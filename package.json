@@ -8,6 +8,11 @@
     "nodemailer": "^6.9.0"
   },
   "devDependencies": {
+    "@types/node": "^25.3.0",
     "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "tsc index.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir dist --esModuleInterop",
+    "clean": "rm -rf dist"
   }
 }
