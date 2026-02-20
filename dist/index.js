@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
+import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
+import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 function nowIso() { return new Date().toISOString(); }
@@ -245,6 +248,28 @@ async function enrichTripWithOpenAI(name) {
         door_to_door_estimate: String(parsed.door_to_door_estimate || ''),
         exchange_rate_eur: String(parsed.exchange_rate_eur || ''),
     };
+}
+/* ---------------- Settings + Helpers ---------------- */
+const SETTINGS_FILE = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/health/settings.json');
+function loadSettings() {
+    try {
+        if (fs.existsSync(SETTINGS_FILE)) {
+            return { briefingTime: '07:00', ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8')) };
+        }
+    }
+    catch { }
+    return { briefingTime: '07:00' };
+}
+function saveSettings(s) {
+    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), 'utf-8');
+}
+/** Returns YYYY-MM-DD in Europe/Berlin, with optional day offset */
+function berlinDate(offsetDays = 0) {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Berlin',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date(Date.now() + offsetDays * 86_400_000));
 }
 /* ---------------- Plugin ---------------- */
 export default function (api) {
@@ -1556,5 +1581,515 @@ export default function (api) {
             return { text: generatePacklist(trip) };
         },
     });
-    api.logger.info("[executive-agent] loaded v11 (travel module)");
+    // ── Health Module ──────────────────────────────────────────────────────────
+    api.registerCommand({
+        name: "weight",
+        acceptsArgs: true,
+        description: "Letztes Gewicht anzeigen oder manuell loggen: /weight [kg]",
+        handler: (ctx) => {
+            const raw = String(ctx.args || "").trim();
+            // Kein Argument → letzten Wert aus Health-Store anzeigen
+            if (!raw) {
+                const entries = readEntries().filter(e => e.type === "weight");
+                if (!entries.length)
+                    return { text: "⚖️ Noch kein Gewicht gespeichert.\nManuell: /weight 78.5\nOder: /healthsync" };
+                const last = entries[entries.length - 1];
+                return { text: `⚖️ Letztes Gewicht: ${last.value?.toFixed(1)} kg\n🕐 ${last.timestamp.slice(0, 16).replace("T", " ")}` };
+            }
+            // Mit Argument → manuell loggen
+            const kg = parseFloat(raw.replace(",", "."));
+            if (isNaN(kg) || kg < 20 || kg > 300)
+                return { text: "❌ Verwendung: /weight 78.5" };
+            const e = appendEntry({ type: "weight", value: kg, unit: "kg" });
+            return { text: `⚖️ Gewicht gespeichert: ${kg.toFixed(1)} kg\n🕐 ${e.timestamp.slice(0, 16).replace("T", " ")}` };
+        },
+    });
+    api.registerCommand({
+        name: "sleep",
+        acceptsArgs: true,
+        description: "Schlaf loggen: /sleep <stunden> [qualität 1-5]",
+        handler: (ctx) => {
+            const parts = String(ctx.args || "").trim().split(/\s+/);
+            const hours = parseFloat(parts[0]?.replace(",", ".") || "");
+            if (isNaN(hours) || hours < 0 || hours > 24) {
+                return { text: "❌ Verwendung: /sleep 7.5 [4]" };
+            }
+            const quality = parts[1] ? parseInt(parts[1]) : undefined;
+            if (quality !== undefined && (isNaN(quality) || quality < 1 || quality > 5)) {
+                return { text: "❌ Qualität muss zwischen 1 und 5 liegen." };
+            }
+            const e = appendEntry({ type: "sleep", value: hours, unit: "h", quality });
+            const qStr = quality !== undefined ? `  |  Qualität: ${quality}/5` : "";
+            return { text: `😴 Schlaf gespeichert: ${hours.toFixed(1)} h${qStr}\n🕐 ${e.timestamp.slice(0, 16).replace("T", " ")}` };
+        },
+    });
+    api.registerCommand({
+        name: "symptom",
+        acceptsArgs: true,
+        description: "Symptom loggen: /symptom <text>",
+        handler: (ctx) => {
+            const text = String(ctx.args || "").trim();
+            if (!text)
+                return { text: "❌ Verwendung: /symptom Kopfschmerzen seit heute Mittag" };
+            const e = appendEntry({ type: "symptom", text });
+            return { text: `🤒 Symptom gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace("T", " ")}` };
+        },
+    });
+    api.registerCommand({
+        name: "healthlog",
+        acceptsArgs: true,
+        description: "Freitext-Gesundheitseintrag: /healthlog <text>",
+        handler: (ctx) => {
+            const text = String(ctx.args || "").trim();
+            if (!text)
+                return { text: "❌ Verwendung: /healthlog Heute Sport gemacht, fühle mich gut." };
+            const e = appendEntry({ type: "log", text });
+            return { text: `📝 Health-Log gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace("T", " ")}` };
+        },
+    });
+    api.registerCommand({
+        name: "healthweek",
+        description: "Health-Zusammenfassung letzte 7 Tage",
+        handler: () => {
+            const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            const entries = readEntries(since);
+            if (!entries.length)
+                return { text: "📭 Keine Health-Einträge in den letzten 7 Tagen." };
+            return { text: formatSummary(summarize(entries), "Woche") };
+        },
+    });
+    api.registerCommand({
+        name: "healthmonth",
+        description: "Health-Zusammenfassung letzter Monat (30 Tage)",
+        handler: () => {
+            const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            const entries = readEntries(since);
+            if (!entries.length)
+                return { text: "📭 Keine Health-Einträge in den letzten 30 Tagen." };
+            return { text: formatSummary(summarize(entries), "Monat") };
+        },
+    });
+    // ── Withings Module ────────────────────────────────────────────────────────
+    const withingsClientId = process.env.WITHINGS_CLIENT_ID || '';
+    const withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET || '';
+    const withingsRedirectUri = 'http://46.62.153.181:8080/withings/callback';
+    const withingsCallbackPort = 8080;
+    // Laufender Callback-Server (max. einer gleichzeitig)
+    let withingsCallbackServer = null;
+    api.registerCommand({
+        name: 'withingsauth',
+        description: 'Withings OAuth2 starten (temporärer Callback-Server): /withingsauth',
+        handler: () => {
+            if (!withingsClientId || !withingsClientSecret) {
+                return { text: '❌ WITHINGS_CLIENT_ID / WITHINGS_CLIENT_SECRET nicht gesetzt.' };
+            }
+            // Vorherigen Server schließen falls noch aktiv
+            if (withingsCallbackServer) {
+                try {
+                    withingsCallbackServer.close();
+                }
+                catch { }
+                withingsCallbackServer = null;
+            }
+            const state = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+            const authUrl = buildAuthUrl(withingsClientId, withingsRedirectUri, state);
+            // Temporären HTTP-Server starten
+            const server = http.createServer(async (req, res) => {
+                try {
+                    const reqUrl = new URL(req.url || '/', `http://localhost:${withingsCallbackPort}`);
+                    if (reqUrl.pathname !== '/withings/callback') {
+                        res.writeHead(404);
+                        res.end('Not found');
+                        return;
+                    }
+                    const code = reqUrl.searchParams.get('code') || '';
+                    const err = reqUrl.searchParams.get('error') || '';
+                    if (err) {
+                        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+                        res.end(`<html><body><h2>❌ Withings Fehler: ${err}</h2></body></html>`);
+                        server.close();
+                        withingsCallbackServer = null;
+                        return;
+                    }
+                    if (!code) {
+                        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+                        res.end('<html><body><h2>❌ Kein Code empfangen.</h2></body></html>');
+                        return;
+                    }
+                    const tokens = await exchangeCode(withingsClientId, withingsClientSecret, code, withingsRedirectUri);
+                    api.logger.info(`[withings] OAuth erfolgreich, userid=${tokens.userid}`);
+                    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`<html><body style="font-family:sans-serif;padding:2em;text-align:center">
+            <h2>✅ Withings erfolgreich verbunden!</h2>
+            <p>User-ID: ${tokens.userid}</p>
+            <p>Du kannst dieses Fenster schließen und in Telegram <strong>/healthsync</strong> ausführen.</p>
+          </body></html>`);
+                    server.close();
+                    withingsCallbackServer = null;
+                }
+                catch (e) {
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`<html><body><h2>❌ Fehler: ${e.message}</h2></body></html>`);
+                    server.close();
+                    withingsCallbackServer = null;
+                }
+            });
+            server.on('error', (e) => {
+                api.logger.error(`[withings] Callback-Server Fehler: ${e.message}`);
+                withingsCallbackServer = null;
+            });
+            server.listen(withingsCallbackPort, '0.0.0.0', () => {
+                api.logger.info(`[withings] Callback-Server gestartet auf Port ${withingsCallbackPort}`);
+            });
+            withingsCallbackServer = server;
+            // Auto-Stop nach 60 Sekunden
+            const timer = setTimeout(() => {
+                if (withingsCallbackServer === server) {
+                    server.close();
+                    withingsCallbackServer = null;
+                    api.logger.info('[withings] Callback-Server nach 60s automatisch gestoppt');
+                }
+            }, 60_000);
+            server.on('close', () => clearTimeout(timer));
+            const already = isAuthorized() ? ' (bereits verbunden — neu autorisieren)' : '';
+            return {
+                text: `🔐 Withings OAuth2${already}\n\n` +
+                    `1. Öffne diesen Link im Browser:\n${authUrl}\n\n` +
+                    `2. Bei Withings anmelden und Zugriff bestätigen.\n\n` +
+                    `3. Der Browser wird automatisch zu diesem Server weitergeleitet.\n` +
+                    `   ✅ Seite zeigt Erfolg → direkt /healthsync ausführen.\n\n` +
+                    `⏱ Callback-Server läuft 60 Sekunden auf Port ${withingsCallbackPort}.`,
+            };
+        },
+    });
+    api.registerCommand({
+        name: 'withingstoken',
+        acceptsArgs: true,
+        description: 'Withings OAuth-Code manuell einlösen: /withingstoken <code oder URL>',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                if (!raw)
+                    return { text: '❌ Verwendung: /withingstoken <code>\nOder vollständige Redirect-URL einfügen.' };
+                if (!withingsClientId || !withingsClientSecret) {
+                    return { text: '❌ WITHINGS_CLIENT_ID / WITHINGS_CLIENT_SECRET nicht gesetzt.' };
+                }
+                // Akzeptiere vollen URL oder reinen Code
+                let code = raw;
+                try {
+                    const parsed = new URL(raw);
+                    const extracted = parsed.searchParams.get('code');
+                    if (extracted)
+                        code = extracted;
+                }
+                catch { /* kein URL → raw ist bereits der Code */ }
+                code = code.replace(/['"]/g, '').trim();
+                if (!code)
+                    return { text: '❌ Kein Code gefunden in der Eingabe.' };
+                const tokens = await exchangeCode(withingsClientId, withingsClientSecret, code, withingsRedirectUri);
+                api.logger.info(`[withings] OAuth (manuell) erfolgreich, userid=${tokens.userid}`);
+                return {
+                    text: `✅ Withings erfolgreich verbunden!\n` +
+                        `👤 User-ID: ${tokens.userid}\n\n` +
+                        `Jetzt: /healthsync`,
+                };
+            }
+            catch (e) {
+                return { text: `❌ /withingstoken fehlgeschlagen: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'healthsync',
+        description: 'Withings-Daten importieren: /healthsync [tage]',
+        acceptsArgs: true,
+        handler: async (ctx) => {
+            try {
+                if (!withingsClientId || !withingsClientSecret) {
+                    return { text: '❌ WITHINGS_CLIENT_ID / WITHINGS_CLIENT_SECRET nicht gesetzt.' };
+                }
+                const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
+                const daysArg = parseInt(String(ctx.args || '').trim()) || 30;
+                const days = Math.max(1, Math.min(365, daysArg));
+                const sinceMs = tokens.last_sync
+                    ? tokens.last_sync - 24 * 60 * 60 * 1000 // 1 Tag Überlappung
+                    : Date.now() - days * 24 * 60 * 60 * 1000;
+                const parts = [`🔄 Withings Sync (seit ${new Date(sinceMs).toISOString().slice(0, 10)})...\n`];
+                let totalNew = 0;
+                // ── Measures (Gewicht, Körperfett, HR) ──
+                try {
+                    const measures = await fetchMeasures(tokens.access_token, sinceMs);
+                    let mCount = 0;
+                    for (const m of measures) {
+                        if (m.weight_kg != null) {
+                            appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+                            mCount++;
+                        }
+                        if (m.fat_ratio_pct != null) {
+                            appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+                        }
+                        if (m.hr_bpm != null) {
+                            appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+                        }
+                    }
+                    parts.push(`⚖️ Messungen: ${measures.length} (${mCount} Gewicht)`);
+                    totalNew += measures.length;
+                }
+                catch (e) {
+                    parts.push(`⚖️ Messungen: ❌ ${e.message}`);
+                }
+                // ── Schlaf ──
+                try {
+                    const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs);
+                    for (const s of sleeps) {
+                        appendEntry({
+                            type: 'sleep', value: s.total_h, unit: 'h',
+                            deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
+                            quality: s.score, source: 'withings',
+                        });
+                    }
+                    parts.push(`😴 Schlaf: ${sleeps.length} Nächte`);
+                    totalNew += sleeps.length;
+                }
+                catch (e) {
+                    parts.push(`😴 Schlaf: ❌ ${e.message}`);
+                }
+                // ── Aktivität (Schritte) ──
+                try {
+                    const activities = await fetchActivity(tokens.access_token, sinceMs);
+                    for (const a of activities) {
+                        if (a.steps > 0) {
+                            appendEntry({
+                                type: 'steps', steps: a.steps, distance_m: a.distance_m,
+                                calories: a.calories, source: 'withings',
+                            });
+                        }
+                        if (a.hr_avg) {
+                            appendEntry({ type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+                        }
+                    }
+                    const totalSteps = activities.reduce((s, a) => s + a.steps, 0);
+                    parts.push(`👟 Aktivität: ${activities.length} Tage, ${totalSteps.toLocaleString('de')} Schritte gesamt`);
+                    totalNew += activities.length;
+                }
+                catch (e) {
+                    parts.push(`👟 Aktivität: ❌ ${e.message}`);
+                }
+                // ── Workouts ──
+                try {
+                    const workouts = await fetchWorkouts(tokens.access_token, sinceMs);
+                    for (const w of workouts) {
+                        appendEntry({
+                            type: 'activity', activity_type: w.activity_type,
+                            duration_min: w.duration_min, steps: w.steps,
+                            distance_m: w.distance_m, calories: w.calories,
+                            hr_avg: w.hr_avg, source: 'withings',
+                        });
+                    }
+                    parts.push(`🏃 Workouts: ${workouts.length}`);
+                    totalNew += workouts.length;
+                }
+                catch (e) {
+                    parts.push(`🏃 Workouts: ❌ ${e.message}`);
+                }
+                // Update last_sync
+                saveTokens({ ...tokens, last_sync: Date.now() });
+                parts.push(`\n✅ ${totalNew} Einträge importiert.`);
+                return { text: parts.join('\n') };
+            }
+            catch (e) {
+                return { text: `❌ /healthsync fehlgeschlagen: ${e.message}` };
+            }
+        },
+    });
+    // ── Briefing ───────────────────────────────────────────────────────────────
+    async function generateBriefingText() {
+        const tz = 'Europe/Berlin';
+        const now = new Date();
+        const fmtDT = new Intl.DateTimeFormat('de-DE', { timeZone: tz, dateStyle: 'full', timeStyle: 'short' });
+        const fmtTime = new Intl.DateTimeFormat('de-DE', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+        const parts = [`🧠 Briefing — ${fmtDT.format(now)}\n`];
+        // ── (1) Wetter Tuttlingen ──
+        try {
+            const wRes = await fetchWithTimeout('https://api.open-meteo.com/v1/forecast' +
+                '?latitude=48.0641&longitude=8.8236' +
+                '&current=temperature_2m,apparent_temperature,precipitation,weathercode,windspeed_10m' +
+                '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
+                '&timezone=Europe%2FBerlin&forecast_days=3', { method: 'GET' }, 10000);
+            const wd = await wRes.json();
+            const c = wd.current;
+            const d = wd.daily;
+            const wcode = {
+                0: '☀️', 1: '🌤', 2: '⛅', 3: '☁️', 45: '🌫', 48: '🌫',
+                51: '🌦', 53: '🌦', 55: '🌧', 61: '🌧', 63: '🌧', 65: '🌧',
+                71: '🌨', 73: '🌨', 75: '❄️', 80: '🌦', 81: '🌧', 82: '⛈',
+                95: '⛈', 96: '⛈', 99: '⛈',
+            };
+            const icon = wcode[c.weathercode] ?? '🌡';
+            parts.push(`${icon} Wetter Tuttlingen: ${c.temperature_2m}°C (gefühlt ${c.apparent_temperature}°C), ` +
+                `💨 ${c.windspeed_10m} km/h, 🌧 ${c.precipitation} mm\n` +
+                `   Mo: ${d.temperature_2m_min[0]}–${d.temperature_2m_max[0]}°C ` +
+                `Di: ${d.temperature_2m_min[1]}–${d.temperature_2m_max[1]}°C ` +
+                `Mi: ${d.temperature_2m_min[2]}–${d.temperature_2m_max[2]}°C`);
+        }
+        catch {
+            parts.push('🌡 Wetter: nicht verfügbar');
+        }
+        parts.push('');
+        // ── (2) Kalender heute ──
+        try {
+            ensureM365Configured();
+            const dayStart = new Date(now);
+            dayStart.setHours(0, 0, 0, 0);
+            const dayEnd = new Date(now);
+            dayEnd.setHours(23, 59, 59, 999);
+            const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+                `/calendarView?startDateTime=${encodeURIComponent(dayStart.toISOString())}` +
+                `&endDateTime=${encodeURIComponent(dayEnd.toISOString())}` +
+                `&$select=subject,start,end,location&$orderby=start/dateTime`;
+            const evData = await graphGet(tenantId, clientId, m365Secret, url);
+            const evs = evData?.value || [];
+            parts.push(`📅 Kalender heute (${evs.length} Termine)`);
+            if (!evs.length) {
+                parts.push('   • keine Termine');
+            }
+            else {
+                for (const ev of evs) {
+                    const s = new Date(ev.start.dateTime);
+                    const e = new Date(ev.end.dateTime);
+                    const loc = ev.location?.displayName ? ` | ${ev.location.displayName}` : '';
+                    parts.push(`   • ${fmtTime.format(s)}–${fmtTime.format(e)} — ${ev.subject || '(kein Titel)'}${loc}`);
+                }
+            }
+        }
+        catch {
+            parts.push('📅 Kalender: nicht verfügbar');
+        }
+        parts.push('');
+        // ── (3) Gesundheit ──
+        parts.push('🏥 Gesundheit (letzte Werte)');
+        const todayBerlin = berlinDate(0);
+        const yesterdayBerlin = berlinDate(-1);
+        function dateHint(ts) {
+            const d = ts.slice(0, 10);
+            if (d === todayBerlin)
+                return '';
+            if (d === yesterdayBerlin)
+                return ' (gestern)';
+            return ` (${d})`;
+        }
+        const lastWeight = lastEntry('weight');
+        const lastSleep = lastEntry('sleep');
+        const lastSteps = lastEntry('steps');
+        const lastHR = lastEntry('heartrate');
+        if (lastWeight)
+            parts.push(`   ⚖️ Gewicht: ${lastWeight.value?.toFixed(1)} kg${dateHint(lastWeight.timestamp)}`);
+        else
+            parts.push('   ⚖️ Gewicht: –');
+        if (lastSleep) {
+            const scoreStr = lastSleep.quality ? `  Score: ${lastSleep.quality}/100` : '';
+            const deepStr = lastSleep.deep_sleep_h ? `  Tief: ${lastSleep.deep_sleep_h}h` : '';
+            const remStr = lastSleep.rem_sleep_h ? `  REM: ${lastSleep.rem_sleep_h}h` : '';
+            parts.push(`   😴 Schlaf: ${lastSleep.value?.toFixed(1)} h${scoreStr}${deepStr}${remStr}${dateHint(lastSleep.timestamp)}`);
+        }
+        else
+            parts.push('   😴 Schlaf: –');
+        if (lastSteps)
+            parts.push(`   👟 Schritte: ${lastSteps.steps?.toLocaleString('de')}${dateHint(lastSteps.timestamp)}`);
+        else
+            parts.push('   👟 Schritte: –');
+        if (lastHR)
+            parts.push(`   ❤️ Herzfrequenz: ${lastHR.hr_avg} bpm${dateHint(lastHR.timestamp)}`);
+        else
+            parts.push('   ❤️ Herzfrequenz: –');
+        parts.push('');
+        // ── (4) Offene Drafts ──
+        try {
+            const ds = listDrafts('draft', 5);
+            parts.push(`📝 Drafts (${ds.length} offen)`);
+            if (!ds.length)
+                parts.push('   • keine offenen Drafts');
+            else
+                for (const d of ds)
+                    parts.push(`   • ${d.id} [${d.account}] — ${d.subject}`);
+        }
+        catch {
+            parts.push('📝 Drafts: nicht verfügbar');
+        }
+        return parts.join('\n').trim();
+    }
+    api.registerCommand({
+        name: 'briefing',
+        description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
+        handler: async () => {
+            try {
+                return { text: await generateBriefingText() };
+            }
+            catch (e) {
+                return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
+            }
+        },
+    });
+    // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────
+    api.registerCommand({
+        name: 'briefingtime',
+        acceptsArgs: true,
+        description: 'Briefing-Uhrzeit setzen: /briefingtime HH:MM  (Europe/Berlin, Standard: 07:00)',
+        handler: (ctx) => {
+            const raw = String(ctx.args || '').trim();
+            if (!/^\d{1,2}:\d{2}$/.test(raw))
+                return { text: '❌ Verwendung: /briefingtime 07:30' };
+            const [h, m] = raw.split(':').map(Number);
+            if (h < 0 || h > 23 || m < 0 || m > 59)
+                return { text: '❌ Ungültige Uhrzeit.' };
+            const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            const s = loadSettings();
+            s.briefingTime = time;
+            saveSettings(s);
+            return {
+                text: `⏰ Tägliches Briefing auf ${time} Uhr (Europe/Berlin) gesetzt.\n` +
+                    `Chat-ID: ${s.telegramChatId || '(noch nicht erfasst — sende irgendeine Nachricht)'}`,
+            };
+        },
+    });
+    // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
+    api.registerHook('message_received', (event) => {
+        try {
+            const id = String(event?.senderId || '').trim();
+            if (!id)
+                return;
+            const s = loadSettings();
+            if (s.telegramChatId !== id) {
+                s.telegramChatId = id;
+                saveSettings(s);
+                api.logger.info(`[executive-agent] telegramChatId gespeichert: ${id}`);
+            }
+        }
+        catch { }
+    }, { name: 'capture-telegram-chat-id' });
+    // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
+    let lastBriefingDate = '';
+    setInterval(async () => {
+        try {
+            const s = loadSettings();
+            if (!s.telegramChatId)
+                return;
+            // Aktuelle Berliner Zeit als HH:MM
+            const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+            const hh = String(inBerlin.getHours()).padStart(2, '0');
+            const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+            const nowHHMM = `${hh}:${mm}`;
+            const today = berlinDate(0);
+            if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
+                lastBriefingDate = today;
+                const text = await generateBriefingText();
+                await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, text);
+                api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+            }
+        }
+        catch (e) {
+            api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
+        }
+    }, 60_000);
+    api.logger.info("[executive-agent] loaded v14 (briefing scheduler + briefingtime)");
 }
