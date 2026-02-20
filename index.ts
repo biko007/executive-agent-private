@@ -378,12 +378,31 @@ async function parseTripFreeText(
     year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date());
 
+  // Compute concrete Monday anchors so Haiku has no ambiguity
+  const [ty, tm, td] = todayBerlin.split('-').map(Number);
+  const todayUtc = new Date(Date.UTC(ty, tm - 1, td));
+  const isoDow = todayUtc.getUTCDay() === 0 ? 7 : todayUtc.getUTCDay(); // Mon=1…Sun=7
+  const daysToNextMon = 8 - isoDow; // always 2..8
+  const msDay = 86_400_000;
+  const nextMonMs     = todayUtc.getTime() + daysToNextMon * msDay;
+  const nextNextMonMs = nextMonMs + 7 * msDay;
+  const monNext     = new Date(nextMonMs).toISOString().slice(0, 10);
+  const monNextNext = new Date(nextNextMonMs).toISOString().slice(0, 10);
+
   const prompt =
-    `Heute ist der ${todayBerlin} (Zeitzone Europe/Berlin).\n` +
+    `Heute ist der ${todayBerlin} (Wochentag: ${['So','Mo','Di','Mi','Do','Fr','Sa'][todayUtc.getUTCDay()]}, Zeitzone Europe/Berlin).\n\n` +
+    `WICHTIG — Deutsche Wochenreferenzen (verbindlich):\n` +
+    `  "nächste Woche"      = Montag ${monNext} bis Sonntag (7 Tage ab ${monNext})\n` +
+    `  "übernächste Woche"  = Montag ${monNextNext} bis Sonntag — das ist ZWEI Wochen ab heute, NICHT eine\n` +
+    `  "übermorgen"         = ${new Date(todayUtc.getTime() + 2 * msDay).toISOString().slice(0, 10)}\n` +
+    `  "Anfang <Monat>"     = 1. des Monats\n` +
+    `  "Mitte <Monat>"      = 15. des Monats\n` +
+    `  "Ende <Monat>"       = letzter Tag des Monats\n` +
+    `  "nächsten <Wochentag>"     = der kommende <Wochentag> in der Woche ab ${monNext}\n` +
+    `  "übernächsten <Wochentag>" = der <Wochentag> in der Woche ab ${monNextNext}\n\n` +
     `Der Nutzer beschreibt eine Reise in freiem Text:\n` +
     `"${text}"\n\n` +
-    `Extrahiere Reiseziel, Startdatum und Enddatum.\n` +
-    `Löse relative Datumsangaben wie "nächsten Montag", "übernächste Woche", "3. März" relativ zum heutigen Datum auf.\n` +
+    `Extrahiere Reiseziel, Startdatum und Enddatum. Wende die obigen Regeln exakt an.\n` +
     `Antworte NUR mit einem JSON-Objekt (kein Markdown, kein Text davor/danach).\n\n` +
     `Wenn alle drei Felder eindeutig erkennbar sind:\n` +
     `{ "destination": "<Reiseziel>", "start": "<YYYY-MM-DD>", "end": "<YYYY-MM-DD>" }\n\n` +
