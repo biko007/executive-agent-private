@@ -190,7 +190,7 @@ export default function (api) {
             `&$select=receivedDateTime,from,subject,id,isRead` +
             `&$filter=isRead eq false` +
             `&$orderby=receivedDateTime desc`;
-        const data = await graphGet(token, url);
+        const data = await graphGet(tenantId, clientId, m365Secret, url);
         const vals = data.value || [];
         return vals.map((m) => ({
             source: "m365",
@@ -291,11 +291,11 @@ export default function (api) {
             `&$select=subject,start,end`;
         const cal = await graphGetFn(tenantId, clientId, m365Secret, calUrl);
         // robust conflict scan: query a wider window and check overlaps ourselves
-        const scanStart = new Date(se.start.getTime() - 12 * 60 * 60 * 1000).toISOString();
-        const scanEnd = new Date(se.end.getTime() + 12 * 60 * 60 * 1000).toISOString();
+        const scanStart = new Date(start.getTime() - 12 * 60 * 60 * 1000).toISOString();
+        const scanEnd = new Date(end.getTime() + 12 * 60 * 60 * 1000).toISOString();
         const candidates = await listConflicts(scanStart, scanEnd);
-        const startMs = se.start.getTime();
-        const endMs = se.end.getTime();
+        const startMs = start.getTime();
+        const endMs = end.getTime();
         // overlap if: eventStart < end && eventEnd > start
         const conflicts = candidates.filter((ev) => {
             const s = new Date(ev?.start?.dateTime).getTime();
@@ -691,10 +691,24 @@ export default function (api) {
         const se = buildStartEnd(dateStr, timeStr, durationMin);
         if (!se)
             return { text: "Invalid date/time. Example: /meet 27.02 14:00 60 Strategic Call" };
-        const startIso = se.start.toISOString();
-        const endIso = se.end.toISOString();
+        const { start, end } = se;
+        const startIso = start.toISOString();
+        const endIso = end.toISOString();
         // Conflict check
-        const conflicts = await listConflicts(startIso, endIso);
+        // Conflict check (robust): scan wider window and compute overlaps locally
+        const scanStartIso = new Date(start.getTime() - 12 * 60 * 60 * 1000).toISOString();
+        const scanEndIso = new Date(end.getTime() + 12 * 60 * 60 * 1000).toISOString();
+        const candidates = await listConflicts(scanStartIso, scanEndIso);
+        const startMs = start.getTime();
+        const endMs = end.getTime();
+        // overlap if: eventStart < end && eventEnd > start
+        const conflicts = candidates.filter((ev) => {
+            const s = new Date(ev?.start?.dateTime).getTime();
+            const e = new Date(ev?.end?.dateTime).getTime();
+            if (!Number.isFinite(s) || !Number.isFinite(e))
+                return false;
+            return s < endMs && e > startMs;
+        });
         if (conflicts.length && !force) {
             const tz = "Europe/Berlin";
             const fmtTime = new Intl.DateTimeFormat("de-DE", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });

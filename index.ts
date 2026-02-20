@@ -400,7 +400,7 @@ const scanEnd   = new Date(end.getTime()   + 12 * 60 * 60 * 1000).toISOString();
 const candidates = await listConflicts(scanStart, scanEnd);
 
 const startMs = start.getTime();
-const endMs   = end.getTime();
+const endMs = end.getTime();
 
 // overlap if: eventStart < end && eventEnd > start
 const conflicts = candidates.filter((ev: any) => {
@@ -837,12 +837,28 @@ for (const k of days) {
     const { dateStr, timeStr, durationMin, title } = parsed;
     const se = buildStartEnd(dateStr, timeStr, durationMin);
     if (!se) return { text: "Invalid date/time. Example: /meet 27.02 14:00 60 Strategic Call" };
+    const { start, end } = se;
 
     const startIso = start.toISOString();
     const endIso = end.toISOString();
 
     // Conflict check
-    const conflicts = await listConflicts(startIso, endIso);
+    // Conflict check (robust): scan wider window and compute overlaps locally
+    const scanStartIso = new Date(start.getTime() - 12 * 60 * 60 * 1000).toISOString();
+    const scanEndIso   = new Date(end.getTime()   + 12 * 60 * 60 * 1000).toISOString();
+
+    const candidates = await listConflicts(scanStartIso, scanEndIso);
+
+    const startMs = start.getTime();
+    const endMs = end.getTime();
+
+    // overlap if: eventStart < end && eventEnd > start
+    const conflicts = candidates.filter((ev: any) => {
+      const s = new Date(ev?.start?.dateTime).getTime();
+      const e = new Date(ev?.end?.dateTime).getTime();
+      if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+      return s < endMs && e > startMs;
+    });
 
     if (conflicts.length && !force) {
       const tz = "Europe/Berlin";

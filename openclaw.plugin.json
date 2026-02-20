@@ -3,7 +3,7 @@
   "name": "Executive Agent",
   "version": "0.1.3",
   "kind": "extension",
-  "entry": "index.ts",
+  "entry": "dist/index.js",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -16,39 +16,77 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean" },
-              "email": { "type": "string" },
-              "tenantId": { "type": "string" },
-              "clientId": { "type": "string" }
+              "enabled": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "string"
+              },
+              "tenantId": {
+                "type": "string"
+              },
+              "clientId": {
+                "type": "string"
+              }
             },
-            "required": ["enabled", "email", "tenantId", "clientId"]
+            "required": [
+              "enabled",
+              "email",
+              "tenantId",
+              "clientId"
+            ]
           },
           "yahoo": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean" },
-              "email": { "type": "string" },
-              "imapHost": { "type": "string" },
-              "imapPort": { "type": "number" },
-              "smtpHost": { "type": "string" },
-              "smtpPort": { "type": "number" }
+              "enabled": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "string"
+              },
+              "imapHost": {
+                "type": "string"
+              },
+              "imapPort": {
+                "type": "number"
+              },
+              "smtpHost": {
+                "type": "string"
+              },
+              "smtpPort": {
+                "type": "number"
+              }
             },
-            "required": ["enabled", "email", "imapHost", "imapPort", "smtpHost", "smtpPort"]
+            "required": [
+              "enabled",
+              "email",
+              "imapHost",
+              "imapPort",
+              "smtpHost",
+              "smtpPort"
+            ]
           },
           "signatures": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "m365": { "type": "string" },
-              "yahoo": { "type": "string" }
+              "m365": {
+                "type": "string"
+              },
+              "yahoo": {
+                "type": "string"
+              }
             }
           },
           "sendPolicy": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "requireApproval": { "type": "boolean" }
+              "requireApproval": {
+                "type": "boolean"
+              }
             }
           }
         }
