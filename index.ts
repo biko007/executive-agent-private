@@ -246,6 +246,27 @@ export default function (api: any) {
     return JSON.parse(fs.readFileSync(p, "utf-8"));
   }
 
+  function listDrafts(status?: MailDraft["status"], limit: number = 5): MailDraft[] {
+    if (!fs.existsSync(draftsDir)) return [];
+    const files = fs.readdirSync(draftsDir).filter(f => f.endsWith(".json"));
+    const out: MailDraft[] = [];
+
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(draftsDir, f), "utf-8");
+        const d = JSON.parse(raw);
+        if (!d?.id || !d?.status) continue;
+        if (status && d.status !== status) continue;
+        out.push(d as MailDraft);
+      } catch {
+        // ignore broken draft file
+      }
+    }
+
+    out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    return out.slice(0, Math.max(1, Math.min(20, limit)));
+  }
+
   function ensureM365Configured() {
     if (!m365Enabled) throw new Error("m365_disabled");
     if (!tenantId || !clientId || !m365User) throw new Error("m365_not_configured");
@@ -550,6 +571,137 @@ if (conflicts.length && !force) {
           `• Send-Policy: ${requireApproval ? "requireApproval=true ✅" : "requireApproval=false ⚠️"}\n\n` +
           "Hinweis: prüft nur plugins.entries.executive-agent.config + ENV Secrets (nicht daily-briefing/skills)."
       };
+    },
+  });
+
+  // Executive brief: inbox unread + next events + open drafts
+  api.registerCommand({
+    name: "brief",
+    description: "Executive snapshot: unread inbox + next events + open drafts. Usage: /brief",
+    requireAuth: true,
+    handler: async () => {
+      const tz = "Europe/Berlin";
+      const now = new Date();
+      const fmtNow = new Intl.DateTimeFormat("de-DE", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+
+      const parts: string[] = [];
+      parts.push(`🧠 Brief — ${fmtNow.format(now)}`);
+      parts.push("");
+
+      // (A) Unread unified inbox (top 5)
+      try {
+        const n = 5;
+        const perSource = 10;
+        const [mMsgs, yMsgs] = await Promise.all([
+          m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
+          yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
+        ]);
+        const combined = [...mMsgs, ...yMsgs].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1)).slice(0, n);
+
+        parts.push("📥 Unread Inbox (top 5)");
+        if (!combined.length) {
+          parts.push("• keine ungelesenen Mails");
+        } else {
+          for (const m of combined) {
+            const src = m.source === "m365" ? "[M365]" : "[YAHOO]";
+            const dt = m.dateIso.replace("T", " ").replace("Z", "Z");
+            parts.push(`• ${src} ${dt} — ${m.from} — ${m.subject}`);
+          }
+        }
+        parts.push("");
+      } catch (e) {
+        parts.push("📥 Unread Inbox");
+        parts.push("• ❌ Fehler beim Laden");
+        parts.push("");
+      }
+
+      // (B) Next events (top 3, next 7 days)
+      try {
+        if (!m365Enabled) throw new Error("m365_disabled");
+        ensureM365Configured();
+
+        const start = new Date();
+        const end = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        let url =
+          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+          `/calendarView?startDateTime=${encodeURIComponent(start.toISOString())}` +
+          `&endDateTime=${encodeURIComponent(end.toISOString())}` +
+          `&$select=subject,start,end,location` +
+          `&$orderby=start/dateTime`;
+
+        const events: any[] = [];
+        for (let i = 0; i < 10 && events.length < 3; i++) {
+          const json = await graphGet(tenantId, clientId, m365Secret, url);
+          if (Array.isArray(json?.value)) events.push(...json.value);
+          const next = json?.["@odata.nextLink"];
+          if (!next) break;
+          url = next;
+        }
+
+        const fmtDate = new Intl.DateTimeFormat("de-DE", {
+          timeZone: tz,
+          weekday: "short",
+          month: "2-digit",
+          day: "2-digit",
+        });
+        const fmtTime = new Intl.DateTimeFormat("de-DE", {
+          timeZone: tz,
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+        parts.push("📅 Next Events (top 3)");
+        const top = events.slice(0, 3);
+        if (!top.length) {
+          parts.push("• keine Termine (7 Tage)");
+        } else {
+          for (const ev of top) {
+            const subj = ev?.subject || "(ohne Titel)";
+            const sdt = ev?.start?.dateTime ? new Date(ev.start.dateTime) : null;
+            const edt = ev?.end?.dateTime ? new Date(ev.end.dateTime) : null;
+            const when =
+              sdt && edt
+                ? `${fmtDate.format(sdt)} ${fmtTime.format(sdt)}–${fmtTime.format(edt)}`
+                : "(time?)";
+            const loc = ev?.location?.displayName ? ` | ${ev.location.displayName}` : "";
+            parts.push(`• ${when} — ${subj}${loc}`);
+          }
+        }
+        parts.push("");
+      } catch (e) {
+        parts.push("📅 Next Events");
+        parts.push("• ❌ Fehler beim Laden");
+        parts.push("");
+      }
+
+      // (C) Open drafts (status=draft, top 5)
+      try {
+        const ds = listDrafts("draft", 5);
+        parts.push("📝 Drafts (open, top 5)");
+        if (!ds.length) {
+          parts.push("• keine offenen Drafts");
+        } else {
+          for (const d of ds) {
+            parts.push(`• ${d.id} [${d.account}] — To: ${(d.to || []).join(", ")} — ${d.subject}`);
+          }
+        }
+        parts.push("");
+      } catch (e) {
+        parts.push("📝 Drafts");
+        parts.push("• ❌ Fehler beim Laden");
+        parts.push("");
+      }
+
+      return { text: parts.join("\n").trim() };
     },
   });
 
