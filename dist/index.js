@@ -25,6 +25,23 @@ function parseRetryAfterMs(res) {
         return Math.min(secs * 1000, 30_000);
     return null;
 }
+async function fetchWithTimeout(url, init, timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...(init || {}), signal: controller.signal });
+    }
+    catch (e) {
+        // normalize abort to a readable error
+        if (e?.name === "AbortError") {
+            throw new Error(`fetch_timeout_after_${timeoutMs}ms`);
+        }
+        throw e;
+    }
+    finally {
+        clearTimeout(t);
+    }
+}
 async function graphToken(tenantId, clientId, clientSecret) {
     const key = cacheKey(tenantId, clientId);
     const cached = graphTokenCache.get(key);
@@ -37,11 +54,11 @@ async function graphToken(tenantId, clientId, clientSecret) {
     form.set("scope", "https://graph.microsoft.com/.default");
     form.set("client_secret", clientSecret);
     form.set("grant_type", "client_credentials");
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: form,
-    });
+    }, 20000);
     const text = await res.text().catch(() => "");
     let parsed = null;
     try {
@@ -83,7 +100,7 @@ async function graphRequest(tenantId, clientId, clientSecret, method, url, body)
             headers["Content-Type"] = "application/json";
             fetchBody = JSON.stringify(body ?? {});
         }
-        const res = await fetch(url, { method, headers, body: fetchBody });
+        const res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 20000);
         // 401: token expired/revoked → refresh once and retry immediately
         if (res.status === 401 && !didRefreshOn401) {
             didRefreshOn401 = true;
@@ -670,6 +687,126 @@ export default function (api) {
         },
     });
     // Draft ops (avoid collision with OpenClaw /approve)
+    function parseKvArgs(inputRaw) {
+        const s = String(inputRaw || "").trim();
+        const out = {};
+        if (!s)
+            return out;
+        // Tokenize: key=value where value may be "..." or '...'
+        const re = /(\w+)=("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)/g;
+        let m;
+        while ((m = re.exec(s))) {
+            const key = m[1].toLowerCase();
+            let val = m[2] || "";
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1);
+            }
+            val = val.replace(/\\n/g, "\n");
+            out[key] = val;
+        }
+        return out;
+    }
+    api.registerCommand({
+        name: "draftcreate",
+        description: 'Create draft quickly. Usage: /draftcreate account=yahoo|m365 to=a@b.com[,c@d.com] subject=... body=...',
+        acceptsArgs: true,
+        requireAuth: true,
+        handler: (ctx) => {
+            try {
+                const kv = parseKvArgs(ctx.args || "");
+                const account = (kv.account || "").toLowerCase();
+                if (account !== "yahoo" && account !== "m365")
+                    return { text: 'Usage: /draftcreate account=yahoo|m365 to=... subject=... body=...' };
+                if (account === "yahoo")
+                    ensureYahooConfigured();
+                if (account === "m365")
+                    ensureM365Configured();
+                const toRaw = kv.to || "";
+                const to = toRaw.split(/[;,]/).map(x => x.trim()).filter(Boolean);
+                if (!to.length || !to.every(x => x.includes("@")))
+                    return { text: "❌ Invalid to=. Use: to=a@b.com[,c@d.com]" };
+                const subject = kv.subject || "";
+                const body = kv.body || "";
+                if (!subject)
+                    return { text: '❌ Missing subject=. Example: subject=Hello' };
+                if (!body)
+                    return { text: '❌ Missing body=. Example: body=Line1\\n\\nLine2' };
+                const d = {
+                    id: makeId(account),
+                    createdAt: nowIso(),
+                    status: "draft",
+                    account: account,
+                    user: account === "yahoo" ? yahooUser : m365User,
+                    to,
+                    subject,
+                    bodyText: body,
+                };
+                saveDraft(d);
+                return {
+                    text: `✅ Draft created: ${d.id} [${d.account}]
+` +
+                        `/draftshow ${d.id}
+` +
+                        `/draftedit ${d.id} subject="..."
+` +
+                        `/draftedit ${d.id} body="..."
+` +
+                        `/draftapprove ${d.id}
+` +
+                        `/draftsend ${d.id}`
+                };
+            }
+            catch (e) {
+                return { text: `❌ /draftcreate failed: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: "draftedit",
+        description: 'Edit draft fields. Usage: /draftedit <id> [to=...] [subject=...] [body=...]',
+        acceptsArgs: true,
+        requireAuth: true,
+        handler: (ctx) => {
+            try {
+                const raw = String(ctx.args || "").trim();
+                const m = raw.match(/^(\S+)\s*(.*)$/);
+                if (!m)
+                    return { text: 'Usage: /draftedit <id> subject=... | body=... | to=a@b.com[,c@d.com]' };
+                const id = m[1];
+                const rest = m[2] || "";
+                const d = loadDraft(id);
+                if (!d)
+                    return { text: `Draft not found: ${id}` };
+                if (d.status === "sent")
+                    return { text: `❌ Draft already sent: ${id}` };
+                const kv = parseKvArgs(rest);
+                if (kv.to !== undefined) {
+                    const to = String(kv.to || "").split(/[;,]/).map(x => x.trim()).filter(Boolean);
+                    if (!to.length || !to.every(x => x.includes("@")))
+                        return { text: "❌ Invalid to=. Use: to=a@b.com[,c@d.com]" };
+                    d.to = to;
+                }
+                if (kv.subject !== undefined) {
+                    const subject = String(kv.subject || "");
+                    if (!subject)
+                        return { text: "❌ subject= cannot be empty" };
+                    d.subject = subject;
+                }
+                if (kv.body !== undefined) {
+                    const body = String(kv.body || "");
+                    if (!body)
+                        return { text: "❌ body= cannot be empty" };
+                    d.bodyText = body;
+                }
+                saveDraft(d);
+                return { text: `✅ Draft updated: ${id} (${d.status})
+/draftshow ${id}` };
+            }
+            catch (e) {
+                return { text: `❌ /draftedit failed: ${e.message}` };
+            }
+        },
+    });
     api.registerCommand({
         name: "draftlist",
         description: "List open drafts. Usage: /draftlist [n]",
@@ -903,29 +1040,84 @@ export default function (api) {
     }
     function parseMeetArgs(inputRaw) {
         const input = String(inputRaw || "").trim();
-        const parts = input.split(/\s+/);
-        if (parts.length < 3)
+        if (!input)
             return null;
-        let dateStr;
-        let timeStr;
-        let durationMin;
-        let title;
-        // /meet DD.MM HH:MM duration Title...
-        if (parts.length >= 4 && !isNaN(Number(parts[2]))) {
+        const parts = input.split(/\s+/);
+        if (parts.length < 2)
+            return null;
+        const tz = "Europe/Berlin";
+        function fmtDDMM(d) {
+            const dd = String(d.getDate()).padStart(2, "0");
+            const mm = String(d.getMonth() + 1).padStart(2, "0");
+            return `${dd}.${mm}`;
+        }
+        function nextWeekday(target) {
+            const now = new Date();
+            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const cur = d.getDay(); // 0=Sun..6=Sat
+            let delta = (target - cur + 7) % 7;
+            if (delta === 0)
+                delta = 7; // "next", not "today"
+            d.setDate(d.getDate() + delta);
+            return d;
+        }
+        function parseDuration(token) {
+            if (!token)
+                return null;
+            const t = token.toLowerCase();
+            // 45min / 45m
+            if (/^\d+(min|m)$/.test(t)) {
+                const n = Number(t.replace(/(min|m)$/, ""));
+                return Number.isFinite(n) && n > 0 ? n : null;
+            }
+            // 1h / 1.5h
+            if (/^\d+(\.\d+)?h$/.test(t)) {
+                const h = Number(t.replace(/h$/, ""));
+                return Number.isFinite(h) && h > 0 ? Math.round(h * 60) : null;
+            }
+            // plain minutes (e.g. 45)
+            if (/^\d+$/.test(t)) {
+                const n = Number(t);
+                return Number.isFinite(n) && n > 0 ? n : null;
+            }
+            return null;
+        }
+        // Date token can be DD.MM or heute/morgen or weekday
+        const dateTok = parts[0].toLowerCase();
+        const timeTok = parts[1];
+        let dateStr = "";
+        if (/^\d{1,2}\.\d{1,2}$/.test(dateTok)) {
             dateStr = parts[0];
-            timeStr = parts[1];
-            durationMin = Number(parts[2]);
-            title = parts.slice(3).join(" ");
+        }
+        else if (dateTok === "heute") {
+            dateStr = fmtDDMM(new Date());
+        }
+        else if (dateTok === "morgen") {
+            const d = new Date();
+            d.setDate(d.getDate() + 1);
+            dateStr = fmtDDMM(d);
         }
         else {
-            // /meet DD.MM HH:MM Title...  -> default duration
-            dateStr = parts[0];
-            timeStr = parts[1];
-            durationMin = 60; // default
-            title = parts.slice(2).join(" ");
+            const map = { so: 0, mo: 1, di: 2, mi: 3, do: 4, fr: 5, sa: 6 };
+            if (map[dateTok] !== undefined) {
+                dateStr = fmtDDMM(nextWeekday(map[dateTok]));
+            }
+            else {
+                return null;
+            }
         }
-        if (!title)
+        if (!/^\d{1,2}:\d{2}$/.test(timeTok))
             return null;
+        const timeStr = timeTok;
+        // Optional duration as 3rd token
+        const dur = parseDuration(parts[2]);
+        const durationMin = dur ?? 60;
+        // Title starts after date+time(+duration)
+        const titleStart = dur ? 3 : 2;
+        let title = parts.slice(titleStart).join(" ").trim();
+        if (!title) {
+            title = `Meeting ${dateStr} ${timeStr}`;
+        }
         return { dateStr, timeStr, durationMin, title };
     }
     function buildStartEnd(dateStr, timeStr, durationMin) {
