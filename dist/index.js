@@ -671,6 +671,26 @@ export default function (api) {
     });
     // Draft ops (avoid collision with OpenClaw /approve)
     api.registerCommand({
+        name: "draftlist",
+        description: "List open drafts. Usage: /draftlist [n]",
+        acceptsArgs: true,
+        requireAuth: true,
+        handler: (ctx) => {
+            const nRaw = String(ctx.args || "").trim();
+            const nNum = nRaw ? Number(nRaw) : 5;
+            const n = Math.max(1, Math.min(20, Number.isFinite(nNum) ? nNum : 5));
+            const ds = listDrafts("draft", n);
+            if (!ds.length)
+                return { text: "📝 Drafts: keine offenen Drafts." };
+            const lines = ds.map(d => {
+                const to = (d.to || []).join(", ");
+                const when = String(d.createdAt || "").replace("T", " ").replace("Z", "Z");
+                return `• ${d.id} [${d.account}] ${when}\n  To: ${to}\n  ${d.subject}`;
+            });
+            return { text: `📝 Drafts (open, top ${n})\n\n${lines.join("\n\n")}` };
+        },
+    });
+    api.registerCommand({
         name: "draftshow",
         description: "Show draft. Usage: /draftshow <draftId>",
         acceptsArgs: true,
