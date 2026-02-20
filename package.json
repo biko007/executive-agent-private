@@ -9,10 +9,13 @@
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
+    "@types/nodemailer": "^7.0.10",
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "build": "tsc index.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir dist --esModuleInterop",
-    "clean": "rm -rf dist"
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "check:node": "node --check dist/index.js",
+    "dev:check": "bash ./dev-check.sh"
   }
 }
