@@ -200,6 +200,28 @@ export default function (api) {
             subject: m?.subject || "(no subject)",
         }));
     }
+    async function m365Recent(limit, hours) {
+        ensureM365Configured();
+        // newest first, optional time filter
+        const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+            `/mailFolders/Inbox/messages?$top=${limit}` +
+            `&$select=receivedDateTime,from,subject,id,isRead` +
+            `&$orderby=receivedDateTime desc`;
+        let url = base;
+        if (hours && Number.isFinite(hours) && hours > 0) {
+            const sinceIso = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+            url += `&$filter=receivedDateTime ge ${sinceIso}`;
+        }
+        const data = await graphGet(tenantId, clientId, m365Secret, url);
+        const vals = data.value || [];
+        return vals.map((m) => ({
+            source: "m365",
+            id: String(m.id),
+            dateIso: String(m.receivedDateTime || nowIso()),
+            from: m?.from?.emailAddress?.address || "?",
+            subject: m?.subject || "(no subject)",
+        }));
+    }
     async function yahooUnread(limit) {
         ensureYahooConfigured();
         const client = new ImapFlow({
@@ -221,6 +243,38 @@ export default function (api) {
             });
             if (out.length >= limit)
                 break;
+        }
+        await client.logout();
+        return out;
+    }
+    async function yahooRecent(limit, hours) {
+        ensureYahooConfigured();
+        const client = new ImapFlow({
+            host: yahooImapHost,
+            port: yahooImapPort,
+            secure: true,
+            auth: { user: yahooUser, pass: yahooPass },
+        });
+        await client.connect();
+        await client.mailboxOpen("INBOX");
+        // Without a time bound, IMAP "recent" can be heavy; use safe default window.
+        const effectiveHours = (hours && Number.isFinite(hours) && hours > 0) ? hours : (24 * 30);
+        const since = new Date(Date.now() - effectiveHours * 60 * 60 * 1000);
+        const searchRes = await client.search({ since });
+        const uids = Array.isArray(searchRes) ? searchRes : [];
+        uids.sort((a, b) => b - a);
+        const pick = uids.slice(0, limit);
+        const out = [];
+        if (pick.length) {
+            for await (const msg of client.fetch(pick, { uid: true, envelope: true, internalDate: true })) {
+                out.push({
+                    source: "yahoo",
+                    id: String(msg.uid),
+                    dateIso: msg.internalDate ? new Date(msg.internalDate).toISOString() : nowIso(),
+                    from: msg.envelope?.from?.[0]?.address || "?",
+                    subject: msg.envelope?.subject || "(no subject)",
+                });
+            }
         }
         await client.logout();
         return out;
@@ -366,28 +420,64 @@ export default function (api) {
     // Unified inbox: unread + chronological
     api.registerCommand({
         name: "inbox",
-        description: "Unified unread inbox (M365 + Yahoo). Usage: /inbox [n]",
+        description: "Unified inbox (default: unread). Usage: /inbox [n] | /inbox last [24h] [n]",
         acceptsArgs: true,
         requireAuth: true,
         handler: async (ctx) => {
             try {
-                const n = Math.max(1, Math.min(20, Number(String(ctx.args || "10").trim() || "10")));
-                const perSource = Math.max(5, n); // fetch a bit more per source for better merge
-                const [mMsgs, yMsgs] = await Promise.all([
-                    m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
-                    yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
-                ]);
+                const raw = String(ctx.args || "").trim();
+                const tokens = raw ? raw.split(/\s+/) : [];
+                let mode = "unread";
+                let hours = undefined;
+                let n = 10;
+                if (tokens[0]?.toLowerCase() === "last") {
+                    mode = "last";
+                    const t1 = tokens[1];
+                    const t2 = tokens[2];
+                    if (t1 && /h$/i.test(t1)) {
+                        const h = Number(t1.replace(/h$/i, ""));
+                        if (Number.isFinite(h) && h > 0)
+                            hours = h;
+                        if (t2)
+                            n = Number(t2);
+                    }
+                    else if (t1) {
+                        n = Number(t1);
+                    }
+                }
+                else if (tokens[0]) {
+                    n = Number(tokens[0]);
+                }
+                n = Math.max(1, Math.min(20, Number.isFinite(n) ? Number(n) : 10));
+                const perSource = Math.max(10, n); // fetch a bit more per source for better merge
+                const [mMsgs, yMsgs] = mode === "last"
+                    ? await Promise.all([
+                        m365Enabled ? m365Recent(perSource, hours) : Promise.resolve([]),
+                        yahooEnabled ? yahooRecent(perSource, hours) : Promise.resolve([]),
+                    ])
+                    : await Promise.all([
+                        m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
+                        yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
+                    ]);
                 const combined = [...mMsgs, ...yMsgs]
                     .sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1))
                     .slice(0, n);
                 if (!combined.length) {
-                    return { text: "📥 Unified Inbox: keine ungelesenen Mails." };
+                    return {
+                        text: mode === "last"
+                            ? "📥 Unified Inbox: keine Mails im gewählten Zeitraum."
+                            : "📥 Unified Inbox: keine ungelesenen Mails."
+                    };
                 }
                 const lines = combined.map(m => {
                     const src = m.source === "m365" ? "[M365]" : "[YAHOO]";
-                    return `${src} ${m.id}\n  ${m.dateIso} | ${m.from}\n  ${m.subject}`;
+                    const dt = m.dateIso.replace("T", " ").replace("Z", "Z");
+                    return `${src} ${dt} | ${m.from}\n${m.subject}\n(id: ${m.id})`;
                 });
-                return { text: `📥 Unified Inbox (unread, top ${n})\n\n${lines.join("\n\n")}` };
+                const title = mode === "last"
+                    ? `📥 Unified Inbox (last${hours ? " " + hours + "h" : ""}, top ${n})`
+                    : `📥 Unified Inbox (unread, top ${n})`;
+                return { text: `${title}\n\n${lines.join("\n\n")}` };
             }
             catch (e) {
                 return { text: `❌ /inbox failed: ${e.message}` };
