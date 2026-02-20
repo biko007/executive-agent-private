@@ -92,5 +92,6 @@
         }
       }
     }
-  }
+  },
+  "main": "dist/index.js"
 }
