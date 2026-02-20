@@ -249,6 +249,66 @@ async function enrichTripWithOpenAI(name) {
         exchange_rate_eur: String(parsed.exchange_rate_eur || ''),
     };
 }
+async function parseTripFreeText(text) {
+    const apiKey = readAnthropicKey();
+    if (!apiKey)
+        throw new Error('ANTHROPIC_API_KEY nicht gesetzt');
+    const todayBerlin = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Berlin',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+    const prompt = `Heute ist der ${todayBerlin} (Zeitzone Europe/Berlin).\n` +
+        `Der Nutzer beschreibt eine Reise in freiem Text:\n` +
+        `"${text}"\n\n` +
+        `Extrahiere Reiseziel, Startdatum und Enddatum.\n` +
+        `Löse relative Datumsangaben wie "nächsten Montag", "übernächste Woche", "3. März" relativ zum heutigen Datum auf.\n` +
+        `Antworte NUR mit einem JSON-Objekt (kein Markdown, kein Text davor/danach).\n\n` +
+        `Wenn alle drei Felder eindeutig erkennbar sind:\n` +
+        `{ "destination": "<Reiseziel>", "start": "<YYYY-MM-DD>", "end": "<YYYY-MM-DD>" }\n\n` +
+        `Wenn etwas unklar oder fehlend ist:\n` +
+        `{ "unclear": true, "question": "<kurze Rückfrage auf Deutsch>" }`;
+    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 256,
+            messages: [{ role: 'user', content: prompt }],
+        }),
+    }, 20000);
+    if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        throw new Error(`Anthropic API Fehler: ${res.status} — ${err.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const content = data?.content?.[0]?.text || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch)
+        throw new Error(`Haiku: kein JSON in Antwort — ${content.slice(0, 200)}`);
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonMatch[0]);
+    }
+    catch (e) {
+        throw new Error(`Haiku: JSON parse fehlgeschlagen — ${e.message}`);
+    }
+    if (parsed.unclear) {
+        return { unclear: true, question: String(parsed.question || 'Bitte Reiseziel und Daten angeben.') };
+    }
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (!parsed.destination || !dateRe.test(parsed.start) || !dateRe.test(parsed.end)) {
+        return { unclear: true, question: 'Ich konnte Ziel oder Datum nicht eindeutig erkennen. Bitte nochmal mit Reiseziel und konkreten Daten.' };
+    }
+    return {
+        destination: String(parsed.destination),
+        start: String(parsed.start),
+        end: String(parsed.end),
+    };
+}
 /* ---------------- Settings + Helpers ---------------- */
 const SETTINGS_FILE = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/health/settings.json');
 function loadSettings() {
@@ -1529,6 +1589,74 @@ export default function (api) {
             const activities = activitiesRaw.split(",").map((a) => a.trim());
             const trip = createTrip(name, start_date, end_date, destination, climate, activities);
             return { text: `✅ Reise *${trip.name}* angelegt!\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 Klima: ${trip.climate}\n🎯 Aktivitäten: ${trip.activities.join(", ")}\n🔑 ID: ${trip.id}` };
+        },
+    });
+    // ── /trip: Free-text Reise anlegen via Haiku ──────────────────────────────
+    api.registerCommand({
+        name: "trip",
+        acceptsArgs: true,
+        description: "Reise per Freitext anlegen: /trip Ich fahre nächste Woche nach Barcelona bis zum 3. März",
+        handler: async (ctx) => {
+            const raw = (ctx.args || "").trim();
+            if (!raw) {
+                return { text: "Bitte beschreibe deine Reise, z. B.:\n/trip Ich fliege nächsten Montag nach Tokyo und komme am 15. März zurück" };
+            }
+            // Haiku parst Freitext → { destination, start, end } oder { unclear, question }
+            let parsed;
+            try {
+                parsed = await parseTripFreeText(raw);
+            }
+            catch (e) {
+                return { text: `❌ Haiku-Parsing fehlgeschlagen: ${e.message}` };
+            }
+            if ("unclear" in parsed) {
+                return { text: `❓ ${parsed.question}` };
+            }
+            const { destination, start, end } = parsed;
+            // KI-Anreicherung via enrichTripWithOpenAI (gleiche Logik wie /tripnew auto)
+            try {
+                const info = await enrichTripWithOpenAI(destination);
+                let weatherLines = '(nicht verfügbar)';
+                if (info.lat && info.lon) {
+                    try {
+                        const forecast = await fetchWeatherForecast(info.lat, info.lon);
+                        if (forecast.length) {
+                            weatherLines = forecast
+                                .map(d => `  ${d.date}: ${d.tmin}–${d.tmax}°C, 🌧 ${d.precip} mm`)
+                                .join('\n');
+                        }
+                    }
+                    catch (_) { /* Wetter optional */ }
+                }
+                const trip = createTrip(destination, start, end, info.destination, info.climate, info.activities);
+                updateTrip(trip.id, {
+                    country_code: info.country_code,
+                    currency: info.currency,
+                    visa_de: info.visa_de,
+                    distance_km: info.distance_km,
+                    travel_mode: info.travel_mode,
+                    door_to_door_estimate: info.door_to_door_estimate,
+                    exchange_rate_eur: info.exchange_rate_eur,
+                });
+                return {
+                    text: `✅ Reise *${trip.name}* angelegt (via Freitext + KI)!\n` +
+                        `📅 ${trip.start_date} → ${trip.end_date}\n` +
+                        `📍 ${info.destination} (${info.country_code})\n` +
+                        `💶 Währung: ${info.currency}\n` +
+                        `💱 Wechselkurs: ${info.exchange_rate_eur}\n` +
+                        `🛂 Visum (DE-Pass): ${info.visa_de}\n` +
+                        `📏 Luftlinie ab Tuttlingen: ${info.distance_km} km\n` +
+                        `🚀 Verkehrsmittel: ${info.travel_mode}\n` +
+                        `⏱ Haustür-zu-Haustür: ${info.door_to_door_estimate}\n` +
+                        `🌡 Klima: ${info.climate}\n` +
+                        `🎯 Aktivitäten: ${info.activities.join(", ")}\n` +
+                        `☁️ Wetter (7-Tage-Vorschau):\n${weatherLines}\n` +
+                        `🔑 ID: ${trip.id}`,
+                };
+            }
+            catch (e) {
+                return { text: `❌ KI-Anreicherung fehlgeschlagen: ${e.message}\nFallback: /tripnew ${destination} ${start} ${end}` };
+            }
         },
     });
     api.registerCommand({
