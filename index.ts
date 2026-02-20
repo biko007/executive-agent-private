@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ImapFlow } from "imapflow";
@@ -215,6 +216,141 @@ async function graphPost(
   body: any
 ): Promise<any> {
   return graphRequest(tenantId, clientId, clientSecret, "POST", url, body);
+}
+
+/* ---------------- Anthropic Trip Enrichment ---------------- */
+
+function readAnthropicKey(): string {
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  try {
+    const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
+    const content = fs.readFileSync(envPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      if (line.startsWith('#') || !line.includes('=')) continue;
+      const eq = line.indexOf('=');
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim();
+      if (key === 'ANTHROPIC_API_KEY' && val) return val;
+    }
+  } catch {}
+  return '';
+}
+
+interface TripEnrichment {
+  destination: string;
+  country_code: string;
+  lat: number;
+  lon: number;
+  climate: string;
+  activities: string[];
+  currency: string;
+  visa_de: string;
+  distance_km: number;
+  travel_mode: string;
+  door_to_door_estimate: string;
+  exchange_rate_eur: string;
+}
+
+interface WeatherDay {
+  date: string;
+  tmax: number;
+  tmin: number;
+  precip: number;
+}
+
+async function fetchWeatherForecast(lat: number, lon: number): Promise<WeatherDay[]> {
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${lat}&longitude=${lon}` +
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum` +
+    `&timezone=auto&forecast_days=7`;
+
+  const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+  if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
+
+  const data: any = await res.json();
+  const d = data?.daily;
+  if (!d?.time?.length) return [];
+
+  return (d.time as string[]).map((date: string, i: number) => ({
+    date,
+    tmax:   Math.round(d.temperature_2m_max[i] ?? 0),
+    tmin:   Math.round(d.temperature_2m_min[i] ?? 0),
+    precip: Math.round((d.precipitation_sum[i] ?? 0) * 10) / 10,
+  }));
+}
+
+async function enrichTripWithOpenAI(name: string): Promise<TripEnrichment> {
+  const apiKey = readAnthropicKey();
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY nicht gesetzt (in ~/.config/openclaw/env eintragen)');
+
+  const prompt =
+    `Du hilfst bei der Reiseplanung. Der Nutzer plant eine Reise nach "${name}".\n` +
+    `Antworte NUR mit einem JSON-Objekt (kein Markdown, kein Text davor/danach):\n` +
+    `{\n` +
+    `  "destination": "<Hauptstadt oder bekannteste Stadt des Ziels>",\n` +
+    `  "country": "<Land auf Deutsch>",\n` +
+    `  "country_code": "<ISO-3166-1-Alpha-2-Ländercode, z.B. JP>",\n` +
+    `  "lat": <Breitengrad der Destination als Dezimalzahl, z.B. 35.6895>,\n` +
+    `  "lon": <Längengrad der Destination als Dezimalzahl, z.B. 139.6917>,\n` +
+    `  "climate": "<eines von: tropical|temperate|cold|desert|mixed>",\n` +
+    `  "activities": ["<eines oder mehrere von: business|leisure|outdoor|beach|city>"],\n` +
+    `  "currency": "<Währungsname und Symbol, z.B. Japanischer Yen (¥)>",\n` +
+    `  "visa_de": "<Visapflicht für deutschen Pass, z.B. 'kein Visum erforderlich (bis 90 Tage)'>",\n` +
+    `  "distance_km": <Luftlinie in km von Tuttlingen (48.0641°N, 8.8236°E) als ganze Zahl>,\n` +
+    `  "travel_mode": "<Empfohlenes Hauptverkehrsmittel, z.B. Flugzeug, Zug, Auto>",\n` +
+    `  "door_to_door_estimate": "<Haustür-zu-Haustür Zeitschätzung ab Tuttlingen, z.B. 'ca. 14-16 Stunden (Flug FRA + Transfers)'>",\n` +
+    `  "exchange_rate_eur": "<Wechselkurs: wie viel Landeswährung bekommt man für 1 EUR, z.B. '1 EUR ≈ 160 JPY' oder '1 EUR ≈ 1,08 USD'>"\n` +
+    `}`;
+
+  const res = await fetchWithTimeout(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    },
+    30000
+  );
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`Anthropic API Fehler: ${res.status} — ${err.slice(0, 200)}`);
+  }
+
+  const data: any = await res.json();
+  const content: string = data?.content?.[0]?.text || '';
+
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error(`Anthropic: kein JSON in Antwort — ${content.slice(0, 200)}`);
+
+  let parsed: any;
+  try { parsed = JSON.parse(jsonMatch[0]); } catch (e: any) {
+    throw new Error(`Anthropic: JSON parse fehlgeschlagen — ${e.message}`);
+  }
+
+  return {
+    destination:           String(parsed.destination || name),
+    country_code:          String(parsed.country_code || '').toUpperCase(),
+    lat:                   Number(parsed.lat) || 0,
+    lon:                   Number(parsed.lon) || 0,
+    climate:               String(parsed.climate || 'temperate'),
+    activities:            Array.isArray(parsed.activities) ? parsed.activities.map(String) : ['leisure'],
+    currency:              String(parsed.currency || ''),
+    visa_de:               String(parsed.visa_de || ''),
+    distance_km:           Number(parsed.distance_km) || 0,
+    travel_mode:           String(parsed.travel_mode || ''),
+    door_to_door_estimate: String(parsed.door_to_door_estimate || ''),
+    exchange_rate_eur:     String(parsed.exchange_rate_eur || ''),
+  };
 }
 
 /* ---------------- Plugin ---------------- */
@@ -1514,6 +1650,149 @@ for (const k of days) {
   });
 
 
-  api.logger.info("[executive-agent] loaded v10 (unified inbox unread)");
+  // ── Travel Module ─────────────────────────────────────────────────────────
 
+  api.registerCommand({
+    name: "trips",
+    description: "Alle Reisen anzeigen",
+    handler: async () => {
+      const trips = listTrips();
+      if (!trips.length) return { text: "📭 Keine Reisen gespeichert. Mit /tripnew anlegen." };
+      const lines = trips.map(t =>
+        `✈️ *${t.name}* (${t.id})\n   📅 ${t.start_date} → ${t.end_date}\n   📍 ${t.destination || "–"}  🌡 ${t.climate}  🎯 ${t.activities.join(", ")}\n   📦 ${t.segments.length} Segment(e)`
+      );
+      return { text: `🗺 Deine Reisen:\n\n${lines.join("\n\n")}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "tripnew",
+    acceptsArgs: true,
+    description: "Neue Reise anlegen: /tripnew <name> <start> <end> — bei nur 3 Args: KI-Anreicherung via OpenAI",
+    handler: async (ctx: any) => {
+      const raw = (ctx.args || "").trim();
+      const tokens = raw.split(/\s+/);
+
+      // Finde den ersten Token im Format YYYY-MM-DD → alles davor ist der Name
+      const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+      const firstDateIdx = tokens.findIndex((t: string) => datePattern.test(t));
+      if (firstDateIdx < 1 || firstDateIdx + 1 >= tokens.length) {
+        return { text: "❌ Verwendung: /tripnew New York 2026-03-03 2026-03-05\nOder manuell: /tripnew Tokyo 2026-03-10 2026-03-18 Japan temperate leisure,city" };
+      }
+
+      const name       = tokens.slice(0, firstDateIdx).join(" ");
+      const start_date = tokens[firstDateIdx];
+      const end_date   = tokens[firstDateIdx + 1];
+      const rest       = tokens.slice(firstDateIdx + 2); // optionale manuelle Params
+
+      const isAutoMode = rest.length === 0;
+
+      if (isAutoMode) {
+        // ── KI-Anreicherung ──
+        try {
+          const info = await enrichTripWithOpenAI(name);
+
+          // ── Wettervorschau (7 Tage) ──
+          let weatherLines = '(nicht verfügbar)';
+          if (info.lat && info.lon) {
+            try {
+              const forecast = await fetchWeatherForecast(info.lat, info.lon);
+              if (forecast.length) {
+                weatherLines = forecast
+                  .map(d => `  ${d.date}: ${d.tmin}–${d.tmax}°C, 🌧 ${d.precip} mm`)
+                  .join('\n');
+              }
+            } catch (_) { /* Wetter optional */ }
+          }
+
+          const trip = createTrip(name, start_date, end_date, info.destination, info.climate as any, info.activities as any[]);
+          updateTrip(trip.id, {
+            country_code:          info.country_code,
+            currency:              info.currency,
+            visa_de:               info.visa_de,
+            distance_km:           info.distance_km,
+            travel_mode:           info.travel_mode,
+            door_to_door_estimate: info.door_to_door_estimate,
+            exchange_rate_eur:     info.exchange_rate_eur,
+          } as any);
+
+          return {
+            text:
+              `✅ Reise *${trip.name}* angelegt (KI-angereichert)!\n` +
+              `📅 ${trip.start_date} → ${trip.end_date}\n` +
+              `📍 ${info.destination} (${info.country_code})\n` +
+              `💶 Währung: ${info.currency}\n` +
+              `💱 Wechselkurs: ${info.exchange_rate_eur}\n` +
+              `🛂 Visum (DE-Pass): ${info.visa_de}\n` +
+              `📏 Luftlinie ab Tuttlingen: ${info.distance_km} km\n` +
+              `🚀 Verkehrsmittel: ${info.travel_mode}\n` +
+              `⏱ Haustür-zu-Haustür: ${info.door_to_door_estimate}\n` +
+              `🌡 Klima: ${info.climate}\n` +
+              `🎯 Aktivitäten: ${info.activities.join(", ")}\n` +
+              `☁️ Wetter (7-Tage-Vorschau):\n${weatherLines}\n` +
+              `🔑 ID: ${trip.id}`,
+          };
+        } catch (e: any) {
+          return { text: `❌ KI-Anreicherung fehlgeschlagen: ${e.message}\nTipp: /tripnew ${name} ${start_date} ${end_date} <destination> <climate> <activities>` };
+        }
+      }
+
+      // ── Manueller Modus ──
+      const destination   = rest[0] || "";
+      const climate       = rest[1] || "temperate";
+      const activitiesRaw = rest[2] || "leisure";
+      const activities = activitiesRaw.split(",").map((a: string) => a.trim()) as any[];
+      const trip = createTrip(name, start_date, end_date, destination, climate as any, activities);
+      return { text: `✅ Reise *${trip.name}* angelegt!\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 Klima: ${trip.climate}\n🎯 Aktivitäten: ${trip.activities.join(", ")}\n🔑 ID: ${trip.id}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "tripshow",
+    acceptsArgs: true,
+    description: "Reise anzeigen: /tripshow <id>",
+    handler: async (ctx: any) => {
+      const id = (ctx.args || "").trim();
+      if (!id) return { text: "❌ Verwendung: /tripshow <trip-id>" };
+      const trip = getTrip(id);
+      if (!trip) return { text: `❌ Reise "${id}" nicht gefunden. /trips zeigt alle IDs.` };
+      const segs = trip.segments.length
+        ? trip.segments.map((s: any) => `  • [${s.type}] ${s.title} — ${s.datetime_local}${s.confirmation ? " ✔ " + s.confirmation : ""}`).join("\n")
+        : "  (noch keine Segmente)";
+      return { text: `✈️ *${trip.name}*\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 ${trip.climate} | 🎯 ${trip.activities.join(", ")}\n\n📋 Segmente:\n${segs}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "tripadd",
+    acceptsArgs: true,
+    description: "Segment hinzufügen: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]",
+    handler: async (ctx: any) => {
+      const parts = (ctx.args || "").trim().split(/\s+/);
+      if (parts.length < 5) return { text: "❌ Verwendung: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]\nBeispiel: /tripadd tokyo-2026-03 flight 2026-03-10T10:30 Europe/Berlin LH716-FRA-NRT ABC123" };
+      const [tripId, type, datetime_local, timezone, ...rest] = parts;
+      const confirmation = rest.length > 1 ? rest[rest.length - 1] : undefined;
+      const title = confirmation ? rest.slice(0, -1).join(" ") : rest.join(" ");
+      const dt = new Date(datetime_local);
+      const datetime_utc = isNaN(dt.getTime()) ? datetime_local : dt.toISOString();
+      const trip = addSegment(tripId, { type: type as any, datetime_local, datetime_utc, timezone, title, confirmation });
+      if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
+      return { text: `✅ Segment hinzugefügt zu *${trip.name}*:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestaetigung: " + confirmation : ""}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "pack",
+    acceptsArgs: true,
+    description: "Packliste für eine Reise: /pack <trip-id>",
+    handler: async (ctx: any) => {
+      const id = (ctx.args || "").trim();
+      if (!id) return { text: "❌ Verwendung: /pack <trip-id>" };
+      const trip = getTrip(id);
+      if (!trip) return { text: `❌ Reise "${id}" nicht gefunden. /trips zeigt alle IDs.` };
+      return { text: generatePacklist(trip) };
+    },
+  });
+
+  api.logger.info("[executive-agent] loaded v11 (travel module)");
 }
