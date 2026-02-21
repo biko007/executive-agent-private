@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
+import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges } from "./sharepoint-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -1988,7 +1989,9 @@ export default function (api) {
                 try {
                     const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs);
                     for (const s of sleeps) {
-                        appendEntry({
+                        // Keep original sleep date (instead of "now") so briefing picks the right day.
+                        const ts = new Date(`${s.date}T03:00:00.000Z`);
+                        appendEntryWithTimestamp(ts, {
                             type: 'sleep', value: s.total_h, unit: 'h',
                             deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
                             quality: s.score, source: 'withings',
@@ -2049,6 +2052,36 @@ export default function (api) {
         },
     });
     // ── Briefing ───────────────────────────────────────────────────────────────
+    async function syncWithingsForBriefing() {
+        if (!withingsClientId || !withingsClientSecret || !isAuthorized())
+            return;
+        try {
+            const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
+            const sinceMs = Date.now() - 36 * 60 * 60 * 1000; // last 36h to catch morning updates
+            const measures = await fetchMeasures(tokens.access_token, sinceMs).catch(() => []);
+            for (const m of measures) {
+                if (m.weight_kg != null)
+                    appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+                if (m.fat_ratio_pct != null)
+                    appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+                if (m.hr_bpm != null)
+                    appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+            }
+            const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs).catch(() => []);
+            for (const s of sleeps) {
+                const ts = new Date(`${s.date}T03:00:00.000Z`);
+                appendEntryWithTimestamp(ts, {
+                    type: 'sleep', value: s.total_h, unit: 'h',
+                    deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
+                    quality: s.score, source: 'withings',
+                });
+            }
+            saveTokens({ ...tokens, last_sync: Date.now() });
+        }
+        catch (e) {
+            api.logger.warn(`[executive-agent] Briefing-PreSync übersprungen: ${e.message}`);
+        }
+    }
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
@@ -2125,7 +2158,20 @@ export default function (api) {
             return ` (${d})`;
         }
         const lastWeight = lastEntry('weight');
-        const lastSleep = lastEntry('sleep');
+        const sleepEntries = readEntries().filter(e => e.type === 'sleep');
+        const sleepByDay = new Map();
+        for (const s of sleepEntries) {
+            const day = new Intl.DateTimeFormat('en-CA', {
+                timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date(s.timestamp));
+            const prev = sleepByDay.get(day);
+            // Prefer the longest sleep entry per day to avoid showing a short nap.
+            if (!prev || (Number(s.value || 0) > Number(prev.value || 0)))
+                sleepByDay.set(day, s);
+        }
+        const lastSleep = Array.from(sleepByDay.values())
+            .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+            .pop() || null;
         const lastSteps = lastEntry('steps');
         const lastHR = lastEntry('heartrate');
         if (lastWeight)
@@ -2169,10 +2215,95 @@ export default function (api) {
         description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
         handler: async () => {
             try {
+                await syncWithingsForBriefing();
                 return { text: await generateBriefingText() };
             }
             catch (e) {
                 return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
+            }
+        },
+    });
+    // ── SharePoint-Befehle ──────────────────────────────────────────────────────
+    api.registerCommand({
+        name: 'sharepoint',
+        acceptsArgs: true,
+        description: 'SharePoint: Ohne Arg → Sites auflisten. Mit Arg (siteId) → Drives auflisten.',
+        handler: async (ctx) => {
+            if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+                return { text: '❌ M365-Konfiguration fehlt (tenant/client/secret).' };
+            }
+            const arg = String(ctx.args || '').trim();
+            try {
+                if (!arg) {
+                    const sites = await listSites(tenantId, clientId, m365Secret);
+                    if (!sites.length)
+                        return { text: '📂 Keine SharePoint-Sites gefunden.' };
+                    const lines = sites.map((s, i) => `${i + 1}. **${s.displayName}**\n   ID: \`${s.id}\`\n   ${s.webUrl}`);
+                    return { text: `📂 **SharePoint-Sites** (${sites.length}):\n\n${lines.join('\n\n')}` };
+                }
+                else {
+                    const drives = await listDrives(tenantId, clientId, m365Secret, arg);
+                    if (!drives.length)
+                        return { text: `📂 Keine Dokumentbibliotheken für Site gefunden.` };
+                    const lines = drives.map((d, i) => `${i + 1}. **${d.name}** (${d.driveType})\n   ID: \`${d.id}\`\n   ${d.webUrl}`);
+                    return { text: `📂 **Drives** (${drives.length}):\n\n${lines.join('\n\n')}` };
+                }
+            }
+            catch (e) {
+                return { text: `❌ /sharepoint Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'spdocs',
+        acceptsArgs: true,
+        description: 'SharePoint-Volltextsuche: /spdocs <suchbegriff>',
+        handler: async (ctx) => {
+            if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+                return { text: '❌ M365-Konfiguration fehlt.' };
+            }
+            const query = String(ctx.args || '').trim();
+            if (!query)
+                return { text: '❌ Verwendung: /spdocs <suchbegriff>' };
+            try {
+                const hits = await searchDocuments(tenantId, clientId, m365Secret, query);
+                if (!hits.length)
+                    return { text: `🔍 Keine Ergebnisse für „${query}".` };
+                const top = hits.slice(0, 10);
+                const lines = top.map((h, i) => {
+                    const size = h.size ? ` · ${(h.size / 1024).toFixed(0)} KB` : '';
+                    const date = h.lastModifiedDateTime ? ` · ${h.lastModifiedDateTime.slice(0, 10)}` : '';
+                    const snippet = h.summary ? `\n   ${h.summary.slice(0, 120)}` : '';
+                    return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
+                });
+                return { text: `🔍 **Ergebnisse für „${query}"** (${hits.length}):\n\n${lines.join('\n\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /spdocs Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'sprecent',
+        description: 'Kürzlich geänderte SharePoint-Dateien (letzte 24h)',
+        handler: async () => {
+            if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+                return { text: '❌ M365-Konfiguration fehlt.' };
+            }
+            try {
+                const files = await getRecentFiles(tenantId, clientId, m365Secret);
+                if (!files.length)
+                    return { text: '📂 Keine Änderungen in den letzten 24 Stunden.' };
+                const top = files.slice(0, 15);
+                const lines = top.map((f, i) => {
+                    const date = f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 16).replace('T', ' ') : '';
+                    const size = f.size ? ` · ${(f.size / 1024).toFixed(0)} KB` : '';
+                    return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.webUrl}`;
+                });
+                return { text: `📂 **Kürzlich geändert** (${files.length}, max 15):\n\n${lines.join('\n\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /sprecent Fehler: ${e.message}` };
             }
         },
     });
@@ -2201,7 +2332,12 @@ export default function (api) {
     // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
     api.registerHook('message_received', (event) => {
         try {
-            const id = String(event?.senderId || '').trim();
+            // Prefer real chat id; fallback to sender id.
+            const id = String(event?.chatId ||
+                event?.threadId ||
+                event?.conversationId ||
+                event?.senderId ||
+                '').trim();
             if (!id)
                 return;
             const s = loadSettings();
@@ -2213,6 +2349,26 @@ export default function (api) {
         }
         catch { }
     }, { name: 'capture-telegram-chat-id' });
+    // ── SharePoint-Polling (alle 30 Minuten) ────────────────────────────────────
+    setInterval(async () => {
+        try {
+            if (!m365Enabled || !tenantId || !clientId || !m365Secret)
+                return;
+            const s = loadSettings();
+            if (!s.telegramChatId)
+                return;
+            const changes = await pollForChanges(tenantId, clientId, m365Secret);
+            if (!changes.length)
+                return;
+            const lines = changes.slice(0, 10).map(c => `${c.changeType === 'created' ? '🆕' : '✏️'} ${c.fileName}\n   ${c.webUrl}`);
+            const msg = `📂 **SharePoint-Änderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
+            await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, msg);
+            api.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} Änderungen gesendet`);
+        }
+        catch (e) {
+            api.logger.error(`[executive-agent] SharePoint-Poll Fehler: ${e.message}`);
+        }
+    }, 30 * 60_000);
     // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
     let lastBriefingDate = '';
     setInterval(async () => {
@@ -2228,6 +2384,7 @@ export default function (api) {
             const today = berlinDate(0);
             if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
                 lastBriefingDate = today;
+                await syncWithingsForBriefing();
                 const text = await generateBriefingText();
                 await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, text);
                 api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
@@ -2237,5 +2394,5 @@ export default function (api) {
             api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
         }
     }, 60_000);
-    api.logger.info("[executive-agent] loaded v14 (briefing scheduler + briefingtime)");
+    api.logger.info("[executive-agent] loaded v15 (briefing scheduler + briefingtime + sharepoint)");
 }
