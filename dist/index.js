@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
-import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges } from "./sharepoint-store.js";
+import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges, fullSync } from "./sharepoint-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -2307,6 +2307,53 @@ export default function (api) {
             }
         },
     });
+    api.registerCommand({
+        name: 'spsync',
+        description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren',
+        handler: async () => {
+            if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+                return { text: '❌ M365-Konfiguration fehlt.' };
+            }
+            const s = loadSettings();
+            const chatId = s.telegramChatId;
+            const send = async (msg) => {
+                if (chatId) {
+                    try {
+                        await api.runtime.telegram.sendMessageTelegram(chatId, msg);
+                    }
+                    catch { }
+                }
+            };
+            // fire-and-forget: sofort antworten, sync im Hintergrund
+            (async () => {
+                await send('🔄 SharePoint-Vollsync gestartet...');
+                let lastReport = 0;
+                try {
+                    const result = await fullSync(tenantId, clientId, m365Secret, (count, siteName) => {
+                        const now = Date.now();
+                        if (now - lastReport > 10_000) { // max alle 10s
+                            lastReport = now;
+                            send(`🔄 Sync läuft... ${count} Dateien (aktuell: ${siteName})`);
+                        }
+                    });
+                    const durSec = (result.durationMs / 1000).toFixed(1);
+                    let summary = `✅ **SharePoint-Sync abgeschlossen**\n\n`;
+                    summary += `📂 ${result.totalFiles} Dateien · ${result.totalSites} Sites · ${result.totalDrives} Drives\n`;
+                    summary += `⏱ ${durSec}s`;
+                    if (result.errors.length) {
+                        summary += `\n\n⚠️ ${result.errors.length} Fehler:\n` + result.errors.slice(0, 5).map(e => `• ${e}`).join('\n');
+                    }
+                    await send(summary);
+                    api.logger.info(`[executive-agent] spsync: ${result.totalFiles} files, ${result.totalSites} sites, ${durSec}s`);
+                }
+                catch (e) {
+                    await send(`❌ SharePoint-Sync fehlgeschlagen: ${e.message}`);
+                    api.logger.error(`[executive-agent] spsync error: ${e.message}`);
+                }
+            })();
+            return { text: '🔄 SharePoint-Vollsync gestartet. Fortschritt kommt via Telegram.' };
+        },
+    });
     // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────
     api.registerCommand({
         name: 'briefingtime',
@@ -2394,5 +2441,5 @@ export default function (api) {
             api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
         }
     }, 60_000);
-    api.logger.info("[executive-agent] loaded v16 (sprecent: Drive-API statt Search-API)");
+    api.logger.info("[executive-agent] loaded v17 (spsync: Vollsync-Befehl)");
 }
