@@ -2394,5 +2394,5 @@ export default function (api) {
             api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
         }
     }, 60_000);
-    api.logger.info("[executive-agent] loaded v15 (briefing scheduler + briefingtime + sharepoint)");
+    api.logger.info("[executive-agent] loaded v16 (sprecent: Drive-API statt Search-API)");
 }
