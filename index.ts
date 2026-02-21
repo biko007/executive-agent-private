@@ -2280,7 +2280,9 @@ for (const k of days) {
         try {
           const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs);
           for (const s of sleeps) {
-            appendEntry({
+            // Keep original sleep date (instead of "now") so briefing picks the right day.
+            const ts = new Date(`${s.date}T03:00:00.000Z`);
+            appendEntryWithTimestamp(ts, {
               type: 'sleep', value: s.total_h, unit: 'h',
               deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
               quality: s.score, source: 'withings',
@@ -2336,6 +2338,35 @@ for (const k of days) {
   });
 
   // ── Briefing ───────────────────────────────────────────────────────────────
+
+  async function syncWithingsForBriefing(): Promise<void> {
+    if (!withingsClientId || !withingsClientSecret || !isAuthorized()) return;
+    try {
+      const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
+      const sinceMs = Date.now() - 36 * 60 * 60 * 1000; // last 36h to catch morning updates
+
+      const measures = await fetchMeasures(tokens.access_token, sinceMs).catch(() => [] as any[]);
+      for (const m of measures) {
+        if (m.weight_kg != null) appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+        if (m.fat_ratio_pct != null) appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+        if (m.hr_bpm != null) appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+      }
+
+      const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs).catch(() => [] as any[]);
+      for (const s of sleeps) {
+        const ts = new Date(`${s.date}T03:00:00.000Z`);
+        appendEntryWithTimestamp(ts, {
+          type: 'sleep', value: s.total_h, unit: 'h',
+          deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
+          quality: s.score, source: 'withings',
+        });
+      }
+
+      saveTokens({ ...tokens, last_sync: Date.now() });
+    } catch (e: any) {
+      api.logger.warn(`[executive-agent] Briefing-PreSync übersprungen: ${e.message}`);
+    }
+  }
 
   async function generateBriefingText(): Promise<string> {
     const tz  = 'Europe/Berlin';
@@ -2414,7 +2445,19 @@ for (const k of days) {
     }
 
     const lastWeight = lastEntry('weight');
-    const lastSleep  = lastEntry('sleep');
+    const sleepEntries = readEntries().filter(e => e.type === 'sleep');
+    const sleepByDay = new Map<string, any>();
+    for (const s of sleepEntries) {
+      const day = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date(s.timestamp));
+      const prev = sleepByDay.get(day);
+      // Prefer the longest sleep entry per day to avoid showing a short nap.
+      if (!prev || (Number(s.value || 0) > Number(prev.value || 0))) sleepByDay.set(day, s);
+    }
+    const lastSleep = Array.from(sleepByDay.values())
+      .sort((a: any, b: any) => String(a.timestamp).localeCompare(String(b.timestamp)))
+      .pop() || null;
     const lastSteps  = lastEntry('steps');
     const lastHR     = lastEntry('heartrate');
 
@@ -2451,6 +2494,7 @@ for (const k of days) {
     description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
     handler: async () => {
       try {
+        await syncWithingsForBriefing();
         return { text: await generateBriefingText() };
       } catch (e: any) {
         return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
@@ -2485,7 +2529,14 @@ for (const k of days) {
 
   api.registerHook('message_received', (event: any) => {
     try {
-      const id = String(event?.senderId || '').trim();
+      // Prefer real chat id; fallback to sender id.
+      const id = String(
+        event?.chatId ||
+        event?.threadId ||
+        event?.conversationId ||
+        event?.senderId ||
+        ''
+      ).trim();
       if (!id) return;
       const s = loadSettings();
       if (s.telegramChatId !== id) {
@@ -2514,6 +2565,7 @@ for (const k of days) {
 
       if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
         lastBriefingDate = today;
+        await syncWithingsForBriefing();
         const text = await generateBriefingText();
         await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, text);
         api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
