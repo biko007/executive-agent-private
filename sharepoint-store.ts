@@ -327,21 +327,45 @@ export async function searchDocuments(t: string, c: string, s: string, query: st
 }
 
 export async function getRecentFiles(t: string, c: string, s: string): Promise<SPSearchHit[]> {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const query = `lastModifiedDateTime>=${since}`;
-  return searchDocuments(t, c, s, query);
+  const sites = await listSites(t, c, s);
+  const allFiles: SPSearchHit[] = [];
+
+  for (const site of sites) {
+    let drives: SPDrive[];
+    try {
+      drives = await listDrives(t, c, s, site.id);
+    } catch { continue; }
+
+    for (const drive of drives) {
+      try {
+        const url = `${GRAPH}/sites/${encodeURIComponent(site.id)}/drives/${encodeURIComponent(drive.id)}/root/children?$orderby=lastModifiedDateTime desc&$top=10`;
+        const data = await graphGet(t, c, s, url);
+        const items: any[] = data?.value || [];
+        for (const f of items) {
+          if (f.folder) continue; // skip folders
+          allFiles.push({
+            name: f.name || "",
+            webUrl: f.webUrl || "",
+            lastModifiedDateTime: f.lastModifiedDateTime || "",
+            size: f.size || undefined,
+          });
+        }
+      } catch { continue; }
+    }
+  }
+
+  // sort newest first, return top 25
+  allFiles.sort((a, b) => (b.lastModifiedDateTime || "").localeCompare(a.lastModifiedDateTime || ""));
+  return allFiles.slice(0, 25);
 }
 
 export async function pollForChanges(t: string, c: string, s: string): Promise<SPChangeEntry[]> {
   const state = loadPollState();
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const query = state.lastPollIso
-    ? `lastModifiedDateTime>=${state.lastPollIso}`
-    : `lastModifiedDateTime>=${since}`;
+  const since = state.lastPollIso || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   let hits: SPSearchHit[];
   try {
-    hits = await searchDocuments(t, c, s, query);
+    hits = await getRecentFiles(t, c, s);
   } catch {
     return [];
   }
@@ -350,6 +374,8 @@ export async function pollForChanges(t: string, c: string, s: string): Promise<S
   const newHashes: Record<string, string> = { ...state.knownFileHashes };
 
   for (const hit of hits) {
+    // skip files older than our poll window
+    if (hit.lastModifiedDateTime && hit.lastModifiedDateTime < since) continue;
     const key = hit.webUrl;
     const prevMod = state.knownFileHashes[key];
     if (!prevMod) {
