@@ -399,3 +399,137 @@ export async function pollForChanges(t: string, c: string, s: string): Promise<S
   savePollState({ lastPollIso: new Date().toISOString(), knownFileHashes: newHashes });
   return changes;
 }
+
+/* ---------------- Full sync (recursive index) ---------------- */
+
+export type SPIndexEntry = {
+  name: string;
+  path: string;       // e.g. "Dokumente/Subfolder/file.pdf"
+  webUrl: string;
+  size: number;
+  lastModifiedDateTime: string;
+  createdDateTime: string;
+  mimeType?: string;
+  siteName: string;
+  siteId: string;
+  driveName: string;
+  driveId: string;
+};
+
+export type SPSyncResult = {
+  totalFiles: number;
+  totalSites: number;
+  totalDrives: number;
+  errors: string[];
+  durationMs: number;
+};
+
+const INDEX_FILE = path.join(POLL_STATE_DIR, "sharepoint-index.json");
+
+type ProgressFn = (current: number, siteName: string) => void;
+
+async function crawlFolder(
+  t: string, c: string, s: string,
+  siteId: string, driveId: string, folderId: string | null,
+  parentPath: string,
+  collector: SPIndexEntry[],
+  meta: { siteName: string; siteId: string; driveName: string; driveId: string },
+  onFile: () => void,
+): Promise<void> {
+  const base = `${GRAPH}/sites/${encodeURIComponent(siteId)}/drives/${encodeURIComponent(driveId)}`;
+  let url = folderId
+    ? `${base}/items/${encodeURIComponent(folderId)}/children?$top=200`
+    : `${base}/root/children?$top=200`;
+
+  while (url) {
+    const data = await graphGet(t, c, s, url);
+    const items: any[] = data?.value || [];
+
+    for (const item of items) {
+      const itemPath = parentPath ? `${parentPath}/${item.name}` : item.name || "";
+
+      if (item.folder) {
+        // recurse into sub-folder
+        await crawlFolder(t, c, s, siteId, driveId, item.id, itemPath, collector, meta, onFile);
+      } else {
+        collector.push({
+          name: item.name || "",
+          path: itemPath,
+          webUrl: item.webUrl || "",
+          size: item.size || 0,
+          lastModifiedDateTime: item.lastModifiedDateTime || "",
+          createdDateTime: item.createdDateTime || "",
+          mimeType: item.file?.mimeType || undefined,
+          siteName: meta.siteName,
+          siteId: meta.siteId,
+          driveName: meta.driveName,
+          driveId: meta.driveId,
+        });
+        onFile();
+      }
+    }
+
+    url = data?.["@odata.nextLink"] || "";
+  }
+}
+
+export async function fullSync(
+  t: string, c: string, s: string,
+  onProgress?: ProgressFn,
+): Promise<SPSyncResult> {
+  const start = Date.now();
+  const allFiles: SPIndexEntry[] = [];
+  const errors: string[] = [];
+  let siteCount = 0;
+  let driveCount = 0;
+
+  const sites = await listSites(t, c, s);
+  siteCount = sites.length;
+
+  for (const site of sites) {
+    let drives: SPDrive[];
+    try {
+      drives = await listDrives(t, c, s, site.id);
+    } catch (e: any) {
+      errors.push(`Site "${site.displayName}": ${e.message}`);
+      continue;
+    }
+    driveCount += drives.length;
+
+    for (const drive of drives) {
+      try {
+        await crawlFolder(t, c, s, site.id, drive.id, null, "", allFiles, {
+          siteName: site.displayName,
+          siteId: site.id,
+          driveName: drive.name,
+          driveId: drive.id,
+        }, () => {
+          if (onProgress && allFiles.length % 50 === 0) {
+            onProgress(allFiles.length, site.displayName);
+          }
+        });
+      } catch (e: any) {
+        errors.push(`Drive "${drive.name}" @ "${site.displayName}": ${e.message}`);
+      }
+    }
+  }
+
+  // persist index
+  fs.mkdirSync(POLL_STATE_DIR, { recursive: true });
+  const index = {
+    syncedAt: new Date().toISOString(),
+    totalFiles: allFiles.length,
+    totalSites: siteCount,
+    totalDrives: driveCount,
+    files: allFiles,
+  };
+  fs.writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8");
+
+  return {
+    totalFiles: allFiles.length,
+    totalSites: siteCount,
+    totalDrives: driveCount,
+    errors,
+    durationMs: Date.now() - start,
+  };
+}
