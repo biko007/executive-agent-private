@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "sourceMap": false
   },
-  "include": ["index.ts"],
+  "include": ["index.ts", "sharepoint-store.ts"],
   "exclude": ["dist", "node_modules"]
 }

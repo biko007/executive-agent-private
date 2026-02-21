@@ -5,6 +5,7 @@ import {
   buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized,
   fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts,
 } from "./withings-store.js";
+import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges } from "./sharepoint-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -2502,6 +2503,85 @@ for (const k of days) {
     },
   });
 
+  // ── SharePoint-Befehle ──────────────────────────────────────────────────────
+
+  api.registerCommand({
+    name: 'sharepoint',
+    acceptsArgs: true,
+    description: 'SharePoint: Ohne Arg → Sites auflisten. Mit Arg (siteId) → Drives auflisten.',
+    handler: async (ctx: any) => {
+      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+        return { text: '❌ M365-Konfiguration fehlt (tenant/client/secret).' };
+      }
+      const arg = String(ctx.args || '').trim();
+      try {
+        if (!arg) {
+          const sites = await listSites(tenantId, clientId, m365Secret);
+          if (!sites.length) return { text: '📂 Keine SharePoint-Sites gefunden.' };
+          const lines = sites.map((s, i) => `${i + 1}. **${s.displayName}**\n   ID: \`${s.id}\`\n   ${s.webUrl}`);
+          return { text: `📂 **SharePoint-Sites** (${sites.length}):\n\n${lines.join('\n\n')}` };
+        } else {
+          const drives = await listDrives(tenantId, clientId, m365Secret, arg);
+          if (!drives.length) return { text: `📂 Keine Dokumentbibliotheken für Site gefunden.` };
+          const lines = drives.map((d, i) => `${i + 1}. **${d.name}** (${d.driveType})\n   ID: \`${d.id}\`\n   ${d.webUrl}`);
+          return { text: `📂 **Drives** (${drives.length}):\n\n${lines.join('\n\n')}` };
+        }
+      } catch (e: any) {
+        return { text: `❌ /sharepoint Fehler: ${e.message}` };
+      }
+    },
+  });
+
+  api.registerCommand({
+    name: 'spdocs',
+    acceptsArgs: true,
+    description: 'SharePoint-Volltextsuche: /spdocs <suchbegriff>',
+    handler: async (ctx: any) => {
+      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+        return { text: '❌ M365-Konfiguration fehlt.' };
+      }
+      const query = String(ctx.args || '').trim();
+      if (!query) return { text: '❌ Verwendung: /spdocs <suchbegriff>' };
+      try {
+        const hits = await searchDocuments(tenantId, clientId, m365Secret, query);
+        if (!hits.length) return { text: `🔍 Keine Ergebnisse für „${query}".` };
+        const top = hits.slice(0, 10);
+        const lines = top.map((h, i) => {
+          const size = h.size ? ` · ${(h.size / 1024).toFixed(0)} KB` : '';
+          const date = h.lastModifiedDateTime ? ` · ${h.lastModifiedDateTime.slice(0, 10)}` : '';
+          const snippet = h.summary ? `\n   ${h.summary.slice(0, 120)}` : '';
+          return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
+        });
+        return { text: `🔍 **Ergebnisse für „${query}"** (${hits.length}):\n\n${lines.join('\n\n')}` };
+      } catch (e: any) {
+        return { text: `❌ /spdocs Fehler: ${e.message}` };
+      }
+    },
+  });
+
+  api.registerCommand({
+    name: 'sprecent',
+    description: 'Kürzlich geänderte SharePoint-Dateien (letzte 24h)',
+    handler: async () => {
+      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
+        return { text: '❌ M365-Konfiguration fehlt.' };
+      }
+      try {
+        const files = await getRecentFiles(tenantId, clientId, m365Secret);
+        if (!files.length) return { text: '📂 Keine Änderungen in den letzten 24 Stunden.' };
+        const top = files.slice(0, 15);
+        const lines = top.map((f, i) => {
+          const date = f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 16).replace('T', ' ') : '';
+          const size = f.size ? ` · ${(f.size / 1024).toFixed(0)} KB` : '';
+          return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.webUrl}`;
+        });
+        return { text: `📂 **Kürzlich geändert** (${files.length}, max 15):\n\n${lines.join('\n\n')}` };
+      } catch (e: any) {
+        return { text: `❌ /sprecent Fehler: ${e.message}` };
+      }
+    },
+  });
+
   // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────
 
   api.registerCommand({
@@ -2547,6 +2627,28 @@ for (const k of days) {
     } catch {}
   }, { name: 'capture-telegram-chat-id' });
 
+  // ── SharePoint-Polling (alle 30 Minuten) ────────────────────────────────────
+
+  setInterval(async () => {
+    try {
+      if (!m365Enabled || !tenantId || !clientId || !m365Secret) return;
+      const s = loadSettings();
+      if (!s.telegramChatId) return;
+
+      const changes = await pollForChanges(tenantId, clientId, m365Secret);
+      if (!changes.length) return;
+
+      const lines = changes.slice(0, 10).map(c =>
+        `${c.changeType === 'created' ? '🆕' : '✏️'} ${c.fileName}\n   ${c.webUrl}`
+      );
+      const msg = `📂 **SharePoint-Änderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
+      await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, msg);
+      api.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} Änderungen gesendet`);
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] SharePoint-Poll Fehler: ${e.message}`);
+    }
+  }, 30 * 60_000);
+
   // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
 
   let lastBriefingDate = '';
@@ -2575,5 +2677,5 @@ for (const k of days) {
     }
   }, 60_000);
 
-  api.logger.info("[executive-agent] loaded v14 (briefing scheduler + briefingtime)");
+  api.logger.info("[executive-agent] loaded v15 (briefing scheduler + briefingtime + sharepoint)");
 }
