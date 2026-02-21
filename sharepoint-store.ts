@@ -400,6 +400,45 @@ export async function pollForChanges(t: string, c: string, s: string): Promise<S
   return changes;
 }
 
+/* ---------------- Local index search (offline, no Search API) ------------ */
+
+export function searchLocalIndex(query: string): SPSearchHit[] | null {
+  if (!fs.existsSync(INDEX_FILE)) return null;
+
+  let index: any;
+  try {
+    index = JSON.parse(fs.readFileSync(INDEX_FILE, "utf-8"));
+  } catch { return null; }
+
+  const files: SPIndexEntry[] = index?.files || [];
+  if (!files.length) return null;
+
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = files.filter((f) => {
+    const haystack = `${f.name} ${f.path} ${f.siteName} ${f.driveName}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+
+  // sort newest first
+  matches.sort((a, b) => (b.lastModifiedDateTime || "").localeCompare(a.lastModifiedDateTime || ""));
+
+  return matches.slice(0, 25).map((f) => ({
+    name: f.name,
+    webUrl: f.webUrl,
+    lastModifiedDateTime: f.lastModifiedDateTime,
+    size: f.size || undefined,
+    summary: `${f.siteName} › ${f.path}`,
+  }));
+}
+
+export function getIndexAge(): { exists: boolean; syncedAt?: string; fileCount?: number } {
+  if (!fs.existsSync(INDEX_FILE)) return { exists: false };
+  try {
+    const index = JSON.parse(fs.readFileSync(INDEX_FILE, "utf-8"));
+    return { exists: true, syncedAt: index.syncedAt, fileCount: index.totalFiles };
+  } catch { return { exists: false }; }
+}
+
 /* ---------------- Full sync (recursive index) ---------------- */
 
 export type SPIndexEntry = {
