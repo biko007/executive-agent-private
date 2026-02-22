@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
-import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges, fullSync } from "./sharepoint-store.js";
+import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -2257,30 +2257,30 @@ export default function (api) {
     api.registerCommand({
         name: 'spdocs',
         acceptsArgs: true,
-        description: 'SharePoint-Volltextsuche: /spdocs <suchbegriff>',
+        description: 'SharePoint-Suche im lokalen Index: /spdocs <suchbegriff>',
         handler: async (ctx) => {
-            if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
-                return { text: '❌ M365-Konfiguration fehlt.' };
-            }
             const query = String(ctx.args || '').trim();
             if (!query)
                 return { text: '❌ Verwendung: /spdocs <suchbegriff>' };
-            try {
-                const hits = await searchDocuments(tenantId, clientId, m365Secret, query);
-                if (!hits.length)
-                    return { text: `🔍 Keine Ergebnisse für „${query}".` };
-                const top = hits.slice(0, 10);
-                const lines = top.map((h, i) => {
-                    const size = h.size ? ` · ${(h.size / 1024).toFixed(0)} KB` : '';
-                    const date = h.lastModifiedDateTime ? ` · ${h.lastModifiedDateTime.slice(0, 10)}` : '';
-                    const snippet = h.summary ? `\n   ${h.summary.slice(0, 120)}` : '';
-                    return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
-                });
-                return { text: `🔍 **Ergebnisse für „${query}"** (${hits.length}):\n\n${lines.join('\n\n')}` };
+            const hits = searchLocalIndex(query);
+            if (hits === null) {
+                const info = getIndexAge();
+                if (!info.exists) {
+                    return { text: '📂 Kein SharePoint-Index vorhanden. Bitte zuerst /spsync ausführen.' };
+                }
+                return { text: '📂 Index ist leer. Bitte /spsync erneut ausführen.' };
             }
-            catch (e) {
-                return { text: `❌ /spdocs Fehler: ${e.message}` };
-            }
+            if (!hits.length)
+                return { text: `🔍 Keine Ergebnisse für „${query}" im lokalen Index.` };
+            const info = getIndexAge();
+            const syncInfo = info.syncedAt ? ` (Index: ${info.syncedAt.slice(0, 16).replace('T', ' ')}, ${info.fileCount} Dateien)` : '';
+            const lines = hits.slice(0, 10).map((h, i) => {
+                const size = h.size ? ` · ${(h.size / 1024).toFixed(0)} KB` : '';
+                const date = h.lastModifiedDateTime ? ` · ${h.lastModifiedDateTime.slice(0, 10)}` : '';
+                const snippet = h.summary ? `\n   ${h.summary}` : '';
+                return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
+            });
+            return { text: `🔍 **Ergebnisse für „${query}"** (${hits.length})${syncInfo}:\n\n${lines.join('\n\n')}` };
         },
     });
     api.registerCommand({
@@ -2441,5 +2441,5 @@ export default function (api) {
             api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
         }
     }, 60_000);
-    api.logger.info("[executive-agent] loaded v17 (spsync: Vollsync-Befehl)");
+    api.logger.info("[executive-agent] loaded v18 (spdocs: lokale Index-Suche)");
 }
