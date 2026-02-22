@@ -247,25 +247,41 @@ function savePollState(state: PollState): void {
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
 export async function listSites(t: string, c: string, s: string): Promise<SPSite[]> {
-  const data = await graphGet(t, c, s, `${GRAPH}/sites?search=*&$top=200`);
-  const items: any[] = data?.value || [];
-  return items.map((site: any) => ({
-    id: site.id,
-    displayName: site.displayName || site.name || "",
-    webUrl: site.webUrl || "",
-    description: site.description || undefined,
-  }));
+  const all: SPSite[] = [];
+  let url: string = `${GRAPH}/sites?search=*&$top=200`;
+  while (url) {
+    const data = await graphGet(t, c, s, url);
+    const items: any[] = data?.value || [];
+    for (const site of items) {
+      all.push({
+        id: site.id,
+        displayName: site.displayName || site.name || "",
+        webUrl: site.webUrl || "",
+        description: site.description || undefined,
+      });
+    }
+    url = data?.["@odata.nextLink"] || "";
+  }
+  return all;
 }
 
 export async function listDrives(t: string, c: string, s: string, siteId: string): Promise<SPDrive[]> {
-  const data = await graphGet(t, c, s, `${GRAPH}/sites/${encodeURIComponent(siteId)}/drives`);
-  const items: any[] = data?.value || [];
-  return items.map((d: any) => ({
-    id: d.id,
-    name: d.name || "",
-    driveType: d.driveType || "",
-    webUrl: d.webUrl || "",
-  }));
+  const all: SPDrive[] = [];
+  let url: string = `${GRAPH}/sites/${encodeURIComponent(siteId)}/drives?$top=200`;
+  while (url) {
+    const data = await graphGet(t, c, s, url);
+    const items: any[] = data?.value || [];
+    for (const d of items) {
+      all.push({
+        id: d.id,
+        name: d.name || "",
+        driveType: d.driveType || "",
+        webUrl: d.webUrl || "",
+      });
+    }
+    url = data?.["@odata.nextLink"] || "";
+  }
+  return all;
 }
 
 export async function listFiles(
@@ -486,16 +502,16 @@ type ProgressFn = (current: number, siteName: string) => void;
 
 async function crawlFolder(
   t: string, c: string, s: string,
-  siteId: string, driveId: string, folderId: string | null,
+  driveBase: string, folderId: string | null,
   parentPath: string,
   collector: SPIndexEntry[],
   meta: { siteName: string; siteId: string; driveName: string; driveId: string },
   onFile: () => void,
+  errors: string[],
 ): Promise<void> {
-  const base = `${GRAPH}/sites/${encodeURIComponent(siteId)}/drives/${encodeURIComponent(driveId)}`;
   let url = folderId
-    ? `${base}/items/${encodeURIComponent(folderId)}/children?$top=200`
-    : `${base}/root/children?$top=200`;
+    ? `${driveBase}/items/${encodeURIComponent(folderId)}/children?$top=200`
+    : `${driveBase}/root/children?$top=200`;
 
   while (url) {
     const data = await graphGet(t, c, s, url);
@@ -505,8 +521,11 @@ async function crawlFolder(
       const itemPath = parentPath ? `${parentPath}/${item.name}` : item.name || "";
 
       if (item.folder) {
-        // recurse into sub-folder
-        await crawlFolder(t, c, s, siteId, driveId, item.id, itemPath, collector, meta, onFile);
+        try {
+          await crawlFolder(t, c, s, driveBase, item.id, itemPath, collector, meta, onFile, errors);
+        } catch (e: any) {
+          errors.push(`Folder "${itemPath}" @ "${meta.driveName}": ${e.message}`);
+        }
       } else {
         collector.push({
           name: item.name || "",
@@ -532,6 +551,7 @@ async function crawlFolder(
 export async function fullSync(
   t: string, c: string, s: string,
   onProgress?: ProgressFn,
+  m365User?: string,
 ): Promise<SPSyncResult> {
   const start = Date.now();
   const allFiles: SPIndexEntry[] = [];
@@ -553,8 +573,10 @@ export async function fullSync(
     driveCount += drives.length;
 
     for (const drive of drives) {
+      const beforeCount = allFiles.length;
+      const driveBase = `${GRAPH}/sites/${encodeURIComponent(site.id)}/drives/${encodeURIComponent(drive.id)}`;
       try {
-        await crawlFolder(t, c, s, site.id, drive.id, null, "", allFiles, {
+        await crawlFolder(t, c, s, driveBase, null, "", allFiles, {
           siteName: site.displayName,
           siteId: site.id,
           driveName: drive.name,
@@ -563,10 +585,38 @@ export async function fullSync(
           if (onProgress && allFiles.length % 50 === 0) {
             onProgress(allFiles.length, site.displayName);
           }
-        });
+        }, errors);
       } catch (e: any) {
         errors.push(`Drive "${drive.name}" @ "${site.displayName}": ${e.message}`);
       }
+      const driveFiles = allFiles.length - beforeCount;
+      if (onProgress) onProgress(allFiles.length, `${site.displayName} / ${drive.name} (${driveFiles} Dateien)`);
+    }
+  }
+
+  // Crawl personal OneDrive if M365 user is configured
+  if (m365User) {
+    try {
+      const driveData = await graphGet(t, c, s, `${GRAPH}/users/${encodeURIComponent(m365User)}/drive`);
+      if (driveData?.id) {
+        driveCount += 1;
+        const beforeCount = allFiles.length;
+        const driveBase = `${GRAPH}/drives/${encodeURIComponent(driveData.id)}`;
+        await crawlFolder(t, c, s, driveBase, null, "", allFiles, {
+          siteName: "OneDrive",
+          siteId: m365User,
+          driveName: driveData.name || "OneDrive",
+          driveId: driveData.id,
+        }, () => {
+          if (onProgress && allFiles.length % 50 === 0) {
+            onProgress(allFiles.length, "OneDrive");
+          }
+        }, errors);
+        const odFiles = allFiles.length - beforeCount;
+        if (onProgress) onProgress(allFiles.length, `OneDrive (${odFiles} Dateien)`);
+      }
+    } catch (e: any) {
+      errors.push(`OneDrive "${m365User}": ${e.message}`);
     }
   }
 

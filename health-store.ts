@@ -241,3 +241,118 @@ export function formatSummary(s: HealthSummary, label: string): string {
 
   return lines.join('\n');
 }
+
+// ── Trend Analysis ──────────────────────────────────────────────────────────
+
+export type TrendDirection = 'up' | 'down' | 'stable';
+
+export interface WeightTrend {
+  current: number;
+  min: number;
+  max: number;
+  avg: number;
+  change: number;
+  direction: TrendDirection;
+  dataPoints: number;
+}
+
+export interface SleepTrend {
+  avgDuration: number;
+  minDuration: number;
+  maxDuration: number;
+  avgQuality: number;
+  dataPoints: number;
+}
+
+export type AlertSeverity = 'info' | 'warning' | 'critical';
+
+export interface HealthAlert {
+  type: string;
+  severity: AlertSeverity;
+  message: string;
+}
+
+function numAvg(arr: number[]): number {
+  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+}
+
+export function getWeightTrend(days: 7 | 30 | 90): WeightTrend | null {
+  const since = new Date(Date.now() - days * 86_400_000);
+  const entries = readEntries(since).filter(e => e.type === 'weight' && e.value != null);
+  if (!entries.length) return null;
+
+  const values = entries.map(e => e.value!);
+  const current = values[values.length - 1];
+  const first = values[0];
+  const change = +(current - first).toFixed(2);
+  const direction: TrendDirection = Math.abs(change) < 0.3 ? 'stable' : change > 0 ? 'up' : 'down';
+
+  return {
+    current: +current.toFixed(1),
+    min: +Math.min(...values).toFixed(1),
+    max: +Math.max(...values).toFixed(1),
+    avg: +numAvg(values).toFixed(1),
+    change: +change.toFixed(1),
+    direction,
+    dataPoints: values.length,
+  };
+}
+
+export function getSleepTrend(days: 7 | 30 | 90): SleepTrend | null {
+  const since = new Date(Date.now() - days * 86_400_000);
+  const entries = readEntries(since).filter(e => e.type === 'sleep' && e.value != null);
+  if (!entries.length) return null;
+
+  const durations = entries.map(e => e.value!);
+  const qualities = entries.filter(e => e.quality != null).map(e => e.quality!);
+
+  return {
+    avgDuration: +numAvg(durations).toFixed(1),
+    minDuration: +Math.min(...durations).toFixed(1),
+    maxDuration: +Math.max(...durations).toFixed(1),
+    avgQuality: qualities.length ? +numAvg(qualities).toFixed(0) : 0,
+    dataPoints: durations.length,
+  };
+}
+
+export function checkHealthAlerts(): HealthAlert[] {
+  const alerts: HealthAlert[] = [];
+  const now = Date.now();
+
+  // Sleep < 6h on 3+ of last 7 nights → warning
+  const sevenDaysAgo = new Date(now - 7 * 86_400_000);
+  const recentSleep = readEntries(sevenDaysAgo).filter(e => e.type === 'sleep' && e.value != null);
+  // Deduplicate by day (keep longest per day)
+  const sleepByDay = new Map<string, number>();
+  for (const s of recentSleep) {
+    const day = s.timestamp.slice(0, 10);
+    const prev = sleepByDay.get(day) ?? 0;
+    if ((s.value ?? 0) > prev) sleepByDay.set(day, s.value!);
+  }
+  const shortNights = Array.from(sleepByDay.values()).filter(h => h < 6).length;
+  if (shortNights >= 3) {
+    alerts.push({ type: 'sleep_low_week', severity: 'warning', message: `Schlaf unter 6h an ${shortNights} von 7 Tagen` });
+  }
+
+  // Sleep < 5h last night → critical
+  const lastSleepValues = Array.from(sleepByDay.entries()).sort((a, b) => b[0].localeCompare(a[0]));
+  if (lastSleepValues.length && lastSleepValues[0][1] < 5) {
+    alerts.push({ type: 'sleep_critical', severity: 'critical', message: `Schlaf letzte Nacht nur ${lastSleepValues[0][1].toFixed(1)}h` });
+  }
+
+  // Weight change > 2kg in 7 days → warning
+  const wt = getWeightTrend(7);
+  if (wt && Math.abs(wt.change) > 2) {
+    const dir = wt.change > 0 ? '+' : '';
+    alerts.push({ type: 'weight_change', severity: 'warning', message: `Gewichtsveränderung ${dir}${wt.change} kg in 7 Tagen` });
+  }
+
+  // No Withings data for 3+ days → info
+  const threeDaysAgo = new Date(now - 3 * 86_400_000);
+  const recentWithings = readEntries(threeDaysAgo).filter(e => e.source === 'withings');
+  if (!recentWithings.length) {
+    alerts.push({ type: 'no_withings_data', severity: 'info', message: 'Keine Withings-Daten seit 3+ Tagen' });
+  }
+
+  return alerts;
+}

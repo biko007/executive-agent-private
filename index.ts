@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
-import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
+import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts } from "./health-store.js";
+import type { HealthAlert } from "./health-store.js";
 import {
   buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized,
   fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts,
@@ -491,6 +492,7 @@ const SETTINGS_FILE = path.join(
 interface Settings {
   briefingTime: string;    // "HH:MM" Europe/Berlin
   telegramChatId?: string; // captured from first incoming message
+  healthReportDay?: number; // 0=So, 1=Mo, ..., 6=Sa (default: 1=Mo)
 }
 
 function loadSettings(): Settings {
@@ -553,6 +555,59 @@ export default function (api: any) {
   // ---- Signatures (normalize literal "\n" to real newlines)
   const sigM365 = String(signatures.m365 || "Mit freundlichem Gruß\n\nKI-Agent Hans Dampf\nim Auftrag von\nJürgen Bickel").replace(/\\n/g, "\n");
   const sigYahoo = String(signatures.yahoo || "Mit freundlichem Gruß\n\nKI-Agent Hans Dampf\nim Auftrag von\nJürgen Bickel").replace(/\\n/g, "\n");
+
+  // ---- Telegram Bot Token (for direct API fallback)
+  let telegramBotToken = '';
+  try {
+    const ocCfgPath = path.join(process.env.HOME || '/root', '.openclaw/openclaw.json');
+    if (fs.existsSync(ocCfgPath)) {
+      const ocCfg = JSON.parse(fs.readFileSync(ocCfgPath, 'utf-8'));
+      telegramBotToken = ocCfg?.channels?.telegram?.botToken || '';
+    }
+  } catch { /* ignore */ }
+
+  /**
+   * Send a Telegram message with fallback: plugin API → direct Bot API.
+   * Returns true if the message was sent successfully.
+   */
+  async function sendTelegram(chatId: string, text: string): Promise<boolean> {
+    // Try plugin API first
+    try {
+      if (api.runtime?.channel?.telegram?.sendMessageTelegram) {
+        await api.runtime.channel.telegram.sendMessageTelegram(chatId, text);
+        return true;
+      }
+    } catch (err: any) {
+      api.logger.warn(`[executive-agent] plugin telegram-send failed: ${err.message}, trying direct API...`);
+    }
+
+    // Fallback: direct Telegram Bot API
+    if (!telegramBotToken) {
+      api.logger.error('[executive-agent] No bot token available for direct Telegram send');
+      return false;
+    }
+    try {
+      const res = await fetchWithTimeout(
+        `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+        },
+        15000,
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        api.logger.error(`[executive-agent] direct telegram-send HTTP ${res.status}: ${body}`);
+        return false;
+      }
+      api.logger.info('[executive-agent] message sent via direct Telegram Bot API');
+      return true;
+    } catch (err: any) {
+      api.logger.error(`[executive-agent] direct telegram-send failed: ${err.message}`);
+      return false;
+    }
+  }
 
   const draftPath = (id: string) => path.join(draftsDir, `${id}.json`);
   function saveDraft(d: MailDraft) { fs.writeFileSync(draftPath(d.id), JSON.stringify(d, null, 2), "utf-8"); }
@@ -2121,6 +2176,57 @@ for (const k of days) {
     },
   });
 
+  api.registerCommand({
+    name: 'healthtrend',
+    acceptsArgs: true,
+    description: 'Gewichts- und Schlaftrend: /healthtrend [7|30|90]  (Default: 30)',
+    handler: (ctx: any) => {
+      const raw = String(ctx.args || '').trim();
+      const days = ([7, 30, 90] as const).includes(Number(raw) as any) ? (Number(raw) as 7 | 30 | 90) : 30;
+
+      const parts: string[] = [`📊 Health-Trend (${days} Tage)\n`];
+
+      const wt = getWeightTrend(days);
+      if (wt) {
+        const arrow = wt.direction === 'up' ? '📈' : wt.direction === 'down' ? '📉' : '➡️';
+        const sign = wt.change > 0 ? '+' : '';
+        parts.push(`⚖️ Gewicht:`);
+        parts.push(`   Aktuell: ${wt.current} kg  ${arrow} ${sign}${wt.change} kg`);
+        parts.push(`   Min: ${wt.min} kg  |  Max: ${wt.max} kg  |  Ø ${wt.avg} kg`);
+        parts.push(`   Datenpunkte: ${wt.dataPoints}`);
+      } else {
+        parts.push('⚖️ Gewicht: keine Daten');
+      }
+
+      parts.push('');
+
+      const st = getSleepTrend(days);
+      if (st) {
+        parts.push('😴 Schlaf:');
+        parts.push(`   Ø ${st.avgDuration} h  |  Min: ${st.minDuration} h  |  Max: ${st.maxDuration} h`);
+        if (st.avgQuality) parts.push(`   Qualität: Ø ${st.avgQuality}%`);
+        parts.push(`   Datenpunkte: ${st.dataPoints}`);
+      } else {
+        parts.push('😴 Schlaf: keine Daten');
+      }
+
+      return { text: parts.join('\n') };
+    },
+  });
+
+  api.registerCommand({
+    name: 'healthalerts',
+    description: 'Aktive Health-Alerts anzeigen',
+    handler: () => {
+      const alerts = checkHealthAlerts();
+      if (!alerts.length) return { text: '✅ Keine aktiven Health-Alerts.' };
+
+      const icons: Record<string, string> = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
+      const lines = alerts.map(a => `${icons[a.severity] || '•'} ${a.message}`);
+      return { text: `🚨 Health-Alerts (${alerts.length}):\n\n${lines.join('\n')}` };
+    },
+  });
+
   // ── Withings Module ────────────────────────────────────────────────────────
 
   const withingsClientId     = process.env.WITHINGS_CLIENT_ID || '';
@@ -2455,51 +2561,50 @@ for (const k of days) {
     } catch { parts.push('📅 Kalender: nicht verfügbar'); }
     parts.push('');
 
-    // ── (3) Gesundheit ──
-    parts.push('🏥 Gesundheit (letzte Werte)');
-    const todayBerlin     = berlinDate(0);
-    const yesterdayBerlin = berlinDate(-1);
+    // ── (3) Gesundheit mit Trends ──
+    {
+      const healthLines: string[] = [];
+      const wt7 = getWeightTrend(7);
+      const lastWeight = lastEntry('weight');
 
-    function dateHint(ts: string): string {
-      const d = ts.slice(0, 10);
-      if (d === todayBerlin)     return '';
-      if (d === yesterdayBerlin) return ' (gestern)';
-      return ` (${d})`;
+      if (lastWeight && wt7) {
+        const arrow = wt7.direction === 'up' ? '📈' : wt7.direction === 'down' ? '📉' : '➡️';
+        const sign = wt7.change > 0 ? '+' : '';
+        healthLines.push(`   📊 Gewicht: ${wt7.current} kg (${arrow} ${sign}${wt7.change} kg / 7 Tage)`);
+      } else if (lastWeight) {
+        healthLines.push(`   📊 Gewicht: ${lastWeight.value?.toFixed(1)} kg`);
+      }
+
+      // Last night sleep (dedup by day, pick longest)
+      const sleepEntries = readEntries().filter(e => e.type === 'sleep');
+      const sleepByDay = new Map<string, any>();
+      for (const s of sleepEntries) {
+        const day = new Intl.DateTimeFormat('en-CA', {
+          timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date(s.timestamp));
+        const prev = sleepByDay.get(day);
+        if (!prev || (Number(s.value || 0) > Number(prev.value || 0))) sleepByDay.set(day, s);
+      }
+      const lastSleep = Array.from(sleepByDay.values())
+        .sort((a: any, b: any) => String(a.timestamp).localeCompare(String(b.timestamp)))
+        .pop() || null;
+      if (lastSleep) {
+        healthLines.push(`   😴 Schlaf letzte Nacht: ${lastSleep.value?.toFixed(1)}h`);
+      }
+
+      // Alerts
+      const alerts = checkHealthAlerts();
+      const alertIcons: Record<string, string> = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
+      for (const a of alerts) {
+        healthLines.push(`   ${alertIcons[a.severity] || '•'} ${a.message}`);
+      }
+
+      if (healthLines.length) {
+        parts.push('🏥 Health:');
+        parts.push(...healthLines);
+        parts.push('');
+      }
     }
-
-    const lastWeight = lastEntry('weight');
-    const sleepEntries = readEntries().filter(e => e.type === 'sleep');
-    const sleepByDay = new Map<string, any>();
-    for (const s of sleepEntries) {
-      const day = new Intl.DateTimeFormat('en-CA', {
-        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-      }).format(new Date(s.timestamp));
-      const prev = sleepByDay.get(day);
-      // Prefer the longest sleep entry per day to avoid showing a short nap.
-      if (!prev || (Number(s.value || 0) > Number(prev.value || 0))) sleepByDay.set(day, s);
-    }
-    const lastSleep = Array.from(sleepByDay.values())
-      .sort((a: any, b: any) => String(a.timestamp).localeCompare(String(b.timestamp)))
-      .pop() || null;
-    const lastSteps  = lastEntry('steps');
-    const lastHR     = lastEntry('heartrate');
-
-    if (lastWeight) parts.push(`   ⚖️ Gewicht: ${lastWeight.value?.toFixed(1)} kg${dateHint(lastWeight.timestamp)}`);
-    else parts.push('   ⚖️ Gewicht: –');
-
-    if (lastSleep) {
-      const scoreStr = lastSleep.quality ? `  Score: ${lastSleep.quality}/100` : '';
-      const deepStr  = lastSleep.deep_sleep_h ? `  Tief: ${lastSleep.deep_sleep_h}h` : '';
-      const remStr   = lastSleep.rem_sleep_h  ? `  REM: ${lastSleep.rem_sleep_h}h`   : '';
-      parts.push(`   😴 Schlaf: ${lastSleep.value?.toFixed(1)} h${scoreStr}${deepStr}${remStr}${dateHint(lastSleep.timestamp)}`);
-    } else parts.push('   😴 Schlaf: –');
-
-    if (lastSteps) parts.push(`   👟 Schritte: ${lastSteps.steps?.toLocaleString('de')}${dateHint(lastSteps.timestamp)}`);
-    else parts.push('   👟 Schritte: –');
-
-    if (lastHR) parts.push(`   ❤️ Herzfrequenz: ${lastHR.hr_avg} bpm${dateHint(lastHR.timestamp)}`);
-    else parts.push('   ❤️ Herzfrequenz: –');
-    parts.push('');
 
     // ── (4) Offene Drafts ──
     try {
@@ -2640,12 +2745,16 @@ for (const k of days) {
       const chatId = s.telegramChatId;
 
       const send = async (msg: string) => {
-        if (chatId) {
-          try { await api.runtime.telegram.sendMessageTelegram(chatId, msg); } catch {}
+        if (!chatId) {
+          api.logger.warn('[executive-agent] spsync: kein telegramChatId – Nachricht wird nicht gesendet');
+          return;
         }
+        await sendTelegram(chatId, msg);
       };
 
       // fire-and-forget: sofort antworten, sync im Hintergrund
+      const syncUser = m365User || process.env.M365_USER || '';
+
       (async () => {
         await send('🔄 SharePoint-Vollsync gestartet...');
         let lastReport = 0;
@@ -2654,24 +2763,27 @@ for (const k of days) {
             const now = Date.now();
             if (now - lastReport > 10_000) { // max alle 10s
               lastReport = now;
-              send(`🔄 Sync läuft... ${count} Dateien (aktuell: ${siteName})`);
+              send(`🔄 Sync läuft... ${count} Dateien (aktuell: ${siteName})`).catch(() => {});
             }
-          });
+          }, syncUser || undefined);
 
           const durSec = (result.durationMs / 1000).toFixed(1);
-          let summary = `✅ **SharePoint-Sync abgeschlossen**\n\n`;
+          let summary = `✅ SharePoint-Sync abgeschlossen\n\n`;
           summary += `📂 ${result.totalFiles} Dateien · ${result.totalSites} Sites · ${result.totalDrives} Drives\n`;
           summary += `⏱ ${durSec}s`;
           if (result.errors.length) {
-            summary += `\n\n⚠️ ${result.errors.length} Fehler:\n` + result.errors.slice(0, 5).map(e => `• ${e}`).join('\n');
+            summary += `\n\n⚠️ ${result.errors.length} Fehler:\n` + result.errors.slice(0, 5).map((e: string) => `• ${e}`).join('\n');
           }
+          api.logger.info(`[executive-agent] spsync: ${result.totalFiles} files, ${result.totalSites} sites, ${result.totalDrives} drives, ${durSec}s`);
           await send(summary);
-          api.logger.info(`[executive-agent] spsync: ${result.totalFiles} files, ${result.totalSites} sites, ${durSec}s`);
         } catch (e: any) {
-          await send(`❌ SharePoint-Sync fehlgeschlagen: ${e.message}`);
-          api.logger.error(`[executive-agent] spsync error: ${e.message}`);
+          const msg = e?.message || String(e);
+          api.logger.error(`[executive-agent] spsync error: ${msg}`);
+          await send(`❌ SharePoint-Sync fehlgeschlagen: ${msg}`);
         }
-      })();
+      })().catch(e => {
+        api.logger.error(`[executive-agent] spsync unhandled: ${e?.message || e}`);
+      });
 
       return { text: '🔄 SharePoint-Vollsync gestartet. Fortschritt kommt via Telegram.' };
     },
@@ -2934,6 +3046,23 @@ for (const k of days) {
     },
   });
 
+  api.registerCommand({
+    name: 'healthreportday',
+    acceptsArgs: true,
+    description: 'Wochentag für Health-Report: /healthreportday <Mo|Di|Mi|Do|Fr|Sa|So>',
+    handler: (ctx: any) => {
+      const raw = String(ctx.args || '').trim().toLowerCase();
+      const dayMap: Record<string, number> = { so: 0, mo: 1, di: 2, mi: 3, do: 4, fr: 5, sa: 6 };
+      const dayNum = dayMap[raw];
+      if (dayNum === undefined) return { text: '❌ Verwendung: /healthreportday Mo  (Mo|Di|Mi|Do|Fr|Sa|So)' };
+      const dayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+      const s = loadSettings();
+      s.healthReportDay = dayNum;
+      saveSettings(s);
+      return { text: `📊 Wöchentlicher Health-Report auf ${dayNames[dayNum]} gesetzt.` };
+    },
+  });
+
   // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
 
   api.registerHook('message_received', (event: any) => {
@@ -2971,11 +3100,7 @@ for (const k of days) {
         `${c.changeType === 'created' ? '🆕' : '✏️'} ${c.fileName}\n   ${c.webUrl}`
       );
       const msg = `📂 **SharePoint-Änderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
-      if (!api.runtime.telegram?.sendMessageTelegram) {
-        api.logger.warn(`[executive-agent] SharePoint-Poll: Telegram nicht verfügbar, übersprungen`);
-        return;
-      }
-      await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, msg);
+      await sendTelegram(s.telegramChatId, msg);
       api.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} Änderungen gesendet`);
     } catch (e: any) {
       api.logger.error(`[executive-agent] SharePoint-Poll Fehler: ${e.message}`);
@@ -2990,7 +3115,6 @@ for (const k of days) {
     try {
       const s = loadSettings();
       if (!s.telegramChatId) return;
-      if (!api.runtime.telegram?.sendMessageTelegram) return;
 
       // Aktuelle Berliner Zeit als HH:MM
       const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
@@ -3005,7 +3129,7 @@ for (const k of days) {
           api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
         }
         const text = await generateBriefingText();
-        await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, text);
+        await sendTelegram(s.telegramChatId, text);
         // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
         lastBriefingDate = today;
         api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
@@ -3015,5 +3139,86 @@ for (const k of days) {
     }
   }, 60_000);
 
-  api.logger.info("[executive-agent] loaded v18 (spdocs: lokale Index-Suche)");
+  // ── Wöchentlicher Health-Report (Standard: Montag 07:00) ─────────────────
+
+  function generateWeeklyHealthReport(): string {
+    const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+    const kwDate = new Date(inBerlin);
+    kwDate.setDate(kwDate.getDate() + 3 - ((kwDate.getDay() + 6) % 7));
+    const week1 = new Date(kwDate.getFullYear(), 0, 4);
+    const kw = 1 + Math.round(((kwDate.getTime() - week1.getTime()) / 86_400_000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+
+    const parts: string[] = [`📊 Wöchentlicher Health-Report (KW ${kw})\n`];
+
+    // Weight
+    const wt7 = getWeightTrend(7);
+    const wt30 = getWeightTrend(30);
+    parts.push('⚖️ Gewicht:');
+    if (wt7) {
+      // "Wochenstart" = oldest value in the 7-day window
+      const weekStart = wt7.current - wt7.change;
+      const sign7 = wt7.change > 0 ? '+' : '';
+      parts.push(`   Aktuell: ${wt7.current} kg  |  Wochenstart: ${weekStart.toFixed(1)} kg  |  Veränderung: ${sign7}${wt7.change} kg`);
+    } else {
+      parts.push('   Keine Daten diese Woche');
+    }
+    if (wt30) {
+      const arrow30 = wt30.direction === 'up' ? '📈' : wt30.direction === 'down' ? '📉' : '➡️';
+      const sign30 = wt30.change > 0 ? '+' : '';
+      parts.push(`   30-Tage-Trend: ${arrow30} ${sign30}${wt30.change} kg`);
+    }
+
+    parts.push('');
+
+    // Sleep
+    const st7 = getSleepTrend(7);
+    parts.push('😴 Schlaf:');
+    if (st7) {
+      parts.push(`   Durchschnitt: ${st7.avgDuration}h  |  Min: ${st7.minDuration}h  |  Max: ${st7.maxDuration}h`);
+      if (st7.avgQuality) parts.push(`   Qualität: Durchschnitt ${st7.avgQuality}%`);
+    } else {
+      parts.push('   Keine Daten diese Woche');
+    }
+
+    parts.push('');
+
+    // Alerts
+    const alerts = checkHealthAlerts();
+    if (alerts.length) {
+      const alertIcons: Record<string, string> = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
+      parts.push('🚨 Alerts:');
+      for (const a of alerts) parts.push(`   ${alertIcons[a.severity] || '•'} ${a.message}`);
+    } else {
+      parts.push('✅ Alerts: keine aktiven Warnungen');
+    }
+
+    return parts.join('\n');
+  }
+
+  let lastWeeklyReportDate = '';
+
+  setInterval(async () => {
+    try {
+      const s = loadSettings();
+      if (!s.telegramChatId) return;
+
+      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+      const hh = String(inBerlin.getHours()).padStart(2, '0');
+      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+      const nowHHMM = `${hh}:${mm}`;
+      const today = berlinDate(0);
+      const reportDay = s.healthReportDay ?? 1; // Default: Montag
+
+      if (inBerlin.getDay() === reportDay && nowHHMM === s.briefingTime && lastWeeklyReportDate !== today) {
+        const text = generateWeeklyHealthReport();
+        await sendTelegram(s.telegramChatId, text);
+        lastWeeklyReportDate = today;
+        api.logger.info(`[executive-agent] Wöchentlicher Health-Report gesendet (${today})`);
+      }
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] Weekly Health-Report Fehler: ${e.message}`);
+    }
+  }, 60_000);
+
+  api.logger.info("[executive-agent] loaded v20 (telegram direct fallback)");
 }
