@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import { updateEntityId } from './link-store.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -93,8 +93,16 @@ function saveAll(vehicles: Vehicle[]): void {
   fs.writeFileSync(VEHICLES_FILE, JSON.stringify(vehicles, null, 2), 'utf-8');
 }
 
-function makeId(): string {
-  return 'v-' + crypto.randomBytes(3).toString('hex');
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+function makeReadableId(make: string, model: string, existingIds: string[]): string {
+  const base = 'v-' + slugify(make) + '-' + slugify(model);
+  if (!existingIds.includes(base)) return base;
+  let n = 2;
+  while (existingIds.includes(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────
@@ -114,9 +122,10 @@ export function createVehicle(
   year: number,
   opts?: Partial<Pick<Vehicle, 'name' | 'plate' | 'vin' | 'color' | 'mileage'>>
 ): Vehicle {
+  const all = loadAll();
   const now = new Date().toISOString();
   const vehicle: Vehicle = {
-    id: makeId(),
+    id: makeReadableId(make, model, all.map(v => v.id)),
     type,
     name: opts?.name || `${make} ${model}`,
     plate: opts?.plate,
@@ -131,7 +140,6 @@ export function createVehicle(
     createdAt: now,
     updatedAt: now,
   };
-  const all = loadAll();
   all.push(vehicle);
   saveAll(all);
   return vehicle;
@@ -156,6 +164,40 @@ export function deleteVehicle(id: string): boolean {
   const dd = docsDir(id);
   if (fs.existsSync(dd)) fs.rmSync(dd, { recursive: true, force: true });
   return true;
+}
+
+// ── ID change & migration ─────────────────────────────────────────────────
+
+export function changeVehicleId(oldId: string, newId: string): Vehicle | null {
+  if (!/^v-[a-z0-9]+(-[a-z0-9]+)*$/.test(newId) || newId.length < 4) return null;
+  const all = loadAll();
+  if (all.some(v => v.id === newId)) return null;
+  const idx = all.findIndex(v => v.id === oldId);
+  if (idx === -1) return null;
+  all[idx].id = newId;
+  all[idx].updatedAt = new Date().toISOString();
+  saveAll(all);
+  // Rename docs directory
+  const oldDir = docsDir(oldId);
+  const newDir = docsDir(newId);
+  if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir);
+  // Update link-store references
+  updateEntityId('fleet', oldId, newId);
+  return all[idx];
+}
+
+export function migrateHexIds(): { oldId: string; newId: string }[] {
+  const all = loadAll();
+  const results: { oldId: string; newId: string }[] = [];
+  const hexPattern = /^v-[0-9a-f]{6}$/;
+  const toMigrate = all.filter(v => hexPattern.test(v.id));
+  for (const v of toMigrate) {
+    const currentIds = loadAll().map(x => x.id);
+    const newId = makeReadableId(v.make, v.model, currentIds);
+    const result = changeVehicleId(v.id, newId);
+    if (result) results.push({ oldId: v.id, newId });
+  }
+  return results;
 }
 
 // ── Service log ────────────────────────────────────────────────────────────

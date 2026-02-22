@@ -11,6 +11,7 @@ import {
   getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle,
   addServiceEntry, setInsurance, setTuevDate, addDocument, removeDocument,
   checkDeadlines, formatVehicleList, formatVehicleDetail,
+  changeVehicleId, migrateHexIds,
 } from "./fleet-store.js";
 import {
   getLinksForEntity, addSharePointLink, addLocalLink, removeLink,
@@ -2816,8 +2817,14 @@ for (const k of days) {
     description: 'Alle Fahrzeuge im Fuhrpark anzeigen',
     handler: async () => {
       try {
+        // Auto-migrate old hex IDs to readable IDs
+        const migrated = migrateHexIds();
         const vehicles = getAllVehicles();
-        return { text: formatVehicleList(vehicles) };
+        let text = formatVehicleList(vehicles);
+        if (migrated.length > 0) {
+          text += '\n\n🔄 IDs migriert:\n' + migrated.map(m => `  ${m.oldId} → ${m.newId}`).join('\n');
+        }
+        return { text };
       } catch (e: any) {
         return { text: `❌ Fehler: ${e.message}` };
       }
@@ -2873,7 +2880,7 @@ for (const k of days) {
   api.registerCommand({
     name: 'fleetedit',
     acceptsArgs: true,
-    description: 'Fahrzeug bearbeiten: /fleetedit <id> <feld> <wert>  (name, plate, mileage, tuev, color, vin)',
+    description: 'Fahrzeug bearbeiten: /fleetedit <id> <feld> <wert>  (name, plate, mileage, tuev, color, vin, id)',
     handler: async (ctx: any) => {
       try {
         const raw = String(ctx.args || '').trim();
@@ -2902,7 +2909,15 @@ for (const k of days) {
           }
           case 'color':    updates.color = value; break;
           case 'vin':      updates.vin = value; break;
-          default: return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: name, plate, mileage, tuev, color, vin` };
+          case 'id': {
+            const newId = value.toLowerCase().startsWith('v-') ? value.toLowerCase() : `v-${value.toLowerCase()}`;
+            if (!/^v-[a-z0-9]+(-[a-z0-9]+)*$/.test(newId))
+              return { text: '❌ ID darf nur Kleinbuchstaben, Zahlen und Bindestriche enthalten.' };
+            const result = changeVehicleId(id, newId);
+            if (!result) return { text: `❌ ID '${newId}' ist bereits vergeben oder ungültig.` };
+            return { text: `✅ ID geändert: ${id} → ${newId}\n\n${formatVehicleDetail(result)}` };
+          }
+          default: return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: name, plate, mileage, tuev, color, vin, id` };
         }
 
         const updated = updateVehicle(id, updates);

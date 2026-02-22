@@ -164,6 +164,19 @@ export function searchSharePointForLinking(query: string): SpSearchResult[] {
   }));
 }
 
+export function updateEntityId(entityType: string, oldId: string, newId: string): number {
+  const links = loadLinks();
+  let count = 0;
+  for (const link of links) {
+    if (link.entityType === entityType && link.entityId === oldId) {
+      link.entityId = newId;
+      count++;
+    }
+  }
+  if (count > 0) saveLinks(links);
+  return count;
+}
+
 export function formatLinksForTelegram(links: DocumentLink[]): string {
   if (!links.length) return "Keine verknüpften Dokumente.";
 
