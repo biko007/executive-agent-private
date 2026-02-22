@@ -2768,13 +2768,17 @@ for (const k of days) {
 
       (async () => {
         await send('🔄 SharePoint-Vollsync gestartet...');
-        let lastReport = 0;
+        const lastTotal = getIndexAge().fileCount || 10000;
+        const milestones = [25, 50, 75];
+        let nextMilestone = 0;
         try {
-          const result = await fullSync(tenantId, clientId, m365Secret, (count, siteName) => {
-            const now = Date.now();
-            if (now - lastReport > 10_000) { // max alle 10s
-              lastReport = now;
-              send(`🔄 Sync läuft... ${count} Dateien (aktuell: ${siteName})`).catch(() => {});
+          const result = await fullSync(tenantId, clientId, m365Secret, (count) => {
+            if (nextMilestone < milestones.length) {
+              const pct = Math.round((count / lastTotal) * 100);
+              if (pct >= milestones[nextMilestone]) {
+                nextMilestone++;
+                send(`🔄 Sync läuft... ${pct}% (${count} Dateien)`).catch(() => {});
+              }
             }
           }, syncUser || undefined);
 

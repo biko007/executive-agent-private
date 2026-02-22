@@ -3,7 +3,7 @@ import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTri
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
 import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
-import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, } from "./fleet-store.js";
+import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -2465,13 +2465,17 @@ export default function (api) {
             const syncUser = m365User || process.env.M365_USER || '';
             (async () => {
                 await send('🔄 SharePoint-Vollsync gestartet...');
-                let lastReport = 0;
+                const lastTotal = getIndexAge().fileCount || 10000;
+                const milestones = [25, 50, 75];
+                let nextMilestone = 0;
                 try {
-                    const result = await fullSync(tenantId, clientId, m365Secret, (count, siteName) => {
-                        const now = Date.now();
-                        if (now - lastReport > 10_000) { // max alle 10s
-                            lastReport = now;
-                            send(`🔄 Sync läuft... ${count} Dateien (aktuell: ${siteName})`).catch(() => { });
+                    const result = await fullSync(tenantId, clientId, m365Secret, (count) => {
+                        if (nextMilestone < milestones.length) {
+                            const pct = Math.round((count / lastTotal) * 100);
+                            if (pct >= milestones[nextMilestone]) {
+                                nextMilestone++;
+                                send(`🔄 Sync läuft... ${pct}% (${count} Dateien)`).catch(() => { });
+                            }
                         }
                     }, syncUser || undefined);
                     const durSec = (result.durationMs / 1000).toFixed(1);
@@ -2511,8 +2515,14 @@ export default function (api) {
         description: 'Alle Fahrzeuge im Fuhrpark anzeigen',
         handler: async () => {
             try {
+                // Auto-migrate old hex IDs to readable IDs
+                const migrated = migrateHexIds();
                 const vehicles = getAllVehicles();
-                return { text: formatVehicleList(vehicles) };
+                let text = formatVehicleList(vehicles);
+                if (migrated.length > 0) {
+                    text += '\n\n🔄 IDs migriert:\n' + migrated.map(m => `  ${m.oldId} → ${m.newId}`).join('\n');
+                }
+                return { text };
             }
             catch (e) {
                 return { text: `❌ Fehler: ${e.message}` };
@@ -2574,7 +2584,7 @@ export default function (api) {
     api.registerCommand({
         name: 'fleetedit',
         acceptsArgs: true,
-        description: 'Fahrzeug bearbeiten: /fleetedit <id> <feld> <wert>  (name, plate, mileage, tuev, color, vin)',
+        description: 'Fahrzeug bearbeiten: /fleetedit <id> <feld> <wert>  (name, plate, mileage, tuev, color, vin, id)',
         handler: async (ctx) => {
             try {
                 const raw = String(ctx.args || '').trim();
@@ -2614,7 +2624,16 @@ export default function (api) {
                     case 'vin':
                         updates.vin = value;
                         break;
-                    default: return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: name, plate, mileage, tuev, color, vin` };
+                    case 'id': {
+                        const newId = value.toLowerCase().startsWith('v-') ? value.toLowerCase() : `v-${value.toLowerCase()}`;
+                        if (!/^v-[a-z0-9]+(-[a-z0-9]+)*$/.test(newId))
+                            return { text: '❌ ID darf nur Kleinbuchstaben, Zahlen und Bindestriche enthalten.' };
+                        const result = changeVehicleId(id, newId);
+                        if (!result)
+                            return { text: `❌ ID '${newId}' ist bereits vergeben oder ungültig.` };
+                        return { text: `✅ ID geändert: ${id} → ${newId}\n\n${formatVehicleDetail(result)}` };
+                    }
+                    default: return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: name, plate, mileage, tuev, color, vin, id` };
                 }
                 const updated = updateVehicle(id, updates);
                 return { text: `✅ Aktualisiert:\n\n${formatVehicleDetail(updated)}` };
