@@ -181,18 +181,40 @@ export async function fetchSleep(token: string, sinceMs: number): Promise<Within
     lastupdate: String(Math.floor(sinceMs / 1000)),
   }, token);
 
-  const out: WithingsSleep[] = [];
+  // Withings returns multiple series per night (wake-ups split a night).
+  // Group by the Withings-provided `date` field (= night date) and aggregate.
+  const nightMap = new Map<string, { total: number; deep: number; rem: number; light: number; scores: number[] }>();
+
   for (const s of b?.series || []) {
     const d = s.data || {};
     const total = d.total_sleep_time ?? 0;
     if (total <= 0) continue;
+
+    // Prefer Withings `date` field; fall back to enddate-derived date
+    const nightDate: string = s.date
+      || new Date((s.enddate || s.startdate) * 1000).toISOString().slice(0, 10);
+
+    const agg = nightMap.get(nightDate) || { total: 0, deep: 0, rem: 0, light: 0, scores: [] };
+    agg.total += total;
+    agg.deep  += d.deep_sleep_duration ?? 0;
+    agg.rem   += d.rem_sleep_duration ?? 0;
+    agg.light += d.light_sleep_duration ?? 0;
+    if (d.sleep_score != null && d.sleep_score > 0) agg.scores.push(d.sleep_score);
+    nightMap.set(nightDate, agg);
+  }
+
+  const out: WithingsSleep[] = [];
+  for (const [date, agg] of nightMap) {
+    const avgScore = agg.scores.length
+      ? Math.round(agg.scores.reduce((a, b) => a + b, 0) / agg.scores.length)
+      : undefined;
     out.push({
-      date:    new Date(s.startdate * 1000).toISOString().slice(0, 10),
-      total_h: Math.round(total / 360) / 10,
-      deep_h:  Math.round((d.deep_sleep_duration ?? 0) / 360) / 10,
-      rem_h:   Math.round((d.rem_sleep_duration ?? 0) / 360) / 10,
-      light_h: Math.round((d.light_sleep_duration ?? 0) / 360) / 10,
-      score:   d.sleep_score ?? undefined,
+      date,
+      total_h: Math.round(agg.total / 360) / 10,
+      deep_h:  Math.round(agg.deep / 360) / 10,
+      rem_h:   Math.round(agg.rem / 360) / 10,
+      light_h: Math.round(agg.light / 360) / 10,
+      score:   avgScore,
     });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));

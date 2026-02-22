@@ -53,6 +53,14 @@ function ensureDir(): void {
   fs.mkdirSync(HEALTH_DIR, { recursive: true });
 }
 
+// ── Dedup check ───────────────────────────────────────────────────────────
+
+/** Returns true if an entry with the same type and date already exists */
+export function hasEntryForDate(type: HealthEntryType, dateStr: string): boolean {
+  const all = readEntries();
+  return all.some(e => e.type === type && e.timestamp.slice(0, 10) === dateStr);
+}
+
 // ── Append-only write ──────────────────────────────────────────────────────
 
 export function appendEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): HealthEntry {
@@ -303,8 +311,18 @@ export function getSleepTrend(days: 7 | 30 | 90): SleepTrend | null {
   const entries = readEntries(since).filter(e => e.type === 'sleep' && e.value != null);
   if (!entries.length) return null;
 
-  const durations = entries.map(e => e.value!);
-  const qualities = entries.filter(e => e.quality != null).map(e => e.quality!);
+  // Aggregate sessions per night (sum durations, collect qualities)
+  const byNight = new Map<string, { total: number; qualities: number[] }>();
+  for (const e of entries) {
+    const day = e.timestamp.slice(0, 10);
+    const prev = byNight.get(day) || { total: 0, qualities: [] };
+    prev.total += e.value!;
+    if (e.quality != null && e.quality > 0) prev.qualities.push(e.quality);
+    byNight.set(day, prev);
+  }
+
+  const durations = Array.from(byNight.values()).map(n => n.total);
+  const qualities = Array.from(byNight.values()).flatMap(n => n.qualities);
 
   return {
     avgDuration: +numAvg(durations).toFixed(1),
@@ -322,12 +340,11 @@ export function checkHealthAlerts(): HealthAlert[] {
   // Sleep < 6h on 3+ of last 7 nights → warning
   const sevenDaysAgo = new Date(now - 7 * 86_400_000);
   const recentSleep = readEntries(sevenDaysAgo).filter(e => e.type === 'sleep' && e.value != null);
-  // Deduplicate by day (keep longest per day)
+  // Aggregate sessions per night (sum durations)
   const sleepByDay = new Map<string, number>();
   for (const s of recentSleep) {
     const day = s.timestamp.slice(0, 10);
-    const prev = sleepByDay.get(day) ?? 0;
-    if ((s.value ?? 0) > prev) sleepByDay.set(day, s.value!);
+    sleepByDay.set(day, (sleepByDay.get(day) ?? 0) + (s.value ?? 0));
   }
   const shortNights = Array.from(sleepByDay.values()).filter(h => h < 6).length;
   if (shortNights >= 3) {

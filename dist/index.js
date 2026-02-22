@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
-import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts } from "./health-store.js";
+import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts, hasEntryForDate } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
 import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
@@ -2107,20 +2107,23 @@ export default function (api) {
                 catch (e) {
                     parts.push(`⚖️ Messungen: ❌ ${e.message}`);
                 }
-                // ── Schlaf ──
+                // ── Schlaf (aggregiert pro Nacht, dedup) ──
                 try {
                     const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs);
+                    let sleepNew = 0;
                     for (const s of sleeps) {
-                        // Keep original sleep date (instead of "now") so briefing picks the right day.
+                        if (hasEntryForDate('sleep', s.date))
+                            continue; // skip if already synced
                         const ts = new Date(`${s.date}T03:00:00.000Z`);
                         appendEntryWithTimestamp(ts, {
                             type: 'sleep', value: s.total_h, unit: 'h',
                             deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
                             quality: s.score, source: 'withings',
                         });
+                        sleepNew++;
                     }
-                    parts.push(`😴 Schlaf: ${sleeps.length} Nächte`);
-                    totalNew += sleeps.length;
+                    parts.push(`😴 Schlaf: ${sleeps.length} Nächte (${sleepNew} neu)`);
+                    totalNew += sleepNew;
                 }
                 catch (e) {
                     parts.push(`😴 Schlaf: ❌ ${e.message}`);
@@ -2191,6 +2194,8 @@ export default function (api) {
             }
             const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs).catch(() => []);
             for (const s of sleeps) {
+                if (hasEntryForDate('sleep', s.date))
+                    continue;
                 const ts = new Date(`${s.date}T03:00:00.000Z`);
                 appendEntryWithTimestamp(ts, {
                     type: 'sleep', value: s.total_h, unit: 'h',
