@@ -2088,21 +2088,22 @@ export default function (api) {
                 // ── Measures (Gewicht, Körperfett, HR) ──
                 try {
                     const measures = await fetchMeasures(tokens.access_token, sinceMs);
-                    let mCount = 0;
+                    let mNew = 0;
                     for (const m of measures) {
-                        if (m.weight_kg != null) {
+                        const dateStr = m.date.toISOString().slice(0, 10);
+                        if (m.weight_kg != null && !hasEntryForDate('weight', dateStr)) {
                             appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-                            mCount++;
+                            mNew++;
                         }
-                        if (m.fat_ratio_pct != null) {
+                        if (m.fat_ratio_pct != null && !hasEntryForDate('body_fat', dateStr)) {
                             appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
                         }
-                        if (m.hr_bpm != null) {
+                        if (m.hr_bpm != null && !hasEntryForDate('heartrate', dateStr)) {
                             appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
                         }
                     }
-                    parts.push(`⚖️ Messungen: ${measures.length} (${mCount} Gewicht)`);
-                    totalNew += measures.length;
+                    parts.push(`⚖️ Messungen: ${measures.length} (${mNew} neu)`);
+                    totalNew += mNew;
                 }
                 catch (e) {
                     parts.push(`⚖️ Messungen: ❌ ${e.message}`);
@@ -2131,20 +2132,23 @@ export default function (api) {
                 // ── Aktivität (Schritte) ──
                 try {
                     const activities = await fetchActivity(tokens.access_token, sinceMs);
+                    let actNew = 0;
                     for (const a of activities) {
-                        if (a.steps > 0) {
-                            appendEntry({
+                        const ts = new Date(`${a.date}T12:00:00.000Z`);
+                        if (a.steps > 0 && !hasEntryForDate('steps', a.date)) {
+                            appendEntryWithTimestamp(ts, {
                                 type: 'steps', steps: a.steps, distance_m: a.distance_m,
                                 calories: a.calories, source: 'withings',
                             });
+                            actNew++;
                         }
-                        if (a.hr_avg) {
-                            appendEntry({ type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+                        if (a.hr_avg && !hasEntryForDate('heartrate', a.date)) {
+                            appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
                         }
                     }
                     const totalSteps = activities.reduce((s, a) => s + a.steps, 0);
-                    parts.push(`👟 Aktivität: ${activities.length} Tage, ${totalSteps.toLocaleString('de')} Schritte gesamt`);
-                    totalNew += activities.length;
+                    parts.push(`👟 Aktivität: ${activities.length} Tage (${actNew} neu), ${totalSteps.toLocaleString('de')} Schritte gesamt`);
+                    totalNew += actNew;
                 }
                 catch (e) {
                     parts.push(`👟 Aktivität: ❌ ${e.message}`);
@@ -2152,16 +2156,21 @@ export default function (api) {
                 // ── Workouts ──
                 try {
                     const workouts = await fetchWorkouts(tokens.access_token, sinceMs);
+                    let wNew = 0;
                     for (const w of workouts) {
-                        appendEntry({
+                        if (hasEntryForDate('activity', w.date))
+                            continue;
+                        const ts = new Date(`${w.date}T12:00:00.000Z`);
+                        appendEntryWithTimestamp(ts, {
                             type: 'activity', activity_type: w.activity_type,
                             duration_min: w.duration_min, steps: w.steps,
                             distance_m: w.distance_m, calories: w.calories,
                             hr_avg: w.hr_avg, source: 'withings',
                         });
+                        wNew++;
                     }
-                    parts.push(`🏃 Workouts: ${workouts.length}`);
-                    totalNew += workouts.length;
+                    parts.push(`🏃 Workouts: ${workouts.length} (${wNew} neu)`);
+                    totalNew += wNew;
                 }
                 catch (e) {
                     parts.push(`🏃 Workouts: ❌ ${e.message}`);
@@ -2185,11 +2194,12 @@ export default function (api) {
             const sinceMs = Date.now() - 36 * 60 * 60 * 1000; // last 36h to catch morning updates
             const measures = await fetchMeasures(tokens.access_token, sinceMs).catch(() => []);
             for (const m of measures) {
-                if (m.weight_kg != null)
+                const dateStr = m.date.toISOString().slice(0, 10);
+                if (m.weight_kg != null && !hasEntryForDate('weight', dateStr))
                     appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-                if (m.fat_ratio_pct != null)
+                if (m.fat_ratio_pct != null && !hasEntryForDate('body_fat', dateStr))
                     appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
-                if (m.hr_bpm != null)
+                if (m.hr_bpm != null && !hasEntryForDate('heartrate', dateStr))
                     appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
             }
             const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs).catch(() => []);
@@ -2469,7 +2479,6 @@ export default function (api) {
             // fire-and-forget: sofort antworten, sync im Hintergrund
             const syncUser = m365User || process.env.M365_USER || '';
             (async () => {
-                await send('🔄 SharePoint-Vollsync gestartet...');
                 const lastTotal = getIndexAge().fileCount || 10000;
                 const milestones = [25, 50, 75];
                 let nextMilestone = 0;
