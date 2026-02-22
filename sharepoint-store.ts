@@ -493,8 +493,15 @@ export type SPSyncResult = {
   totalSites: number;
   totalDrives: number;
   errors: string[];
+  skippedSites: string[];
   durationMs: number;
 };
+
+/* Configurable site blacklist — sites whose displayName matches are skipped during sync */
+const SITE_BLACKLIST: string[] = [
+  "Mein Arbeitsbereich",
+  "Designer",
+];
 
 const INDEX_FILE = path.join(POLL_STATE_DIR, "sharepoint-index.json");
 
@@ -559,15 +566,23 @@ export async function fullSync(
   let siteCount = 0;
   let driveCount = 0;
 
-  const sites = await listSites(t, c, s);
-  siteCount = sites.length;
+  const allSites = await listSites(t, c, s);
+  const skippedSites: string[] = [];
+  const sites = allSites.filter((site) => {
+    if (SITE_BLACKLIST.some((bl) => site.displayName === bl)) {
+      skippedSites.push(site.displayName);
+      return false;
+    }
+    return true;
+  });
+  siteCount = allSites.length;
 
   for (const site of sites) {
     let drives: SPDrive[];
     try {
       drives = await listDrives(t, c, s, site.id);
     } catch (e: any) {
-      errors.push(`Site "${site.displayName}": ${e.message}`);
+      errors.push(`Site "${site.displayName}": kein Zugriff`);
       continue;
     }
     driveCount += drives.length;
@@ -636,6 +651,7 @@ export async function fullSync(
     totalSites: siteCount,
     totalDrives: driveCount,
     errors,
+    skippedSites,
     durationMs: Date.now() - start,
   };
 }

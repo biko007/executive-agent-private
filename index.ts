@@ -12,6 +12,11 @@ import {
   addServiceEntry, setInsurance, setTuevDate, addDocument, removeDocument,
   checkDeadlines, formatVehicleList, formatVehicleDetail,
 } from "./fleet-store.js";
+import {
+  getLinksForEntity, addSharePointLink, addLocalLink, removeLink,
+  searchSharePointForLinking, formatLinksForTelegram,
+} from "./link-store.js";
+import type { SpSearchResult } from "./link-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -2050,7 +2055,12 @@ for (const k of days) {
       const segs = trip.segments.length
         ? trip.segments.map((s: any) => `  • [${s.type}] ${s.title} — ${s.datetime_local}${s.confirmation ? " ✔ " + s.confirmation : ""}`).join("\n")
         : "  (noch keine Segmente)";
-      return { text: `✈️ *${trip.name}*\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 ${trip.climate} | 🎯 ${trip.activities.join(", ")}\n\n📋 Segmente:\n${segs}` };
+      let text = `✈️ *${trip.name}*\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 ${trip.climate} | 🎯 ${trip.activities.join(", ")}\n\n📋 Segmente:\n${segs}`;
+      const links = getLinksForEntity("trip", id);
+      if (links.length) {
+        text += `\n\n📎 Verknüpfte Dokumente:\n${formatLinksForTelegram(links)}`;
+      }
+      return { text };
     },
   });
 
@@ -2771,6 +2781,9 @@ for (const k of days) {
           let summary = `✅ SharePoint-Sync abgeschlossen\n\n`;
           summary += `📂 ${result.totalFiles} Dateien · ${result.totalSites} Sites · ${result.totalDrives} Drives\n`;
           summary += `⏱ ${durSec}s`;
+          if (result.skippedSites?.length) {
+            summary += `\n\n⚠️ ${result.skippedSites.length} Sites übersprungen: ${result.skippedSites.join(', ')} (Blacklist)`;
+          }
           if (result.errors.length) {
             summary += `\n\n⚠️ ${result.errors.length} Fehler:\n` + result.errors.slice(0, 5).map((e: string) => `• ${e}`).join('\n');
           }
@@ -2845,7 +2858,12 @@ for (const k of days) {
         if (!id) return { text: '❌ Verwendung: /fleetshow <id>' };
         const v = getVehicle(id);
         if (!v) return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
-        return { text: formatVehicleDetail(v) };
+        let text = formatVehicleDetail(v);
+        const links = getLinksForEntity("fleet", id);
+        if (links.length) {
+          text += `\n\n📎 Verknüpfte Dokumente:\n${formatLinksForTelegram(links)}`;
+        }
+        return { text };
       } catch (e: any) {
         return { text: `❌ Fehler: ${e.message}` };
       }
@@ -3062,6 +3080,139 @@ for (const k of days) {
       return { text: `📊 Wöchentlicher Health-Report auf ${dayNames[dayNum]} gesetzt.` };
     },
   });
+
+  // ── Dokumenten-Verknüpfung (Link-Store) ──────────────────────────────────
+
+  // Pending SP link selection state (per chat)
+  const pendingLinkSelections = new Map<string, {
+    entityType: string;
+    entityId: string;
+    results: SpSearchResult[];
+    label: string;
+    expiresAt: number;
+  }>();
+
+  api.registerCommand({
+    name: 'link',
+    acceptsArgs: true,
+    description: 'Verknüpfte Dokumente anzeigen: /link <entityType> <entityId>',
+    handler: async (ctx: any) => {
+      const parts = String(ctx.args || '').trim().split(/\s+/);
+      if (parts.length < 2) return { text: '❌ Verwendung: /link <entityType> <entityId>' };
+      const [entityType, entityId] = parts;
+      const links = getLinksForEntity(entityType, entityId);
+      if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit ${entityType} ${entityId}.` };
+      return { text: `📎 Verknüpfte Dokumente (${entityType} ${entityId}):\n\n${formatLinksForTelegram(links)}` };
+    },
+  });
+
+  api.registerCommand({
+    name: 'linkadd',
+    acceptsArgs: true,
+    description: 'Dokument verknüpfen: /linkadd <entityType> <entityId> sp <suchbegriff> | /linkadd <entityType> <entityId> local <label>',
+    handler: async (ctx: any) => {
+      const raw = String(ctx.args || '').trim();
+      const parts = raw.split(/\s+/);
+      if (parts.length < 4) return { text: '❌ Verwendung:\n/linkadd <entityType> <entityId> sp <suchbegriff>\n/linkadd <entityType> <entityId> local <label>' };
+
+      const [entityType, entityId, docType, ...rest] = parts;
+
+      if (docType === 'sp') {
+        const query = rest.join(' ');
+        if (!query) return { text: '❌ Suchbegriff fehlt.' };
+        const results = searchSharePointForLinking(query);
+        if (!results.length) return { text: `❌ Keine Treffer für "${query}" im SharePoint-Index.\nTipp: /spsync falls der Index veraltet ist.` };
+
+        const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
+        pendingLinkSelections.set(chatId, {
+          entityType,
+          entityId,
+          results,
+          label: query,
+          expiresAt: Date.now() + 5 * 60_000, // 5 min expiry
+        });
+
+        const lines = results.map((r, i) => `${i + 1}) ${r.name}\n   ${r.siteName} › ${r.path}`);
+        return { text: `📂 Gefunden (${results.length}):\n\n${lines.join('\n\n')}\n\nAntwort mit Nummer zum Verknüpfen:` };
+      }
+
+      if (docType === 'local') {
+        const label = rest.join(' ') || 'Dokument';
+        // The next file sent by user will be linked — for now create a placeholder
+        return { text: `📎 Sende jetzt die Datei. Label: "${label}"\n(Lokaler Upload wird beim nächsten Dateiempfang verknüpft)` };
+      }
+
+      return { text: '❌ Typ muss "sp" oder "local" sein.' };
+    },
+  });
+
+  api.registerCommand({
+    name: 'linkdel',
+    acceptsArgs: true,
+    description: 'Verknüpfung entfernen: /linkdel <linkId>',
+    handler: async (ctx: any) => {
+      const linkId = String(ctx.args || '').trim();
+      if (!linkId) return { text: '❌ Verwendung: /linkdel <linkId>' };
+      const removed = removeLink(linkId);
+      if (!removed) return { text: `❌ Verknüpfung "${linkId}" nicht gefunden.` };
+      return { text: `🗑 Verknüpfung ${linkId} entfernt.` };
+    },
+  });
+
+  // Shortcut: /fleetlink <id> = /link fleet <id>
+  api.registerCommand({
+    name: 'fleetlink',
+    acceptsArgs: true,
+    description: 'Fahrzeug-Dokumente anzeigen: /fleetlink <id>',
+    handler: async (ctx: any) => {
+      const id = String(ctx.args || '').trim();
+      if (!id) return { text: '❌ Verwendung: /fleetlink <id>' };
+      const links = getLinksForEntity('fleet', id);
+      if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit Fahrzeug ${id}.` };
+      return { text: `📎 Fahrzeug-Dokumente (${id}):\n\n${formatLinksForTelegram(links)}` };
+    },
+  });
+
+  // Shortcut: /triplink <id> = /link trip <id>
+  api.registerCommand({
+    name: 'triplink',
+    acceptsArgs: true,
+    description: 'Reise-Dokumente anzeigen: /triplink <id>',
+    handler: async (ctx: any) => {
+      const id = String(ctx.args || '').trim();
+      if (!id) return { text: '❌ Verwendung: /triplink <id>' };
+      const links = getLinksForEntity('trip', id);
+      if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit Reise ${id}.` };
+      return { text: `📎 Reise-Dokumente (${id}):\n\n${formatLinksForTelegram(links)}` };
+    },
+  });
+
+  // Handle numeric replies for pending SP link selections
+  api.registerHook('message_received', (event: any) => {
+    try {
+      const chatId = String(event?.chatId || event?.threadId || event?.conversationId || event?.senderId || '');
+      if (!chatId) return;
+      const pending = pendingLinkSelections.get(chatId);
+      if (!pending || Date.now() > pending.expiresAt) {
+        if (pending) pendingLinkSelections.delete(chatId);
+        return;
+      }
+
+      const text = String(event?.text || '').trim();
+      const num = parseInt(text, 10);
+      if (isNaN(num) || num < 1 || num > pending.results.length) return;
+
+      const selected = pending.results[num - 1];
+      const link = addSharePointLink(pending.entityType, pending.entityId, selected, pending.label);
+      pendingLinkSelections.delete(chatId);
+
+      // Send confirmation via telegram
+      const s = loadSettings();
+      if (s.telegramChatId) {
+        sendTelegram(s.telegramChatId, `📎 ${selected.name} verknüpft mit ${pending.entityType} ${pending.entityId}\nLabel: ${link.label} | ID: ${link.id}`).catch(() => {});
+      }
+    } catch {}
+  }, { name: 'link-selection-handler' });
 
   // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
 
