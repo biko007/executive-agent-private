@@ -3,6 +3,7 @@ import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTri
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
 import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
+import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, } from "./fleet-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -96,7 +97,15 @@ async function graphRequest(tenantId, clientId, clientSecret, method, url, body)
             graphTokenCache.delete(cacheKey(tenantId, clientId));
         return graphToken(tenantId, clientId, clientSecret);
     };
-    let token = await getToken(false);
+    let token;
+    try {
+        token = await getToken(false);
+    }
+    catch {
+        // Token fetch failed (network error) → one retry after 2s
+        await sleep(2000);
+        token = await getToken(false);
+    }
     let didRefreshOn401 = false;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const headers = { Authorization: `Bearer ${token}` };
@@ -105,7 +114,18 @@ async function graphRequest(tenantId, clientId, clientSecret, method, url, body)
             headers["Content-Type"] = "application/json";
             fetchBody = JSON.stringify(body ?? {});
         }
-        const res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 20000);
+        let res;
+        try {
+            res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 20000);
+        }
+        catch (e) {
+            // Network error (TypeError: fetch failed, DNS, connection reset, etc.) → retry
+            if (attempt < maxRetries) {
+                await sleep(Math.min(2000 * Math.pow(2, attempt), 10000));
+                continue;
+            }
+            throw new Error(`graph_${method.toLowerCase()}_network_error: ${e.message}`);
+        }
         // 401: token expired/revoked → refresh once and retry immediately
         if (res.status === 401 && !didRefreshOn401) {
             didRefreshOn401 = true;
@@ -2208,6 +2228,30 @@ export default function (api) {
         catch {
             parts.push('📝 Drafts: nicht verfügbar');
         }
+        // ── (5) Fuhrpark-Fristen ──
+        try {
+            const deadlines = checkDeadlines();
+            if (deadlines.length) {
+                parts.push('');
+                parts.push('🚗 Fuhrpark-Fristen:');
+                for (const w of deadlines) {
+                    const icon = w.vehicleType === 'car' ? '🚗' : '🚲';
+                    const label = w.field === 'tuev' ? 'TÜV' : 'Versicherung';
+                    if (w.severity === 'overdue') {
+                        parts.push(`🔴 ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen`);
+                    }
+                    else if (w.severity === 'warning') {
+                        const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
+                        parts.push(`⚠️ ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE})`);
+                    }
+                    else {
+                        const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
+                        parts.push(`ℹ️ ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE})`);
+                    }
+                }
+            }
+        }
+        catch { /* fleet deadlines optional */ }
         return parts.join('\n').trim();
     }
     api.registerCommand({
@@ -2354,6 +2398,261 @@ export default function (api) {
             return { text: '🔄 SharePoint-Vollsync gestartet. Fortschritt kommt via Telegram.' };
         },
     });
+    // ── Fuhrpark-Befehle ───────────────────────────────────────────────────────
+    function parseDateDE(s) {
+        const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+        if (!m)
+            return null;
+        const [, dd, mm, yyyy] = m;
+        return `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    }
+    api.registerCommand({
+        name: 'fleet',
+        description: 'Alle Fahrzeuge im Fuhrpark anzeigen',
+        handler: async () => {
+            try {
+                const vehicles = getAllVehicles();
+                return { text: formatVehicleList(vehicles) };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetadd',
+        acceptsArgs: true,
+        description: 'Fahrzeug hinzufügen: /fleetadd <car|bike> <Hersteller> <Modell> <Baujahr>',
+        handler: async (ctx) => {
+            try {
+                const args = String(ctx.args || '').trim().split(/\s+/);
+                if (args.length < 4)
+                    return { text: '❌ Verwendung: /fleetadd <car|bike> <Hersteller> <Modell> <Baujahr>' };
+                const type = args[0].toLowerCase();
+                if (type !== 'car' && type !== 'bike')
+                    return { text: '❌ Typ muss "car" oder "bike" sein.' };
+                const make = args[1];
+                const model = args[2];
+                const year = parseInt(args[3], 10);
+                if (isNaN(year) || year < 1900 || year > 2100)
+                    return { text: '❌ Ungültiges Baujahr.' };
+                const v = createVehicle(type, make, model, year);
+                return { text: `✅ Fahrzeug angelegt:\n\n${formatVehicleDetail(v)}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetshow',
+        acceptsArgs: true,
+        description: 'Fahrzeug-Details anzeigen: /fleetshow <id>',
+        handler: async (ctx) => {
+            try {
+                const id = String(ctx.args || '').trim();
+                if (!id)
+                    return { text: '❌ Verwendung: /fleetshow <id>' };
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                return { text: formatVehicleDetail(v) };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetedit',
+        acceptsArgs: true,
+        description: 'Fahrzeug bearbeiten: /fleetedit <id> <feld> <wert>  (name, plate, mileage, tuev, color, vin)',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 3)
+                    return { text: '❌ Verwendung: /fleetedit <id> <feld> <wert>' };
+                const [id, field, ...rest] = parts;
+                const value = rest.join(' ');
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                const updates = {};
+                switch (field.toLowerCase()) {
+                    case 'name':
+                        updates.name = value;
+                        break;
+                    case 'plate':
+                        updates.plate = value;
+                        break;
+                    case 'mileage': {
+                        const km = parseInt(value, 10);
+                        if (isNaN(km))
+                            return { text: '❌ km-Stand muss eine Zahl sein.' };
+                        updates.mileage = km;
+                        break;
+                    }
+                    case 'tuev': {
+                        const iso = parseDateDE(value);
+                        if (!iso)
+                            return { text: '❌ Datum im Format DD.MM.YYYY erwartet.' };
+                        updates.tuevDate = iso;
+                        break;
+                    }
+                    case 'color':
+                        updates.color = value;
+                        break;
+                    case 'vin':
+                        updates.vin = value;
+                        break;
+                    default: return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: name, plate, mileage, tuev, color, vin` };
+                }
+                const updated = updateVehicle(id, updates);
+                return { text: `✅ Aktualisiert:\n\n${formatVehicleDetail(updated)}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetdel',
+        acceptsArgs: true,
+        description: 'Fahrzeug löschen: /fleetdel <id>',
+        handler: async (ctx) => {
+            try {
+                const id = String(ctx.args || '').trim();
+                if (!id)
+                    return { text: '❌ Verwendung: /fleetdel <id>' };
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                deleteVehicle(id);
+                return { text: `🗑 Fahrzeug **${v.name}** (${v.id}) gelöscht.` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetservice',
+        acceptsArgs: true,
+        description: 'Service-Eintrag: /fleetservice <id> <typ> [kosten] [notiz]',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 2)
+                    return { text: '❌ Verwendung: /fleetservice <id> <typ> [kosten] [notiz]' };
+                const [id, typ, ...rest] = parts;
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                let cost;
+                let noteParts = [];
+                if (rest.length > 0) {
+                    const maybeCost = parseFloat(rest[0]);
+                    if (!isNaN(maybeCost)) {
+                        cost = maybeCost;
+                        noteParts = rest.slice(1);
+                    }
+                    else {
+                        noteParts = rest;
+                    }
+                }
+                const entry = {
+                    date: new Date().toISOString().slice(0, 10),
+                    type: typ,
+                    mileage: v.mileage,
+                    cost,
+                    notes: noteParts.length ? noteParts.join(' ') : undefined,
+                };
+                const updated = addServiceEntry(id, entry);
+                return { text: `✅ Service-Eintrag hinzugefügt:\n🔧 ${typ}${cost != null ? ` | ${cost} €` : ''}${entry.notes ? ` — ${entry.notes}` : ''}\n\nFahrzeug: ${updated.name}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetinsurance',
+        acceptsArgs: true,
+        description: 'Versicherung setzen: /fleetinsurance <id> <anbieter> <typ> [kosten/jahr]',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 3)
+                    return { text: '❌ Verwendung: /fleetinsurance <id> <anbieter> <typ> [kosten/jahr]' };
+                const [id, provider, type, ...rest] = parts;
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                let annualCost;
+                if (rest.length > 0) {
+                    const c = parseFloat(rest[0]);
+                    if (!isNaN(c))
+                        annualCost = c;
+                }
+                const insurance = { provider, type, annualCost };
+                const updated = setInsurance(id, insurance);
+                return { text: `✅ Versicherung gesetzt:\n🛡 ${provider} (${type})${annualCost != null ? ` | ${annualCost} €/Jahr` : ''}\n\nFahrzeug: ${updated.name}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleettuev',
+        acceptsArgs: true,
+        description: 'TÜV-Datum setzen: /fleettuev <id> <DD.MM.YYYY>',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 2)
+                    return { text: '❌ Verwendung: /fleettuev <id> <DD.MM.YYYY>' };
+                const [id, dateStr] = parts;
+                const iso = parseDateDE(dateStr);
+                if (!iso)
+                    return { text: '❌ Datum im Format DD.MM.YYYY erwartet.' };
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                const updated = setTuevDate(id, iso);
+                return { text: `✅ TÜV-Datum gesetzt: ${dateStr}\n\nFahrzeug: ${updated.name}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'fleetdocs',
+        acceptsArgs: true,
+        description: 'Dokumente eines Fahrzeugs anzeigen: /fleetdocs <id>',
+        handler: async (ctx) => {
+            try {
+                const id = String(ctx.args || '').trim();
+                if (!id)
+                    return { text: '❌ Verwendung: /fleetdocs <id>' };
+                const v = getVehicle(id);
+                if (!v)
+                    return { text: `❌ Fahrzeug nicht gefunden: ${id}` };
+                if (!v.documents.length)
+                    return { text: `📎 Keine Dokumente für **${v.name}**.` };
+                const lines = v.documents.map(d => `   • ${d.label} (${d.filename}) — ${d.uploadedAt.slice(0, 10)}`);
+                return { text: `📎 Dokumente für **${v.name}** (${v.documents.length}):\n\n${lines.join('\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
     // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────
     api.registerCommand({
         name: 'briefingtime',
@@ -2409,6 +2708,10 @@ export default function (api) {
                 return;
             const lines = changes.slice(0, 10).map(c => `${c.changeType === 'created' ? '🆕' : '✏️'} ${c.fileName}\n   ${c.webUrl}`);
             const msg = `📂 **SharePoint-Änderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
+            if (!api.runtime.telegram?.sendMessageTelegram) {
+                api.logger.warn(`[executive-agent] SharePoint-Poll: Telegram nicht verfügbar, übersprungen`);
+                return;
+            }
             await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, msg);
             api.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} Änderungen gesendet`);
         }
@@ -2423,6 +2726,8 @@ export default function (api) {
             const s = loadSettings();
             if (!s.telegramChatId)
                 return;
+            if (!api.runtime.telegram?.sendMessageTelegram)
+                return;
             // Aktuelle Berliner Zeit als HH:MM
             const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
             const hh = String(inBerlin.getHours()).padStart(2, '0');
@@ -2430,10 +2735,17 @@ export default function (api) {
             const nowHHMM = `${hh}:${mm}`;
             const today = berlinDate(0);
             if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
-                lastBriefingDate = today;
-                await syncWithingsForBriefing();
+                // Withings-Sync darf fehlschlagen ohne Briefing zu blockieren
+                try {
+                    await syncWithingsForBriefing();
+                }
+                catch (syncErr) {
+                    api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+                }
                 const text = await generateBriefingText();
                 await api.runtime.telegram.sendMessageTelegram(s.telegramChatId, text);
+                // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
+                lastBriefingDate = today;
                 api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
             }
         }

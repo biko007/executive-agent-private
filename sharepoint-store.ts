@@ -140,7 +140,14 @@ async function graphRequest(
     return graphToken(tenantId, clientId, clientSecret);
   };
 
-  let token = await getToken(false);
+  let token: string;
+  try {
+    token = await getToken(false);
+  } catch {
+    // Token fetch failed (network error) → one retry after 2s
+    await sleep(2000);
+    token = await getToken(false);
+  }
   let didRefreshOn401 = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -155,7 +162,17 @@ async function graphRequest(
       fetchBody = JSON.stringify(body ?? {});
     }
 
-    const res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 30000);
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 30000);
+    } catch (e: any) {
+      // Network error (TypeError: fetch failed, DNS, connection reset, etc.) → retry
+      if (attempt < maxRetries) {
+        await sleep(Math.min(2000 * Math.pow(2, attempt), 10000));
+        continue;
+      }
+      throw new Error(`sp_${method.toLowerCase()}_network_error: ${e.message}`);
+    }
 
     if (res.status === 401 && !didRefreshOn401) {
       didRefreshOn401 = true;
