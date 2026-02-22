@@ -295,6 +295,74 @@ interface WeatherDay {
   precip: number;
 }
 
+interface WeatherBriefing {
+  currentTemp: number;
+  currentDesc: string;
+  todayMin: number;
+  todayMax: number;
+  todayRainHour: number | null;  // first hour with rain, or null
+  tomorrowMin: number;
+  tomorrowMax: number;
+  tomorrowDesc: string;
+}
+
+const WMO_CODES: Record<number, string> = {
+  0: 'sonnig ☀️', 1: 'überwiegend sonnig ☀️', 2: 'leicht bewölkt ⛅', 3: 'bewölkt ☁️',
+  45: 'Nebel 🌫️', 48: 'Reifnebel 🌫️',
+  51: 'leichter Niesel 🌦️', 53: 'Niesel 🌦️', 55: 'starker Niesel 🌧️',
+  56: 'gefrierender Niesel 🌧️', 57: 'starker gef. Niesel 🌧️',
+  61: 'leichter Regen 🌧️', 63: 'Regen 🌧️', 65: 'starker Regen 🌧️',
+  66: 'gefrierender Regen 🌧️', 67: 'starker gef. Regen 🌧️',
+  71: 'leichter Schneefall 🌨️', 73: 'Schneefall 🌨️', 75: 'starker Schneefall 🌨️',
+  77: 'Schneegriesel 🌨️',
+  80: 'Regenschauer 🌦️', 81: 'starke Schauer 🌧️', 82: 'Sturzregen 🌧️',
+  85: 'Schneeschauer 🌨️', 86: 'starke Schneeschauer 🌨️',
+  95: 'Gewitter ⛈️', 96: 'Gewitter mit Hagel ⛈️', 99: 'starkes Hagelgewitter ⛈️',
+};
+
+function wmoToText(code: number): string {
+  return WMO_CODES[code] ?? `Code ${code}`;
+}
+
+async function fetchWeatherBriefing(lat: number, lon: number): Promise<WeatherBriefing> {
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${lat}&longitude=${lon}` +
+    `&current=temperature_2m,weather_code` +
+    `&hourly=precipitation&forecast_hours=24` +
+    `&daily=temperature_2m_max,temperature_2m_min,weather_code` +
+    `&timezone=Europe%2FBerlin&forecast_days=2`;
+
+  const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+  if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
+
+  const data: any = await res.json();
+
+  const currentTemp = Math.round(data.current?.temperature_2m ?? 0);
+  const currentDesc = wmoToText(data.current?.weather_code ?? 0);
+
+  const d = data.daily;
+  const todayMin  = Math.round(d?.temperature_2m_min?.[0] ?? 0);
+  const todayMax  = Math.round(d?.temperature_2m_max?.[0] ?? 0);
+  const tomorrowMin  = Math.round(d?.temperature_2m_min?.[1] ?? 0);
+  const tomorrowMax  = Math.round(d?.temperature_2m_max?.[1] ?? 0);
+  const tomorrowDesc = wmoToText(d?.weather_code?.[1] ?? 0);
+
+  // Find first hour with precipitation > 0
+  let todayRainHour: number | null = null;
+  const hourlyPrecip: number[] = data.hourly?.precipitation ?? [];
+  const hourlyTimes: string[] = data.hourly?.time ?? [];
+  for (let i = 0; i < hourlyPrecip.length; i++) {
+    if (hourlyPrecip[i] > 0) {
+      const h = new Date(hourlyTimes[i]).getHours();
+      todayRainHour = h;
+      break;
+    }
+  }
+
+  return { currentTemp, currentDesc, todayMin, todayMax, todayRainHour, tomorrowMin, tomorrowMax, tomorrowDesc };
+}
+
 async function fetchWeatherForecast(lat: number, lon: number): Promise<WeatherDay[]> {
   const url =
     `https://api.open-meteo.com/v1/forecast` +
@@ -496,10 +564,18 @@ const SETTINGS_FILE = path.join(
   '.openclaw/workspace/artifacts/personal/health/settings.json'
 );
 
+interface LocationSetting {
+  lat: number;
+  lon: number;
+  label: string;
+  updatedAt?: string; // ISO timestamp
+}
+
 interface Settings {
   briefingTime: string;    // "HH:MM" Europe/Berlin
   telegramChatId?: string; // captured from first incoming message
   healthReportDay?: number; // 0=So, 1=Mo, ..., 6=Sa (default: 1=Mo)
+  location?: LocationSetting;
 }
 
 function loadSettings(): Settings {
@@ -524,7 +600,17 @@ function berlinDate(offsetDays = 0): string {
   }).format(new Date(Date.now() + offsetDays * 86_400_000));
 }
 
-const USER_LOCATION = { lat: 48.8384, lon: 10.0933, label: "Aalen" };
+const DEFAULT_LOCATION: LocationSetting = { lat: 47.9838, lon: 8.8234, label: "Tuttlingen" };
+
+function getLocationSettings(): LocationSetting {
+  try {
+    const s = loadSettings();
+    if (s.location && s.location.lat != null && s.location.lon != null) {
+      return s.location;
+    }
+  } catch {}
+  return DEFAULT_LOCATION;
+}
 
 interface AstroData {
   sunrise: string;   // HH:MM
@@ -534,13 +620,13 @@ interface AstroData {
   illumination: number; // 0-100
 }
 
-function getAstroData(date: Date): AstroData {
+function getAstroData(date: Date, location: LocationSetting = DEFAULT_LOCATION): AstroData {
   const tz = 'Europe/Berlin';
   const fmt = (d: Date) => new Intl.DateTimeFormat('de-DE', {
     timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(d);
 
-  const sun = SunCalc.getTimes(date, USER_LOCATION.lat, USER_LOCATION.lon);
+  const sun = SunCalc.getTimes(date, location.lat, location.lon);
   const moon = SunCalc.getMoonIllumination(date);
   const phase = moon.phase;
 
@@ -2573,12 +2659,27 @@ for (const k of days) {
 
     const parts: string[] = [];
 
-    // ── Header: Datum + Astronomie (immer) ──
-    const astro = getAstroData(now);
-    parts.push(`📅 *${fmtDateFull.format(now)}*`);
-    parts.push('');
+    // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
+    const loc = getLocationSettings();
+    const astro = getAstroData(now, loc);
+    parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
+    parts.push(`📍 ${loc.label}`);
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
     parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
+
+    // ── WETTER (immer) ──
+    try {
+      const w = await fetchWeatherBriefing(loc.lat, loc.lon);
+      parts.push('');
+      parts.push(SEP);
+      parts.push(`🌤️ *WETTER — ${loc.label}*`);
+      parts.push(SEP);
+      parts.push(`- Jetzt:   ${w.currentTemp}°C, ${w.currentDesc}`);
+      let todayLine = `- Heute:   ${w.todayMin}–${w.todayMax}°C`;
+      if (w.todayRainHour !== null) todayLine += `, Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00 🌧️`;
+      parts.push(todayLine);
+      parts.push(`- Morgen:  ${w.tomorrowMin}–${w.tomorrowMax}°C, ${w.tomorrowDesc}`);
+    } catch { /* wetter optional */ }
 
     // ── INBOX ──
     try {
@@ -2602,51 +2703,53 @@ for (const k of days) {
       }
     } catch { /* inbox optional */ }
 
-    // ── HEUTE & MORGEN ──
+    // ── KALENDER (nächste 7 Tage, kompakt) ──
     try {
       ensureM365Configured();
-      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-      const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
-      const tomorrowStart = new Date(todayEnd.getTime() + 1);
-      const tomorrowEnd   = new Date(tomorrowStart); tomorrowEnd.setHours(23, 59, 59, 999);
+      const rangeStart = new Date(now); rangeStart.setHours(0, 0, 0, 0);
+      const rangeEnd = new Date(rangeStart); rangeEnd.setDate(rangeEnd.getDate() + 7); rangeEnd.setHours(23, 59, 59, 999);
 
-      const [todayData, tomorrowData] = await Promise.all([
-        graphGet(tenantId, clientId, m365Secret,
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-          `/calendarView?startDateTime=${encodeURIComponent(todayStart.toISOString())}` +
-          `&endDateTime=${encodeURIComponent(todayEnd.toISOString())}` +
-          `&$select=subject,start,end,location&$orderby=start/dateTime`),
-        graphGet(tenantId, clientId, m365Secret,
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-          `/calendarView?startDateTime=${encodeURIComponent(tomorrowStart.toISOString())}` +
-          `&endDateTime=${encodeURIComponent(tomorrowEnd.toISOString())}` +
-          `&$select=subject,start,end,location&$orderby=start/dateTime`),
-      ]);
-      const todayEvs: any[] = todayData?.value || [];
-      const tomorrowEvs: any[] = tomorrowData?.value || [];
+      const calData = await graphGet(tenantId, clientId, m365Secret,
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+        `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
+        `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
+        `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`);
+      const allEvs: any[] = calData?.value || [];
 
-      if (todayEvs.length > 0 || tomorrowEvs.length > 0) {
-        const fmtEv = (ev: any) => {
-          const s = new Date(ev.start.dateTime);
-          const e = new Date(ev.end.dateTime);
-          const diffH = Math.round((e.getTime() - s.getTime()) / 3600000 * 10) / 10;
-          const dur = diffH >= 1 ? `(${diffH}h)` : `(${Math.round(diffH * 60)}min)`;
-          const loc = ev.location?.displayName ? ` — ${ev.location.displayName}` : '';
-          return `- ${fmtTime.format(s)} ${ev.subject || '(kein Titel)'} ${dur}${loc}`;
-        };
+      if (allEvs.length > 0) {
+        // Group events by day (Berlin time)
+        const fmtDayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+        const fmtWeekday = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'short' });
+        const fmtDayMonth = new Intl.DateTimeFormat('de-DE', { timeZone: tz, day: '2-digit', month: '2-digit' });
+
+        const byDay = new Map<string, any[]>();
+        for (const ev of allEvs) {
+          const evDate = new Date(ev.start.dateTime);
+          const key = fmtDayKey.format(evDate);
+          if (!byDay.has(key)) byDay.set(key, []);
+          byDay.get(key)!.push(ev);
+        }
 
         parts.push('');
         parts.push(SEP);
-        parts.push('📆 *HEUTE & MORGEN*');
+        parts.push('📆 *KALENDER*');
         parts.push(SEP);
-        if (todayEvs.length > 0) {
-          parts.push('Heute:');
-          for (const ev of todayEvs) parts.push(fmtEv(ev));
-        }
-        if (tomorrowEvs.length > 0) {
-          if (todayEvs.length > 0) parts.push('');
-          parts.push('Morgen:');
-          for (const ev of tomorrowEvs) parts.push(fmtEv(ev));
+
+        for (const [dayKey, evs] of byDay) {
+          const dayDate = new Date(dayKey + 'T12:00:00');
+          const wd = fmtWeekday.format(dayDate);
+          const dm = fmtDayMonth.format(dayDate);
+          const dayLabel = `${wd} ${dm}.`;
+
+          for (let i = 0; i < evs.length; i++) {
+            const ev = evs[i];
+            const s = new Date(ev.start.dateTime);
+            const e = new Date(ev.end.dateTime);
+            const diffH = Math.round((e.getTime() - s.getTime()) / 3600000 * 10) / 10;
+            const dur = diffH >= 1 ? `(${diffH}h)` : `(${Math.round(diffH * 60)}min)`;
+            const prefix = i === 0 ? dayLabel : ' '.repeat(dayLabel.length);
+            parts.push(`${prefix}  ${fmtTime.format(s)} ${ev.subject || '(kein Titel)'} ${dur}`);
+          }
         }
       }
     } catch { /* calendar optional */ }
@@ -3360,6 +3463,50 @@ for (const k of days) {
       }
     } catch {}
   }, { name: 'capture-telegram-chat-id' });
+
+  // ── Standort via Telegram Location Message speichern ──────────────────────
+
+  api.registerHook('message_received', async (event: any) => {
+    try {
+      const loc = event?.location || event?.raw?.message?.location;
+      if (!loc || loc.latitude == null || loc.longitude == null) return;
+
+      const lat = Number(loc.latitude);
+      const lon = Number(loc.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      // Reverse-geocoding via Nominatim
+      let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      try {
+        const geoRes = await fetchWithTimeout(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
+          { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
+          10000,
+        );
+        if (geoRes.ok) {
+          const geo: any = await geoRes.json();
+          label = geo?.address?.city
+            || geo?.address?.town
+            || geo?.address?.village
+            || geo?.address?.municipality
+            || geo?.display_name?.split(',')[0]
+            || label;
+        }
+      } catch { /* geocoding optional, keep coordinate label */ }
+
+      const s = loadSettings();
+      s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
+      saveSettings(s);
+      api.logger.info(`[executive-agent] Standort gespeichert: ${label} (${lat}, ${lon})`);
+
+      const chatId = s.telegramChatId;
+      if (chatId) {
+        sendTelegram(chatId, `📍 Standort gespeichert: ${label}`).catch(() => {});
+      }
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] Location-Handler Fehler: ${e?.message}`);
+    }
+  }, { name: 'capture-telegram-location' });
 
   // ── SharePoint-Polling (alle 30 Minuten) ────────────────────────────────────
 
