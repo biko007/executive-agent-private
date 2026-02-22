@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import SunCalc from "suncalc";
 import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts, hasEntryForDate } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
@@ -370,6 +371,57 @@ function berlinDate(offsetDays = 0) {
         timeZone: 'Europe/Berlin',
         year: 'numeric', month: '2-digit', day: '2-digit',
     }).format(new Date(Date.now() + offsetDays * 86_400_000));
+}
+const USER_LOCATION = { lat: 48.8384, lon: 10.0933, label: "Aalen" };
+function getAstroData(date) {
+    const tz = 'Europe/Berlin';
+    const fmt = (d) => new Intl.DateTimeFormat('de-DE', {
+        timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(d);
+    const sun = SunCalc.getTimes(date, USER_LOCATION.lat, USER_LOCATION.lon);
+    const moon = SunCalc.getMoonIllumination(date);
+    const phase = moon.phase;
+    let moonIcon;
+    let moonPhase;
+    if (phase < 0.03 || phase >= 0.97) {
+        moonIcon = '🌑';
+        moonPhase = 'Neumond';
+    }
+    else if (phase < 0.22) {
+        moonIcon = '🌒';
+        moonPhase = 'Zunehmende Sichel';
+    }
+    else if (phase < 0.28) {
+        moonIcon = '🌓';
+        moonPhase = 'Erstes Viertel';
+    }
+    else if (phase < 0.47) {
+        moonIcon = '🌔';
+        moonPhase = 'Zunehmender Mond';
+    }
+    else if (phase < 0.53) {
+        moonIcon = '🌕';
+        moonPhase = 'Vollmond';
+    }
+    else if (phase < 0.72) {
+        moonIcon = '🌖';
+        moonPhase = 'Abnehmender Mond';
+    }
+    else if (phase < 0.78) {
+        moonIcon = '🌗';
+        moonPhase = 'Letztes Viertel';
+    }
+    else {
+        moonIcon = '🌘';
+        moonPhase = 'Abnehmende Sichel';
+    }
+    return {
+        sunrise: fmt(sun.sunrise),
+        sunset: fmt(sun.sunset),
+        moonIcon,
+        moonPhase,
+        illumination: Math.round(moon.fraction * 100),
+    };
 }
 /* ---------------- Plugin ---------------- */
 export default function (api) {
@@ -2222,78 +2274,119 @@ export default function (api) {
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
-        const fmtDT = new Intl.DateTimeFormat('de-DE', { timeZone: tz, dateStyle: 'full', timeStyle: 'short' });
+        const SEP = '━━━━━━━━━━━━━━━━━━━━';
         const fmtTime = new Intl.DateTimeFormat('de-DE', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
-        const parts = [`🧠 Briefing — ${fmtDT.format(now)}\n`];
-        // ── (1) Wetter Tuttlingen ──
-        try {
-            const wRes = await fetchWithTimeout('https://api.open-meteo.com/v1/forecast' +
-                '?latitude=48.0641&longitude=8.8236' +
-                '&current=temperature_2m,apparent_temperature,precipitation,weathercode,windspeed_10m' +
-                '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
-                '&timezone=Europe%2FBerlin&forecast_days=3', { method: 'GET' }, 10000);
-            const wd = await wRes.json();
-            const c = wd.current;
-            const d = wd.daily;
-            const wcode = {
-                0: '☀️', 1: '🌤', 2: '⛅', 3: '☁️', 45: '🌫', 48: '🌫',
-                51: '🌦', 53: '🌦', 55: '🌧', 61: '🌧', 63: '🌧', 65: '🌧',
-                71: '🌨', 73: '🌨', 75: '❄️', 80: '🌦', 81: '🌧', 82: '⛈',
-                95: '⛈', 96: '⛈', 99: '⛈',
-            };
-            const icon = wcode[c.weathercode] ?? '🌡';
-            parts.push(`${icon} Wetter Tuttlingen: ${c.temperature_2m}°C (gefühlt ${c.apparent_temperature}°C), ` +
-                `💨 ${c.windspeed_10m} km/h, 🌧 ${c.precipitation} mm\n` +
-                `   Mo: ${d.temperature_2m_min[0]}–${d.temperature_2m_max[0]}°C ` +
-                `Di: ${d.temperature_2m_min[1]}–${d.temperature_2m_max[1]}°C ` +
-                `Mi: ${d.temperature_2m_min[2]}–${d.temperature_2m_max[2]}°C`);
-        }
-        catch {
-            parts.push('🌡 Wetter: nicht verfügbar');
-        }
+        const fmtDateFull = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        const parts = [];
+        // ── Header: Datum + Astronomie (immer) ──
+        const astro = getAstroData(now);
+        parts.push(`📅 *${fmtDateFull.format(now)}*`);
         parts.push('');
-        // ── (2) Kalender heute ──
+        parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
+        parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
+        // ── INBOX ──
+        try {
+            const perSource = 10;
+            const [mMsgs, yMsgs] = await Promise.all([
+                m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
+                yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
+            ]);
+            const m365Count = mMsgs.length;
+            const yahooCount = yMsgs.length;
+            if (m365Count > 0 || yahooCount > 0) {
+                const combined = [...mMsgs, ...yMsgs].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1));
+                const newest = combined[0];
+                parts.push('');
+                parts.push(SEP);
+                parts.push('📬 *INBOX*');
+                parts.push(SEP);
+                if (m365Count > 0)
+                    parts.push(`- ${m365Count} ungelesene M365-Mail${m365Count > 1 ? 's' : ''}`);
+                if (yahooCount > 0)
+                    parts.push(`- ${yahooCount} ungelesene Yahoo-Mail${yahooCount > 1 ? 's' : ''}`);
+                if (newest)
+                    parts.push(`  → Neueste: "${newest.subject}" — ${newest.from}`);
+            }
+        }
+        catch { /* inbox optional */ }
+        // ── HEUTE & MORGEN ──
         try {
             ensureM365Configured();
-            const dayStart = new Date(now);
-            dayStart.setHours(0, 0, 0, 0);
-            const dayEnd = new Date(now);
-            dayEnd.setHours(23, 59, 59, 999);
-            const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-                `/calendarView?startDateTime=${encodeURIComponent(dayStart.toISOString())}` +
-                `&endDateTime=${encodeURIComponent(dayEnd.toISOString())}` +
-                `&$select=subject,start,end,location&$orderby=start/dateTime`;
-            const evData = await graphGet(tenantId, clientId, m365Secret, url);
-            const evs = evData?.value || [];
-            parts.push(`📅 Kalender heute (${evs.length} Termine)`);
-            if (!evs.length) {
-                parts.push('   • keine Termine');
-            }
-            else {
-                for (const ev of evs) {
+            const todayStart = new Date(now);
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date(now);
+            todayEnd.setHours(23, 59, 59, 999);
+            const tomorrowStart = new Date(todayEnd.getTime() + 1);
+            const tomorrowEnd = new Date(tomorrowStart);
+            tomorrowEnd.setHours(23, 59, 59, 999);
+            const [todayData, tomorrowData] = await Promise.all([
+                graphGet(tenantId, clientId, m365Secret, `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+                    `/calendarView?startDateTime=${encodeURIComponent(todayStart.toISOString())}` +
+                    `&endDateTime=${encodeURIComponent(todayEnd.toISOString())}` +
+                    `&$select=subject,start,end,location&$orderby=start/dateTime`),
+                graphGet(tenantId, clientId, m365Secret, `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+                    `/calendarView?startDateTime=${encodeURIComponent(tomorrowStart.toISOString())}` +
+                    `&endDateTime=${encodeURIComponent(tomorrowEnd.toISOString())}` +
+                    `&$select=subject,start,end,location&$orderby=start/dateTime`),
+            ]);
+            const todayEvs = todayData?.value || [];
+            const tomorrowEvs = tomorrowData?.value || [];
+            if (todayEvs.length > 0 || tomorrowEvs.length > 0) {
+                const fmtEv = (ev) => {
                     const s = new Date(ev.start.dateTime);
                     const e = new Date(ev.end.dateTime);
-                    const loc = ev.location?.displayName ? ` | ${ev.location.displayName}` : '';
-                    parts.push(`   • ${fmtTime.format(s)}–${fmtTime.format(e)} — ${ev.subject || '(kein Titel)'}${loc}`);
+                    const diffH = Math.round((e.getTime() - s.getTime()) / 3600000 * 10) / 10;
+                    const dur = diffH >= 1 ? `(${diffH}h)` : `(${Math.round(diffH * 60)}min)`;
+                    const loc = ev.location?.displayName ? ` — ${ev.location.displayName}` : '';
+                    return `- ${fmtTime.format(s)} ${ev.subject || '(kein Titel)'} ${dur}${loc}`;
+                };
+                parts.push('');
+                parts.push(SEP);
+                parts.push('📆 *HEUTE & MORGEN*');
+                parts.push(SEP);
+                if (todayEvs.length > 0) {
+                    parts.push('Heute:');
+                    for (const ev of todayEvs)
+                        parts.push(fmtEv(ev));
+                }
+                if (tomorrowEvs.length > 0) {
+                    if (todayEvs.length > 0)
+                        parts.push('');
+                    parts.push('Morgen:');
+                    for (const ev of tomorrowEvs)
+                        parts.push(fmtEv(ev));
                 }
             }
         }
-        catch {
-            parts.push('📅 Kalender: nicht verfügbar');
+        catch { /* calendar optional */ }
+        // ── DRAFTS ──
+        try {
+            const ds = listDrafts('draft', 5);
+            if (ds.length > 0) {
+                parts.push('');
+                parts.push(SEP);
+                parts.push('✏️ *DRAFTS*');
+                parts.push(SEP);
+                parts.push(`- ${ds.length} Entwürf${ds.length > 1 ? 'e' : ''} offen`);
+                for (let i = 0; i < ds.length; i++) {
+                    const to = ds[i].to?.join(', ') || '?';
+                    parts.push(`  → #${i + 1}: "${ds[i].subject}" an ${to}`);
+                }
+            }
         }
-        parts.push('');
-        // ── (3) Gesundheit mit Trends ──
+        catch { /* drafts optional */ }
+        // ── HEALTH ──
         {
             const healthLines = [];
             const wt7 = getWeightTrend(7);
             const lastWeight = lastEntry('weight');
             if (lastWeight && wt7) {
-                const arrow = wt7.direction === 'up' ? '📈' : wt7.direction === 'down' ? '📉' : '➡️';
+                const arrow = wt7.direction === 'up' ? '↗' : wt7.direction === 'down' ? '↘' : '→';
                 const sign = wt7.change > 0 ? '+' : '';
-                healthLines.push(`   📊 Gewicht: ${wt7.current} kg (${arrow} ${sign}${wt7.change} kg / 7 Tage)`);
+                healthLines.push(`- Gewicht:  ${wt7.current} kg  (Trend: ${arrow} ${sign}${wt7.change} kg/Woche)`);
             }
             else if (lastWeight) {
-                healthLines.push(`   📊 Gewicht: ${lastWeight.value?.toFixed(1)} kg`);
+                healthLines.push(`- Gewicht:  ${lastWeight.value?.toFixed(1)} kg`);
             }
             // Last night sleep (dedup by day, pick longest)
             const sleepEntries = readEntries().filter(e => e.type === 'sleep');
@@ -2306,57 +2399,63 @@ export default function (api) {
                 if (!prev || (Number(s.value || 0) > Number(prev.value || 0)))
                     sleepByDay.set(day, s);
             }
-            const lastSleep = Array.from(sleepByDay.values())
-                .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
-                .pop() || null;
+            // 7-day average
+            const sleepDays = Array.from(sleepByDay.values())
+                .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+            const lastSleep = sleepDays.length ? sleepDays[sleepDays.length - 1] : null;
             if (lastSleep) {
-                healthLines.push(`   😴 Schlaf letzte Nacht: ${lastSleep.value?.toFixed(1)}h`);
+                const val = Number(lastSleep.value || 0);
+                const hours = Math.floor(val);
+                const mins = Math.round((val - hours) * 60);
+                let sleepLine = `- Schlaf:   ${hours}h ${String(mins).padStart(2, '0')}min`;
+                const last7 = sleepDays.slice(-7);
+                if (last7.length >= 2) {
+                    const avg = last7.reduce((sum, e) => sum + Number(e.value || 0), 0) / last7.length;
+                    const avgH = Math.floor(avg);
+                    const avgM = Math.round((avg - avgH) * 60);
+                    sleepLine += `  (Ø 7 Tage: ${avgH}h ${String(avgM).padStart(2, '0')}min)`;
+                }
+                healthLines.push(sleepLine);
             }
             // Alerts
             const alerts = checkHealthAlerts();
-            const alertIcons = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
-            for (const a of alerts) {
-                healthLines.push(`   ${alertIcons[a.severity] || '•'} ${a.message}`);
+            const activeAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'warning');
+            if (activeAlerts.length > 0) {
+                const alertIcons = { critical: '🔴', warning: '⚠️' };
+                healthLines.push(`- Alerts:   ${activeAlerts.length > 1 ? `${activeAlerts.length} aktiv` : '⚠️ 1 aktiv'} → "${activeAlerts[0].message}"`);
             }
-            if (healthLines.length) {
-                parts.push('🏥 Health:');
+            if (healthLines.length > 0) {
+                parts.push('');
+                parts.push(SEP);
+                parts.push('❤️ *HEALTH*');
+                parts.push(SEP);
                 parts.push(...healthLines);
-                parts.push('');
             }
         }
-        // ── (4) Offene Drafts ──
+        // ── FUHRPARK — FRISTEN (nur wenn innerhalb 60 Tage) ──
         try {
-            const ds = listDrafts('draft', 5);
-            parts.push(`📝 Drafts (${ds.length} offen)`);
-            if (!ds.length)
-                parts.push('   • keine offenen Drafts');
-            else
-                for (const d of ds)
-                    parts.push(`   • ${d.id} [${d.account}] — ${d.subject}`);
-        }
-        catch {
-            parts.push('📝 Drafts: nicht verfügbar');
-        }
-        // ── (5) Fuhrpark-Fristen ──
-        try {
-            const deadlines = checkDeadlines();
-            if (deadlines.length) {
+            const deadlines = checkDeadlines().filter((w) => w.severity === 'overdue' || w.daysLeft <= 60);
+            if (deadlines.length > 0) {
                 parts.push('');
-                parts.push('🚗 Fuhrpark-Fristen:');
+                parts.push(SEP);
+                parts.push('🚗 *FUHRPARK — FRISTEN*');
+                parts.push(SEP);
                 for (const w of deadlines) {
-                    const icon = w.vehicleType === 'car' ? '🚗' : '🚲';
+                    const icon = w.vehicleType === 'car' ? '🚗' : '🏍';
                     const label = w.field === 'tuev' ? 'TÜV' : 'Versicherung';
                     if (w.severity === 'overdue') {
-                        parts.push(`🔴 ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen`);
-                    }
-                    else if (w.severity === 'warning') {
-                        const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
-                        parts.push(`⚠️ ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE})`);
+                        parts.push(`- ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
                     }
                     else {
                         const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
-                        parts.push(`ℹ️ ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE})`);
+                        parts.push(`- ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE}) ⚠️`);
                     }
+                }
+                // Add "Alle anderen: kein Handlungsbedarf" if there are vehicles without deadlines
+                const allVehicles = getAllVehicles();
+                const vehiclesWithDeadlines = new Set(deadlines.map((d) => d.vehicleName));
+                if (allVehicles.length > deadlines.length) {
+                    parts.push('- Alle anderen: kein Handlungsbedarf');
                 }
             }
         }

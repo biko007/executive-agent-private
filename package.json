@@ -5,11 +5,13 @@
   "dependencies": {
     "dotenv": "^17.3.1",
     "imapflow": "^1.0.0",
-    "nodemailer": "^8.0.1"
+    "nodemailer": "^8.0.1",
+    "suncalc": "^1.9.0"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
     "@types/nodemailer": "^7.0.10",
+    "@types/suncalc": "^1.9.2",
     "typescript": "^5.9.3"
   },
   "scripts": {
