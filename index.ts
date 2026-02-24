@@ -47,6 +47,41 @@ type UnifiedMsg = {
   subject: string;
 };
 
+/* ---------------- Mail-Parsing: Buchungserkennung ---------------- */
+
+type BookingType = 'FLIGHT' | 'HOTEL' | 'TRAIN' | 'CAR' | 'EVENT';
+
+interface ParsedBooking {
+  type: BookingType;
+  title: string;
+  destination: string;
+  startDate: string;       // ISO8601
+  endDate: string | null;
+  confirmationNumber: string | null;
+  provider: string;
+}
+
+interface ProcessedMails {
+  version: 1;
+  ids: string[];  // "m365::<msgId>" or "yahoo::<uid>"
+}
+
+const BOOKING_TO_SEGMENT: Record<BookingType, 'flight' | 'hotel' | 'activity' | 'transfer'> = {
+  FLIGHT: 'flight',
+  HOTEL: 'hotel',
+  TRAIN: 'transfer',
+  CAR: 'transfer',
+  EVENT: 'activity',
+};
+
+const BOOKING_EMOJI: Record<BookingType, string> = {
+  FLIGHT: '✈️',
+  HOTEL: '🏨',
+  TRAIN: '🚆',
+  CAR: '🚗',
+  EVENT: '🎫',
+};
+
 function nowIso() { return new Date().toISOString(); }
 function makeId(prefix: string) { return `${prefix}_${crypto.randomBytes(6).toString("hex")}`; }
 
@@ -742,6 +777,79 @@ export default function (api: any) {
     }
   }
 
+  /**
+   * Send Telegram message with inline keyboard buttons.
+   */
+  async function sendTelegramWithKeyboard(
+    chatId: string,
+    text: string,
+    keyboard: { text: string; callback_data: string }[][],
+  ): Promise<boolean> {
+    if (!telegramBotToken) {
+      api.logger.error('[executive-agent] No bot token for keyboard message');
+      return false;
+    }
+    try {
+      const res = await fetchWithTimeout(
+        `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard },
+          }),
+        },
+        15000,
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        api.logger.error(`[executive-agent] keyboard-send HTTP ${res.status}: ${body}`);
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      api.logger.error(`[executive-agent] keyboard-send failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+    if (!telegramBotToken) return;
+    try {
+      await fetchWithTimeout(
+        `https://api.telegram.org/bot${telegramBotToken}/answerCallbackQuery`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            callback_query_id: callbackQueryId,
+            text: text || '',
+          }),
+        },
+        10000,
+      );
+    } catch {}
+  }
+
+  /* --- Pending-Booking State --- */
+
+  const pendingBookings = new Map<string, {
+    booking: ParsedBooking;
+    source: Account;
+    mailId: string;
+    expiresAt: number;
+  }>();
+
+  // Pending trip-selection state (user picked "Zu bestehender Reise")
+  const pendingTripSelections = new Map<string, {
+    bookingKey: string;
+    trips: { id: string; name: string }[];
+    expiresAt: number;
+  }>();
+
   const draftPath = (id: string) => path.join(draftsDir, `${id}.json`);
   function saveDraft(d: MailDraft) { fs.writeFileSync(draftPath(d.id), JSON.stringify(d, null, 2), "utf-8"); }
   function loadDraft(id: string): MailDraft | null {
@@ -780,6 +888,40 @@ export default function (api: any) {
     if (!yahooEnabled) throw new Error("yahoo_disabled");
     if (!yahooUser || !yahooImapHost || !yahooSmtpHost) throw new Error("yahoo_not_configured");
     if (!yahooPass) throw new Error("yahoo_secret_missing (YAHOO_APP_PASSWORD)");
+  }
+
+  /* ---------------- Processed-Mail Store (Duplikat-Tracking) ---------------- */
+
+  const processedMailPath = path.join(workspace, 'artifacts', 'personal', 'mail-parsing', 'processed.json');
+
+  function loadProcessed(): ProcessedMails {
+    try {
+      if (fs.existsSync(processedMailPath)) {
+        return JSON.parse(fs.readFileSync(processedMailPath, 'utf-8'));
+      }
+    } catch {}
+    return { version: 1, ids: [] };
+  }
+
+  function saveProcessed(p: ProcessedMails): void {
+    fs.mkdirSync(path.dirname(processedMailPath), { recursive: true });
+    fs.writeFileSync(processedMailPath, JSON.stringify(p, null, 2), 'utf-8');
+  }
+
+  function isProcessed(source: Account, id: string): boolean {
+    const key = `${source}::${id}`;
+    return loadProcessed().ids.includes(key);
+  }
+
+  function markProcessed(source: Account, id: string): void {
+    const p = loadProcessed();
+    const key = `${source}::${id}`;
+    if (!p.ids.includes(key)) {
+      p.ids.push(key);
+      // Keep last 2000 entries to avoid unbounded growth
+      if (p.ids.length > 2000) p.ids = p.ids.slice(-2000);
+      saveProcessed(p);
+    }
   }
 
   /* ---------------- Unified: unread fetchers ---------------- */
@@ -904,6 +1046,181 @@ export default function (api: any) {
 
     await client.logout();
     return out;
+  }
+
+  /* ---------------- Mail Body Fetchers (für Buchungserkennung) ---------------- */
+
+  function stripHtml(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?(p|div|tr|li|h[1-6])[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  async function m365FetchBody(messageId: string): Promise<string> {
+    ensureM365Configured();
+    const url =
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+      `/messages/${encodeURIComponent(messageId)}?$select=body,subject,from`;
+
+    const data = await graphGet(tenantId, clientId, m365Secret, url);
+    const bodyContent: string = data?.body?.content || '';
+    const contentType: string = data?.body?.contentType || 'html';
+
+    if (contentType.toLowerCase() === 'text') return bodyContent;
+    return stripHtml(bodyContent);
+  }
+
+  async function yahooFetchBody(uid: string): Promise<string> {
+    ensureYahooConfigured();
+
+    const client = new ImapFlow({
+      host: yahooImapHost,
+      port: yahooImapPort,
+      secure: true,
+      auth: { user: yahooUser, pass: yahooPass },
+    });
+
+    try {
+      await client.connect();
+      await client.mailboxOpen('INBOX');
+
+      const msg: any = await client.fetchOne(uid, { source: true });
+      if (!msg || !msg.source) return '';
+
+      // source is a Buffer containing the raw RFC822 message
+      const raw = msg.source.toString('utf-8');
+
+      // Simple extraction: find the text/plain part or strip HTML from body
+      // Look for the body after headers (double CRLF)
+      const headerEnd = raw.indexOf('\r\n\r\n');
+      if (headerEnd === -1) return raw.slice(0, 2000);
+
+      const body = raw.slice(headerEnd + 4);
+
+      // Check if it looks like HTML
+      if (body.includes('<html') || body.includes('<HTML') || body.includes('<body')) {
+        return stripHtml(body).slice(0, 5000);
+      }
+
+      // For multipart messages, try to extract text/plain part
+      const contentTypeMatch = raw.match(/Content-Type:\s*multipart\/[^;]+;\s*boundary="?([^"\r\n]+)"?/i);
+      if (contentTypeMatch) {
+        const boundary = contentTypeMatch[1];
+        const parts = body.split(`--${boundary}`);
+        for (const part of parts) {
+          if (part.match(/Content-Type:\s*text\/plain/i)) {
+            const partBody = part.indexOf('\r\n\r\n');
+            if (partBody !== -1) return part.slice(partBody + 4).replace(/--\s*$/, '').trim().slice(0, 5000);
+          }
+        }
+        // Fallback: look for text/html part and strip
+        for (const part of parts) {
+          if (part.match(/Content-Type:\s*text\/html/i)) {
+            const partBody = part.indexOf('\r\n\r\n');
+            if (partBody !== -1) return stripHtml(part.slice(partBody + 4)).slice(0, 5000);
+          }
+        }
+      }
+
+      return body.slice(0, 5000);
+    } catch (e: any) {
+      api.logger.warn(`[executive-agent] yahooFetchBody(${uid}) Fehler: ${e.message}`);
+      return '';
+    } finally {
+      try { await client.logout(); } catch {}
+    }
+  }
+
+  /* ---------------- Haiku: Buchungsanalyse ---------------- */
+
+  async function analyzeMailForBooking(subject: string, from: string, bodyText: string): Promise<ParsedBooking | null> {
+    const apiKey = readAnthropicKey();
+    if (!apiKey) return null;
+
+    const prompt =
+      `Analysiere die folgende E-Mail. Handelt es sich um eine Reise-Buchungsbestätigung ` +
+      `(Flug, Hotel, Bahn, Mietwagen, Event/Veranstaltung)?\n\n` +
+      `Falls JA, antworte NUR mit einem JSON-Objekt:\n` +
+      `{\n` +
+      `  "type": "FLIGHT" | "HOTEL" | "TRAIN" | "CAR" | "EVENT",\n` +
+      `  "title": "<Kurzbezeichnung, z.B. 'LH1234 München → Frankfurt'>",\n` +
+      `  "destination": "<Zielort>",\n` +
+      `  "startDate": "<ISO8601 Datum/Zeit>",\n` +
+      `  "endDate": "<ISO8601 Datum/Zeit oder null>",\n` +
+      `  "confirmationNumber": "<Buchungsnummer oder null>",\n` +
+      `  "provider": "<Anbieter, z.B. Lufthansa, Booking.com>"\n` +
+      `}\n\n` +
+      `Falls NEIN (Newsletter, Werbung, normale Korrespondenz), antworte NUR mit: null\n\n` +
+      `--- E-Mail ---\n` +
+      `Von: ${from}\n` +
+      `Betreff: ${subject}\n\n` +
+      `${bodyText.slice(0, 3000)}\n` +
+      `--- Ende ---`;
+
+    try {
+      const res = await fetchWithTimeout(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 512,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        },
+        30000,
+      );
+
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        api.logger.warn(`[executive-agent] Haiku booking-analysis HTTP ${res.status}: ${err.slice(0, 200)}`);
+        return null;
+      }
+
+      const data: any = await res.json();
+      const content: string = data?.content?.[0]?.text || '';
+
+      // "null" response means no booking
+      if (content.trim() === 'null' || content.trim() === '`null`') return null;
+
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return null;
+
+      const parsed: any = JSON.parse(jsonMatch[0]);
+
+      const validTypes: BookingType[] = ['FLIGHT', 'HOTEL', 'TRAIN', 'CAR', 'EVENT'];
+      const type = validTypes.includes(parsed.type) ? parsed.type as BookingType : null;
+      if (!type) return null;
+
+      return {
+        type,
+        title: String(parsed.title || subject),
+        destination: String(parsed.destination || ''),
+        startDate: String(parsed.startDate || ''),
+        endDate: parsed.endDate ? String(parsed.endDate) : null,
+        confirmationNumber: parsed.confirmationNumber ? String(parsed.confirmationNumber) : null,
+        provider: String(parsed.provider || ''),
+      };
+    } catch (e: any) {
+      api.logger.warn(`[executive-agent] analyzeMailForBooking Fehler: ${e.message}`);
+      return null;
+    }
   }
 
   /* ---------------- SMTP (Yahoo) ---------------- */
@@ -3309,6 +3626,158 @@ for (const k of days) {
     },
   });
 
+  // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
+
+  function formatBookingMessage(booking: ParsedBooking): string {
+    const emoji = BOOKING_EMOJI[booking.type] || '📧';
+    const lines = [`${emoji} *Buchungsbestätigung erkannt*`];
+    lines.push(`${booking.provider} — ${booking.title}`);
+
+    if (booking.startDate) {
+      try {
+        const start = new Date(booking.startDate);
+        const fmtDate = new Intl.DateTimeFormat('de-DE', {
+          weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
+        }).format(start);
+        let dateLine = fmtDate;
+        if (booking.endDate) {
+          const end = new Date(booking.endDate);
+          const fmtEnd = new Intl.DateTimeFormat('de-DE', {
+            hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
+          }).format(end);
+          dateLine += ` → ${fmtEnd}`;
+        }
+        lines.push(dateLine);
+      } catch {
+        lines.push(booking.startDate);
+      }
+    }
+
+    if (booking.destination) lines.push(`Ziel: ${booking.destination}`);
+    if (booking.confirmationNumber) lines.push(`Bestätigung: ${booking.confirmationNumber}`);
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Scans unread mails for booking confirmations.
+   * Returns number of bookings found.
+   */
+  async function scanMailsForBookings(reportChatId?: string): Promise<{ scanned: number; found: number; details: string[] }> {
+    const details: string[] = [];
+    let scanned = 0;
+    let found = 0;
+
+    // Collect unread mails from enabled accounts
+    const allMails: UnifiedMsg[] = [];
+
+    if (m365Enabled) {
+      try {
+        const msgs = await m365Unread(20);
+        allMails.push(...msgs);
+      } catch (e: any) {
+        api.logger.warn(`[executive-agent] mail-scanner m365 Fehler: ${e.message}`);
+      }
+    }
+
+    if (yahooEnabled) {
+      try {
+        const msgs = await yahooUnread(20);
+        allMails.push(...msgs);
+      } catch (e: any) {
+        api.logger.warn(`[executive-agent] mail-scanner yahoo Fehler: ${e.message}`);
+      }
+    }
+
+    for (const mail of allMails) {
+      if (isProcessed(mail.source, mail.id)) continue;
+
+      scanned++;
+
+      try {
+        // Fetch body
+        let bodyText = '';
+        if (mail.source === 'm365') {
+          bodyText = await m365FetchBody(mail.id);
+        } else {
+          bodyText = await yahooFetchBody(mail.id);
+        }
+
+        // Analyze with Haiku
+        const booking = await analyzeMailForBooking(mail.subject, mail.from, bodyText);
+
+        // Mark as processed regardless of result
+        markProcessed(mail.source, mail.id);
+
+        if (booking) {
+          found++;
+          const msg = formatBookingMessage(booking);
+          details.push(msg);
+
+          // Send Telegram notification with inline keyboard
+          if (reportChatId) {
+            const bookingKey = `booking_${crypto.randomBytes(6).toString('hex')}`;
+            pendingBookings.set(bookingKey, {
+              booking,
+              source: mail.source,
+              mailId: mail.id,
+              expiresAt: Date.now() + 30 * 60_000, // 30 min expiry
+            });
+
+            const keyboard = [
+              [
+                { text: '🆕 Neue Reise', callback_data: `${bookingKey}::new` },
+                { text: '📋 Zu bestehender Reise', callback_data: `${bookingKey}::existing` },
+              ],
+              [
+                { text: '❌ Ignorieren', callback_data: `${bookingKey}::ignore` },
+              ],
+            ];
+
+            await sendTelegramWithKeyboard(
+              reportChatId,
+              `${msg}\n\nZu Reise hinzufügen?`,
+              keyboard,
+            );
+          }
+        }
+      } catch (e: any) {
+        api.logger.warn(`[executive-agent] mail-scanner Fehler bei ${mail.source}:${mail.id}: ${e.message}`);
+        // Mark as processed to avoid retrying broken mails forever
+        markProcessed(mail.source, mail.id);
+      }
+    }
+
+    return { scanned, found, details };
+  }
+
+  api.registerCommand({
+    name: 'scanmail',
+    description: 'Manueller Mail-Scan auf Buchungsbestätigungen',
+    handler: async (ctx: any) => {
+      if (!m365Enabled && !yahooEnabled) {
+        return { text: '❌ Kein Mail-Account aktiviert (m365/yahoo).' };
+      }
+
+      const chatId = String(ctx?.chatId || ctx?.threadId || ctx?.conversationId || ctx?.senderId || '');
+
+      try {
+        const { scanned, found, details } = await scanMailsForBookings(chatId);
+
+        if (found === 0) {
+          return { text: `✅ ${scanned} neue Mails gescannt — keine Buchungen erkannt.` };
+        }
+
+        // When chatId is available, notifications are sent via keyboard messages.
+        // Return summary only.
+        return { text: `📬 ${scanned} Mails gescannt, ${found} Buchung(en) erkannt.` };
+      } catch (e: any) {
+        return { text: `❌ Mail-Scan Fehler: ${e.message}` };
+      }
+    },
+  });
+
   // ── Dokumenten-Verknüpfung (Link-Store) ──────────────────────────────────
 
   // Pending SP link selection state (per chat)
@@ -3508,6 +3977,216 @@ for (const k of days) {
     }
   }, { name: 'capture-telegram-location' });
 
+  // ── Booking Callback Handler (Telegram Inline Buttons) ─────────────────────
+
+  function addBookingAsSegment(tripId: string, booking: ParsedBooking): string | null {
+    const segmentType = BOOKING_TO_SEGMENT[booking.type];
+    const seg = addSegment(tripId, {
+      type: segmentType,
+      datetime_local: booking.startDate,
+      datetime_utc: booking.startDate, // best effort; mail data usually has local time
+      timezone: 'Europe/Berlin',
+      title: booking.title,
+      confirmation: booking.confirmationNumber || undefined,
+      notes: `Provider: ${booking.provider}${booking.destination ? ' | Ziel: ' + booking.destination : ''}`,
+    });
+    return seg ? seg.segments[seg.segments.length - 1].id : null;
+  }
+
+  async function handleBookingCallback(
+    callbackQueryId: string,
+    chatId: string,
+    data: string,
+  ): Promise<void> {
+    // data format: "booking_<hex>::<action>"
+    const sepIdx = data.indexOf('::');
+    if (sepIdx === -1) return;
+
+    const bookingKey = data.slice(0, sepIdx);
+    const action = data.slice(sepIdx + 2);
+
+    const pending = pendingBookings.get(bookingKey);
+    if (!pending || Date.now() > pending.expiresAt) {
+      pendingBookings.delete(bookingKey);
+      await answerCallbackQuery(callbackQueryId, 'Buchung abgelaufen.');
+      return;
+    }
+
+    const { booking } = pending;
+    const emoji = BOOKING_EMOJI[booking.type] || '📧';
+
+    if (action === 'ignore') {
+      pendingBookings.delete(bookingKey);
+      await answerCallbackQuery(callbackQueryId, 'Ignoriert');
+      await sendTelegram(chatId, `${emoji} ${booking.title} — ignoriert.`);
+      return;
+    }
+
+    if (action === 'new') {
+      pendingBookings.delete(bookingKey);
+      await answerCallbackQuery(callbackQueryId, 'Neue Reise wird erstellt...');
+
+      try {
+        const tripName = booking.destination || booking.title;
+        const startDate = booking.startDate.slice(0, 10); // YYYY-MM-DD
+        const endDate = booking.endDate ? booking.endDate.slice(0, 10) : startDate;
+        const trip = createTrip(tripName, startDate, endDate, booking.destination);
+        addBookingAsSegment(trip.id, booking);
+        await sendTelegram(chatId,
+          `✅ Reise *${trip.name}* erstellt (${trip.id})\n${emoji} ${booking.title} als Segment hinzugefügt.`
+        );
+      } catch (e: any) {
+        await sendTelegram(chatId, `❌ Fehler beim Erstellen der Reise: ${e.message}`);
+      }
+      return;
+    }
+
+    if (action === 'existing') {
+      await answerCallbackQuery(callbackQueryId, 'Reisen werden geladen...');
+
+      const trips = listTrips();
+      if (!trips.length) {
+        pendingBookings.delete(bookingKey);
+        await sendTelegram(chatId, '❌ Keine bestehenden Reisen gefunden. Nutze "Neue Reise" stattdessen.');
+        return;
+      }
+
+      // Store pending selection and present numbered list
+      pendingTripSelections.set(chatId, {
+        bookingKey,
+        trips: trips.map(t => ({ id: t.id, name: t.name })),
+        expiresAt: Date.now() + 5 * 60_000,
+      });
+
+      const lines = trips.map((t, i) => `${i + 1}) ${t.name} (${t.start_date} — ${t.end_date})`);
+      await sendTelegram(chatId,
+        `📋 Bestehende Reisen:\n\n${lines.join('\n')}\n\nAntwort mit Nummer zum Zuordnen:`
+      );
+      return;
+    }
+
+    // Handle trip selection by number (from callback with trip index)
+    if (action.startsWith('trip_')) {
+      const tripIdx = parseInt(action.slice(5), 10);
+      const trips = listTrips();
+      if (isNaN(tripIdx) || tripIdx < 0 || tripIdx >= trips.length) {
+        await answerCallbackQuery(callbackQueryId, 'Ungültige Auswahl');
+        return;
+      }
+
+      pendingBookings.delete(bookingKey);
+      await answerCallbackQuery(callbackQueryId, 'Wird hinzugefügt...');
+
+      const trip = trips[tripIdx];
+      addBookingAsSegment(trip.id, booking);
+      await sendTelegram(chatId,
+        `✅ ${emoji} ${booking.title} zu Reise *${trip.name}* hinzugefügt.`
+      );
+      return;
+    }
+  }
+
+  // Hook to handle numeric replies for trip selection (text message after inline button)
+  api.registerHook('message_received', (event: any) => {
+    try {
+      const chatId = String(event?.chatId || event?.threadId || event?.conversationId || event?.senderId || '');
+      if (!chatId) return;
+
+      const pending = pendingTripSelections.get(chatId);
+      if (!pending || Date.now() > pending.expiresAt) {
+        if (pending) pendingTripSelections.delete(chatId);
+        return;
+      }
+
+      const text = String(event?.text || '').trim();
+      const num = parseInt(text, 10);
+      if (isNaN(num) || num < 1 || num > pending.trips.length) return;
+
+      const selectedTrip = pending.trips[num - 1];
+      const bookingEntry = pendingBookings.get(pending.bookingKey);
+      pendingTripSelections.delete(chatId);
+
+      if (!bookingEntry) {
+        sendTelegram(chatId, '❌ Buchung nicht mehr verfügbar (abgelaufen).').catch(() => {});
+        return;
+      }
+
+      const { booking } = bookingEntry;
+      pendingBookings.delete(pending.bookingKey);
+
+      const emoji = BOOKING_EMOJI[booking.type] || '📧';
+      addBookingAsSegment(selectedTrip.id, booking);
+      sendTelegram(chatId,
+        `✅ ${emoji} ${booking.title} zu Reise *${selectedTrip.name}* hinzugefügt.`
+      ).catch(() => {});
+    } catch {}
+  }, { name: 'booking-trip-selection-handler' });
+
+  // Hook to handle callback_query from Telegram (if framework routes them)
+  api.registerHook('message_received', async (event: any) => {
+    try {
+      const cbq = event?.raw?.callback_query;
+      if (!cbq) return;
+
+      const callbackQueryId = String(cbq.id || '');
+      const chatId = String(cbq.message?.chat?.id || '');
+      const data = String(cbq.data || '');
+
+      if (!data.startsWith('booking_')) return;
+      if (!chatId || !callbackQueryId) return;
+
+      await handleBookingCallback(callbackQueryId, chatId, data);
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] booking callback Fehler: ${e?.message}`);
+    }
+  }, { name: 'booking-callback-handler' });
+
+  // Fallback: Poll for callback queries if framework doesn't route them
+  let lastCallbackUpdateId = 0;
+
+  setInterval(async () => {
+    if (!telegramBotToken) return;
+    try {
+      const url = `https://api.telegram.org/bot${telegramBotToken}/getUpdates?offset=${lastCallbackUpdateId + 1}&timeout=0&allowed_updates=["callback_query"]`;
+      const res = await fetchWithTimeout(url, { method: 'GET' }, 10000);
+      if (!res.ok) return;
+
+      const data: any = await res.json();
+      const results: any[] = data?.result || [];
+
+      for (const update of results) {
+        lastCallbackUpdateId = Math.max(lastCallbackUpdateId, update.update_id || 0);
+        const cbq = update.callback_query;
+        if (!cbq || !String(cbq.data || '').startsWith('booking_')) continue;
+
+        const callbackQueryId = String(cbq.id || '');
+        const chatId = String(cbq.message?.chat?.id || '');
+        const cbData = String(cbq.data || '');
+
+        if (chatId && callbackQueryId) {
+          await handleBookingCallback(callbackQueryId, chatId, cbData);
+        }
+      }
+    } catch {}
+  }, 3000);
+
+  // ── Mail-Scanner Hintergrund-Task (alle 30 Minuten) ───────────────────────
+
+  setInterval(async () => {
+    try {
+      if (!m365Enabled && !yahooEnabled) return;
+      const s = loadSettings();
+      if (!s.telegramChatId) return;
+
+      const { found } = await scanMailsForBookings(s.telegramChatId);
+      if (found > 0) {
+        api.logger.info(`[executive-agent] Mail-Scanner: ${found} Buchung(en) erkannt`);
+      }
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] Mail-Scanner Fehler: ${e.message}`);
+    }
+  }, 30 * 60_000);
+
   // ── SharePoint-Polling (alle 30 Minuten) ────────────────────────────────────
 
   setInterval(async () => {
@@ -3643,5 +4322,5 @@ for (const k of days) {
     }
   }, 60_000);
 
-  api.logger.info("[executive-agent] loaded v20 (telegram direct fallback)");
+  api.logger.info("[executive-agent] loaded v21 (mail-parsing: booking detection)");
 }
