@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import SunCalc from "suncalc";
-import { createTrip, getTrip, listTrips, addSegment, generatePacklist, updateTrip } from "./travel-store.js";
+import { createTrip, getTrip, listTrips, addSegment, removeSegment, updateSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import {
   listProperties, getProperty, updateProperty, addUnit, updateUnit, removeUnit,
   setDistributionKey, listLeases, getLeaseByUnit, setLease, deleteLease,
@@ -88,6 +88,10 @@ const BOOKING_EMOJI: Record<BookingType, string> = {
   TRAIN: '🚆',
   CAR: '🚗',
   EVENT: '🎫',
+};
+
+const SEGMENT_EMOJI: Record<string, string> = {
+  flight: '✈️', hotel: '🏨', transfer: '🚆', activity: '🎫', note: '📝',
 };
 
 function nowIso() { return new Date().toISOString(); }
@@ -198,7 +202,7 @@ async function graphRequest(
   tenantId: string,
   clientId: string,
   clientSecret: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE" | "PATCH",
   url: string,
   body?: any
 ): Promise<any> {
@@ -224,7 +228,7 @@ async function graphRequest(
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
     let fetchBody: any = undefined;
 
-    if (method === "POST") {
+    if (method === "POST" || method === "PATCH") {
       headers["Content-Type"] = "application/json";
       fetchBody = JSON.stringify(body ?? {});
     }
@@ -296,6 +300,15 @@ async function graphPost(
   body: any
 ): Promise<any> {
   return graphRequest(tenantId, clientId, clientSecret, "POST", url, body);
+}
+
+async function graphDelete(
+  tenantId: string,
+  clientId: string,
+  clientSecret: string,
+  url: string
+): Promise<any> {
+  return graphRequest(tenantId, clientId, clientSecret, "DELETE", url);
 }
 
 /* ---------------- Anthropic Trip Enrichment ---------------- */
@@ -857,6 +870,74 @@ export default function (api: any) {
     trips: { id: string; name: string }[];
     expiresAt: number;
   }>();
+
+  /* --- Pending Segment-Deletion State (Telegram Inline Keyboard) --- */
+  const pendingSegmentDeletions = new Map<string, {
+    tripId: string;
+    segmentId: string;
+    calendarEventId: string;
+    expiresAt: number;
+  }>();
+
+  /* --- Calendar Sync for Trip Segments --- */
+
+  async function createSegmentCalendarEvent(
+    tripId: string,
+    segmentId: string,
+  ): Promise<{ eventId: string; webLink: string } | null> {
+    if (!m365Enabled || !tenantId || !clientId || !m365Secret || !m365User) return null;
+    const trip = getTrip(tripId);
+    if (!trip) return null;
+    const seg = trip.segments.find(s => s.id === segmentId);
+    if (!seg) return null;
+
+    const emoji = SEGMENT_EMOJI[seg.type] || '📋';
+    const subject = `${trip.name} — ${emoji} ${seg.title}`;
+    const isHotel = seg.type === 'hotel';
+    const startDt = seg.datetime_local || trip.start_date + 'T12:00:00';
+    const endDate = new Date(startDt);
+    endDate.setHours(endDate.getHours() + (isHotel ? 24 : 1));
+    const endDt = endDate.toISOString().replace('Z', '');
+
+    const bodyParts = [
+      seg.confirmation && `Bestätigung: ${seg.confirmation}`,
+      seg.notes && `Notizen: ${seg.notes}`,
+      `Trip: ${trip.name} (${trip.id})`,
+    ].filter(Boolean);
+
+    try {
+      const calUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/events`;
+      const event = await graphPost(tenantId, clientId, m365Secret, calUrl, {
+        subject,
+        start: { dateTime: startDt, timeZone: seg.timezone || 'Europe/Berlin' },
+        end: { dateTime: endDt, timeZone: seg.timezone || 'Europe/Berlin' },
+        location: trip.destination ? { displayName: trip.destination } : undefined,
+        body: bodyParts.length ? { contentType: 'Text', content: bodyParts.join('\n') } : undefined,
+      });
+      if (event?.id) {
+        updateSegment(tripId, segmentId, {
+          calendarEventId: event.id,
+          calendarWebLink: event.webLink || '',
+        });
+        return { eventId: event.id, webLink: event.webLink || '' };
+      }
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] createSegmentCalendarEvent failed: ${e.message}`);
+    }
+    return null;
+  }
+
+  async function deleteSegmentCalendarEvent(calendarEventId: string): Promise<boolean> {
+    if (!m365Enabled || !tenantId || !clientId || !m365Secret || !m365User) return false;
+    try {
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/events/${encodeURIComponent(calendarEventId)}`;
+      await graphDelete(tenantId, clientId, m365Secret, url);
+      return true;
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] deleteSegmentCalendarEvent failed: ${e.message}`);
+      return false;
+    }
+  }
 
   const draftPath = (id: string) => path.join(draftsDir, `${id}.json`);
   function saveDraft(d: MailDraft) { fs.writeFileSync(draftPath(d.id), JSON.stringify(d, null, 2), "utf-8"); }
@@ -2531,7 +2612,70 @@ for (const k of days) {
       const datetime_utc = isNaN(dt.getTime()) ? datetime_local : dt.toISOString();
       const trip = addSegment(tripId, { type: type as any, datetime_local, datetime_utc, timezone, title, confirmation });
       if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
-      return { text: `✅ Segment hinzugefügt zu *${trip.name}*:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestaetigung: " + confirmation : ""}` };
+      const newSeg = trip.segments[trip.segments.length - 1];
+      let calInfo = '';
+      if (newSeg) {
+        const cal = await createSegmentCalendarEvent(tripId, newSeg.id);
+        if (cal) calInfo = `\n  📅 Kalendereintrag erstellt`;
+      }
+      return { text: `✅ Segment hinzugefügt zu *${trip.name}*:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestaetigung: " + confirmation : ""}${calInfo}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "tripdel",
+    acceptsArgs: true,
+    description: "Segment entfernen: /tripdel <trip-id> <segment-id>",
+    handler: async (ctx: any) => {
+      const parts = (ctx.args || "").trim().split(/\s+/);
+      if (parts.length < 2) return { text: "❌ Verwendung: /tripdel <trip-id> <segment-id>" };
+      const [tripId, segmentId] = parts;
+      const result = removeSegment(tripId, segmentId);
+      if (!result) return { text: `❌ Segment "${segmentId}" in Reise "${tripId}" nicht gefunden.` };
+      const { trip, removed } = result;
+      const emoji = SEGMENT_EMOJI[removed.type] || '📋';
+
+      if (removed.calendarEventId) {
+        const delKey = `segdel_${crypto.randomBytes(6).toString('hex')}`;
+        pendingSegmentDeletions.set(delKey, {
+          tripId,
+          segmentId,
+          calendarEventId: removed.calendarEventId,
+          expiresAt: Date.now() + 30 * 60_000,
+        });
+        const chatId = ctx.chatId || ctx.threadId || ctx.conversationId || '';
+        if (chatId) {
+          await sendTelegramWithKeyboard(
+            chatId,
+            `✅ Segment entfernt: ${emoji} ${removed.title}\n\n📅 Kalendereintrag ebenfalls löschen?`,
+            [[
+              { text: '✅ Ja, löschen', callback_data: `${delKey}::yes` },
+              { text: '❌ Nein, behalten', callback_data: `${delKey}::no` },
+            ]],
+          );
+          return { text: '' };
+        }
+      }
+      return { text: `✅ Segment entfernt aus *${trip.name}*:\n${emoji} ${removed.title}` };
+    },
+  });
+
+  api.registerCommand({
+    name: "tripsync",
+    acceptsArgs: true,
+    description: "Kalender-Sync für alle Segmente: /tripsync <trip-id>",
+    handler: async (ctx: any) => {
+      const tripId = (ctx.args || "").trim();
+      if (!tripId) return { text: "❌ Verwendung: /tripsync <trip-id>" };
+      const trip = getTrip(tripId);
+      if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
+      let created = 0, skipped = 0, failed = 0;
+      for (const seg of trip.segments) {
+        if (seg.calendarEventId) { skipped++; continue; }
+        const cal = await createSegmentCalendarEvent(tripId, seg.id);
+        if (cal) { created++; } else { failed++; }
+      }
+      return { text: `📅 Kalender-Sync für *${trip.name}*:\n✅ ${created} erstellt, ⏭ ${skipped} vorhanden, ❌ ${failed} fehlgeschlagen` };
     },
   });
 
@@ -4174,7 +4318,7 @@ for (const k of days) {
 
   // ── Booking Callback Handler (Telegram Inline Buttons) ─────────────────────
 
-  function addBookingAsSegment(tripId: string, booking: ParsedBooking): string | null {
+  async function addBookingAsSegment(tripId: string, booking: ParsedBooking): Promise<string | null> {
     const segmentType = BOOKING_TO_SEGMENT[booking.type];
     const seg = addSegment(tripId, {
       type: segmentType,
@@ -4185,7 +4329,12 @@ for (const k of days) {
       confirmation: booking.confirmationNumber || undefined,
       notes: `Provider: ${booking.provider}${booking.destination ? ' | Ziel: ' + booking.destination : ''}`,
     });
-    return seg ? seg.segments[seg.segments.length - 1].id : null;
+    if (!seg) return null;
+    const newSegId = seg.segments[seg.segments.length - 1].id;
+    createSegmentCalendarEvent(tripId, newSegId).catch(e => {
+      api.logger.error(`[executive-agent] calendar event for booking segment failed: ${e?.message}`);
+    });
+    return newSegId;
   }
 
   async function handleBookingCallback(
@@ -4226,7 +4375,7 @@ for (const k of days) {
         const startDate = booking.startDate.slice(0, 10); // YYYY-MM-DD
         const endDate = booking.endDate ? booking.endDate.slice(0, 10) : startDate;
         const trip = createTrip(tripName, startDate, endDate, booking.destination);
-        addBookingAsSegment(trip.id, booking);
+        await addBookingAsSegment(trip.id, booking);
         await sendTelegram(chatId,
           `✅ Reise *${trip.name}* erstellt (${trip.id})\n${emoji} ${booking.title} als Segment hinzugefügt.`
         );
@@ -4273,7 +4422,7 @@ for (const k of days) {
       await answerCallbackQuery(callbackQueryId, 'Wird hinzugefügt...');
 
       const trip = trips[tripIdx];
-      addBookingAsSegment(trip.id, booking);
+      await addBookingAsSegment(trip.id, booking);
       await sendTelegram(chatId,
         `✅ ${emoji} ${booking.title} zu Reise *${trip.name}* hinzugefügt.`
       );
@@ -4282,7 +4431,7 @@ for (const k of days) {
   }
 
   // Hook to handle numeric replies for trip selection (text message after inline button)
-  api.registerHook('message_received', (event: any) => {
+  api.registerHook('message_received', async (event: any) => {
     try {
       const chatId = String(event?.chatId || event?.threadId || event?.conversationId || event?.senderId || '');
       if (!chatId) return;
@@ -4310,7 +4459,7 @@ for (const k of days) {
       pendingBookings.delete(pending.bookingKey);
 
       const emoji = BOOKING_EMOJI[booking.type] || '📧';
-      addBookingAsSegment(selectedTrip.id, booking);
+      await addBookingAsSegment(selectedTrip.id, booking);
       sendTelegram(chatId,
         `✅ ${emoji} ${booking.title} zu Reise *${selectedTrip.name}* hinzugefügt.`
       ).catch(() => {});
@@ -4327,12 +4476,37 @@ for (const k of days) {
       const chatId = String(cbq.message?.chat?.id || '');
       const data = String(cbq.data || '');
 
+      if (data.startsWith('segdel_')) {
+        const sepIdx = data.indexOf('::');
+        if (sepIdx === -1) return;
+        const delKey = data.slice(0, sepIdx);
+        const action = data.slice(sepIdx + 2);
+        const pending = pendingSegmentDeletions.get(delKey);
+        if (!pending || Date.now() > pending.expiresAt) {
+          pendingSegmentDeletions.delete(delKey);
+          await answerCallbackQuery(callbackQueryId, 'Abgelaufen.');
+          return;
+        }
+        pendingSegmentDeletions.delete(delKey);
+        if (action === 'yes') {
+          await answerCallbackQuery(callbackQueryId, 'Wird gelöscht...');
+          const ok = await deleteSegmentCalendarEvent(pending.calendarEventId);
+          await sendTelegram(chatId, ok
+            ? '✅ Kalendereintrag gelöscht.'
+            : '❌ Kalendereintrag konnte nicht gelöscht werden.');
+        } else {
+          await answerCallbackQuery(callbackQueryId, 'Beibehalten');
+          await sendTelegram(chatId, '📅 Kalendereintrag beibehalten.');
+        }
+        return;
+      }
+
       if (!data.startsWith('booking_')) return;
       if (!chatId || !callbackQueryId) return;
 
       await handleBookingCallback(callbackQueryId, chatId, data);
     } catch (e: any) {
-      api.logger.error(`[executive-agent] booking callback Fehler: ${e?.message}`);
+      api.logger.error(`[executive-agent] callback Fehler: ${e?.message}`);
     }
   }, { name: 'booking-callback-handler' });
 

@@ -16,6 +16,8 @@ export interface TripSegment {
   title: string;
   confirmation?: string;
   notes?: string;
+  calendarEventId?: string;
+  calendarWebLink?: string;
 }
 
 export interface Trip {
@@ -99,6 +101,28 @@ export function addSegment(tripId: string, segment: Omit<TripSegment, 'id'>): Tr
     id: `seg-${Date.now()}`
   };
   trip.segments.push(seg);
+  trip.updated_at = new Date().toISOString();
+  fs.writeFileSync(tripPath(tripId), JSON.stringify(trip, null, 2), 'utf8');
+  return trip;
+}
+
+export function removeSegment(tripId: string, segmentId: string): { trip: Trip; removed: TripSegment } | null {
+  const trip = getTrip(tripId);
+  if (!trip) return null;
+  const idx = trip.segments.findIndex(s => s.id === segmentId);
+  if (idx === -1) return null;
+  const [removed] = trip.segments.splice(idx, 1);
+  trip.updated_at = new Date().toISOString();
+  fs.writeFileSync(tripPath(tripId), JSON.stringify(trip, null, 2), 'utf8');
+  return { trip, removed };
+}
+
+export function updateSegment(tripId: string, segmentId: string, patch: Partial<TripSegment>): Trip | null {
+  const trip = getTrip(tripId);
+  if (!trip) return null;
+  const seg = trip.segments.find(s => s.id === segmentId);
+  if (!seg) return null;
+  Object.assign(seg, patch);
   trip.updated_at = new Date().toISOString();
   fs.writeFileSync(tripPath(tripId), JSON.stringify(trip, null, 2), 'utf8');
   return trip;
