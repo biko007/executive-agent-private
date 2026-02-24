@@ -2716,6 +2716,24 @@ export default function (api) {
             api.logger.warn(`[executive-agent] Briefing-PreSync übersprungen: ${e.message}`);
         }
     }
+    function getPhoneLocationForBriefingOrThrow(now) {
+        const s = loadSettings();
+        const loc = s.location;
+        if (!loc || loc.lat == null || loc.lon == null) {
+            throw new Error('phone_location_missing');
+        }
+        // Standort muss frisch sein: max 12h alt
+        const updatedAtMs = loc.updatedAt ? Date.parse(loc.updatedAt) : NaN;
+        if (!Number.isFinite(updatedAtMs)) {
+            throw new Error('phone_location_missing_timestamp');
+        }
+        const ageMs = now.getTime() - updatedAtMs;
+        const maxAgeMs = 12 * 60 * 60 * 1000;
+        if (ageMs > maxAgeMs) {
+            throw new Error('phone_location_stale');
+        }
+        return loc;
+    }
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
@@ -2724,7 +2742,7 @@ export default function (api) {
         const fmtDateFull = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
         const parts = [];
         // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
-        const loc = getLocationSettings();
+        const loc = getPhoneLocationForBriefingOrThrow(now);
         const astro = getAstroData(now, loc);
         parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
         parts.push(`📍 ${loc.label}`);
@@ -2930,6 +2948,12 @@ export default function (api) {
                 return { text: await generateBriefingText() };
             }
             catch (e) {
+                if (e?.message === 'phone_location_missing' || e?.message === 'phone_location_missing_timestamp') {
+                    return { text: '❌ Briefing abgebrochen: kein aktueller Handy-Standort vorhanden.\nBitte Standort in Telegram teilen, dann /briefing erneut.' };
+                }
+                if (e?.message === 'phone_location_stale') {
+                    return { text: '❌ Briefing abgebrochen: Handy-Standort ist älter als 12h.\nBitte aktuellen Standort in Telegram teilen, dann /briefing erneut.' };
+                }
                 return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
             }
         },
@@ -4214,5 +4238,91 @@ export default function (api) {
             api.logger.error(`[executive-agent] Weekly Health-Report Fehler: ${e.message}`);
         }
     }, 60_000);
-    api.logger.info("[executive-agent] loaded v21 (mail-parsing: booking detection)");
+    // ── Location HTTP Endpoint (POST /location) ──────────────────────────────
+    const locationPort = 18791;
+    const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
+    const locationServer = http.createServer(async (req, res) => {
+        // CORS preflight
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204, {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            });
+            res.end();
+            return;
+        }
+        if (req.method !== 'POST' || (req.url && !req.url.startsWith('/location'))) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Not found' }));
+            return;
+        }
+        // Auth check
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.replace(/^Bearer\s+/i, '');
+        if (!gatewayToken || token !== gatewayToken) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+            return;
+        }
+        // Parse JSON body
+        let body = '';
+        try {
+            await new Promise((resolve, reject) => {
+                req.on('data', (chunk) => { body += chunk; });
+                req.on('end', resolve);
+                req.on('error', reject);
+                setTimeout(() => reject(new Error('timeout')), 10000);
+            });
+        }
+        catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
+            return;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(body);
+        }
+        catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Invalid JSON' }));
+            return;
+        }
+        const lat = Number(parsed.lat);
+        const lon = Number(parsed.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
+            return;
+        }
+        // Reverse-geocoding via Nominatim
+        let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        try {
+            const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
+            if (geoRes.ok) {
+                const geo = await geoRes.json();
+                label = geo?.address?.city
+                    || geo?.address?.town
+                    || geo?.address?.village
+                    || geo?.address?.municipality
+                    || geo?.display_name?.split(',')[0]
+                    || label;
+            }
+        }
+        catch { /* geocoding optional, keep coordinate label */ }
+        const s = loadSettings();
+        s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
+        saveSettings(s);
+        api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, label }));
+    });
+    locationServer.on('error', (e) => {
+        api.logger.error(`[executive-agent] Location-Server Fehler: ${e.message}`);
+    });
+    locationServer.listen(locationPort, '127.0.0.1', () => {
+        api.logger.info(`[executive-agent] Location-API gestartet auf Port ${locationPort}`);
+    });
+    api.logger.info("[executive-agent] loaded v22 (location API endpoint)");
 }
