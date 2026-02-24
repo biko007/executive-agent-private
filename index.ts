@@ -4336,35 +4336,6 @@ for (const k of days) {
     }
   }, { name: 'booking-callback-handler' });
 
-  // Fallback: Poll for callback queries if framework doesn't route them
-  let lastCallbackUpdateId = 0;
-
-  setInterval(async () => {
-    if (!telegramBotToken) return;
-    try {
-      const url = `https://api.telegram.org/bot${telegramBotToken}/getUpdates?offset=${lastCallbackUpdateId + 1}&timeout=0&allowed_updates=["callback_query"]`;
-      const res = await fetchWithTimeout(url, { method: 'GET' }, 10000);
-      if (!res.ok) return;
-
-      const data: any = await res.json();
-      const results: any[] = data?.result || [];
-
-      for (const update of results) {
-        lastCallbackUpdateId = Math.max(lastCallbackUpdateId, update.update_id || 0);
-        const cbq = update.callback_query;
-        if (!cbq || !String(cbq.data || '').startsWith('booking_')) continue;
-
-        const callbackQueryId = String(cbq.id || '');
-        const chatId = String(cbq.message?.chat?.id || '');
-        const cbData = String(cbq.data || '');
-
-        if (chatId && callbackQueryId) {
-          await handleBookingCallback(callbackQueryId, chatId, cbData);
-        }
-      }
-    } catch {}
-  }, 3000);
-
   // ── Mail-Scanner Hintergrund-Task (alle 30 Minuten) ───────────────────────
 
   setInterval(async () => {
