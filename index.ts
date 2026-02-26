@@ -4304,11 +4304,22 @@ for (const k of days) {
 
   api.registerHook('message_received', async (event: any) => {
     try {
-      const loc = event?.location || event?.raw?.message?.location;
-      if (!loc || loc.latitude == null || loc.longitude == null) return;
+      // The gateway formats location messages as text in event.content:
+      //   Live:  "🛰 Live location: LAT, LON ±Xm"
+      //   Pin:   "📍 LAT, LON ±Xm"
+      //   Place: "📍 Name — Address (LAT, LON ±Xm)"
+      const content: string = event?.content ?? '';
+      if (!content) return;
 
-      const lat = Number(loc.latitude);
-      const lon = Number(loc.longitude);
+      // Only process location messages (start with 📍 or 🛰)
+      if (!content.startsWith('📍') && !content.startsWith('🛰')) return;
+
+      // Extract coordinates: match "LAT, LON" pattern (decimal numbers)
+      const coordMatch = content.match(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+      if (!coordMatch) return;
+
+      const lat = Number(coordMatch[1]);
+      const lon = Number(coordMatch[2]);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
       // Reverse-geocoding via Nominatim
@@ -4789,5 +4800,5 @@ for (const k of days) {
     api.logger.info(`[executive-agent] Location-API gestartet auf Port ${locationPort}`);
   });
 
-  api.logger.info("[executive-agent] loaded v22 (location API endpoint)");
+  api.logger.info("[executive-agent] loaded v23 (location reverse-geocoding fix)");
 }
