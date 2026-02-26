@@ -79,3 +79,10 @@ const DEFAULT_LOCATION = { lat: 47.9838, lon: 8.8234, label: "Tuttlingen" };
 ```
 
 Dynamisch: `settings.json` → `location` (via Telegram Location Message)
+
+## Laufende Arbeiten
+<!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
+Reconnect den Kontext findet -->
+
+Aktuell: /location Endpoint — iOS Shortcut sendet lat/lon als Float-Strings, Skalierungs-Logik (1e7/1e14) entfernt, jetzt direkt parseFloat().
+Stand:   Erledigt. Debug-Logging entfernt, Build + Restart + Test OK. Standort wird korrekt gespeichert (z.B. Altenhaßlau 50.196, 9.190).
