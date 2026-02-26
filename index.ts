@@ -3149,11 +3149,12 @@ for (const k of days) {
   api.registerCommand({
     name: 'instatop',
     description: 'Top Posts nach Engagement: /instatop [n]',
-    handler: async (_args: any) => {
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
       try {
         if (!instaAuthorized()) return { text: '❌ Instagram nicht verbunden.' };
         const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
-        const n = Math.min(Math.max(parseInt(String(_args?.text || '5')) || 5, 1), 20);
+        const n = Math.min(Math.max(parseInt(String(ctx.args || '5')) || 5, 1), 20);
         const media = await fetchMedia(tokens.access_token, tokens.ig_business_id, false);
         const sorted = [...media].sort((a, b) => b.engagement - a.engagement).slice(0, n);
         if (!sorted.length) return { text: '📸 Keine Posts gefunden.' };
@@ -3286,9 +3287,10 @@ for (const k of days) {
   api.registerCommand({
     name: 'instadraft',
     description: 'Instagram Draft erstellen: /instadraft <plan-nr | freitext>',
-    handler: async (_args: any) => {
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
       try {
-        const input = String(_args?.text || '').trim();
+        const input = String(ctx.args || '').trim();
         if (!input) return { text: '❌ Nutzung: /instadraft <plan-nr> oder /instadraft <freitext>' };
 
         const planNr = parseInt(input);
@@ -3385,9 +3387,10 @@ for (const k of days) {
   api.registerCommand({
     name: 'instaedit',
     description: 'Instagram Draft anzeigen/bearbeiten: /instaedit <id> [key=value]',
-    handler: async (_args: any) => {
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
       try {
-        const parts = String(_args?.text || '').trim().split(/\s+/);
+        const parts = String(ctx.args || '').trim().split(/\s+/);
         const id = parts[0];
         if (!id) return { text: '❌ Nutzung: /instaedit <id> [caption=...|status=...|hashtags=...]' };
 
