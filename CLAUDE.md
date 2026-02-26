@@ -85,8 +85,4 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message)
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Erledigt (2026-02-26):
-- Location History: Jeder Standort-Update wird als JSONL in artifacts/personal/location/history.jsonl geloggt (inkl. altitude).
-- Briefing Staleness Warning: Bei Standort >6h alt zeigt Briefing `⚠️ Ort (Stand: vor Xh)`. Harte 12h-Grenze (Error) bleibt.
-- Modell-Upgrade: Travel-Info + Travel-Extraktion von Haiku auf claude-sonnet-4-20250514. Mail-Klassifizierung bleibt Haiku.
-- /location Endpoint: iOS Shortcut sendet lat/lon als Float-Strings, direkt parseFloat() (keine Skalierung).
+Keine laufenden Arbeiten.
