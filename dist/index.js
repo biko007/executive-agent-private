@@ -7,6 +7,7 @@ import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized,
 import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
+import { saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, fetchInsights, fetchMedia, loadInsightsCache, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, } from "./instagram-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -305,7 +306,7 @@ async function enrichTripWithOpenAI(name) {
             'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-            model: 'claude-haiku-4-5-20251001',
+            model: 'claude-sonnet-4-20250514',
             max_tokens: 1024,
             messages: [{ role: 'user', content: prompt }],
         }),
@@ -385,7 +386,7 @@ async function parseTripFreeText(text) {
             'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-            model: 'claude-haiku-4-5-20251001',
+            model: 'claude-sonnet-4-20250514',
             max_tokens: 256,
             messages: [{ role: 'user', content: prompt }],
         }),
@@ -2435,6 +2436,26 @@ export default function (api) {
             return { text: `🚨 Health-Alerts (${alerts.length}):\n\n${lines.join('\n')}` };
         },
     });
+    // ── Instagram Module ───────────────────────────────────────────────────────
+    const metaAppId = process.env.META_APP_ID || '';
+    const metaAppSecret = process.env.META_APP_SECRET || '';
+    const igBusinessId = process.env.INSTAGRAM_BUSINESS_ID || '';
+    // Bootstrap: Wenn Token in env aber kein Token-File → initiales File schreiben
+    if (process.env.INSTAGRAM_ACCESS_TOKEN && !instaAuthorized()) {
+        try {
+            saveInstaTokens({
+                access_token: process.env.INSTAGRAM_ACCESS_TOKEN,
+                expires_at: Date.now() + 60 * 24 * 60 * 60 * 1000, // 60 Tage
+                refreshed_at: Date.now(),
+                ig_business_id: igBusinessId,
+                page_id: process.env.META_PAGE_ID || '',
+            });
+            api.logger.info('[executive-agent] Instagram: Token aus Env-Variable gespeichert');
+        }
+        catch (e) {
+            api.logger.warn(`[executive-agent] Instagram Bootstrap-Fehler: ${e.message}`);
+        }
+    }
     // ── Withings Module ────────────────────────────────────────────────────────
     const withingsClientId = process.env.WITHINGS_CLIENT_ID || '';
     const withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET || '';
@@ -2682,6 +2703,366 @@ export default function (api) {
             }
         },
     });
+    // ── Instagram Commands ──────────────────────────────────────────────────────
+    // 4.1 /insta — Account-Überblick
+    api.registerCommand({
+        name: 'insta',
+        description: 'Instagram Account-Überblick: /insta',
+        handler: async () => {
+            try {
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden. Bitte Tokens in env setzen.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                const insights = await fetchInsights(tokens.access_token, tokens.ig_business_id, false);
+                const cacheAge = Math.round((Date.now() - insights.fetched_at) / 60000);
+                const daysLeft = tokenDaysRemaining();
+                const tokenWarn = daysLeft < 7 ? `\n⚠️ Token läuft in ${daysLeft} Tagen ab!` : '';
+                return {
+                    text: `📸 *Instagram @jurgen_bickel*\n\n` +
+                        `👥 Follower: ${insights.followers_count.toLocaleString('de')}\n` +
+                        `📝 Beiträge: ${insights.media_count}\n` +
+                        `📊 Engagement-Rate: ${insights.engagement_rate}%\n` +
+                        `❤️ Ø Likes: ${insights.recent_avg_likes}\n` +
+                        `💬 Ø Kommentare: ${insights.recent_avg_comments}\n` +
+                        `🕐 Cache: ${cacheAge} min alt\n` +
+                        `🔑 Token: ${daysLeft} Tage verbleibend${tokenWarn}`,
+                };
+            }
+            catch (e) {
+                return { text: `❌ /insta Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.2 /instatop — Top N Posts
+    api.registerCommand({
+        name: 'instatop',
+        description: 'Top Posts nach Engagement: /instatop [n]',
+        handler: async (_args) => {
+            try {
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                const n = Math.min(Math.max(parseInt(String(_args?.text || '5')) || 5, 1), 20);
+                const media = await fetchMedia(tokens.access_token, tokens.ig_business_id, false);
+                const sorted = [...media].sort((a, b) => b.engagement - a.engagement).slice(0, n);
+                if (!sorted.length)
+                    return { text: '📸 Keine Posts gefunden.' };
+                const lines = sorted.map((m, i) => {
+                    const preview = m.caption.length > 60 ? m.caption.slice(0, 60) + '…' : m.caption;
+                    return `${i + 1}. ❤️${m.like_count} 💬${m.comments_count} | ${m.media_type}\n   "${preview}"\n   ${m.permalink}`;
+                });
+                return { text: `📸 *Top ${sorted.length} Posts*\n\n${lines.join('\n\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /instatop Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.3 /instatrend — KI Trend-Analyse
+    api.registerCommand({
+        name: 'instatrend',
+        description: 'KI-gestützte Instagram Trend-Analyse: /instatrend',
+        handler: async () => {
+            try {
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden.' };
+                const apiKey = readAnthropicKey();
+                if (!apiKey)
+                    return { text: '❌ ANTHROPIC_API_KEY nicht gesetzt.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                const insights = await fetchInsights(tokens.access_token, tokens.ig_business_id, false);
+                const media = await fetchMedia(tokens.access_token, tokens.ig_business_id, false);
+                const top10 = [...media].sort((a, b) => b.engagement - a.engagement).slice(0, 10);
+                const last10 = [...media].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 10);
+                const prompt = `Du bist ein Social-Media-Marketing-Experte. Analysiere diesen Instagram Business Account.\n\n` +
+                    `Account: @jurgen_bickel\n` +
+                    `Follower: ${insights.followers_count}\nBeiträge: ${insights.media_count}\n` +
+                    `Engagement-Rate: ${insights.engagement_rate}%\nØ Likes: ${insights.recent_avg_likes}\nØ Kommentare: ${insights.recent_avg_comments}\n\n` +
+                    `TOP 10 Posts (nach Engagement):\n${top10.map(m => `- ${m.media_type} | ❤️${m.like_count} 💬${m.comments_count} | "${m.caption.slice(0, 80)}"`).join('\n')}\n\n` +
+                    `LETZTE 10 Posts:\n${last10.map(m => `- ${m.timestamp.slice(0, 10)} | ${m.media_type} | ❤️${m.like_count} 💬${m.comments_count} | "${m.caption.slice(0, 80)}"`).join('\n')}\n\n` +
+                    `Bitte analysiere auf Deutsch:\n1. Welche Inhalte/Themen performen am besten?\n2. Optimale Posting-Zeiten (aus Timestamps ableiten)\n3. Content-Typ-Empfehlung (Reels vs. Karussell vs. Single)\n4. 3 konkrete Verbesserungsvorschläge\n5. Hashtag-Strategie-Empfehlung\n\nKurz und prägnant, max 500 Wörter.`;
+                const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey,
+                        'anthropic-version': '2023-06-01',
+                    },
+                    body: JSON.stringify({
+                        model: 'claude-sonnet-4-20250514',
+                        max_tokens: 1024,
+                        messages: [{ role: 'user', content: prompt }],
+                    }),
+                }, 30000);
+                if (!res.ok) {
+                    const err = await res.text().catch(() => '');
+                    throw new Error(`Anthropic API ${res.status}: ${err.slice(0, 200)}`);
+                }
+                const data = await res.json();
+                const analysis = data.content?.[0]?.text || 'Keine Antwort erhalten.';
+                return { text: `📊 *Instagram Trend-Analyse*\n\n${analysis}` };
+            }
+            catch (e) {
+                return { text: `❌ /instatrend Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.4 /instaplan — KI Content-Kalender
+    api.registerCommand({
+        name: 'instaplan',
+        description: 'KI-generierter 2-Wochen Content-Kalender: /instaplan',
+        handler: async () => {
+            try {
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden.' };
+                const apiKey = readAnthropicKey();
+                if (!apiKey)
+                    return { text: '❌ ANTHROPIC_API_KEY nicht gesetzt.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                const insights = await fetchInsights(tokens.access_token, tokens.ig_business_id, false);
+                const media = await fetchMedia(tokens.access_token, tokens.ig_business_id, false);
+                const top5 = [...media].sort((a, b) => b.engagement - a.engagement).slice(0, 5);
+                const today = new Date().toISOString().slice(0, 10);
+                const prompt = `Du bist ein Social-Media-Planer für den Instagram Business Account @jurgen_bickel.\n\n` +
+                    `Account-Daten:\nFollower: ${insights.followers_count}\nEngagement-Rate: ${insights.engagement_rate}%\n\n` +
+                    `Top 5 Posts:\n${top5.map(m => `- ${m.media_type} | ❤️${m.like_count} 💬${m.comments_count} | "${m.caption.slice(0, 80)}"`).join('\n')}\n\n` +
+                    `Erstelle einen 2-Wochen Content-Kalender ab ${today}. Antworte NUR mit einem JSON-Array (keine Erklärung):\n` +
+                    `[{"nr":1,"date":"YYYY-MM-DD","topic":"...","format":"Reel|Karussell|Single Post|Story","caption_idea":"...","hashtags":["tag1","tag2"],"notes":"..."}]\n\n` +
+                    `Regeln:\n- 3-4 Posts pro Woche\n- Mischung aus Formaten\n- Hashtags relevant und auf Deutsch/Englisch gemischt\n- Caption-Ideen konkret und umsetzbar`;
+                const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey,
+                        'anthropic-version': '2023-06-01',
+                    },
+                    body: JSON.stringify({
+                        model: 'claude-sonnet-4-20250514',
+                        max_tokens: 2048,
+                        messages: [{ role: 'user', content: prompt }],
+                    }),
+                }, 30000);
+                if (!res.ok) {
+                    const err = await res.text().catch(() => '');
+                    throw new Error(`Anthropic API ${res.status}: ${err.slice(0, 200)}`);
+                }
+                const data = await res.json();
+                const raw = data.content?.[0]?.text || '';
+                // Parse JSON from response (may be wrapped in markdown code block)
+                const jsonMatch = raw.match(/\[[\s\S]*\]/);
+                if (!jsonMatch)
+                    return { text: '❌ KI-Antwort konnte nicht als Kalender geparst werden.' };
+                const entries = JSON.parse(jsonMatch[0]);
+                const calendar = { generated_at: new Date().toISOString(), entries };
+                saveCalendar(calendar);
+                const lines = entries.map((e) => `${e.nr}. 📅 ${e.date} | ${e.format}\n   ${e.topic}\n   💡 "${e.caption_idea.slice(0, 60)}…"`);
+                return {
+                    text: `📅 *Content-Kalender* (${entries.length} Einträge)\n\n${lines.join('\n\n')}\n\n` +
+                        `→ /instadraft <nr> um einen Draft zu erstellen`,
+                };
+            }
+            catch (e) {
+                return { text: `❌ /instaplan Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.5 /instadraft — Draft aus Plan oder Freitext
+    api.registerCommand({
+        name: 'instadraft',
+        description: 'Instagram Draft erstellen: /instadraft <plan-nr | freitext>',
+        handler: async (_args) => {
+            try {
+                const input = String(_args?.text || '').trim();
+                if (!input)
+                    return { text: '❌ Nutzung: /instadraft <plan-nr> oder /instadraft <freitext>' };
+                const planNr = parseInt(input);
+                if (!isNaN(planNr)) {
+                    // Draft aus Content-Kalender
+                    const cal = loadCalendar();
+                    if (!cal)
+                        return { text: '❌ Kein Content-Kalender vorhanden. Zuerst /instaplan ausführen.' };
+                    const entry = cal.entries.find((e) => e.nr === planNr);
+                    if (!entry)
+                        return { text: `❌ Plan-Nr. ${planNr} nicht gefunden (${cal.entries.length} Einträge vorhanden).` };
+                    // KI generiert vollständige Caption
+                    const apiKey = readAnthropicKey();
+                    if (!apiKey)
+                        return { text: '❌ ANTHROPIC_API_KEY nicht gesetzt.' };
+                    const prompt = `Du bist ein Instagram Content Creator für @jurgen_bickel.\n\n` +
+                        `Erstelle eine vollständige Instagram-Caption für folgenden Plan:\n` +
+                        `Thema: ${entry.topic}\nFormat: ${entry.format}\nIdee: ${entry.caption_idea}\n` +
+                        `Hashtags: ${entry.hashtags.join(', ')}\nNotizen: ${entry.notes || 'keine'}\n\n` +
+                        `Regeln:\n- Ansprechend und authentisch\n- Passende Emojis\n- Call-to-Action am Ende\n- KEINE Hashtags im Text (die werden separat gehandhabt)\n- Max 2000 Zeichen\n\nAntworte NUR mit der Caption, keine Erklärung.`;
+                    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-api-key': apiKey,
+                            'anthropic-version': '2023-06-01',
+                        },
+                        body: JSON.stringify({
+                            model: 'claude-sonnet-4-20250514',
+                            max_tokens: 512,
+                            messages: [{ role: 'user', content: prompt }],
+                        }),
+                    }, 30000);
+                    if (!res.ok) {
+                        const err = await res.text().catch(() => '');
+                        throw new Error(`Anthropic API ${res.status}: ${err.slice(0, 200)}`);
+                    }
+                    const data = await res.json();
+                    const caption = data.content?.[0]?.text || entry.caption_idea;
+                    const draft = createInstaDraft({
+                        caption,
+                        hashtags: entry.hashtags,
+                        scheduledFor: entry.date,
+                        planNr: entry.nr,
+                        notes: `Aus Content-Kalender #${entry.nr}: ${entry.topic}`,
+                    });
+                    return {
+                        text: `✅ *Draft erstellt*\n\n` +
+                            `🆔 ${draft.id}\n📅 Geplant: ${entry.date}\n📝 Format: ${entry.format}\n\n` +
+                            `Caption:\n${caption.slice(0, 300)}${caption.length > 300 ? '…' : ''}\n\n` +
+                            `#️⃣ ${entry.hashtags.map((h) => '#' + h).join(' ')}\n\n` +
+                            `→ /instaedit ${draft.id} zum Bearbeiten`,
+                    };
+                }
+                else {
+                    // Freitext-Draft
+                    const draft = createInstaDraft({ caption: input });
+                    return {
+                        text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
+                            `→ /instaedit ${draft.id} zum Bearbeiten`,
+                    };
+                }
+            }
+            catch (e) {
+                return { text: `❌ /instadraft Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.6 /instadrafts — Liste aller Drafts
+    api.registerCommand({
+        name: 'instadrafts',
+        description: 'Instagram Drafts auflisten: /instadrafts',
+        handler: async () => {
+            try {
+                const drafts = listInstaDrafts();
+                if (!drafts.length)
+                    return { text: '📝 Keine Instagram-Drafts vorhanden.' };
+                const icons = { entwurf: '📝', freigegeben: '✅' };
+                const lines = drafts.map(d => {
+                    const icon = icons[d.status] || '📝';
+                    const preview = d.caption.length > 50 ? d.caption.slice(0, 50) + '…' : d.caption;
+                    const sched = d.scheduledFor ? ` | 📅 ${d.scheduledFor}` : '';
+                    return `${icon} ${d.id}\n   "${preview}"${sched}`;
+                });
+                return { text: `📸 *Instagram Drafts* (${drafts.length})\n\n${lines.join('\n\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /instadrafts Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.7 /instaedit — Draft bearbeiten
+    api.registerCommand({
+        name: 'instaedit',
+        description: 'Instagram Draft anzeigen/bearbeiten: /instaedit <id> [key=value]',
+        handler: async (_args) => {
+            try {
+                const parts = String(_args?.text || '').trim().split(/\s+/);
+                const id = parts[0];
+                if (!id)
+                    return { text: '❌ Nutzung: /instaedit <id> [caption=...|status=...|hashtags=...]' };
+                const draft = loadInstaDraft(id);
+                if (!draft)
+                    return { text: `❌ Draft "${id}" nicht gefunden.` };
+                // Ohne weitere Parameter: Draft anzeigen
+                if (parts.length === 1) {
+                    return {
+                        text: `📸 *Draft: ${draft.id}*\n\n` +
+                            `Status: ${draft.status}\n` +
+                            `Erstellt: ${draft.createdAt.slice(0, 16).replace('T', ' ')}\n` +
+                            `Aktualisiert: ${draft.updatedAt.slice(0, 16).replace('T', ' ')}\n` +
+                            (draft.scheduledFor ? `Geplant: ${draft.scheduledFor}\n` : '') +
+                            (draft.planNr ? `Plan-Nr: ${draft.planNr}\n` : '') +
+                            `\n📝 Caption:\n${draft.caption}\n\n` +
+                            `#️⃣ ${draft.hashtags.map(h => '#' + h).join(' ') || '(keine)'}` +
+                            (draft.notes ? `\n\n📌 ${draft.notes}` : ''),
+                    };
+                }
+                // Parameter parsen und anwenden
+                const updates = [];
+                for (let i = 1; i < parts.length; i++) {
+                    const [key, ...rest] = parts[i].split('=');
+                    const val = rest.join('=');
+                    switch (key) {
+                        case 'caption':
+                            draft.caption = val;
+                            updates.push('Caption aktualisiert');
+                            break;
+                        case 'status':
+                            if (val === 'entwurf' || val === 'freigegeben') {
+                                draft.status = val;
+                                updates.push(`Status → ${val}`);
+                            }
+                            else {
+                                return { text: '❌ Status muss "entwurf" oder "freigegeben" sein.' };
+                            }
+                            break;
+                        case 'hashtags':
+                            draft.hashtags = val.split(',').map(h => h.trim().replace(/^#/, ''));
+                            updates.push(`Hashtags → ${draft.hashtags.length} Tags`);
+                            break;
+                        default:
+                            return { text: `❌ Unbekannter Key "${key}". Erlaubt: caption, status, hashtags` };
+                    }
+                }
+                saveInstaDraft(draft);
+                return { text: `✅ Draft ${id} aktualisiert:\n${updates.join('\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /instaedit Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.8 /instasync — Cache + Token Refresh
+    api.registerCommand({
+        name: 'instasync',
+        description: 'Instagram Cache + Token forciert erneuern: /instasync',
+        handler: async () => {
+            try {
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                const insights = await fetchInsights(tokens.access_token, tokens.ig_business_id, true);
+                await fetchMedia(tokens.access_token, tokens.ig_business_id, true);
+                const daysLeft = tokenDaysRemaining();
+                return {
+                    text: `🔄 *Instagram Sync abgeschlossen*\n\n` +
+                        `🔑 Token: ${daysLeft} Tage verbleibend\n` +
+                        `👥 Follower: ${insights.followers_count.toLocaleString('de')}\n` +
+                        `📝 Beiträge: ${insights.media_count}\n` +
+                        `📊 Engagement: ${insights.engagement_rate}%`,
+                };
+            }
+            catch (e) {
+                return { text: `❌ /instasync Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.9 /instapost — Phase 2 (deaktiviert)
+    api.registerCommand({
+        name: 'instapost',
+        description: 'Instagram Post veröffentlichen (Phase 2): /instapost',
+        handler: async () => {
+            return {
+                text: '🚧 *Auto-Posting (Phase 2) noch nicht aktiv*\n\n' +
+                    'Drafts können aktuell über /instadrafts eingesehen und manuell gepostet werden.\n' +
+                    'Phase 2 wird Container-basiertes Publishing mit Bild-Upload unterstützen.',
+            };
+        },
+    });
     // ── Briefing ───────────────────────────────────────────────────────────────
     async function syncWithingsForBriefing() {
         if (!withingsClientId || !withingsClientSecret || !isAuthorized())
@@ -2856,6 +3237,30 @@ export default function (api) {
             }
         }
         catch { /* drafts optional */ }
+        // ── INSTAGRAM ──
+        try {
+            const instaLines = [];
+            const daysLeft = tokenDaysRemaining();
+            if (daysLeft > 0 && daysLeft < 7) {
+                instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
+            }
+            const instaCache = loadInsightsCache();
+            if (instaCache) {
+                instaLines.push(`- Follower: ${instaCache.followers_count.toLocaleString('de')} | Engagement: ${instaCache.engagement_rate}%`);
+            }
+            const openInstaDrafts = listInstaDrafts('entwurf');
+            if (openInstaDrafts.length > 0) {
+                instaLines.push(`- ${openInstaDrafts.length} Draft${openInstaDrafts.length > 1 ? 's' : ''} offen`);
+            }
+            if (instaLines.length > 0) {
+                parts.push('');
+                parts.push(SEP);
+                parts.push('📸 *INSTAGRAM*');
+                parts.push(SEP);
+                parts.push(...instaLines);
+            }
+        }
+        catch { /* instagram optional */ }
         // ── HEALTH ──
         {
             const healthLines = [];
@@ -4172,6 +4577,14 @@ export default function (api) {
                 // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
                 lastBriefingDate = today;
                 api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+                // Instagram Token-Warnung
+                try {
+                    if (instaAuthorized() && tokenExpiringSoon()) {
+                        const days = tokenDaysRemaining();
+                        await sendTelegram(s.telegramChatId, `⚠️ *Instagram Token-Warnung*\n\nDein Meta/Instagram Token läuft in ${days} Tagen ab!\nBitte Token erneuern und in env aktualisieren.`);
+                    }
+                }
+                catch { /* instagram warning optional */ }
             }
         }
         catch (e) {
@@ -4440,5 +4853,5 @@ export default function (api) {
     publicLocationServer.listen(publicLocationPort, '0.0.0.0', () => {
         api.logger.info(`[executive-agent] Location-API (public) gestartet auf 0.0.0.0:${publicLocationPort}`);
     });
-    api.logger.info("[executive-agent] loaded v24 (public location endpoint)");
+    api.logger.info("[executive-agent] loaded v25 (instagram integration)");
 }

@@ -32,6 +32,7 @@ health-store.ts     Gewicht, Schlaf, Trends, Alerts
 sharepoint-store.ts SP-Index, Suche, Sync
 link-store.ts       Entity-Dokument-Verknüpfungen
 withings-store.ts   Withings OAuth2 + API
+instagram-store.ts  Instagram Business API, Drafts, Content-Kalender
 ```
 
 ## Datenpfade
@@ -51,6 +52,11 @@ Mail-Parse:  artifacts/personal/mail-parsing/processed.json
 Links:       artifacts/personal/links/links.json
 SP-Index:    artifacts/personal/sharepoint/sharepoint-index.json
 Drafts:      artifacts/personal/mail-drafts/<id>.json
+Instagram:   artifacts/personal/instagram/tokens.json
+             artifacts/personal/instagram/insights-cache.json
+             artifacts/personal/instagram/media-cache.json
+             artifacts/personal/instagram/content-calendar.json
+Insta-Drafts:artifacts/personal/instagram/drafts/<id>.json
 ```
 
 ## Deployment
