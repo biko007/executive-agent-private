@@ -3152,9 +3152,13 @@ for (const k of days) {
 
     // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
     const loc = getPhoneLocationForBriefingOrThrow(now);
+    const locAgeMs = loc.updatedAt ? now.getTime() - Date.parse(loc.updatedAt) : Infinity;
+    const locLabel = locAgeMs > 6 * 3600_000
+      ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
+      : loc.label;
     const astro = getAstroData(now, loc);
     parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
-    parts.push(`📍 ${loc.label}`);
+    parts.push(`📍 ${locLabel}`);
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
     parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
 
@@ -4790,6 +4794,15 @@ for (const k of days) {
     const s = loadSettings();
     s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
     saveSettings(s);
+
+    const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
+    if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(locHistoryDir, 'history.jsonl'),
+      JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
+      'utf-8',
+    );
+
     api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4892,6 +4905,15 @@ for (const k of days) {
     const s = loadSettings();
     s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
     saveSettings(s);
+
+    const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
+    if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(locHistoryDir, 'history.jsonl'),
+      JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
+      'utf-8',
+    );
+
     api.logger.info(`[executive-agent] Public Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
