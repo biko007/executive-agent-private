@@ -1,6 +1,6 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-02-24**
+**Stand: 2026-02-26**
 
 ## Projekt
 
@@ -41,6 +41,7 @@ Trips:       artifacts/personal/travel/<trip-id>.json
 Health:      artifacts/personal/health/health-log.jsonl
 Withings:    artifacts/personal/health/withings-tokens.json
 Settings:    artifacts/personal/health/settings.json (inkl. Standort)
+Loc-History: artifacts/personal/location/history.jsonl
 Fleet:       artifacts/personal/fleet/vehicles.json
 Assets:      artifacts/personal/assets/properties.json
              artifacts/personal/assets/leases.json
@@ -84,5 +85,8 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message)
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Aktuell: /location Endpoint — iOS Shortcut sendet lat/lon als Float-Strings, Skalierungs-Logik (1e7/1e14) entfernt, jetzt direkt parseFloat().
-Stand:   Erledigt. Debug-Logging entfernt, Build + Restart + Test OK. Standort wird korrekt gespeichert (z.B. Altenhaßlau 50.196, 9.190).
+Erledigt (2026-02-26):
+- Location History: Jeder Standort-Update wird als JSONL in artifacts/personal/location/history.jsonl geloggt (inkl. altitude).
+- Briefing Staleness Warning: Bei Standort >6h alt zeigt Briefing `⚠️ Ort (Stand: vor Xh)`. Harte 12h-Grenze (Error) bleibt.
+- Modell-Upgrade: Travel-Info + Travel-Extraktion von Haiku auf claude-sonnet-4-20250514. Mail-Klassifizierung bleibt Haiku.
+- /location Endpoint: iOS Shortcut sendet lat/lon als Float-Strings, direkt parseFloat() (keine Skalierung).
