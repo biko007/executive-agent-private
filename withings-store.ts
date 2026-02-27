@@ -75,6 +75,23 @@ export function saveTokens(t: WithingsTokens): void {
 
 export function isAuthorized(): boolean { return loadTokens() !== null; }
 
+// ── Internal: fetchWithTimeout ────────────────────────────────────────────
+
+async function fetchWithTimeout(url: string, init: any, timeoutMs: number) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...(init || {}), signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`fetch_timeout_after_${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // ── OAuth ──────────────────────────────────────────────────────────────────
 
 const AUTH_URL  = 'https://account.withings.com/oauth2_user/authorize2';
@@ -94,7 +111,7 @@ export function buildAuthUrl(clientId: string, redirectUri: string, state: strin
 async function postForm(url: string, params: Record<string, string>, token?: string): Promise<any> {
   const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(url, { method: 'POST', headers, body: new URLSearchParams(params) });
+  const res = await fetchWithTimeout(url, { method: 'POST', headers, body: new URLSearchParams(params) }, 15000);
   const data: any = await res.json();
   if (data.status !== 0) throw new Error(`Withings API error ${data.status}: ${data.error || JSON.stringify(data)}`);
   return data.body;
@@ -175,30 +192,34 @@ export async function fetchMeasures(token: string, sinceMs: number): Promise<Wit
 // ── Sleep ──────────────────────────────────────────────────────────────────
 
 export async function fetchSleep(token: string, sinceMs: number): Promise<WithingsSleep[]> {
-  // Withings field names: NO underscores (e.g. deepsleepduration, NOT deep_sleep_duration)
+  // Withings field names: mixed conventions (e.g. deepsleepduration vs total_sleep_time)
   const b = await postForm(`${API_BASE}/v2/sleep`, {
     action: 'getsummary',
-    data_fields: 'sleep_score,lightsleepduration,deepsleepduration,remsleepduration,wakeupduration',
+    data_fields: 'sleep_score,total_sleep_time,lightsleepduration,deepsleepduration,remsleepduration,wakeupduration',
     lastupdate: String(Math.floor(sinceMs / 1000)),
   }, token);
 
   // Withings returns multiple series per night (wake-ups split a night).
   // Group by the Withings-provided `date` field (= night date) and aggregate.
-  const nightMap = new Map<string, { light: number; deep: number; rem: number; scores: number[] }>();
+  // Use total_sleep_time from API instead of summing phases (phases may not cover all sleep).
+  const nightMap = new Map<string, { total: number; light: number; deep: number; rem: number; scores: number[] }>();
 
   for (const s of b?.series || []) {
     const d = s.data || {};
+    const total = d.total_sleep_time ?? 0;
     const light = d.lightsleepduration ?? 0;
     const deep  = d.deepsleepduration ?? 0;
     const rem   = d.remsleepduration ?? 0;
-    // Total sleep = light + deep + rem (EXCLUDES wakeup time)
-    if (light + deep + rem <= 0) continue;
+    // Use total_sleep_time if available, otherwise fall back to phase sum
+    const seriesTotal = total > 0 ? total : (light + deep + rem);
+    if (seriesTotal <= 0) continue;
 
     // Prefer Withings `date` field; fall back to enddate-derived date
     const nightDate: string = s.date
       || new Date((s.enddate || s.startdate) * 1000).toISOString().slice(0, 10);
 
-    const agg = nightMap.get(nightDate) || { light: 0, deep: 0, rem: 0, scores: [] };
+    const agg = nightMap.get(nightDate) || { total: 0, light: 0, deep: 0, rem: 0, scores: [] };
+    agg.total += seriesTotal;
     agg.light += light;
     agg.deep  += deep;
     agg.rem   += rem;
@@ -208,13 +229,12 @@ export async function fetchSleep(token: string, sinceMs: number): Promise<Within
 
   const out: WithingsSleep[] = [];
   for (const [date, agg] of nightMap) {
-    const totalSec = agg.light + agg.deep + agg.rem;
     const avgScore = agg.scores.length
       ? Math.round(agg.scores.reduce((a, b) => a + b, 0) / agg.scores.length)
       : undefined;
     out.push({
       date,
-      total_h: Math.round(totalSec / 360) / 10,
+      total_h: Math.round(agg.total / 360) / 10,
       deep_h:  Math.round(agg.deep / 360) / 10,
       rem_h:   Math.round(agg.rem / 360) / 10,
       light_h: Math.round(agg.light / 360) / 10,

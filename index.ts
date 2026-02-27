@@ -1086,6 +1086,7 @@ export default function (api: any) {
       port: yahooImapPort,
       secure: true,
       auth: { user: yahooUser, pass: yahooPass },
+      socketTimeout: 15000,
     });
 
     await client.connect();
@@ -1116,6 +1117,7 @@ export default function (api: any) {
       port: yahooImapPort,
       secure: true,
       auth: { user: yahooUser, pass: yahooPass },
+      socketTimeout: 15000,
     });
 
     await client.connect();
@@ -3562,9 +3564,27 @@ for (const k of days) {
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
     parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
 
+    // ── WETTER + INBOX + KALENDER parallel fetchen ──
+    const rangeStart = new Date(now); rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(rangeStart); rangeEnd.setDate(rangeEnd.getDate() + 7); rangeEnd.setHours(23, 59, 59, 999);
+    const calUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+      `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
+      `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
+      `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`;
+
+    const perSource = 10;
+    const [weatherResult, inboxResult, calendarResult] = await Promise.all([
+      fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null as any),
+      Promise.all([
+        m365Enabled ? m365Unread(perSource).catch(() => [] as any[]) : [],
+        yahooEnabled ? yahooUnread(perSource).catch(() => [] as any[]) : [],
+      ]),
+      m365Enabled ? graphGet(tenantId, clientId, m365Secret, calUrl).catch(() => null) : null,
+    ]);
+
     // ── WETTER (immer) ──
-    try {
-      const w = await fetchWeatherBriefing(loc.lat, loc.lon);
+    if (weatherResult) {
+      const w = weatherResult;
       parts.push('');
       parts.push(SEP);
       parts.push(`🌤️ *WETTER — ${loc.label}*`);
@@ -3574,19 +3594,15 @@ for (const k of days) {
       if (w.todayRainHour !== null) todayLine += `, Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00 🌧️`;
       parts.push(todayLine);
       parts.push(`- Morgen:  ${w.tomorrowMin}–${w.tomorrowMax}°C, ${w.tomorrowDesc}`);
-    } catch { /* wetter optional */ }
+    }
 
     // ── INBOX ──
-    try {
-      const perSource = 10;
-      const [mMsgs, yMsgs] = await Promise.all([
-        m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
-        yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
-      ]);
+    {
+      const [mMsgs, yMsgs] = inboxResult;
       const m365Count = mMsgs.length;
       const yahooCount = yMsgs.length;
       if (m365Count > 0 || yahooCount > 0) {
-        const combined = [...mMsgs, ...yMsgs].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1));
+        const combined = [...mMsgs, ...yMsgs].sort((a: any, b: any) => (a.dateIso < b.dateIso ? 1 : -1));
         const newest = combined[0];
         parts.push('');
         parts.push(SEP);
@@ -3596,23 +3612,12 @@ for (const k of days) {
         if (yahooCount > 0) parts.push(`- ${yahooCount} ungelesene Yahoo-Mail${yahooCount > 1 ? 's' : ''}`);
         if (newest) parts.push(`  → Neueste: "${newest.subject}" — ${newest.from}`);
       }
-    } catch { /* inbox optional */ }
+    }
 
     // ── KALENDER (nächste 7 Tage, kompakt) ──
-    try {
-      ensureM365Configured();
-      const rangeStart = new Date(now); rangeStart.setHours(0, 0, 0, 0);
-      const rangeEnd = new Date(rangeStart); rangeEnd.setDate(rangeEnd.getDate() + 7); rangeEnd.setHours(23, 59, 59, 999);
-
-      const calData = await graphGet(tenantId, clientId, m365Secret,
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-        `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
-        `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
-        `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`);
-      const allEvs: any[] = calData?.value || [];
-
+    {
+      const allEvs: any[] = calendarResult?.value || [];
       if (allEvs.length > 0) {
-        // Group events by day (Berlin time)
         const fmtDayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
         const fmtWeekday = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'short' });
         const fmtDayMonth = new Intl.DateTimeFormat('de-DE', { timeZone: tz, day: '2-digit', month: '2-digit' });
@@ -3647,7 +3652,7 @@ for (const k of days) {
           }
         }
       }
-    } catch { /* calendar optional */ }
+    }
 
     // ── DRAFTS ──
     try {
@@ -3784,9 +3789,24 @@ for (const k of days) {
     description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
     handler: async () => {
       try {
-        await syncWithingsForBriefing();
-        return { text: await generateBriefingText() };
+        const BRIEFING_TIMEOUT_MS = 45000;
+        const briefingWork = async () => {
+          const withingsPromise = syncWithingsForBriefing().catch((e: any) => {
+            api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
+          });
+          const text = await generateBriefingText();
+          await withingsPromise;
+          return text;
+        };
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
+        );
+        const text = await Promise.race([briefingWork(), timeoutPromise]);
+        return { text };
       } catch (e: any) {
+        if (e?.message === 'briefing_timeout') {
+          return { text: '⏱️ Briefing abgebrochen: Timeout nach 45s. Bitte erneut versuchen.' };
+        }
         if (e?.message === 'phone_location_missing' || e?.message === 'phone_location_missing_timestamp') {
           return { text: '❌ Briefing abgebrochen: kein aktueller Handy-Standort vorhanden.\nBitte Standort in Telegram teilen, dann /briefing erneut.' };
         }
@@ -5033,11 +5053,20 @@ for (const k of days) {
       const today   = berlinDate(0);
 
       if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
-        // Withings-Sync darf fehlschlagen ohne Briefing zu blockieren
-        try { await syncWithingsForBriefing(); } catch (syncErr: any) {
-          api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
-        }
-        const text = await generateBriefingText();
+        // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
+        const BRIEFING_TIMEOUT_MS = 45000;
+        const briefingWork = async () => {
+          const withingsPromise = syncWithingsForBriefing().catch((syncErr: any) => {
+            api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+          });
+          const text = await generateBriefingText();
+          await withingsPromise;
+          return text;
+        };
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
+        );
+        const text = await Promise.race([briefingWork(), timeoutPromise]);
         await sendTelegram(s.telegramChatId, text);
         // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
         lastBriefingDate = today;

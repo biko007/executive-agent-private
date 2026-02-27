@@ -818,6 +818,7 @@ export default function (api) {
             port: yahooImapPort,
             secure: true,
             auth: { user: yahooUser, pass: yahooPass },
+            socketTimeout: 15000,
         });
         await client.connect();
         await client.mailboxOpen("INBOX");
@@ -843,6 +844,7 @@ export default function (api) {
             port: yahooImapPort,
             secure: true,
             auth: { user: yahooUser, pass: yahooPass },
+            socketTimeout: 15000,
         });
         await client.connect();
         await client.mailboxOpen("INBOX");
@@ -2737,12 +2739,13 @@ export default function (api) {
     api.registerCommand({
         name: 'instatop',
         description: 'Top Posts nach Engagement: /instatop [n]',
-        handler: async (_args) => {
+        acceptsArgs: true,
+        handler: async (ctx) => {
             try {
                 if (!instaAuthorized())
                     return { text: '❌ Instagram nicht verbunden.' };
                 const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
-                const n = Math.min(Math.max(parseInt(String(_args?.text || '5')) || 5, 1), 20);
+                const n = Math.min(Math.max(parseInt(String(ctx.args || '5')) || 5, 1), 20);
                 const media = await fetchMedia(tokens.access_token, tokens.ig_business_id, false);
                 const sorted = [...media].sort((a, b) => b.engagement - a.engagement).slice(0, n);
                 if (!sorted.length)
@@ -2870,9 +2873,10 @@ export default function (api) {
     api.registerCommand({
         name: 'instadraft',
         description: 'Instagram Draft erstellen: /instadraft <plan-nr | freitext>',
-        handler: async (_args) => {
+        acceptsArgs: true,
+        handler: async (ctx) => {
             try {
-                const input = String(_args?.text || '').trim();
+                const input = String(ctx.args || '').trim();
                 if (!input)
                     return { text: '❌ Nutzung: /instadraft <plan-nr> oder /instadraft <freitext>' };
                 const planNr = parseInt(input);
@@ -2968,9 +2972,10 @@ export default function (api) {
     api.registerCommand({
         name: 'instaedit',
         description: 'Instagram Draft anzeigen/bearbeiten: /instaedit <id> [key=value]',
-        handler: async (_args) => {
+        acceptsArgs: true,
+        handler: async (ctx) => {
             try {
-                const parts = String(_args?.text || '').trim().split(/\s+/);
+                const parts = String(ctx.args || '').trim().split(/\s+/);
                 const id = parts[0];
                 if (!id)
                     return { text: '❌ Nutzung: /instaedit <id> [caption=...|status=...|hashtags=...]' };
@@ -3133,9 +3138,28 @@ export default function (api) {
         parts.push(`📍 ${locLabel}`);
         parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
         parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
+        // ── WETTER + INBOX + KALENDER parallel fetchen ──
+        const rangeStart = new Date(now);
+        rangeStart.setHours(0, 0, 0, 0);
+        const rangeEnd = new Date(rangeStart);
+        rangeEnd.setDate(rangeEnd.getDate() + 7);
+        rangeEnd.setHours(23, 59, 59, 999);
+        const calUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+            `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
+            `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
+            `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`;
+        const perSource = 10;
+        const [weatherResult, inboxResult, calendarResult] = await Promise.all([
+            fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null),
+            Promise.all([
+                m365Enabled ? m365Unread(perSource).catch(() => []) : [],
+                yahooEnabled ? yahooUnread(perSource).catch(() => []) : [],
+            ]),
+            m365Enabled ? graphGet(tenantId, clientId, m365Secret, calUrl).catch(() => null) : null,
+        ]);
         // ── WETTER (immer) ──
-        try {
-            const w = await fetchWeatherBriefing(loc.lat, loc.lon);
+        if (weatherResult) {
+            const w = weatherResult;
             parts.push('');
             parts.push(SEP);
             parts.push(`🌤️ *WETTER — ${loc.label}*`);
@@ -3147,14 +3171,9 @@ export default function (api) {
             parts.push(todayLine);
             parts.push(`- Morgen:  ${w.tomorrowMin}–${w.tomorrowMax}°C, ${w.tomorrowDesc}`);
         }
-        catch { /* wetter optional */ }
         // ── INBOX ──
-        try {
-            const perSource = 10;
-            const [mMsgs, yMsgs] = await Promise.all([
-                m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
-                yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
-            ]);
+        {
+            const [mMsgs, yMsgs] = inboxResult;
             const m365Count = mMsgs.length;
             const yahooCount = yMsgs.length;
             if (m365Count > 0 || yahooCount > 0) {
@@ -3172,22 +3191,10 @@ export default function (api) {
                     parts.push(`  → Neueste: "${newest.subject}" — ${newest.from}`);
             }
         }
-        catch { /* inbox optional */ }
         // ── KALENDER (nächste 7 Tage, kompakt) ──
-        try {
-            ensureM365Configured();
-            const rangeStart = new Date(now);
-            rangeStart.setHours(0, 0, 0, 0);
-            const rangeEnd = new Date(rangeStart);
-            rangeEnd.setDate(rangeEnd.getDate() + 7);
-            rangeEnd.setHours(23, 59, 59, 999);
-            const calData = await graphGet(tenantId, clientId, m365Secret, `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-                `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
-                `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
-                `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`);
-            const allEvs = calData?.value || [];
+        {
+            const allEvs = calendarResult?.value || [];
             if (allEvs.length > 0) {
-                // Group events by day (Berlin time)
                 const fmtDayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
                 const fmtWeekday = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'short' });
                 const fmtDayMonth = new Intl.DateTimeFormat('de-DE', { timeZone: tz, day: '2-digit', month: '2-digit' });
@@ -3220,7 +3227,6 @@ export default function (api) {
                 }
             }
         }
-        catch { /* calendar optional */ }
         // ── DRAFTS ──
         try {
             const ds = listDrafts('draft', 5);
@@ -3353,10 +3359,23 @@ export default function (api) {
         description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
         handler: async () => {
             try {
-                await syncWithingsForBriefing();
-                return { text: await generateBriefingText() };
+                const BRIEFING_TIMEOUT_MS = 45000;
+                const briefingWork = async () => {
+                    const withingsPromise = syncWithingsForBriefing().catch((e) => {
+                        api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
+                    });
+                    const text = await generateBriefingText();
+                    await withingsPromise;
+                    return text;
+                };
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
+                const text = await Promise.race([briefingWork(), timeoutPromise]);
+                return { text };
             }
             catch (e) {
+                if (e?.message === 'briefing_timeout') {
+                    return { text: '⏱️ Briefing abgebrochen: Timeout nach 45s. Bitte erneut versuchen.' };
+                }
                 if (e?.message === 'phone_location_missing' || e?.message === 'phone_location_missing_timestamp') {
                     return { text: '❌ Briefing abgebrochen: kein aktueller Handy-Standort vorhanden.\nBitte Standort in Telegram teilen, dann /briefing erneut.' };
                 }
@@ -4565,14 +4584,18 @@ export default function (api) {
             const nowHHMM = `${hh}:${mm}`;
             const today = berlinDate(0);
             if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
-                // Withings-Sync darf fehlschlagen ohne Briefing zu blockieren
-                try {
-                    await syncWithingsForBriefing();
-                }
-                catch (syncErr) {
-                    api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
-                }
-                const text = await generateBriefingText();
+                // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
+                const BRIEFING_TIMEOUT_MS = 45000;
+                const briefingWork = async () => {
+                    const withingsPromise = syncWithingsForBriefing().catch((syncErr) => {
+                        api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+                    });
+                    const text = await generateBriefingText();
+                    await withingsPromise;
+                    return text;
+                };
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
+                const text = await Promise.race([briefingWork(), timeoutPromise]);
                 await sendTelegram(s.telegramChatId, text);
                 // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
                 lastBriefingDate = today;
