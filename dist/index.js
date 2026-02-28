@@ -3295,7 +3295,13 @@ export default function (api) {
             const sleepDays = Array.from(sleepByDay.values())
                 .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
             const lastSleep = sleepDays.length ? sleepDays[sleepDays.length - 1] : null;
-            if (lastSleep) {
+            const todayStr = new Intl.DateTimeFormat('en-CA', {
+                timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date());
+            const lastSleepDay = lastSleep ? new Intl.DateTimeFormat('en-CA', {
+                timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date(lastSleep.timestamp)) : null;
+            if (lastSleep && lastSleepDay === todayStr) {
                 const val = Number(lastSleep.value || 0);
                 const hours = Math.floor(val);
                 const mins = Math.round((val - hours) * 60);
@@ -3308,6 +3314,9 @@ export default function (api) {
                     sleepLine += `  (Ø 7 Tage: ${avgH}h ${String(avgM).padStart(2, '0')}min)`;
                 }
                 healthLines.push(sleepLine);
+            }
+            else {
+                healthLines.push('- Schlaf:   Keine Schlafdaten (letzte Nacht)');
             }
             // Alerts
             const alerts = checkHealthAlerts();

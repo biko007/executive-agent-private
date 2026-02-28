@@ -24,6 +24,8 @@ export interface MediaItem {
   id: string;
   caption: string;
   media_type: string;       // IMAGE, VIDEO, CAROUSEL_ALBUM
+  media_url?: string;       // image/video URL (IMAGE, CAROUSEL_ALBUM)
+  thumbnail_url?: string;   // thumbnail URL (VIDEO only)
   permalink: string;
   timestamp: string;        // ISO 8601
   like_count: number;
@@ -259,7 +261,7 @@ export async function fetchMedia(token: string, igId: string, force = false): Pr
   }
 
   const res = await graphGet(`/${igId}/media`, token, {
-    fields: 'id,caption,media_type,permalink,timestamp,like_count,comments_count',
+    fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
     limit: '50',
   });
 
@@ -271,6 +273,8 @@ export async function fetchMedia(token: string, igId: string, force = false): Pr
       id: m.id,
       caption: m.caption || '',
       media_type: m.media_type || 'IMAGE',
+      media_url: m.media_url || undefined,
+      thumbnail_url: m.thumbnail_url || undefined,
       permalink: m.permalink || '',
       timestamp: m.timestamp || '',
       like_count: likes,
