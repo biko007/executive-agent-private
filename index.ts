@@ -361,15 +361,25 @@ interface WeatherDay {
   precip: number;
 }
 
+interface WeatherDayData {
+  min: number;
+  max: number;
+  desc: string;
+  wind: number;       // km/h max
+  precip: number;     // mm
+  uv: number;
+}
+
 interface WeatherBriefing {
   currentTemp: number;
   currentDesc: string;
-  todayMin: number;
-  todayMax: number;
   todayRainHour: number | null;  // first hour with rain, or null
-  tomorrowMin: number;
-  tomorrowMax: number;
-  tomorrowDesc: string;
+  days: [WeatherDayData, WeatherDayData, WeatherDayData]; // heute, morgen, übermorgen
+  pressureHpa: number;     // current pressure_msl
+  pressureTrend: '↑ steigend' | '↓ fallend' | '→ stabil';
+  // legacy compat
+  todayMin: number; todayMax: number;
+  tomorrowMin: number; tomorrowMax: number; tomorrowDesc: string;
 }
 
 const WMO_CODES: Record<number, string> = {
@@ -394,10 +404,10 @@ async function fetchWeatherBriefing(lat: number, lon: number): Promise<WeatherBr
   const url =
     `https://api.open-meteo.com/v1/forecast` +
     `?latitude=${lat}&longitude=${lon}` +
-    `&current=temperature_2m,weather_code` +
-    `&hourly=precipitation&forecast_hours=24` +
-    `&daily=temperature_2m_max,temperature_2m_min,weather_code` +
-    `&timezone=Europe%2FBerlin&forecast_days=2`;
+    `&current=temperature_2m,weather_code,pressure_msl` +
+    `&hourly=precipitation,pressure_msl&forecast_hours=24&past_hours=3` +
+    `&daily=temperature_2m_max,temperature_2m_min,weather_code,wind_speed_10m_max,precipitation_sum,uv_index_max` +
+    `&timezone=Europe%2FBerlin&forecast_days=3`;
 
   const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
   if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
@@ -408,11 +418,26 @@ async function fetchWeatherBriefing(lat: number, lon: number): Promise<WeatherBr
   const currentDesc = wmoToText(data.current?.weather_code ?? 0);
 
   const d = data.daily;
-  const todayMin  = Math.round(d?.temperature_2m_min?.[0] ?? 0);
-  const todayMax  = Math.round(d?.temperature_2m_max?.[0] ?? 0);
-  const tomorrowMin  = Math.round(d?.temperature_2m_min?.[1] ?? 0);
-  const tomorrowMax  = Math.round(d?.temperature_2m_max?.[1] ?? 0);
-  const tomorrowDesc = wmoToText(d?.weather_code?.[1] ?? 0);
+  const days: [WeatherDayData, WeatherDayData, WeatherDayData] = [0, 1, 2].map(i => ({
+    min: Math.round(d?.temperature_2m_min?.[i] ?? 0),
+    max: Math.round(d?.temperature_2m_max?.[i] ?? 0),
+    desc: wmoToText(d?.weather_code?.[i] ?? 0),
+    wind: Math.round(d?.wind_speed_10m_max?.[i] ?? 0),
+    precip: Math.round((d?.precipitation_sum?.[i] ?? 0) * 10) / 10,
+    uv: Math.round(d?.uv_index_max?.[i] ?? 0),
+  })) as [WeatherDayData, WeatherDayData, WeatherDayData];
+
+  // Pressure + trend from hourly data (last 3h)
+  const pressureHpa = Math.round(data.current?.pressure_msl ?? 0);
+  const hourlyPressure: number[] = data.hourly?.pressure_msl ?? [];
+  let pressureTrend: WeatherBriefing['pressureTrend'] = '→ stabil';
+  if (hourlyPressure.length >= 4) {
+    const oldest = hourlyPressure[0];
+    const newest = hourlyPressure[hourlyPressure.length - 1];
+    const diff = newest - oldest;
+    if (diff > 1.5) pressureTrend = '↑ steigend';
+    else if (diff < -1.5) pressureTrend = '↓ fallend';
+  }
 
   // Find first hour with precipitation > 0
   let todayRainHour: number | null = null;
@@ -426,7 +451,12 @@ async function fetchWeatherBriefing(lat: number, lon: number): Promise<WeatherBr
     }
   }
 
-  return { currentTemp, currentDesc, todayMin, todayMax, todayRainHour, tomorrowMin, tomorrowMax, tomorrowDesc };
+  return {
+    currentTemp, currentDesc, todayRainHour, days, pressureHpa, pressureTrend,
+    // legacy compat
+    todayMin: days[0].min, todayMax: days[0].max,
+    tomorrowMin: days[1].min, tomorrowMax: days[1].max, tomorrowDesc: days[1].desc,
+  };
 }
 
 async function fetchWeatherForecast(lat: number, lon: number): Promise<WeatherDay[]> {
@@ -681,6 +711,8 @@ function getLocationSettings(): LocationSetting {
 interface AstroData {
   sunrise: string;   // HH:MM
   sunset: string;    // HH:MM
+  moonrise: string | null;  // HH:MM or null (no rise today)
+  moonset: string | null;   // HH:MM or null (no set today)
   moonIcon: string;
   moonPhase: string;
   illumination: number; // 0-100
@@ -693,6 +725,7 @@ function getAstroData(date: Date, location: LocationSetting = DEFAULT_LOCATION):
   }).format(d);
 
   const sun = SunCalc.getTimes(date, location.lat, location.lon);
+  const moonTimes = SunCalc.getMoonTimes(date, location.lat, location.lon);
   const moon = SunCalc.getMoonIllumination(date);
   const phase = moon.phase;
 
@@ -710,6 +743,8 @@ function getAstroData(date: Date, location: LocationSetting = DEFAULT_LOCATION):
   return {
     sunrise: fmt(sun.sunrise),
     sunset: fmt(sun.sunset),
+    moonrise: moonTimes.rise ? fmt(moonTimes.rise) : null,
+    moonset: moonTimes.set ? fmt(moonTimes.set) : null,
     moonIcon,
     moonPhase,
     illumination: Math.round(moon.fraction * 100),
@@ -3521,26 +3556,23 @@ for (const k of days) {
     }
   }
 
-  function getPhoneLocationForBriefingOrThrow(now: Date): LocationSetting {
+  function getBestEffortLocationForBriefing(now: Date): { loc: LocationSetting; isStale: boolean } {
     const s = loadSettings();
     const loc = s.location;
 
+    // Wenn kein Handy-Standort vorhanden: auf gespeicherten/default Standort fallen
     if (!loc || loc.lat == null || loc.lon == null) {
-      throw new Error('phone_location_missing');
+      return { loc: getLocationSettings(), isStale: true };
     }
 
-    // Standort muss frisch sein: max 12h alt
+    // Standort-Frische prüfen, aber NICHT abbrechen
     const updatedAtMs = loc.updatedAt ? Date.parse(loc.updatedAt) : NaN;
     if (!Number.isFinite(updatedAtMs)) {
-      throw new Error('phone_location_missing_timestamp');
+      return { loc, isStale: true };
     }
     const ageMs = now.getTime() - updatedAtMs;
     const maxAgeMs = 12 * 60 * 60 * 1000;
-    if (ageMs > maxAgeMs) {
-      throw new Error('phone_location_stale');
-    }
-
-    return loc;
+    return { loc, isStale: ageMs > maxAgeMs };
   }
 
   async function generateBriefingText(): Promise<string> {
@@ -3553,15 +3585,23 @@ for (const k of days) {
     const parts: string[] = [];
 
     // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
-    const loc = getPhoneLocationForBriefingOrThrow(now);
+    const locInfo = getBestEffortLocationForBriefing(now);
+    const loc = locInfo.loc;
     const locAgeMs = loc.updatedAt ? now.getTime() - Date.parse(loc.updatedAt) : Infinity;
-    const locLabel = locAgeMs > 6 * 3600_000
-      ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
-      : loc.label;
+    const locLabel = !Number.isFinite(locAgeMs)
+      ? `⚠️ ${loc.label} (geschätzt)`
+      : locAgeMs > 6 * 3600_000
+        ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
+        : loc.label;
     const astro = getAstroData(now, loc);
     parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
     parts.push(`📍 ${locLabel}`);
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
+    const moonTimeParts: string[] = [];
+    if (astro.moonrise) moonTimeParts.push(`Aufgang ${astro.moonrise}`);
+    if (astro.moonset) moonTimeParts.push(`Untergang ${astro.moonset}`);
+    const moonTimeStr = moonTimeParts.length ? moonTimeParts.join('  ·  ') : 'nicht sichtbar';
+    parts.push(`🌙 ${moonTimeStr}`);
     parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
 
     // ── WETTER + INBOX + KALENDER parallel fetchen ──
@@ -3585,15 +3625,22 @@ for (const k of days) {
     // ── WETTER (immer) ──
     if (weatherResult) {
       const w = weatherResult;
+      const [td, tm, tu] = w.days;
       parts.push('');
       parts.push(SEP);
       parts.push(`🌤️ *WETTER — ${loc.label}*`);
       parts.push(SEP);
-      parts.push(`- Jetzt:   ${w.currentTemp}°C, ${w.currentDesc}`);
-      let todayLine = `- Heute:   ${w.todayMin}–${w.todayMax}°C`;
-      if (w.todayRainHour !== null) todayLine += `, Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00 🌧️`;
-      parts.push(todayLine);
-      parts.push(`- Morgen:  ${w.tomorrowMin}–${w.tomorrowMax}°C, ${w.tomorrowDesc}`);
+      parts.push(`Jetzt: ${w.currentTemp}°C, ${w.currentDesc}`);
+      if (w.todayRainHour !== null) parts.push(`🌧️ Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00`);
+      parts.push('');
+      // Monospace table: Heute / Morgen / Überm.
+      const r = (s: string) => (s + ' ').padStart(9);
+      parts.push('`          │  Heute  │ Morgen  │ Überm.  `');
+      parts.push(`\`Temp:     │${r(`${td.min}–${td.max}°C`)}│${r(`${tm.min}–${tm.max}°C`)}│${r(`${tu.min}–${tu.max}°C`)}\``);
+      parts.push(`\`Wind:     │${r(`${td.wind} km/h`)}│${r(`${tm.wind} km/h`)}│${r(`${tu.wind} km/h`)}\``);
+      parts.push(`\`Regen:    │${r(`${td.precip} mm`)}│${r(`${tm.precip} mm`)}│${r(`${tu.precip} mm`)}\``);
+      parts.push(`\`UV:       │${r(`${td.uv}`)}│${r(`${tm.uv}`)}│${r(`${tu.uv}`)}\``);
+      parts.push(`\`Druck:    ${w.pressureHpa} hPa (${w.pressureTrend})\``);;
     }
 
     // ── INBOX ──
@@ -3815,12 +3862,6 @@ for (const k of days) {
       } catch (e: any) {
         if (e?.message === 'briefing_timeout') {
           return { text: '⏱️ Briefing abgebrochen: Timeout nach 45s. Bitte erneut versuchen.' };
-        }
-        if (e?.message === 'phone_location_missing' || e?.message === 'phone_location_missing_timestamp') {
-          return { text: '❌ Briefing abgebrochen: kein aktueller Handy-Standort vorhanden.\nBitte Standort in Telegram teilen, dann /briefing erneut.' };
-        }
-        if (e?.message === 'phone_location_stale') {
-          return { text: '❌ Briefing abgebrochen: Handy-Standort ist älter als 12h.\nBitte aktuellen Standort in Telegram teilen, dann /briefing erneut.' };
         }
         return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
       }
