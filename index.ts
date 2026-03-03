@@ -5395,8 +5395,8 @@ for (const k of days) {
     api.logger.error(`[executive-agent] Public Location-Server Fehler: ${e.message}`);
   });
 
-  publicLocationServer.listen(publicLocationPort, '0.0.0.0', () => {
-    api.logger.info(`[executive-agent] Location-API (public) gestartet auf 0.0.0.0:${publicLocationPort}`);
+  publicLocationServer.listen(publicLocationPort, '127.0.0.1', () => {
+    api.logger.info(`[executive-agent] Location-API gestartet auf 127.0.0.1:${publicLocationPort} (via nginx/HTTPS)`);
   });
 
   api.logger.info("[executive-agent] loaded v25 (instagram integration)");
