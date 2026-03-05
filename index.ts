@@ -3597,12 +3597,12 @@ for (const k of days) {
     parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
     parts.push(`📍 ${locLabel}`);
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
+    parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
     const moonTimeParts: string[] = [];
     if (astro.moonrise) moonTimeParts.push(`Aufgang ${astro.moonrise}`);
     if (astro.moonset) moonTimeParts.push(`Untergang ${astro.moonset}`);
     const moonTimeStr = moonTimeParts.length ? moonTimeParts.join('  ·  ') : 'nicht sichtbar';
     parts.push(`🌙 ${moonTimeStr}`);
-    parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
 
     // ── WETTER + INBOX + KALENDER parallel fetchen ──
     const rangeStart = new Date(now); rangeStart.setHours(0, 0, 0, 0);
@@ -3633,14 +3633,25 @@ for (const k of days) {
       parts.push(`Jetzt: ${w.currentTemp}°C, ${w.currentDesc}`);
       if (w.todayRainHour !== null) parts.push(`🌧️ Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00`);
       parts.push('');
-      // Monospace table: Heute / Morgen / Überm.
-      const r = (s: string) => (s + ' ').padStart(9);
-      parts.push('`          │  Heute  │ Morgen  │ Überm.  `');
-      parts.push(`\`Temp:     │${r(`${td.min}–${td.max}°C`)}│${r(`${tm.min}–${tm.max}°C`)}│${r(`${tu.min}–${tu.max}°C`)}\``);
-      parts.push(`\`Wind:     │${r(`${td.wind} km/h`)}│${r(`${tm.wind} km/h`)}│${r(`${tu.wind} km/h`)}\``);
-      parts.push(`\`Regen:    │${r(`${td.precip} mm`)}│${r(`${tm.precip} mm`)}│${r(`${tu.precip} mm`)}\``);
-      parts.push(`\`UV:       │${r(`${td.uv}`)}│${r(`${tm.uv}`)}│${r(`${tu.uv}`)}\``);
-      parts.push(`\`Druck:    ${w.pressureHpa} hPa (${w.pressureTrend})\``);;
+      // Monospace pre-block table, max 35 chars, pipes aligned
+      const L = 9; // label column width
+      const C = 6; // data column width
+      const p = (s: string) => s.padStart(C);
+      const lp = (s: string) => s.padEnd(L);
+      const blank = ' '.repeat(C);
+      const tbl: string[] = [];
+      tbl.push(`${lp('')}|${p('Heu')}|${p('Mor')}|${p('Übm')}`);
+      tbl.push(`${lp('Temp:')}|${p(`${td.min}–${td.max}`)}|${p(`${tm.min}–${tm.max}`)}|${p(`${tu.min}–${tu.max}`)}`);
+      tbl.push(`${lp('°C')}|${blank}|${blank}|`);
+      tbl.push(`${lp('Wind:')}|${p(`${td.wind}`)}|${p(`${tm.wind}`)}|${p(`${tu.wind}`)}`);
+      tbl.push(`${lp('km/h')}|${blank}|${blank}|`);
+      tbl.push(`${lp('Regen:')}|${p(`${td.precip}`)}|${p(`${tm.precip}`)}|${p(`${tu.precip}`)}`);
+      tbl.push(`${lp('mm')}|${blank}|${blank}|`);
+      tbl.push(`${lp('UV:')}|${p(`${td.uv}`)}|${p(`${tm.uv}`)}|${p(`${tu.uv}`)}`);
+      tbl.push(`${lp('(0-11)')}|${blank}|${blank}|`);
+      tbl.push(`${lp('Druck:')} ${w.pressureHpa} (${w.pressureTrend})`);
+      tbl.push('hPa');
+      parts.push('```\n' + tbl.join('\n') + '\n```');
     }
 
     // ── INBOX ──

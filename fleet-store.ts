@@ -40,6 +40,7 @@ export interface Vehicle {
   color?: string;
   mileage?: number;
   tuevDate?: string;
+  vehicleTax?: number;
   insurance?: Insurance;
   serviceLog: ServiceEntry[];
   documents: VehicleDocument[];
