@@ -2,11 +2,12 @@ import fs from "node:fs";
 import SunCalc from "suncalc";
 import { createTrip, getTrip, listTrips, addSegment, removeSegment, updateSegment, generatePacklist, updateTrip } from "./travel-store.js";
 import { listProperties, getProperty, getLeaseByUnit, setLease, getOperatingCosts, setOperatingCosts, calculateNk, seedInitialData, formatPropertyList, formatPropertyDetail, formatRentOverview, formatNkResult, COST_CATEGORIES, } from "./assets-store.js";
-import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts, hasEntryForDate } from "./health-store.js";
+import { appendEntry, appendEntryWithTimestamp, readEntries, lastEntry, summarize, formatSummary, getWeightTrend, getSleepTrend, checkHealthAlerts, hasEntryForDate, upsertEntryForDate } from "./health-store.js";
 import { buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, fetchMeasures, fetchSleep as fetchWithingsSleep, fetchActivity, fetchWorkouts, } from "./withings-store.js";
 import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
+import { getAllInvestments, getInvestment, createInvestment, updateInvestment, addValuation, getValuationHistory, calculateIRR, formatInvestmentList, formatInvestmentDetail, } from "./pe-store.js";
 import { saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, fetchInsights, fetchMedia, loadInsightsCache, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, } from "./instagram-store.js";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -2655,19 +2656,25 @@ export default function (api) {
                 // ── Schlaf (aggregiert pro Nacht, dedup) ──
                 try {
                     const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs);
-                    let sleepNew = 0;
+                    let sleepNew = 0, sleepUpdated = 0;
                     for (const s of sleeps) {
-                        if (hasEntryForDate('sleep', s.date))
-                            continue; // skip if already synced
                         const ts = new Date(`${s.date}T03:00:00.000Z`);
-                        appendEntryWithTimestamp(ts, {
+                        const result = upsertEntryForDate(s.date, ts, {
                             type: 'sleep', value: s.total_h, unit: 'h',
                             deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
                             quality: s.score, source: 'withings',
                         });
-                        sleepNew++;
+                        if (result === 'inserted')
+                            sleepNew++;
+                        else if (result === 'updated')
+                            sleepUpdated++;
                     }
-                    parts.push(`😴 Schlaf: ${sleeps.length} Nächte (${sleepNew} neu)`);
+                    const sleepParts = [`${sleeps.length} Nächte`];
+                    if (sleepNew)
+                        sleepParts.push(`${sleepNew} neu`);
+                    if (sleepUpdated)
+                        sleepParts.push(`${sleepUpdated} aktualisiert`);
+                    parts.push(`😴 Schlaf: ${sleepParts.join(', ')}`);
                     totalNew += sleepNew;
                 }
                 catch (e) {
@@ -3111,10 +3118,8 @@ export default function (api) {
             }
             const sleeps = await fetchWithingsSleep(tokens.access_token, sinceMs).catch(() => []);
             for (const s of sleeps) {
-                if (hasEntryForDate('sleep', s.date))
-                    continue;
                 const ts = new Date(`${s.date}T03:00:00.000Z`);
-                appendEntryWithTimestamp(ts, {
+                upsertEntryForDate(s.date, ts, {
                     type: 'sleep', value: s.total_h, unit: 'h',
                     deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
                     quality: s.score, source: 'withings',
@@ -3189,37 +3194,23 @@ export default function (api) {
             ]),
             m365Enabled ? graphGet(tenantId, clientId, m365Secret, calUrl).catch(() => null) : null,
         ]);
-        // ── WETTER (immer) ──
+        // ── WETTER (reiner Text, Zeilenformat) ──
         if (weatherResult) {
             const w = weatherResult;
             const [td, tm, tu] = w.days;
             parts.push('');
             parts.push(SEP);
-            parts.push(`🌤️ *WETTER — ${loc.label}*`);
+            parts.push(`🌤 *WETTER — ${loc.label}*`);
             parts.push(SEP);
             parts.push(`Jetzt: ${w.currentTemp}°C, ${w.currentDesc}`);
             if (w.todayRainHour !== null)
-                parts.push(`🌧️ Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00`);
+                parts.push(`🌧 Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00`);
             parts.push('');
-            // Monospace pre-block table, max 35 chars, pipes aligned
-            const L = 9; // label column width
-            const C = 6; // data column width
-            const p = (s) => s.padStart(C);
-            const lp = (s) => s.padEnd(L);
-            const blank = ' '.repeat(C);
-            const tbl = [];
-            tbl.push(`${lp('')}|${p('Heu')}|${p('Mor')}|${p('Übm')}`);
-            tbl.push(`${lp('Temp:')}|${p(`${td.min}–${td.max}`)}|${p(`${tm.min}–${tm.max}`)}|${p(`${tu.min}–${tu.max}`)}`);
-            tbl.push(`${lp('°C')}|${blank}|${blank}|`);
-            tbl.push(`${lp('Wind:')}|${p(`${td.wind}`)}|${p(`${tm.wind}`)}|${p(`${tu.wind}`)}`);
-            tbl.push(`${lp('km/h')}|${blank}|${blank}|`);
-            tbl.push(`${lp('Regen:')}|${p(`${td.precip}`)}|${p(`${tm.precip}`)}|${p(`${tu.precip}`)}`);
-            tbl.push(`${lp('mm')}|${blank}|${blank}|`);
-            tbl.push(`${lp('UV:')}|${p(`${td.uv}`)}|${p(`${tm.uv}`)}|${p(`${tu.uv}`)}`);
-            tbl.push(`${lp('(0-11)')}|${blank}|${blank}|`);
-            tbl.push(`${lp('Druck:')} ${w.pressureHpa} (${w.pressureTrend})`);
-            tbl.push('hPa');
-            parts.push('```\n' + tbl.join('\n') + '\n```');
+            parts.push(`Heute: ${td.min}–${td.max}°C · Wind ${td.wind} · Regen ${td.precip}mm · UV ${td.uv}`);
+            parts.push(`Morgen: ${tm.min}–${tm.max}°C · Wind ${tm.wind} · Regen ${tm.precip}mm · UV ${tm.uv}`);
+            parts.push(`Überm.: ${tu.min}–${tu.max}°C · Wind ${tu.wind} · Regen ${tu.precip}mm · UV ${tu.uv}`);
+            parts.push('');
+            parts.push(`Druck: ${w.pressureHpa} hPa (${w.pressureTrend})`);
         }
         // ── INBOX ──
         {
@@ -3855,6 +3846,404 @@ export default function (api) {
             catch (e) {
                 return { text: `❌ Fehler: ${e.message}` };
             }
+        },
+    });
+    // ── Private Equity ────────────────────────────────────────────────────────
+    api.registerCommand({
+        name: 'pe',
+        description: 'Private-Equity-Beteiligungen anzeigen',
+        handler: async () => {
+            try {
+                const investments = getAllInvestments();
+                return { text: formatInvestmentList(investments) };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'peshow',
+        acceptsArgs: true,
+        description: 'Detail einer Beteiligung: /peshow <id>',
+        handler: async (ctx) => {
+            try {
+                const id = String(ctx.args || '').trim();
+                if (!id)
+                    return { text: '❌ Verwendung: /peshow <id>' };
+                const inv = getInvestment(id);
+                if (!inv)
+                    return { text: `❌ Beteiligung nicht gefunden: ${id}` };
+                const history = getValuationHistory(id);
+                let text = formatInvestmentDetail(inv);
+                if (history.length) {
+                    text += '\n\n📊 Bewertungshistorie:\n';
+                    for (const h of history.slice(-10)) {
+                        const amt = h.amount.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        text += `   • ${h.date} — ${amt} € (${h.method || '–'})${h.notes ? ' — ' + h.notes : ''}\n`;
+                    }
+                    if (history.length > 10)
+                        text += `   ... und ${history.length - 10} weitere\n`;
+                }
+                return { text };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'penew',
+        acceptsArgs: true,
+        description: 'Neue Beteiligung: /penew <Firma> <Sektor> <Betrag> <Anteile> <Gesamt-Anteile>',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 5)
+                    return { text: '❌ Verwendung: /penew <Firma> <Sektor> <Betrag> <Anteile> <Gesamt-Anteile>\nBeispiel: /penew TobaGrown Cannabis 50000 500 10000' };
+                const [company, sector, amtStr, sharesStr, totalStr] = parts;
+                const amount = Number(amtStr);
+                const shares = Number(sharesStr);
+                const total = Number(totalStr);
+                if (!Number.isFinite(amount) || amount <= 0)
+                    return { text: '❌ Betrag muss eine positive Zahl sein.' };
+                if (!Number.isFinite(shares) || shares <= 0)
+                    return { text: '❌ Anteile müssen eine positive Zahl sein.' };
+                if (!Number.isFinite(total) || total <= 0)
+                    return { text: '❌ Gesamt-Anteile müssen eine positive Zahl sein.' };
+                const inv = createInvestment(company, sector.replace(/-/g, ' / '), amount, shares, total);
+                return { text: `✅ Beteiligung angelegt!\n\n${formatInvestmentDetail(inv)}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'peedit',
+        acceptsArgs: true,
+        description: 'Beteiligung bearbeiten: /peedit <id> <feld> <wert>',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 3)
+                    return { text: '❌ Verwendung: /peedit <id> <feld> <wert>\nFelder: company, sector, status, contact, notes, shares, ownershipPct' };
+                const [id, field, ...rest] = parts;
+                const value = rest.join(' ');
+                const inv = getInvestment(id);
+                if (!inv)
+                    return { text: `❌ Beteiligung nicht gefunden: ${id}` };
+                const allowed = {
+                    company: 'company', sector: 'sector', status: 'status',
+                    contact: 'contactPerson', notes: 'notes',
+                    shares: 'shares', ownershippct: 'ownershipPct',
+                };
+                const key = allowed[field.toLowerCase()];
+                if (!key)
+                    return { text: `❌ Unbekanntes Feld: ${field}\nErlaubt: ${Object.keys(allowed).join(', ')}` };
+                let patch = {};
+                if (key === 'shares') {
+                    const n = Number(value);
+                    if (!Number.isFinite(n) || n < 0)
+                        return { text: '❌ Anteile müssen eine Zahl sein.' };
+                    patch.shares = n;
+                }
+                else if (key === 'status') {
+                    if (!['active', 'exited', 'written-off'].includes(value))
+                        return { text: '❌ Status: active | exited | written-off' };
+                    patch.status = value;
+                }
+                else {
+                    patch[key] = value;
+                }
+                const updated = updateInvestment(id, patch);
+                return { text: `✅ Aktualisiert: ${field} → ${value}\n\n${formatInvestmentDetail(updated)}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'pevalue',
+        acceptsArgs: true,
+        description: 'Neue Bewertung: /pevalue <id> <betrag> [methode]',
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const parts = raw.split(/\s+/);
+                if (parts.length < 2)
+                    return { text: '❌ Verwendung: /pevalue <id> <betrag> [methode]' };
+                const [id, amtStr, ...methodParts] = parts;
+                const amount = Number(amtStr);
+                if (!Number.isFinite(amount) || amount < 0)
+                    return { text: '❌ Betrag muss eine positive Zahl sein.' };
+                const inv = getInvestment(id);
+                if (!inv)
+                    return { text: `❌ Beteiligung nicht gefunden: ${id}` };
+                const method = methodParts.length ? methodParts.join(' ') : undefined;
+                addValuation(id, amount, method);
+                const updated = getInvestment(id);
+                const irr = calculateIRR(updated.investedAmount, updated.currentValuation, updated.investmentDate, updated.valuationDate);
+                return { text: `✅ Bewertung aktualisiert: ${amount.toLocaleString('de-DE')} €\nIRR: ${irr.toFixed(1)}%\n\n${formatInvestmentDetail(updated)}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    // ── Trading ─────────────────────────────────────────────────────────────────
+    const TRADING_URL = 'http://127.0.0.1:18793';
+    async function tradingFetch(path, opts) {
+        try {
+            const r = await fetch(`${TRADING_URL}${path}`, { signal: AbortSignal.timeout(5000), ...opts });
+            if (!r.ok)
+                return null;
+            return await r.json();
+        }
+        catch {
+            return null;
+        }
+    }
+    function fmtTradingNum(n, d = 2) {
+        return n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+    }
+    function pnlSign(n) {
+        return n >= 0 ? `+${fmtTradingNum(n)}` : fmtTradingNum(n);
+    }
+    api.registerCommand({
+        name: 'trade',
+        description: 'Trading-Status: Modus, Positionen, P&L',
+        handler: async () => {
+            const s = await tradingFetch('/status');
+            if (!s)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            const modeLabel = s.mode === 1 ? 'Monitoring' : s.mode === 2 ? 'Semi-Auto' : 'Full-Auto';
+            return {
+                text: [
+                    `📈 *Trading Status*`,
+                    ``,
+                    `Modus: ${s.mode} — ${modeLabel}`,
+                    `Verbindung: ${s.connected ? '✅ Verbunden' : '❌ Nicht verbunden'}`,
+                    `Paper: ${s.paperMode ? 'Ja' : 'Nein'}`,
+                    `Konto: ${s.account || '—'}`,
+                    ``,
+                    `Net Liquidation: ${fmtTradingNum(s.netLiquidation)} $`,
+                    `Cash: ${fmtTradingNum(s.cashBalance)} $`,
+                    `Tages-P&L: ${pnlSign(s.dailyPnl)} $`,
+                    `Unrealisiert: ${pnlSign(s.unrealizedPnl)} $`,
+                    `Realisiert: ${pnlSign(s.realizedPnl)} $`,
+                    ``,
+                    `Positionen: ${s.positions.length}`,
+                    `Stand: ${s.timestamp}`,
+                ].join('\n'),
+            };
+        },
+    });
+    api.registerCommand({
+        name: 'tradepos',
+        description: 'Offene Trading-Positionen',
+        handler: async () => {
+            const s = await tradingFetch('/status');
+            if (!s)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (!s.positions || s.positions.length === 0)
+                return { text: 'Keine offenen Positionen.' };
+            const lines = s.positions.map((p) => `${p.symbol} | ${p.quantity} @ ${fmtTradingNum(p.avgCost)} | Markt: ${fmtTradingNum(p.marketPrice)} | P&L: ${pnlSign(p.unrealizedPnl)}`);
+            return { text: ['📊 *Positionen*', '', ...lines].join('\n') };
+        },
+    });
+    api.registerCommand({
+        name: 'tradeorders',
+        description: 'Offene Trading-Orders',
+        handler: async () => {
+            return { text: 'Keine offenen Orders. (Phase 1 — nur Monitoring)' };
+        },
+    });
+    api.registerCommand({
+        name: 'trademode',
+        description: 'Aktueller Trading-Modus',
+        handler: async () => {
+            const s = await tradingFetch('/status');
+            if (!s)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return { text: `Trading-Modus: 1 — Monitoring\n(Phase 1: nur Beobachtung, keine Order-Ausführung)` };
+        },
+    });
+    api.registerCommand({
+        name: 'tradewatch',
+        acceptsArgs: true,
+        description: 'Symbol zur Watchlist: /tradewatch AAPL [SMART] [USD]',
+        handler: async (ctx) => {
+            const raw = String(ctx.args || '').trim();
+            if (!raw)
+                return { text: '❌ Verwendung: /tradewatch AAPL [SMART] [USD]' };
+            const parts = raw.split(/\s+/);
+            const symbol = parts[0].toUpperCase();
+            const exchange = parts[1] || 'SMART';
+            const currency = parts[2] || 'USD';
+            const list = await tradingFetch('/watchlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, exchange, currency }),
+            });
+            if (!list)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return { text: `✅ ${symbol} zur Watchlist hinzugefügt. (${list.length} Einträge)` };
+        },
+    });
+    api.registerCommand({
+        name: 'tradeunwatch',
+        acceptsArgs: true,
+        description: 'Symbol von Watchlist entfernen: /tradeunwatch AAPL',
+        handler: async (ctx) => {
+            const symbol = String(ctx.args || '').trim().toUpperCase();
+            if (!symbol)
+                return { text: '❌ Verwendung: /tradeunwatch AAPL' };
+            const list = await tradingFetch(`/watchlist/${symbol}`, { method: 'DELETE' });
+            if (!list)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return { text: `✅ ${symbol} von Watchlist entfernt. (${list.length} Einträge)` };
+        },
+    });
+    api.registerCommand({
+        name: 'tradewatchlist',
+        description: 'Aktuelle Trading-Watchlist',
+        handler: async () => {
+            const list = await tradingFetch('/watchlist');
+            if (!list)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (!list.length)
+                return { text: 'Watchlist ist leer.' };
+            const lines = list.map((w) => `${w.symbol} (${w.exchange}/${w.currency})${w.lastPrice ? ` — ${fmtTradingNum(w.lastPrice)}` : ''}`);
+            return { text: ['👁 *Watchlist*', '', ...lines].join('\n') };
+        },
+    });
+    api.registerCommand({
+        name: 'tradepaper',
+        description: 'Paper-Trading Status',
+        handler: async () => {
+            const h = await tradingFetch('/health');
+            if (!h)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return {
+                text: [
+                    '📋 *Paper-Trading Status*',
+                    '',
+                    `Service: ${h.ok ? '✅ Läuft' : '❌ Fehler'}`,
+                    `IBKR-Verbindung: ${h.connected ? '✅ Verbunden' : '❌ Nicht verbunden'}`,
+                    `Modus: Paper Trading (Port 7497)`,
+                    '',
+                    'Phase 1: Nur Monitoring, keine Order-Ausführung.',
+                ].join('\n'),
+            };
+        },
+    });
+    api.registerCommand({
+        name: 'tradeperf',
+        description: 'Trading-Performance (Tag/Woche/Monat)',
+        handler: async () => {
+            const s = await tradingFetch('/status');
+            if (!s)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return {
+                text: [
+                    '📊 *Trading Performance*',
+                    '',
+                    `Tages-P&L: ${pnlSign(s.dailyPnl)} $`,
+                    `Unrealisiert: ${pnlSign(s.unrealizedPnl)} $`,
+                    `Realisiert: ${pnlSign(s.realizedPnl)} $`,
+                    `Net Liquidation: ${fmtTradingNum(s.netLiquidation)} $`,
+                    `Cash: ${fmtTradingNum(s.cashBalance)} $`,
+                ].join('\n'),
+            };
+        },
+    });
+    // ── Universe Commands ────────────────────────────────────────────────────────
+    api.registerCommand({
+        name: 'tradeuniverse',
+        description: 'Aktives Trading-Universum anzeigen',
+        handler: async () => {
+            const data = await tradingFetch('/universe');
+            if (!data)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (!data.symbols || data.symbols.length === 0) {
+                return { text: '🌐 Universum ist leer. Noch kein Scan durchgeführt.\n\nManual: /tradescan' };
+            }
+            const byIndex = {};
+            for (const s of data.symbols) {
+                byIndex[s.index] = (byIndex[s.index] || 0) + 1;
+            }
+            const indexLines = Object.entries(byIndex).map(([idx, cnt]) => `  ${idx}: ${cnt}`);
+            const topSymbols = data.symbols.slice(0, 10).map((s) => s.symbol).join(', ');
+            return {
+                text: [
+                    '🌐 *Aktives Universum*',
+                    '',
+                    `Gesamt: ${data.symbols.length} Symbole`,
+                    ...indexLines,
+                    '',
+                    `Top: ${topSymbols}`,
+                    `Letzter Build: ${data.lastBuild ? data.lastBuild.slice(0, 19).replace('T', ' ') : '—'}`,
+                ].join('\n'),
+            };
+        },
+    });
+    api.registerCommand({
+        name: 'tradeindex',
+        acceptsArgs: true,
+        description: 'Index aktivieren/deaktivieren: /tradeindex on DAX40',
+        handler: async (ctx) => {
+            const raw = String(ctx.args || '').trim();
+            const parts = raw.split(/\s+/);
+            if (parts.length < 2 || !['on', 'off'].includes(parts[0])) {
+                return { text: '❌ Verwendung: /tradeindex on|off <DAX40|MDAX|SP500|NASDAQ100>' };
+            }
+            const enabled = parts[0] === 'on';
+            const index = parts[1].toUpperCase();
+            const result = await tradingFetch('/universe/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ indices: { [index]: { enabled } } }),
+            });
+            if (!result)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            const status = result.indices?.[index]?.enabled ? '✅ aktiviert' : '❌ deaktiviert';
+            return { text: `${index}: ${status}` };
+        },
+    });
+    api.registerCommand({
+        name: 'tradescan',
+        description: 'Manuellen Universe-Scan auslösen',
+        handler: async () => {
+            const result = await tradingFetch('/universe/scan', { method: 'POST' });
+            if (!result)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            return {
+                text: [
+                    '📡 *Scan abgeschlossen*',
+                    '',
+                    `Universum: ${result.universe} Symbole`,
+                    `Momentum-Signale: ${result.momentum}`,
+                    `Mean-Reversion-Signale: ${result.meanReversion}`,
+                    `Zeit: ${result.timestamp?.slice(0, 19).replace('T', ' ') || '—'}`,
+                ].join('\n'),
+            };
+        },
+    });
+    api.registerCommand({
+        name: 'tradetop',
+        description: 'Top Trading-Kandidaten anzeigen',
+        handler: async () => {
+            const results = await tradingFetch('/universe/top?limit=10');
+            if (!results)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (!results.length)
+                return { text: 'Keine aktuellen Scan-Kandidaten (letzte 2h).' };
+            const lines = results.map((r) => `${r.symbol} | ${r.signal} | Stärke: ${Number(r.strength).toFixed(1)} | ${r.timestamp?.slice(11, 19) || ''}`);
+            return { text: ['🏆 *Top-Kandidaten*', '', ...lines].join('\n') };
         },
     });
     // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────
