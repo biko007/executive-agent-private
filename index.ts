@@ -4402,9 +4402,10 @@ for (const k of days) {
 
   const TRADING_URL = 'http://127.0.0.1:18793';
 
-  async function tradingFetch(path: string, opts?: RequestInit): Promise<any> {
+  async function tradingFetch(path: string, opts?: RequestInit & { timeoutMs?: number }): Promise<any> {
     try {
-      const r = await fetch(`${TRADING_URL}${path}`, { signal: AbortSignal.timeout(5000), ...opts });
+      const { timeoutMs, ...fetchOpts } = opts || {} as any;
+      const r = await fetch(`${TRADING_URL}${path}`, { signal: AbortSignal.timeout(timeoutMs || 5000), ...fetchOpts });
       if (!r.ok) return null;
       return await r.json();
     } catch {
@@ -4473,11 +4474,25 @@ for (const k of days) {
 
   api.registerCommand({
     name: 'trademode',
-    description: 'Aktueller Trading-Modus',
-    handler: async () => {
-      const s = await tradingFetch('/status');
-      if (!s) return { text: '⚠️ Trading-Service nicht erreichbar.' };
-      return { text: `Trading-Modus: 1 — Monitoring\n(Phase 1: nur Beobachtung, keine Order-Ausführung)` };
+    acceptsArgs: true,
+    description: 'Trading-Modus anzeigen/setzen: /trademode [1|2|3]',
+    handler: async (ctx: any) => {
+      const raw = String(ctx.args || '').trim();
+      if (!raw) {
+        const s = await tradingFetch('/status');
+        if (!s) return { text: '⚠️ Trading-Service nicht erreichbar.' };
+        const labels: Record<number, string> = { 1: 'Monitoring', 2: 'Semi-Auto', 3: 'Full-Auto' };
+        return { text: `Trading-Modus: ${s.mode} — ${labels[s.mode] || '?'}` };
+      }
+      const mode = Number(raw);
+      if (![1, 2, 3].includes(mode)) return { text: '❌ Verwendung: /trademode 1|2|3\n1=Monitoring, 2=Semi-Auto, 3=Full-Auto' };
+      const result = await tradingFetch('/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      if (!result) return { text: '⚠️ Trading-Service nicht erreichbar.' };
+      return { text: `✅ Trading-Modus auf ${result.mode} — ${result.label} gesetzt.` };
     },
   });
 
@@ -4629,13 +4644,28 @@ for (const k of days) {
     handler: async () => {
       const result = await tradingFetch('/universe/scan', { method: 'POST' });
       if (!result) return { text: '⚠️ Trading-Service nicht erreichbar.' };
+      if (result.status === 'running') {
+        return { text: '📡 Scan läuft bereits. Status prüfen mit /tradescanstatus' };
+      }
+      return { text: '📡 Scan gestartet. Ergebnis in ~2 Min. Prüfen mit /tradescanstatus' };
+    },
+  });
+
+  api.registerCommand({
+    name: 'tradescanstatus',
+    description: 'Status des letzten Universe-Scans',
+    handler: async () => {
+      const result = await tradingFetch('/universe/scan/status');
+      if (!result) return { text: '⚠️ Trading-Service nicht erreichbar.' };
+      const statusLabel = result.status === 'running' ? '⏳ Läuft...' : result.status === 'done' ? '✅ Fertig' : result.status === 'error' ? '❌ Fehler' : '💤 Idle';
       return {
         text: [
-          '📡 *Scan abgeschlossen*',
+          '📡 *Scan-Status*',
           '',
+          `Status: ${statusLabel}`,
           `Universum: ${result.universe} Symbole`,
-          `Momentum-Signale: ${result.momentum}`,
-          `Mean-Reversion-Signale: ${result.meanReversion}`,
+          `Momentum: ${result.momentum}`,
+          `Mean-Reversion: ${result.meanReversion}`,
           `Zeit: ${result.timestamp?.slice(0, 19).replace('T', ' ') || '—'}`,
         ].join('\n'),
       };
