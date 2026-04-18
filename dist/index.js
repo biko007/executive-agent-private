@@ -8,7 +8,8 @@ import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, search
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
 import { getAllInvestments, getInvestment, createInvestment, updateInvestment, addValuation, getValuationHistory, calculateIRR, formatInvestmentList, formatInvestmentDetail, } from "./pe-store.js";
-import { saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, fetchInsights, fetchMedia, loadInsightsCache, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, } from "./instagram-store.js";
+import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, fetchInsights, fetchMedia, loadInsightsCache, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, } from "./instagram-store.js";
+import { openPage, screenshot, closeBrowser } from "./browser-agent.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -654,6 +655,28 @@ export default function (api) {
             }, 10000);
         }
         catch { }
+    }
+    async function sendTelegramPhoto(chatId, photoPath, caption) {
+        if (!telegramBotToken)
+            return false;
+        try {
+            const photoData = fs.readFileSync(photoPath);
+            const blob = new Blob([photoData], { type: 'image/png' });
+            const form = new FormData();
+            form.append('chat_id', chatId);
+            form.append('photo', blob, 'screenshot.png');
+            if (caption)
+                form.append('caption', caption);
+            const res = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendPhoto`, {
+                method: 'POST',
+                body: form,
+            });
+            return res.ok;
+        }
+        catch (e) {
+            api.logger.error(`[executive-agent] sendTelegramPhoto failed: ${e.message}`);
+            return false;
+        }
     }
     /* --- Pending-Booking State --- */
     const pendingBookings = new Map();
@@ -3291,7 +3314,19 @@ export default function (api) {
             if (daysLeft > 0 && daysLeft < 7) {
                 instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
             }
-            const instaCache = loadInsightsCache();
+            let instaCache = loadInsightsCache();
+            const instaCacheStale = !instaCache || (Date.now() - Number(instaCache.fetched_at || 0)) > 24 * 60 * 60 * 1000;
+            if (instaCacheStale && instaAuthorized()) {
+                try {
+                    const t = loadInstaTokens();
+                    if (t?.access_token && t?.ig_business_id) {
+                        instaCache = await fetchInsights(t.access_token, t.ig_business_id, true);
+                    }
+                }
+                catch (e) {
+                    api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${e?.message || e}`);
+                }
+            }
             if (instaCache) {
                 instaLines.push(`- Follower: ${instaCache.followers_count.toLocaleString('de')} | Engagement: ${instaCache.engagement_rate}%`);
             }
@@ -3998,7 +4033,8 @@ export default function (api) {
     const TRADING_URL = 'http://127.0.0.1:18793';
     async function tradingFetch(path, opts) {
         try {
-            const r = await fetch(`${TRADING_URL}${path}`, { signal: AbortSignal.timeout(5000), ...opts });
+            const { timeoutMs, ...fetchOpts } = opts || {};
+            const r = await fetch(`${TRADING_URL}${path}`, { signal: AbortSignal.timeout(timeoutMs || 5000), ...fetchOpts });
             if (!r.ok)
                 return null;
             return await r.json();
@@ -4064,12 +4100,28 @@ export default function (api) {
     });
     api.registerCommand({
         name: 'trademode',
-        description: 'Aktueller Trading-Modus',
-        handler: async () => {
-            const s = await tradingFetch('/status');
-            if (!s)
+        acceptsArgs: true,
+        description: 'Trading-Modus anzeigen/setzen: /trademode [1|2|3]',
+        handler: async (ctx) => {
+            const raw = String(ctx.args || '').trim();
+            if (!raw) {
+                const s = await tradingFetch('/status');
+                if (!s)
+                    return { text: '⚠️ Trading-Service nicht erreichbar.' };
+                const labels = { 1: 'Monitoring', 2: 'Semi-Auto', 3: 'Full-Auto' };
+                return { text: `Trading-Modus: ${s.mode} — ${labels[s.mode] || '?'}` };
+            }
+            const mode = Number(raw);
+            if (![1, 2, 3].includes(mode))
+                return { text: '❌ Verwendung: /trademode 1|2|3\n1=Monitoring, 2=Semi-Auto, 3=Full-Auto' };
+            const result = await tradingFetch('/mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode }),
+            });
+            if (!result)
                 return { text: '⚠️ Trading-Service nicht erreichbar.' };
-            return { text: `Trading-Modus: 1 — Monitoring\n(Phase 1: nur Beobachtung, keine Order-Ausführung)` };
+            return { text: `✅ Trading-Modus auf ${result.mode} — ${result.label} gesetzt.` };
         },
     });
     api.registerCommand({
@@ -4221,13 +4273,28 @@ export default function (api) {
             const result = await tradingFetch('/universe/scan', { method: 'POST' });
             if (!result)
                 return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (result.status === 'running') {
+                return { text: '📡 Scan läuft bereits. Status prüfen mit /tradescanstatus' };
+            }
+            return { text: '📡 Scan gestartet. Ergebnis in ~2 Min. Prüfen mit /tradescanstatus' };
+        },
+    });
+    api.registerCommand({
+        name: 'tradescanstatus',
+        description: 'Status des letzten Universe-Scans',
+        handler: async () => {
+            const result = await tradingFetch('/universe/scan/status');
+            if (!result)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            const statusLabel = result.status === 'running' ? '⏳ Läuft...' : result.status === 'done' ? '✅ Fertig' : result.status === 'error' ? '❌ Fehler' : '💤 Idle';
             return {
                 text: [
-                    '📡 *Scan abgeschlossen*',
+                    '📡 *Scan-Status*',
                     '',
+                    `Status: ${statusLabel}`,
                     `Universum: ${result.universe} Symbole`,
-                    `Momentum-Signale: ${result.momentum}`,
-                    `Mean-Reversion-Signale: ${result.meanReversion}`,
+                    `Momentum: ${result.momentum}`,
+                    `Mean-Reversion: ${result.meanReversion}`,
                     `Zeit: ${result.timestamp?.slice(0, 19).replace('T', ' ') || '—'}`,
                 ].join('\n'),
             };
@@ -4710,6 +4777,80 @@ export default function (api) {
             if (!links.length)
                 return { text: `📎 Keine Dokumente verknüpft mit Reise ${id}.` };
             return { text: `📎 Reise-Dokumente (${id}):\n\n${formatLinksForTelegram(links)}` };
+        },
+    });
+    // ── Browser Automation ──────────────────────────────────────────────────────
+    api.registerCommand({
+        name: 'browse',
+        acceptsArgs: true,
+        description: 'Webseite besuchen und zusammenfassen: /browse <url>',
+        handler: async (ctx) => {
+            const rawUrl = String(ctx.args || '').trim();
+            if (!rawUrl)
+                return { text: '❌ Verwendung: /browse <url>' };
+            try {
+                const result = await openPage(rawUrl);
+                if (!result.content.trim()) {
+                    return { text: `🌐 *${result.title}*\n${result.url}\n\nKein extrahierbarer Text gefunden.` };
+                }
+                const apiKey = readAnthropicKey();
+                if (apiKey) {
+                    try {
+                        const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'x-api-key': apiKey,
+                                'anthropic-version': '2023-06-01',
+                            },
+                            body: JSON.stringify({
+                                model: 'claude-sonnet-4-20250514',
+                                max_tokens: 1024,
+                                messages: [{
+                                        role: 'user',
+                                        content: `Fasse den folgenden Webseiteninhalt zusammen. Kompakt auf Deutsch, maximal 500 Wörter, als Aufzählung wo sinnvoll.\n\nTitel: ${result.title}\nURL: ${result.url}\n\nInhalt:\n${result.content}`,
+                                    }],
+                            }),
+                        }, 60000);
+                        if (res.ok) {
+                            const data = await res.json();
+                            const summary = data?.content?.[0]?.text || 'Keine Zusammenfassung erhalten.';
+                            return { text: `🌐 *${result.title}*\n${result.url}\n\n${summary}` };
+                        }
+                    }
+                    catch (e) {
+                        api.logger.error(`[executive-agent] /browse Claude summary failed: ${e.message}`);
+                    }
+                }
+                // Fallback: raw text truncated
+                const truncated = result.content.length > 2000 ? result.content.slice(0, 2000) + '\n…(abgeschnitten)' : result.content;
+                return { text: `🌐 *${result.title}*\n${result.url}\n\n${truncated}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
+        },
+    });
+    api.registerCommand({
+        name: 'screenshot',
+        acceptsArgs: true,
+        description: 'Screenshot einer Webseite: /screenshot <url>',
+        handler: async (ctx) => {
+            const rawUrl = String(ctx.args || '').trim();
+            if (!rawUrl)
+                return { text: '❌ Verwendung: /screenshot <url>' };
+            try {
+                const filePath = await screenshot(rawUrl);
+                const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
+                if (chatId) {
+                    await sendTelegramPhoto(chatId, filePath, `📸 ${rawUrl}`);
+                    return { text: '' };
+                }
+                return { text: `📸 Screenshot gespeichert: ${filePath}` };
+            }
+            catch (e) {
+                return { text: `❌ Fehler: ${e.message}` };
+            }
         },
     });
     // Handle numeric replies for pending SP link selections
@@ -5318,5 +5459,8 @@ export default function (api) {
     publicLocationServer.listen(publicLocationPort, '127.0.0.1', () => {
         api.logger.info(`[executive-agent] Location-API gestartet auf 127.0.0.1:${publicLocationPort} (via nginx/HTTPS)`);
     });
-    api.logger.info("[executive-agent] loaded v25 (instagram integration)");
+    // ── Browser Cleanup ──────────────────────────────────────────────────────
+    process.on("beforeExit", () => { closeBrowser().catch(() => { }); });
+    process.on("SIGTERM", () => { closeBrowser().catch(() => { }); });
+    api.logger.info("[executive-agent] loaded v26 (browser automation)");
 }

@@ -42,6 +42,7 @@ import {
   loadCalendar, saveCalendar,
 } from "./instagram-store.js";
 import type { InstaDraft, ContentCalendarEntry } from "./instagram-store.js";
+import { openPage, extractText, screenshot, closeBrowser } from "./browser-agent.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -903,6 +904,26 @@ export default function (api: any) {
         10000,
       );
     } catch {}
+  }
+
+  async function sendTelegramPhoto(chatId: string, photoPath: string, caption?: string): Promise<boolean> {
+    if (!telegramBotToken) return false;
+    try {
+      const photoData = fs.readFileSync(photoPath);
+      const blob = new Blob([photoData], { type: 'image/png' });
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('photo', blob, 'screenshot.png');
+      if (caption) form.append('caption', caption);
+      const res = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendPhoto`, {
+        method: 'POST',
+        body: form,
+      });
+      return res.ok;
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] sendTelegramPhoto failed: ${e.message}`);
+      return false;
+    }
   }
 
   /* --- Pending-Booking State --- */
@@ -3728,7 +3749,18 @@ for (const k of days) {
       if (daysLeft > 0 && daysLeft < 7) {
         instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
       }
-      const instaCache = loadInsightsCache();
+      let instaCache = loadInsightsCache();
+      const instaCacheStale = !instaCache || (Date.now() - Number(instaCache.fetched_at || 0)) > 24 * 60 * 60 * 1000;
+      if (instaCacheStale && instaAuthorized()) {
+        try {
+          const t = loadInstaTokens();
+          if (t?.access_token && t?.ig_business_id) {
+            instaCache = await fetchInsights(t.access_token, t.ig_business_id, true);
+          }
+        } catch (e: any) {
+          api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${e?.message || e}`);
+        }
+      }
       if (instaCache) {
         instaLines.push(`- Follower: ${instaCache.followers_count.toLocaleString('de')} | Engagement: ${instaCache.engagement_rate}%`);
       }
@@ -5171,6 +5203,82 @@ for (const k of days) {
     },
   });
 
+  // ── Browser Automation ──────────────────────────────────────────────────────
+
+  api.registerCommand({
+    name: 'browse',
+    acceptsArgs: true,
+    description: 'Webseite besuchen und zusammenfassen: /browse <url>',
+    handler: async (ctx: any) => {
+      const rawUrl = String(ctx.args || '').trim();
+      if (!rawUrl) return { text: '❌ Verwendung: /browse <url>' };
+      try {
+        const result = await openPage(rawUrl);
+        if (!result.content.trim()) {
+          return { text: `🌐 *${result.title}*\n${result.url}\n\nKein extrahierbarer Text gefunden.` };
+        }
+        const apiKey = readAnthropicKey();
+        if (apiKey) {
+          try {
+            const res = await fetchWithTimeout(
+              'https://api.anthropic.com/v1/messages',
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': apiKey,
+                  'anthropic-version': '2023-06-01',
+                },
+                body: JSON.stringify({
+                  model: 'claude-sonnet-4-20250514',
+                  max_tokens: 1024,
+                  messages: [{
+                    role: 'user',
+                    content: `Fasse den folgenden Webseiteninhalt zusammen. Kompakt auf Deutsch, maximal 500 Wörter, als Aufzählung wo sinnvoll.\n\nTitel: ${result.title}\nURL: ${result.url}\n\nInhalt:\n${result.content}`,
+                  }],
+                }),
+              },
+              60000,
+            );
+            if (res.ok) {
+              const data: any = await res.json();
+              const summary = data?.content?.[0]?.text || 'Keine Zusammenfassung erhalten.';
+              return { text: `🌐 *${result.title}*\n${result.url}\n\n${summary}` };
+            }
+          } catch (e: any) {
+            api.logger.error(`[executive-agent] /browse Claude summary failed: ${e.message}`);
+          }
+        }
+        // Fallback: raw text truncated
+        const truncated = result.content.length > 2000 ? result.content.slice(0, 2000) + '\n…(abgeschnitten)' : result.content;
+        return { text: `🌐 *${result.title}*\n${result.url}\n\n${truncated}` };
+      } catch (e: any) {
+        return { text: `❌ Fehler: ${e.message}` };
+      }
+    },
+  });
+
+  api.registerCommand({
+    name: 'screenshot',
+    acceptsArgs: true,
+    description: 'Screenshot einer Webseite: /screenshot <url>',
+    handler: async (ctx: any) => {
+      const rawUrl = String(ctx.args || '').trim();
+      if (!rawUrl) return { text: '❌ Verwendung: /screenshot <url>' };
+      try {
+        const filePath = await screenshot(rawUrl);
+        const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
+        if (chatId) {
+          await sendTelegramPhoto(chatId, filePath, `📸 ${rawUrl}`);
+          return { text: '' };
+        }
+        return { text: `📸 Screenshot gespeichert: ${filePath}` };
+      } catch (e: any) {
+        return { text: `❌ Fehler: ${e.message}` };
+      }
+    },
+  });
+
   // Handle numeric replies for pending SP link selections
   api.registerHook('message_received', (event: any) => {
     try {
@@ -5862,5 +5970,9 @@ for (const k of days) {
     api.logger.info(`[executive-agent] Location-API gestartet auf 127.0.0.1:${publicLocationPort} (via nginx/HTTPS)`);
   });
 
-  api.logger.info("[executive-agent] loaded v25 (instagram integration)");
+  // ── Browser Cleanup ──────────────────────────────────────────────────────
+  process.on("beforeExit", () => { closeBrowser().catch(() => {}); });
+  process.on("SIGTERM", () => { closeBrowser().catch(() => {}); });
+
+  api.logger.info("[executive-agent] loaded v26 (browser automation)");
 }

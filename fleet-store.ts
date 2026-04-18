@@ -4,7 +4,7 @@ import { updateEntityId } from './link-store.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type VehicleType = 'car' | 'bike';
+export type VehicleType = 'car' | 'bike' | 'boat';
 
 export interface ServiceEntry {
   date: string;
@@ -40,6 +40,7 @@ export interface Vehicle {
   color?: string;
   mileage?: number;
   tuevDate?: string;
+  purchasePrice?: number;
   vehicleTax?: number;
   insurance?: Insurance;
   serviceLog: ServiceEntry[];
@@ -311,7 +312,7 @@ export function checkDeadlines(): DeadlineWarning[] {
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 function vehicleIcon(type: VehicleType): string {
-  return type === 'car' ? '🚗' : '🚲';
+  return type === 'car' ? '🚗' : type === 'boat' ? '🚤' : '🚲';
 }
 
 function tuevStatus(tuevDate?: string): string {
@@ -352,7 +353,7 @@ export function formatVehicleDetail(v: Vehicle): string {
   const lines: string[] = [
     `${icon} **${v.name}**`,
     '',
-    `Typ: ${v.type === 'car' ? 'Auto' : 'Fahrrad'}`,
+    `Typ: ${v.type === 'car' ? 'Auto' : v.type === 'boat' ? 'Boot' : 'Fahrrad'}`,
     `Hersteller: ${v.make}`,
     `Modell: ${v.model}`,
     `Baujahr: ${v.year}`,

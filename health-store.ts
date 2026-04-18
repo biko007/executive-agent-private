@@ -61,6 +61,52 @@ export function hasEntryForDate(type: HealthEntryType, dateStr: string): boolean
   return all.some(e => e.type === type && e.timestamp.slice(0, 10) === dateStr);
 }
 
+/**
+ * Upsert: if an entry for this type+date exists with a lower value, replace it.
+ * Returns 'inserted' | 'updated' | 'skipped'.
+ */
+export function upsertEntryForDate(
+  dateStr: string,
+  ts: Date,
+  entry: Omit<HealthEntry, 'id' | 'timestamp'>
+): 'inserted' | 'updated' | 'skipped' {
+  ensureDir();
+  if (!fs.existsSync(LOG_FILE)) {
+    appendEntryWithTimestamp(ts, entry);
+    return 'inserted';
+  }
+  const lines = fs.readFileSync(LOG_FILE, 'utf-8').split('\n').filter(Boolean);
+  let foundIdx = -1;
+  let foundEntry: HealthEntry | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      const e = JSON.parse(lines[i]) as HealthEntry;
+      if (e.type === entry.type && e.timestamp.slice(0, 10) === dateStr) {
+        foundIdx = i;
+        foundEntry = e;
+      }
+    } catch { /* skip */ }
+  }
+  if (foundIdx === -1) {
+    appendEntryWithTimestamp(ts, entry);
+    return 'inserted';
+  }
+  // Only update if new value is higher (e.g. final sleep > intermediate)
+  if (Number(entry.value || 0) <= Number(foundEntry!.value || 0)) {
+    return 'skipped';
+  }
+  // Replace the line in-place
+  const updated: HealthEntry = {
+    ...foundEntry!,
+    ...entry,
+    id: foundEntry!.id,
+    timestamp: foundEntry!.timestamp,
+  };
+  lines[foundIdx] = JSON.stringify(updated);
+  fs.writeFileSync(LOG_FILE, lines.join('\n') + '\n', 'utf-8');
+  return 'updated';
+}
+
 // ── Append-only write ──────────────────────────────────────────────────────
 
 export function appendEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): HealthEntry {

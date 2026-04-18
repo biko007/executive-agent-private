@@ -30,6 +30,7 @@ export interface Property {
   address: string;
   type: PropertyType;
   owner: OwnerEntity;
+  purchasePrice?: number;
   units: Unit[];
   distributionKeys: DistributionKey[];
   createdAt: string;
