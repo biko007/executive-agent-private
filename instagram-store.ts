@@ -165,6 +165,11 @@ export async function ensureFreshToken(appId: string, appSecret: string): Promis
   const res = await fetchWithTimeout(url.toString(), { method: 'GET' }, 15000);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    // Code 101 = invalid app secret — token itself may still be valid, skip refresh
+    if (body.includes('"code":101') || body.includes('"code": 101')) {
+      console.warn('[instagram-store] Token-Refresh übersprungen (App-Secret ungültig, Code 101) — verwende bestehenden Token');
+      return tokens;
+    }
     throw new Error(`Token-Refresh fehlgeschlagen: ${res.status} — ${body.slice(0, 200)}`);
   }
   const data = await res.json();

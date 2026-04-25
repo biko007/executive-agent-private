@@ -859,53 +859,33 @@ export default function (api) {
             subject: m?.subject || "(no subject)",
         }));
     }
+    /**
+     * Create an ImapFlow client with error handler to prevent uncaught exceptions.
+     * Always use try/finally with client.logout() when using this.
+     */
+    function createSafeImapClient(opts) {
+        const client = new ImapFlow({
+            host: yahooImapHost,
+            port: yahooImapPort,
+            secure: true,
+            auth: { user: yahooUser, pass: yahooPass },
+            socketTimeout: opts?.socketTimeout ?? 15000,
+            logger: false,
+        });
+        // Prevent unhandled 'error' events from crashing the process
+        client.on('error', (err) => {
+            api.logger.warn(`[executive-agent] IMAP connection error (handled): ${err.message}`);
+        });
+        return client;
+    }
     async function yahooUnread(limit) {
         ensureYahooConfigured();
-        const client = new ImapFlow({
-            host: yahooImapHost,
-            port: yahooImapPort,
-            secure: true,
-            auth: { user: yahooUser, pass: yahooPass },
-            socketTimeout: 15000,
-        });
-        await client.connect();
-        await client.mailboxOpen("INBOX");
-        const out = [];
-        for await (const msg of client.fetch({ seen: false }, { uid: true, envelope: true, internalDate: true })) {
-            out.push({
-                source: "yahoo",
-                id: String(msg.uid),
-                dateIso: msg.internalDate ? new Date(msg.internalDate).toISOString() : nowIso(),
-                from: msg.envelope?.from?.[0]?.address || "?",
-                subject: msg.envelope?.subject || "(no subject)",
-            });
-            if (out.length >= limit)
-                break;
-        }
-        await client.logout();
-        return out;
-    }
-    async function yahooRecent(limit, hours) {
-        ensureYahooConfigured();
-        const client = new ImapFlow({
-            host: yahooImapHost,
-            port: yahooImapPort,
-            secure: true,
-            auth: { user: yahooUser, pass: yahooPass },
-            socketTimeout: 15000,
-        });
-        await client.connect();
-        await client.mailboxOpen("INBOX");
-        // Without a time bound, IMAP "recent" can be heavy; use safe default window.
-        const effectiveHours = (hours && Number.isFinite(hours) && hours > 0) ? hours : (24 * 30);
-        const since = new Date(Date.now() - effectiveHours * 60 * 60 * 1000);
-        const searchRes = await client.search({ since });
-        const uids = Array.isArray(searchRes) ? searchRes : [];
-        uids.sort((a, b) => b - a);
-        const pick = uids.slice(0, limit);
-        const out = [];
-        if (pick.length) {
-            for await (const msg of client.fetch(pick, { uid: true, envelope: true, internalDate: true })) {
+        const client = createSafeImapClient();
+        try {
+            await client.connect();
+            await client.mailboxOpen("INBOX");
+            const out = [];
+            for await (const msg of client.fetch({ seen: false }, { uid: true, envelope: true, internalDate: true })) {
                 out.push({
                     source: "yahoo",
                     id: String(msg.uid),
@@ -913,10 +893,45 @@ export default function (api) {
                     from: msg.envelope?.from?.[0]?.address || "?",
                     subject: msg.envelope?.subject || "(no subject)",
                 });
+                if (out.length >= limit)
+                    break;
             }
+            return out;
         }
-        await client.logout();
-        return out;
+        finally {
+            await client.logout().catch(() => { });
+        }
+    }
+    async function yahooRecent(limit, hours) {
+        ensureYahooConfigured();
+        const client = createSafeImapClient();
+        try {
+            await client.connect();
+            await client.mailboxOpen("INBOX");
+            // Without a time bound, IMAP "recent" can be heavy; use safe default window.
+            const effectiveHours = (hours && Number.isFinite(hours) && hours > 0) ? hours : (24 * 30);
+            const since = new Date(Date.now() - effectiveHours * 60 * 60 * 1000);
+            const searchRes = await client.search({ since });
+            const uids = Array.isArray(searchRes) ? searchRes : [];
+            uids.sort((a, b) => b - a);
+            const pick = uids.slice(0, limit);
+            const out = [];
+            if (pick.length) {
+                for await (const msg of client.fetch(pick, { uid: true, envelope: true, internalDate: true })) {
+                    out.push({
+                        source: "yahoo",
+                        id: String(msg.uid),
+                        dateIso: msg.internalDate ? new Date(msg.internalDate).toISOString() : nowIso(),
+                        from: msg.envelope?.from?.[0]?.address || "?",
+                        subject: msg.envelope?.subject || "(no subject)",
+                    });
+                }
+            }
+            return out;
+        }
+        finally {
+            await client.logout().catch(() => { });
+        }
     }
     /* ---------------- Mail Body Fetchers (für Buchungserkennung) ---------------- */
     function stripHtml(html) {
@@ -948,12 +963,7 @@ export default function (api) {
     }
     async function yahooFetchBody(uid) {
         ensureYahooConfigured();
-        const client = new ImapFlow({
-            host: yahooImapHost,
-            port: yahooImapPort,
-            secure: true,
-            auth: { user: yahooUser, pass: yahooPass },
-        });
+        const client = createSafeImapClient({ socketTimeout: 20000 });
         try {
             await client.connect();
             await client.mailboxOpen('INBOX');
@@ -1000,10 +1010,7 @@ export default function (api) {
             return '';
         }
         finally {
-            try {
-                await client.logout();
-            }
-            catch { }
+            await client.logout().catch(() => { });
         }
     }
     /* ---------------- Haiku: Buchungsanalyse ---------------- */
@@ -5155,11 +5162,30 @@ export default function (api) {
     }, 30 * 60_000);
     // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
     let lastBriefingDate = '';
+    let pendingBriefingRetry = null;
     setInterval(async () => {
         try {
             const s = loadSettings();
             if (!s.telegramChatId)
                 return;
+            // ── Briefing-Retry: zuvor fehlgeschlagene Zustellung nochmal versuchen ──
+            if (pendingBriefingRetry && pendingBriefingRetry.attempts < 5) {
+                const retry = pendingBriefingRetry;
+                const backoffMs = Math.min(1000 * Math.pow(2, retry.attempts), 60000);
+                retry.attempts++;
+                api.logger.info(`[executive-agent] Briefing-Retry Versuch ${retry.attempts} (Backoff ${backoffMs}ms)`);
+                await sleep(backoffMs);
+                const sent = await sendTelegram(retry.chatId, retry.text);
+                if (sent) {
+                    api.logger.info(`[executive-agent] Briefing-Retry erfolgreich (Versuch ${retry.attempts})`);
+                    pendingBriefingRetry = null;
+                }
+                return; // Don't run normal briefing logic during retry
+            }
+            else if (pendingBriefingRetry && pendingBriefingRetry.attempts >= 5) {
+                api.logger.error(`[executive-agent] Briefing-Retry aufgegeben nach 5 Versuchen`);
+                pendingBriefingRetry = null;
+            }
             // Aktuelle Berliner Zeit als HH:MM
             const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
             const hh = String(inBerlin.getHours()).padStart(2, '0');
@@ -5179,10 +5205,17 @@ export default function (api) {
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                 const text = await Promise.race([briefingWork(), timeoutPromise]);
-                await sendTelegram(s.telegramChatId, text);
-                // Erst NACH erfolgreichem Senden markieren, damit bei Fehler nächste Minute erneut versucht wird
-                lastBriefingDate = today;
-                api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+                const sent = await sendTelegram(s.telegramChatId, text);
+                if (sent) {
+                    lastBriefingDate = today;
+                    api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+                }
+                else {
+                    // Zustellung fehlgeschlagen → Retry-Queue
+                    pendingBriefingRetry = { text, chatId: s.telegramChatId, attempts: 0 };
+                    lastBriefingDate = today; // Prevent re-generating, retry the existing text
+                    api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
+                }
                 // Instagram Token-Warnung
                 try {
                     if (instaAuthorized() && tokenExpiringSoon()) {
@@ -5462,5 +5495,14 @@ export default function (api) {
     // ── Browser Cleanup ──────────────────────────────────────────────────────
     process.on("beforeExit", () => { closeBrowser().catch(() => { }); });
     process.on("SIGTERM", () => { closeBrowser().catch(() => { }); });
-    api.logger.info("[executive-agent] loaded v26 (browser automation)");
+    // ── Global Error Safety Net — prevent unhandled errors from killing the process ──
+    process.on("uncaughtException", (err) => {
+        api.logger.error(`[executive-agent] Uncaught exception (handled, not crashing): ${err.message}`);
+        api.logger.error(`[executive-agent] Stack: ${err.stack}`);
+    });
+    process.on("unhandledRejection", (reason) => {
+        const msg = reason instanceof Error ? reason.message : String(reason);
+        api.logger.error(`[executive-agent] Unhandled rejection (handled, not crashing): ${msg}`);
+    });
+    api.logger.info("[executive-agent] loaded v27 (IMAP resilience + briefing retry)");
 }
