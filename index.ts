@@ -3888,12 +3888,11 @@ for (const k of days) {
       try {
         const BRIEFING_TIMEOUT_MS = 45000;
         const briefingWork = async () => {
-          const withingsPromise = syncWithingsForBriefing().catch((e: any) => {
+          // Withings-Sync ZUERST, damit aktuelle Schlafdaten vorhanden sind
+          await syncWithingsForBriefing().catch((e: any) => {
             api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
           });
-          const text = await generateBriefingText();
-          await withingsPromise;
-          return text;
+          return await generateBriefingText();
         };
         const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
@@ -5660,12 +5659,11 @@ for (const k of days) {
         // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
         const BRIEFING_TIMEOUT_MS = 45000;
         const briefingWork = async () => {
-          const withingsPromise = syncWithingsForBriefing().catch((syncErr: any) => {
+          // Withings-Sync ZUERST abwarten, damit aktuelle Schlafdaten vorhanden sind
+          await syncWithingsForBriefing().catch((syncErr: any) => {
             api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
           });
-          const text = await generateBriefingText();
-          await withingsPromise;
-          return text;
+          return await generateBriefingText();
         };
         const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
