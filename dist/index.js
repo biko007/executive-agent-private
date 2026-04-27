@@ -3453,12 +3453,11 @@ export default function (api) {
             try {
                 const BRIEFING_TIMEOUT_MS = 45000;
                 const briefingWork = async () => {
-                    const withingsPromise = syncWithingsForBriefing().catch((e) => {
+                    // Withings-Sync ZUERST, damit aktuelle Schlafdaten vorhanden sind
+                    await syncWithingsForBriefing().catch((e) => {
                         api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
                     });
-                    const text = await generateBriefingText();
-                    await withingsPromise;
-                    return text;
+                    return await generateBriefingText();
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                 const text = await Promise.race([briefingWork(), timeoutPromise]);
@@ -5196,12 +5195,11 @@ export default function (api) {
                 // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
                 const BRIEFING_TIMEOUT_MS = 45000;
                 const briefingWork = async () => {
-                    const withingsPromise = syncWithingsForBriefing().catch((syncErr) => {
+                    // Withings-Sync ZUERST abwarten, damit aktuelle Schlafdaten vorhanden sind
+                    await syncWithingsForBriefing().catch((syncErr) => {
                         api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
                     });
-                    const text = await generateBriefingText();
-                    await withingsPromise;
-                    return text;
+                    return await generateBriefingText();
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                 const text = await Promise.race([briefingWork(), timeoutPromise]);
