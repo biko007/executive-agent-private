@@ -760,6 +760,30 @@ function getAstroData(date: Date, location: LocationSetting = DEFAULT_LOCATION):
 /* ---------------- Plugin ---------------- */
 
 export default function (api: any) {
+  // ── Global Error Safety Net — register FIRST, before any async work ──
+  // Prevents socket timeouts, IMAP errors, and Telegram fetch failures from killing the process.
+  process.on("uncaughtException", (err: Error) => {
+    const isSocketTimeout = err.message?.includes("Socket timeout") || err.message?.includes("ETIMEDOUT");
+    const isFetchError = err.message?.includes("fetch failed") || err.message?.includes("ECONNRESET");
+    const severity = (isSocketTimeout || isFetchError) ? "warn" : "error";
+    api.logger[severity](`[executive-agent] Uncaught exception (${severity}, not crashing): ${err.message}`);
+    if (!isSocketTimeout && !isFetchError) {
+      api.logger.error(`[executive-agent] Stack: ${err.stack}`);
+    }
+  });
+  process.on("unhandledRejection", (reason: any) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    const isNetworkError = msg.includes("fetch failed") || msg.includes("Socket timeout")
+      || msg.includes("ETIMEDOUT") || msg.includes("ECONNRESET") || msg.includes("ECONNREFUSED")
+      || msg.includes("UND_ERR_SOCKET") || msg.includes("AbortError");
+    const severity = isNetworkError ? "warn" : "error";
+    api.logger[severity](`[executive-agent] Unhandled rejection (${severity}, not crashing): ${msg}`);
+    if (!isNetworkError && stack) {
+      api.logger.error(`[executive-agent] Rejection stack: ${stack}`);
+    }
+  });
+
   const workspace: string = api?.config?.agents?.defaults?.workspace || "/home/biko/.openclaw/workspace";
   const draftsDir = path.join(workspace, "artifacts", "mail-drafts");
   fs.mkdirSync(draftsDir, { recursive: true });
@@ -808,45 +832,73 @@ export default function (api: any) {
 
   /**
    * Send a Telegram message with fallback: plugin API → direct Bot API.
+   * Retries up to 3 times with exponential backoff on network failures.
    * Returns true if the message was sent successfully.
    */
-  async function sendTelegram(chatId: string, text: string): Promise<boolean> {
-    // Try plugin API first
-    try {
-      if (api.runtime?.channel?.telegram?.sendMessageTelegram) {
-        await api.runtime.channel.telegram.sendMessageTelegram(chatId, text);
-        return true;
-      }
-    } catch (err: any) {
-      api.logger.warn(`[executive-agent] plugin telegram-send failed: ${err.message}, trying direct API...`);
-    }
+  const TELEGRAM_RETRY_DELAYS = [2_000, 5_000, 15_000];
 
-    // Fallback: direct Telegram Bot API
-    if (!telegramBotToken) {
-      api.logger.error('[executive-agent] No bot token available for direct Telegram send');
-      return false;
-    }
-    try {
-      const res = await fetchWithTimeout(
-        `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-        },
-        15000,
-      );
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        api.logger.error(`[executive-agent] direct telegram-send HTTP ${res.status}: ${body}`);
+  async function sendTelegram(chatId: string, text: string): Promise<boolean> {
+    for (let attempt = 0; attempt <= TELEGRAM_RETRY_DELAYS.length; attempt++) {
+      // Try plugin API first
+      try {
+        if (api.runtime?.channel?.telegram?.sendMessageTelegram) {
+          await api.runtime.channel.telegram.sendMessageTelegram(chatId, text);
+          return true;
+        }
+      } catch (err: any) {
+        const isRetryable = isRetryableError(err);
+        if (attempt === 0) {
+          api.logger.warn(`[executive-agent] plugin telegram-send failed: ${err.message}, trying direct API...`);
+        }
+        if (!isRetryable) break; // non-retryable → fall through to direct API
+      }
+
+      // Fallback: direct Telegram Bot API
+      if (!telegramBotToken) {
+        api.logger.error('[executive-agent] No bot token available for direct Telegram send');
         return false;
       }
-      api.logger.info('[executive-agent] message sent via direct Telegram Bot API');
-      return true;
-    } catch (err: any) {
-      api.logger.error(`[executive-agent] direct telegram-send failed: ${err.message}`);
-      return false;
+      try {
+        const res = await fetchWithTimeout(
+          `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+          },
+          15000,
+        );
+        if (res.ok) {
+          if (attempt > 0) api.logger.info(`[executive-agent] Telegram sent after ${attempt + 1} attempts`);
+          return true;
+        }
+        const body = await res.text().catch(() => '');
+        // 4xx client errors (except 429) are not retryable
+        if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+          api.logger.error(`[executive-agent] direct telegram-send HTTP ${res.status}: ${body}`);
+          return false;
+        }
+        api.logger.warn(`[executive-agent] telegram-send HTTP ${res.status} (attempt ${attempt + 1}): ${body}`);
+      } catch (err: any) {
+        api.logger.warn(`[executive-agent] telegram-send failed (attempt ${attempt + 1}): ${err.message}`);
+      }
+
+      // Backoff before retry
+      if (attempt < TELEGRAM_RETRY_DELAYS.length) {
+        await sleep(TELEGRAM_RETRY_DELAYS[attempt]);
+      }
     }
+
+    api.logger.error(`[executive-agent] telegram-send failed after ${TELEGRAM_RETRY_DELAYS.length + 1} attempts`);
+    return false;
+  }
+
+  function isRetryableError(err: any): boolean {
+    const msg = err?.message || '';
+    return msg.includes('fetch failed') || msg.includes('Socket timeout')
+      || msg.includes('ETIMEDOUT') || msg.includes('ECONNRESET')
+      || msg.includes('ECONNREFUSED') || msg.includes('UND_ERR_SOCKET')
+      || msg.includes('AbortError') || msg.includes('fetch_timeout');
   }
 
   /**
@@ -861,31 +913,38 @@ export default function (api: any) {
       api.logger.error('[executive-agent] No bot token for keyboard message');
       return false;
     }
-    try {
-      const res = await fetchWithTimeout(
-        `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text,
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: keyboard },
-          }),
-        },
-        15000,
-      );
-      if (!res.ok) {
+    for (let attempt = 0; attempt <= TELEGRAM_RETRY_DELAYS.length; attempt++) {
+      try {
+        const res = await fetchWithTimeout(
+          `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text,
+              parse_mode: 'Markdown',
+              reply_markup: { inline_keyboard: keyboard },
+            }),
+          },
+          15000,
+        );
+        if (res.ok) return true;
         const body = await res.text().catch(() => '');
-        api.logger.error(`[executive-agent] keyboard-send HTTP ${res.status}: ${body}`);
-        return false;
+        if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+          api.logger.error(`[executive-agent] keyboard-send HTTP ${res.status}: ${body}`);
+          return false;
+        }
+        api.logger.warn(`[executive-agent] keyboard-send HTTP ${res.status} (attempt ${attempt + 1}): ${body}`);
+      } catch (err: any) {
+        api.logger.warn(`[executive-agent] keyboard-send failed (attempt ${attempt + 1}): ${err.message}`);
       }
-      return true;
-    } catch (err: any) {
-      api.logger.error(`[executive-agent] keyboard-send failed: ${err.message}`);
-      return false;
+      if (attempt < TELEGRAM_RETRY_DELAYS.length) {
+        await sleep(TELEGRAM_RETRY_DELAYS[attempt]);
+      }
     }
+    api.logger.error(`[executive-agent] keyboard-send failed after ${TELEGRAM_RETRY_DELAYS.length + 1} attempts`);
+    return false;
   }
 
   async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
@@ -2919,16 +2978,20 @@ for (const k of days) {
   const igBusinessId     = process.env.INSTAGRAM_BUSINESS_ID || '';
 
   // Bootstrap: Wenn Token in env aber kein Token-File → initiales File schreiben
-  if (process.env.INSTAGRAM_ACCESS_TOKEN && !instaAuthorized()) {
+  // Auch: Wenn env-Token sich vom gespeicherten unterscheidet → aktualisieren
+  if (process.env.INSTAGRAM_ACCESS_TOKEN) {
     try {
-      saveInstaTokens({
-        access_token: process.env.INSTAGRAM_ACCESS_TOKEN,
-        expires_at: Date.now() + 60 * 24 * 60 * 60 * 1000, // 60 Tage
-        refreshed_at: Date.now(),
-        ig_business_id: igBusinessId,
-        page_id: process.env.META_PAGE_ID || '',
-      });
-      api.logger.info('[executive-agent] Instagram: Token aus Env-Variable gespeichert');
+      const stored = loadInstaTokens();
+      if (!stored || stored.access_token !== process.env.INSTAGRAM_ACCESS_TOKEN) {
+        saveInstaTokens({
+          access_token: process.env.INSTAGRAM_ACCESS_TOKEN,
+          expires_at: Date.now() + 60 * 24 * 60 * 60 * 1000, // 60 Tage
+          refreshed_at: Date.now(),
+          ig_business_id: igBusinessId,
+          page_id: process.env.META_PAGE_ID || '',
+        });
+        api.logger.info(`[executive-agent] Instagram: Token aus Env-Variable ${stored ? 'aktualisiert' : 'gespeichert'}`);
+      }
     } catch (e: any) {
       api.logger.warn(`[executive-agent] Instagram Bootstrap-Fehler: ${e.message}`);
     }
@@ -3748,31 +3811,44 @@ for (const k of days) {
     } catch { /* drafts optional */ }
 
     // ── INSTAGRAM ──
-    try {
+    {
       const instaLines: string[] = [];
-      const daysLeft = tokenDaysRemaining();
-      if (daysLeft > 0 && daysLeft < 7) {
-        instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
-      }
-      let instaCache = loadInsightsCache();
-      const instaCacheStale = !instaCache || (Date.now() - Number(instaCache.fetched_at || 0)) > 24 * 60 * 60 * 1000;
-      if (instaCacheStale && instaAuthorized()) {
-        try {
+      try {
+        const daysLeft = tokenDaysRemaining();
+        if (daysLeft > 0 && daysLeft < 7) {
+          instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
+        }
+
+        // Always fetch live data during briefing
+        if (instaAuthorized()) {
           const t = loadInstaTokens();
           if (t?.access_token && t?.ig_business_id) {
-            instaCache = await fetchInsights(t.access_token, t.ig_business_id, true);
+            try {
+              const insights = await fetchInsights(t.access_token, t.ig_business_id, true);
+              instaLines.push(`- Follower: ${insights.followers_count.toLocaleString('de')} | Engagement: ${insights.engagement_rate}%`);
+            } catch (e: any) {
+              const errMsg = e?.message || String(e);
+              api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${errMsg}`);
+              // Show error in briefing instead of silent omission
+              if (errMsg.includes('Session has expired') || errMsg.includes('expired')) {
+                instaLines.push(`❌ Token abgelaufen — bitte neuen Token in env setzen`);
+              } else {
+                instaLines.push(`❌ API-Fehler: ${errMsg.slice(0, 120)}`);
+              }
+            }
           }
-        } catch (e: any) {
-          api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${e?.message || e}`);
+        } else {
+          instaLines.push(`⚠️ Nicht verbunden — Token fehlt`);
         }
+
+        const openInstaDrafts = listInstaDrafts('entwurf');
+        if (openInstaDrafts.length > 0) {
+          instaLines.push(`- ${openInstaDrafts.length} Draft${openInstaDrafts.length > 1 ? 's' : ''} offen`);
+        }
+      } catch (e: any) {
+        instaLines.push(`❌ Instagram-Fehler: ${(e?.message || String(e)).slice(0, 100)}`);
       }
-      if (instaCache) {
-        instaLines.push(`- Follower: ${instaCache.followers_count.toLocaleString('de')} | Engagement: ${instaCache.engagement_rate}%`);
-      }
-      const openInstaDrafts = listInstaDrafts('entwurf');
-      if (openInstaDrafts.length > 0) {
-        instaLines.push(`- ${openInstaDrafts.length} Draft${openInstaDrafts.length > 1 ? 's' : ''} offen`);
-      }
+
       if (instaLines.length > 0) {
         parts.push('');
         parts.push(SEP);
@@ -3780,7 +3856,7 @@ for (const k of days) {
         parts.push(SEP);
         parts.push(...instaLines);
       }
-    } catch { /* instagram optional */ }
+    }
 
     // ── HEALTH ──
     {
@@ -6002,15 +6078,5 @@ for (const k of days) {
   process.on("beforeExit", () => { closeBrowser().catch(() => {}); });
   process.on("SIGTERM", () => { closeBrowser().catch(() => {}); });
 
-  // ── Global Error Safety Net — prevent unhandled errors from killing the process ──
-  process.on("uncaughtException", (err: Error) => {
-    api.logger.error(`[executive-agent] Uncaught exception (handled, not crashing): ${err.message}`);
-    api.logger.error(`[executive-agent] Stack: ${err.stack}`);
-  });
-  process.on("unhandledRejection", (reason: any) => {
-    const msg = reason instanceof Error ? reason.message : String(reason);
-    api.logger.error(`[executive-agent] Unhandled rejection (handled, not crashing): ${msg}`);
-  });
-
-  api.logger.info("[executive-agent] loaded v27 (IMAP resilience + briefing retry)");
+  api.logger.info("[executive-agent] loaded v28 (crash resilience + Telegram retry)");
 }
