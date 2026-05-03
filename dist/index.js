@@ -2554,12 +2554,13 @@ export default function (api) {
     const metaAppId = process.env.META_APP_ID || '';
     const metaAppSecret = process.env.META_APP_SECRET || '';
     const igBusinessId = process.env.INSTAGRAM_BUSINESS_ID || '';
-    // Bootstrap: Wenn Token in env aber kein Token-File → initiales File schreiben
-    // Auch: Wenn env-Token sich vom gespeicherten unterscheidet → aktualisieren
+    // Bootstrap: Nur wenn kein Token-File existiert → env-Token als Seed schreiben
+    // Nicht überschreiben wenn bereits ein gültiger (ggf. refreshter) Token vorliegt
     if (process.env.INSTAGRAM_ACCESS_TOKEN) {
         try {
             const stored = loadInstaTokens();
-            if (!stored || stored.access_token !== process.env.INSTAGRAM_ACCESS_TOKEN) {
+            if (!stored) {
+                // Kein Token gespeichert → Seed aus env
                 saveInstaTokens({
                     access_token: process.env.INSTAGRAM_ACCESS_TOKEN,
                     expires_at: Date.now() + 60 * 24 * 60 * 60 * 1000, // 60 Tage
@@ -2567,7 +2568,10 @@ export default function (api) {
                     ig_business_id: igBusinessId,
                     page_id: process.env.META_PAGE_ID || '',
                 });
-                api.logger.info(`[executive-agent] Instagram: Token aus Env-Variable ${stored ? 'aktualisiert' : 'gespeichert'}`);
+                api.logger.info(`[executive-agent] Instagram: Token aus Env-Variable gespeichert (Initial-Seed)`);
+            }
+            else {
+                api.logger.info(`[executive-agent] Instagram: Gespeicherter Token vorhanden (${tokenDaysRemaining()} Tage verbleibend) — Env übersprungen`);
             }
         }
         catch (e) {
@@ -3379,6 +3383,13 @@ export default function (api) {
         {
             const instaLines = [];
             try {
+                // Proaktiver Refresh vor Briefing-Datenabfrage
+                if (instaAuthorized() && metaAppId && metaAppSecret) {
+                    try {
+                        await ensureInstaToken(metaAppId, metaAppSecret);
+                    }
+                    catch { }
+                }
                 const daysLeft = tokenDaysRemaining();
                 if (daysLeft > 0 && daysLeft < 7) {
                     instaLines.push(`⚠️ Token läuft in ${daysLeft} Tagen ab!`);
@@ -5287,14 +5298,20 @@ export default function (api) {
                     lastBriefingDate = today; // Prevent re-generating, retry the existing text
                     api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
                 }
-                // Instagram Token-Warnung
+                // Instagram Token: proaktiver Auto-Refresh (alle 7 Tage)
                 try {
-                    if (instaAuthorized() && tokenExpiringSoon()) {
-                        const days = tokenDaysRemaining();
-                        await sendTelegram(s.telegramChatId, `⚠️ *Instagram Token-Warnung*\n\nDein Meta/Instagram Token läuft in ${days} Tagen ab!\nBitte Token erneuern und in env aktualisieren.`);
+                    if (instaAuthorized() && metaAppId && metaAppSecret) {
+                        await ensureInstaToken(metaAppId, metaAppSecret);
+                        // Warnung nur wenn Token trotz Refresh-Versuch fast abgelaufen
+                        if (tokenExpiringSoon()) {
+                            const days = tokenDaysRemaining();
+                            await sendTelegram(s.telegramChatId, `⚠️ *Instagram Token-Warnung*\n\nToken läuft in ${days} Tagen ab — Auto-Refresh fehlgeschlagen!\nBitte Token manuell erneuern.`);
+                        }
                     }
                 }
-                catch { /* instagram warning optional */ }
+                catch (e) {
+                    api.logger.warn(`[executive-agent] Instagram Auto-Refresh Fehler: ${e.message}`);
+                }
             }
         }
         catch (e) {

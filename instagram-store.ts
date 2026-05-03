@@ -145,17 +145,25 @@ export function tokenExpiringSoon(): boolean {
 }
 
 /**
- * Refresh long-lived token if < 7 days remaining.
- * Meta long-lived tokens are refreshed via GET exchange.
+ * Refresh long-lived token proactively every 7 days (by age, not remaining time).
+ * Meta long-lived tokens can be refreshed any time before expiry.
  */
 export async function ensureFreshToken(appId: string, appSecret: string): Promise<MetaTokens> {
   const tokens = loadTokens();
   if (!tokens) throw new Error('Instagram nicht autorisiert — Token fehlt.');
 
-  // Still fresh enough (> 7 days remaining)
-  if (tokens.expires_at - Date.now() > 7 * 24 * 60 * 60 * 1000) return tokens;
+  // Already expired — can't refresh, need manual re-auth
+  if (tokens.expires_at <= Date.now()) {
+    console.warn('[instagram-store] Token abgelaufen — manuelles Re-Auth nötig');
+    return tokens;
+  }
+
+  // Refresh if last refresh was > 7 days ago (proactive renewal)
+  const daysSinceRefresh = (Date.now() - (tokens.refreshed_at || 0)) / 86_400_000;
+  if (daysSinceRefresh < 7) return tokens;
 
   // Refresh via Meta token exchange
+  console.log(`[instagram-store] Token-Refresh: ${daysSinceRefresh.toFixed(1)} Tage seit letztem Refresh, ${tokenDaysRemaining()} Tage bis Ablauf`);
   const url = new URL(`${GRAPH_BASE}/oauth/access_token`);
   url.searchParams.set('grant_type', 'fb_exchange_token');
   url.searchParams.set('client_id', appId);
