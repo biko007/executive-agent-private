@@ -136,6 +136,12 @@ engineering best practices.
 - Secrets: ~/.config/openclaw/env
 - Git: 3 Repos (workspace, executive-agent, executive-dashboard)
 
+## Plan Mode
+
+- Bei komplexen Aufträgen (>3 Dateien oder neue Features): IMMER Plan Mode verwenden — kein direktes Implementieren ohne Review
+- Plan Mode aktivieren: `Shift+Tab` zweimal drücken vor der Eingabe
+- Ausnahmen: triviale Edits (Config, Token), Bug-Fixes mit klarer Diagnose
+
 ## Engineering Principles
 
 - Minimale, inkrementelle Änderungen — keine unrelated Refactors

@@ -145,25 +145,32 @@ export function tokenExpiringSoon(): boolean {
 }
 
 /**
+ * Mark token as failed — forces refresh on next ensureFreshToken() call.
+ * Call this when API returns code 190 (session expired).
+ */
+export function markTokenFailed(): void {
+  const tokens = loadTokens();
+  if (!tokens) return;
+  tokens.refreshed_at = 0; // Force refresh on next call
+  saveTokens(tokens);
+  console.log('[instagram-store] Token als fehlgeschlagen markiert — nächster Refresh wird erzwungen');
+}
+
+/**
  * Refresh long-lived token proactively every 7 days (by age, not remaining time).
  * Meta long-lived tokens can be refreshed any time before expiry.
+ * Set force=true to bypass the 7-day cooldown (e.g. after API error 190).
  */
-export async function ensureFreshToken(appId: string, appSecret: string): Promise<MetaTokens> {
+export async function ensureFreshToken(appId: string, appSecret: string, force = false): Promise<MetaTokens> {
   const tokens = loadTokens();
   if (!tokens) throw new Error('Instagram nicht autorisiert — Token fehlt.');
 
-  // Already expired — can't refresh, need manual re-auth
-  if (tokens.expires_at <= Date.now()) {
-    console.warn('[instagram-store] Token abgelaufen — manuelles Re-Auth nötig');
-    return tokens;
-  }
-
-  // Refresh if last refresh was > 7 days ago (proactive renewal)
+  // Refresh if last refresh was > 7 days ago OR forced (e.g. after API error)
   const daysSinceRefresh = (Date.now() - (tokens.refreshed_at || 0)) / 86_400_000;
-  if (daysSinceRefresh < 7) return tokens;
+  if (!force && daysSinceRefresh < 7) return tokens;
 
   // Refresh via Meta token exchange
-  console.log(`[instagram-store] Token-Refresh: ${daysSinceRefresh.toFixed(1)} Tage seit letztem Refresh, ${tokenDaysRemaining()} Tage bis Ablauf`);
+  console.log(`[instagram-store] Token-Refresh${force ? ' (erzwungen)' : ''}: ${daysSinceRefresh.toFixed(1)} Tage seit letztem Refresh, ${tokenDaysRemaining()} Tage bis Ablauf`);
   const url = new URL(`${GRAPH_BASE}/oauth/access_token`);
   url.searchParams.set('grant_type', 'fb_exchange_token');
   url.searchParams.set('client_id', appId);
@@ -178,6 +185,11 @@ export async function ensureFreshToken(appId: string, appSecret: string): Promis
       console.warn('[instagram-store] Token-Refresh übersprungen (App-Secret ungültig, Code 101) — verwende bestehenden Token');
       return tokens;
     }
+    // Code 190 = session expired — token is dead, can't refresh
+    if (body.includes('"code":190') || body.includes('"code": 190')) {
+      console.error('[instagram-store] Token auf Meta-Seite abgelaufen (Code 190) — neuer Token aus Meta Developer Portal nötig');
+      throw new Error('Instagram Token abgelaufen — neuer Token aus Meta Developer Portal nötig');
+    }
     throw new Error(`Token-Refresh fehlgeschlagen: ${res.status} — ${body.slice(0, 200)}`);
   }
   const data = await res.json();
@@ -190,6 +202,7 @@ export async function ensureFreshToken(appId: string, appSecret: string): Promis
     page_id: tokens.page_id,
   };
   saveTokens(refreshed);
+  console.log(`[instagram-store] Token erfolgreich erneuert — gültig bis ${new Date(refreshed.expires_at).toISOString().slice(0, 10)}`);
   return refreshed;
 }
 

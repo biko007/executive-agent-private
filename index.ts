@@ -35,7 +35,7 @@ import type { SpSearchResult } from "./link-store.js";
 import {
   loadTokens as loadInstaTokens, saveTokens as saveInstaTokens,
   isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken,
-  tokenDaysRemaining, tokenExpiringSoon,
+  tokenDaysRemaining, tokenExpiringSoon, markTokenFailed as markInstaTokenFailed,
   fetchInsights, fetchMedia, loadInsightsCache,
   saveDraft as saveInstaDraft, loadDraft as loadInstaDraft,
   listDrafts as listInstaDrafts, createDraft as createInstaDraft,
@@ -3837,9 +3837,17 @@ for (const k of days) {
             } catch (e: any) {
               const errMsg = e?.message || String(e);
               api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${errMsg}`);
-              // Show error in briefing instead of silent omission
-              if (errMsg.includes('Session has expired') || errMsg.includes('expired')) {
-                instaLines.push(`❌ Token abgelaufen — bitte neuen Token in env setzen`);
+              // Token expired on Meta side — mark failed and try forced refresh
+              if (errMsg.includes('Session has expired') || errMsg.includes('expired') || errMsg.includes('code":190') || errMsg.includes('code": 190')) {
+                markInstaTokenFailed();
+                try {
+                  const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+                  const retryInsights = await fetchInsights(refreshed.access_token, refreshed.ig_business_id, true);
+                  instaLines.push(`- Follower: ${retryInsights.followers_count.toLocaleString('de')} | Engagement: ${retryInsights.engagement_rate}%`);
+                  instaLines.push(`✅ Token automatisch erneuert`);
+                } catch (retryErr: any) {
+                  instaLines.push(`❌ Token abgelaufen — neuer Token aus Meta Developer Portal nötig`);
+                }
               } else {
                 instaLines.push(`❌ API-Fehler: ${errMsg.slice(0, 120)}`);
               }
