@@ -8,7 +8,7 @@ import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, search
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
 import { getAllInvestments, getInvestment, createInvestment, updateInvestment, addValuation, getValuationHistory, calculateIRR, formatInvestmentList, formatInvestmentDetail, } from "./pe-store.js";
-import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, fetchInsights, fetchMedia, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, } from "./instagram-store.js";
+import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, tokenExpiringSoon, markTokenFailed as markInstaTokenFailed, fetchInsights, fetchMedia, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, loadStyleProfile, saveStyleProfile, validateStyleProfile, getStyleProfileSummary, } from "./instagram-store.js";
 import { openPage, screenshot, closeBrowser } from "./browser-agent.js";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -3194,6 +3194,46 @@ export default function (api) {
             };
         },
     });
+    // 4.10 /instastyle — Style-Profil anzeigen/bearbeiten
+    api.registerCommand({
+        name: 'instastyle',
+        description: 'Style-Profil: /instastyle | /instastyle edit | /instastyle set {...}',
+        acceptsArgs: true,
+        handler: async (ctx) => {
+            try {
+                const raw = String(ctx.args || '').trim();
+                const arg = raw.toLowerCase();
+                // /instastyle edit — zeigt rohes JSON
+                if (arg === 'edit') {
+                    const profile = loadStyleProfile();
+                    const json = JSON.stringify(profile, null, 2);
+                    return {
+                        text: '📝 *Style-Profil (JSON)*\n\n```\n' + json + '\n```\n\n' +
+                            'Zum Speichern:\n/instastyle set {neues JSON}',
+                    };
+                }
+                // /instastyle set {...} — speichert neues Profil
+                if (arg.startsWith('set ') || arg.startsWith('set\n')) {
+                    const jsonStr = raw.slice(4).trim();
+                    const parsed = JSON.parse(jsonStr);
+                    const error = validateStyleProfile(parsed);
+                    if (error) {
+                        return { text: `❌ Validierung fehlgeschlagen: ${error}` };
+                    }
+                    saveStyleProfile(parsed);
+                    return { text: '✅ Style-Profil aktualisiert.\n\n' + getStyleProfileSummary() };
+                }
+                // /instastyle — Übersicht
+                return { text: getStyleProfileSummary() };
+            }
+            catch (e) {
+                if (e instanceof SyntaxError) {
+                    return { text: `❌ Ungültiges JSON: ${e.message}` };
+                }
+                return { text: `❌ /instastyle Fehler: ${e.message}` };
+            }
+        },
+    });
     // ── Briefing ───────────────────────────────────────────────────────────────
     async function syncWithingsForBriefing() {
         if (!withingsClientId || !withingsClientSecret || !isAuthorized())
@@ -3405,9 +3445,18 @@ export default function (api) {
                         catch (e) {
                             const errMsg = e?.message || String(e);
                             api.logger.warn(`[executive-agent] Instagram Insights Refresh fehlgeschlagen: ${errMsg}`);
-                            // Show error in briefing instead of silent omission
-                            if (errMsg.includes('Session has expired') || errMsg.includes('expired')) {
-                                instaLines.push(`❌ Token abgelaufen — bitte neuen Token in env setzen`);
+                            // Token expired on Meta side — mark failed and try forced refresh
+                            if (errMsg.includes('Session has expired') || errMsg.includes('expired') || errMsg.includes('code":190') || errMsg.includes('code": 190')) {
+                                markInstaTokenFailed();
+                                try {
+                                    const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+                                    const retryInsights = await fetchInsights(refreshed.access_token, refreshed.ig_business_id, true);
+                                    instaLines.push(`- Follower: ${retryInsights.followers_count.toLocaleString('de')} | Engagement: ${retryInsights.engagement_rate}%`);
+                                    instaLines.push(`✅ Token automatisch erneuert`);
+                                }
+                                catch (retryErr) {
+                                    instaLines.push(`❌ Token abgelaufen — neuer Token aus Meta Developer Portal nötig`);
+                                }
                             }
                             else {
                                 instaLines.push(`❌ API-Fehler: ${errMsg.slice(0, 120)}`);
@@ -4401,6 +4450,38 @@ export default function (api) {
                 return { text: 'Keine aktuellen Scan-Kandidaten (letzte 2h).' };
             const lines = results.map((r) => `${r.symbol} | ${r.signal} | Stärke: ${Number(r.strength).toFixed(1)} | ${r.timestamp?.slice(11, 19) || ''}`);
             return { text: ['🏆 *Top-Kandidaten*', '', ...lines].join('\n') };
+        },
+    });
+    api.registerCommand({
+        name: 'tradedebug',
+        description: 'Scanner-Debug: zeigt wieviele Symbole jede Bedingung erfüllen',
+        handler: async () => {
+            const stats = await tradingFetch('/debug/scan');
+            if (!stats)
+                return { text: '⚠️ Trading-Service nicht erreichbar.' };
+            if (stats.error)
+                return { text: `⚠️ ${stats.error}` };
+            const m = stats.momentum;
+            const mr = stats.meanReversion;
+            const ts = stats.timestamp?.slice(0, 19).replace('T', ' ') || '—';
+            return {
+                text: [
+                    '🔬 *Scanner Debug*',
+                    `Analysiert: ${stats.totalAnalyzed} Symbole | ${ts}`,
+                    '',
+                    '*Momentum (2 von 3 nötig):*',
+                    `EMA bullish: ${m.emaBullish} | Cross: ${m.emaCross}`,
+                    `RSI 50-70: ${m.rsiInZone}`,
+                    `Vol >120%: ${m.volumeAbove120}`,
+                    `→ Pass: ${m.passed}`,
+                    '',
+                    '*Mean-Reversion (RSI + 1 weitere):*',
+                    `RSI <35: ${mr.rsiBelow35} | <30: ${mr.rsiBelow30}`,
+                    `< BB lower: ${mr.belowBBLower} | unteres Drittel: ${mr.inLowerThird}`,
+                    `Vol >120%: ${mr.volumeAbove120}`,
+                    `→ Pass: ${mr.passed}`,
+                ].join('\n'),
+            };
         },
     });
     // ── Briefing-Zeit konfigurieren ────────────────────────────────────────────

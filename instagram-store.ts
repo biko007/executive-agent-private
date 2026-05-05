@@ -380,6 +380,118 @@ export function saveCalendar(cal: ContentCalendar): void {
   fs.writeFileSync(CALENDAR_FILE, JSON.stringify(cal, null, 2), 'utf-8');
 }
 
+// ── Style Profile ───────────────────────────────────────────────────────────
+
+export interface StyleProfile {
+  voice: { tone: string; perspective?: string; humor?: string };
+  pillars: string[];
+  do?: string[];
+  dont?: string[];
+  hashtag_strategy?: { broad?: number; niche?: number; branded?: number };
+  signature_phrases?: string[];
+  language: string;
+  updated: string;
+}
+
+const STYLE_PROFILE_FILE = path.join(INSTA_DIR, 'style-profile.json');
+
+const DEFAULT_STYLE_PROFILE: StyleProfile = {
+  voice: { tone: 'authentisch, direkt, executive', perspective: 'Ich-Form', humor: 'trocken, situativ' },
+  pillars: ['Personal Brand', 'Was ich gerade tue'],
+  do: ['Konkrete Beobachtungen statt Floskeln', 'Eigene Meinung zeigen', 'Kurze Sätze'],
+  dont: ['Generische Motivationssprüche', 'Übertriebene Emojis', 'Buzzwords ohne Substanz'],
+  hashtag_strategy: { broad: 5, niche: 10, branded: 3 },
+  signature_phrases: [],
+  language: 'de',
+  updated: new Date().toISOString(),
+};
+
+export function loadStyleProfile(): StyleProfile {
+  try {
+    if (fs.existsSync(STYLE_PROFILE_FILE)) {
+      return JSON.parse(fs.readFileSync(STYLE_PROFILE_FILE, 'utf-8'));
+    }
+  } catch (e: any) {
+    console.error('[instagram-store] Style-Profil laden fehlgeschlagen:', e.message);
+  }
+  // Create default
+  saveStyleProfile(DEFAULT_STYLE_PROFILE);
+  return { ...DEFAULT_STYLE_PROFILE };
+}
+
+export function saveStyleProfile(profile: StyleProfile): void {
+  try {
+    ensureDir();
+    profile.updated = new Date().toISOString();
+    fs.writeFileSync(STYLE_PROFILE_FILE, JSON.stringify(profile, null, 2), 'utf-8');
+  } catch (e: any) {
+    console.error('[instagram-store] Style-Profil speichern fehlgeschlagen:', e.message);
+    throw e;
+  }
+}
+
+export function validateStyleProfile(data: any): string | null {
+  if (!data || typeof data !== 'object') return 'JSON muss ein Objekt sein';
+  if (!data.voice?.tone) return 'voice.tone ist Pflichtfeld';
+  if (!Array.isArray(data.pillars) || data.pillars.length === 0) return 'pillars muss ein nicht-leeres Array sein';
+  if (!data.language || typeof data.language !== 'string') return 'language ist Pflichtfeld (z.B. "de")';
+  return null;
+}
+
+export function getStyleProfileSummary(): string {
+  const p = loadStyleProfile();
+  const lines: string[] = [];
+
+  lines.push('📸 *Style-Profil*');
+  lines.push('');
+
+  // Voice
+  lines.push('🎤 *Voice*');
+  lines.push(`Ton: ${p.voice.tone}`);
+  if (p.voice.perspective) lines.push(`Perspektive: ${p.voice.perspective}`);
+  if (p.voice.humor) lines.push(`Humor: ${p.voice.humor}`);
+  lines.push('');
+
+  // Pillars
+  lines.push('🏛 *Pillars*');
+  lines.push(p.pillars.map(pi => `• ${pi}`).join('\n'));
+  lines.push('');
+
+  // Do / Don't
+  if (p.do?.length) {
+    lines.push('✅ *Do*');
+    lines.push(p.do.map(d => `• ${d}`).join('\n'));
+    lines.push('');
+  }
+  if (p.dont?.length) {
+    lines.push('🚫 *Don\'t*');
+    lines.push(p.dont.map(d => `• ${d}`).join('\n'));
+    lines.push('');
+  }
+
+  // Hashtag Strategy
+  if (p.hashtag_strategy) {
+    const hs = p.hashtag_strategy;
+    lines.push('# *Hashtag-Strategie*');
+    lines.push(`Broad ${hs.broad || 0} | Niche ${hs.niche || 0} | Branded ${hs.branded || 0}`);
+    lines.push('');
+  }
+
+  // Signature Phrases
+  if (p.signature_phrases?.length) {
+    lines.push('✍️ *Signature Phrases*');
+    lines.push(p.signature_phrases.map(s => `"${s}"`).join(' | '));
+    lines.push('');
+  }
+
+  // Footer
+  lines.push(`Sprache: ${p.language} | Stand: ${p.updated.slice(0, 16).replace('T', ' ')}`);
+
+  // Truncate to 3500 chars for Telegram
+  const result = lines.join('\n');
+  return result.length > 3500 ? result.slice(0, 3497) + '...' : result;
+}
+
 // ── Phase 2 Stubs (Publishing) ─────────────────────────────────────────────
 // TODO Phase 2: Auto-Posting
 // export async function publishDraft(draft: InstaDraft, token: string, igId: string): Promise<string> { ... }
