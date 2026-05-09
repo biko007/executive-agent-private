@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "sourceMap": false
   },
-  "include": ["index.ts", "sharepoint-store.ts", "fleet-store.ts", "assets-store.ts", "instagram-store.ts", "browser-agent.ts"],
+  "include": ["index.ts", "sharepoint-store.ts", "fleet-store.ts", "assets-store.ts", "instagram-store.ts", "browser-agent.ts", "instagram-content-engine.ts", "system-health.ts"],
   "exclude": ["dist", "node_modules"]
 }

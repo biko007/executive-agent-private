@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { generateDraftId } from './instagram-content-engine.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,8 @@ async function fetchWithTimeout(url: string, init: any, timeoutMs: number) {
 // ── Internal: Graph API wrapper ────────────────────────────────────────────
 
 const GRAPH_BASE = 'https://graph.facebook.com/v21.0';
+// Token exchange must use unversioned endpoint per Meta docs
+const GRAPH_OAUTH_BASE = 'https://graph.facebook.com';
 
 async function graphGet(endpoint: string, token: string, params?: Record<string, string>): Promise<any> {
   const url = new URL(`${GRAPH_BASE}${endpoint}`);
@@ -169,9 +172,9 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
   const daysSinceRefresh = (Date.now() - (tokens.refreshed_at || 0)) / 86_400_000;
   if (!force && daysSinceRefresh < 7) return tokens;
 
-  // Refresh via Meta token exchange
+  // Refresh via Meta token exchange (unversioned endpoint per Meta docs)
   console.log(`[instagram-store] Token-Refresh${force ? ' (erzwungen)' : ''}: ${daysSinceRefresh.toFixed(1)} Tage seit letztem Refresh, ${tokenDaysRemaining()} Tage bis Ablauf`);
-  const url = new URL(`${GRAPH_BASE}/oauth/access_token`);
+  const url = new URL(`${GRAPH_OAUTH_BASE}/oauth/access_token`);
   url.searchParams.set('grant_type', 'fb_exchange_token');
   url.searchParams.set('client_id', appId);
   url.searchParams.set('client_secret', appSecret);
@@ -188,7 +191,7 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
     // Code 190 = session expired — token is dead, can't refresh
     if (body.includes('"code":190') || body.includes('"code": 190')) {
       console.error('[instagram-store] Token auf Meta-Seite abgelaufen (Code 190) — neuer Token aus Meta Developer Portal nötig');
-      throw new Error('Instagram Token abgelaufen — neuer Token aus Meta Developer Portal nötig');
+      throw new Error('Instagram Token abgelaufen (Code 190) — neuer Token aus Meta Developer Portal nötig');
     }
     throw new Error(`Token-Refresh fehlgeschlagen: ${res.status} — ${body.slice(0, 200)}`);
   }
@@ -202,6 +205,23 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
     page_id: tokens.page_id,
   };
   saveTokens(refreshed);
+
+  // Persist new token to env file so service restarts keep the refreshed token
+  try {
+    const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
+    const envContent = fs.readFileSync(envPath, 'utf-8');
+    const updatedEnv = envContent.replace(
+      /^INSTAGRAM_ACCESS_TOKEN=.*$/m,
+      `INSTAGRAM_ACCESS_TOKEN=${data.access_token}`
+    );
+    if (updatedEnv !== envContent) {
+      fs.writeFileSync(envPath, updatedEnv);
+      console.log('[instagram-store] Token in ~/.config/openclaw/env aktualisiert');
+    }
+  } catch (envErr: any) {
+    console.warn(`[instagram-store] Env-Update fehlgeschlagen (Token nur in tokens.json): ${envErr.message}`);
+  }
+
   console.log(`[instagram-store] Token erfolgreich erneuert — gültig bis ${new Date(refreshed.expires_at).toISOString().slice(0, 10)}`);
   return refreshed;
 }
@@ -269,7 +289,7 @@ export async function fetchInsights(token: string, igId: string, force = false):
 
 // ── Media (cached, 24h TTL) ────────────────────────────────────────────────
 
-function loadMediaCache(): MediaCache | null {
+export function loadMediaCache(): MediaCache | null {
   if (!fs.existsSync(MEDIA_CACHE_FILE)) return null;
   try { return JSON.parse(fs.readFileSync(MEDIA_CACHE_FILE, 'utf-8')); }
   catch { return null; }
@@ -320,7 +340,7 @@ function draftPath(id: string): string { return path.join(DRAFTS_DIR, `${id}.jso
 export function createDraft(data: Partial<InstaDraft> & { caption: string }): InstaDraft {
   ensureDir();
   const now = new Date().toISOString();
-  const id = `insta-${Date.now().toString(36)}`;
+  const id = generateDraftId(data.caption);
   const draft: InstaDraft = {
     id,
     createdAt: now,
@@ -380,43 +400,213 @@ export function saveCalendar(cal: ContentCalendar): void {
   fs.writeFileSync(CALENDAR_FILE, JSON.stringify(cal, null, 2), 'utf-8');
 }
 
-// ── Style Profile ───────────────────────────────────────────────────────────
+// ── Style Profile v2 ────────────────────────────────────────────────────────
+
+// Sub-types
+
+export interface PillarContentIdea {
+  format: string;
+  idea: string;
+}
+
+export interface Pillar {
+  id: 'culture' | 'technology' | 'style' | 'health' | 'freedom';
+  name: string;
+  description: string;
+  good_examples: string[];
+  bad_examples: string[];
+  content_ideas: PillarContentIdea[];
+  example_caption: string;
+}
+
+export interface DoRule {
+  id: number;
+  title: string;
+  rule: string;
+  good_example: string;
+  bad_example?: string;
+  rationale: string;
+  subtitle_format?: Record<string, any>;
+}
+
+export interface DontRule {
+  id: number;
+  title: string;
+  bad_examples: string[];
+  alternative: string;
+  rationale: string;
+}
+
+export interface SignaturePhrase {
+  phrase: string;
+  tone: string;
+  use_case: string;
+}
+
+export interface ContentFormat {
+  id: string;
+  name: string;
+  purpose: string;
+  structure: string[];
+  example: string;
+}
+
+export interface CaptionTemplate {
+  id: string;
+  name: string;
+  structure: string;
+  example: string;
+}
+
+export interface StoryFormat {
+  id: string;
+  name: string;
+  example: string;
+}
+
+export interface ReferenceAccount {
+  name: string;
+  relevance: string;
+  patterns: string[];
+  lessons: string[];
+}
+
+export interface ContentExample {
+  category: string;
+  hook: string;
+  caption: string;
+  hashtags: string[];
+}
 
 export interface StyleProfile {
-  voice: { tone: string; perspective?: string; humor?: string };
-  pillars: string[];
-  do?: string[];
-  dont?: string[];
-  hashtag_strategy?: { broad?: number; niche?: number; branded?: number };
-  signature_phrases?: string[];
-  language: string;
+  version: string;
+  schema_version: number;
   updated: string;
+  meta: {
+    name: string;
+    stylebook_version: string;
+    owner: string;
+    principle: string;
+  };
+  positioning: {
+    bio_recommended: Record<string, string>;
+    brand_core: Record<string, string>;
+    perception_goals: string[];
+    non_positioning: string[];
+  };
+  voice: {
+    core_adjectives: string[];
+    extended_tone: string[];
+    good_examples: string[];
+    bad_examples: string[];
+  };
+  main_formula: {
+    rule: string;
+    fields: string[];
+    min_match_count: number;
+  };
+  pillars: Pillar[];
+  signature_phrases: {
+    en: SignaturePhrase[];
+    de: SignaturePhrase[];
+  };
+  cannabis_rules: {
+    share_target_percent: number;
+    role_includes: string[];
+    role_excludes: string[];
+    good_angles: string[];
+    bad_angles: string[];
+  };
+  dos: DoRule[];
+  donts: DontRule[];
+  visual_identity: {
+    style_summary: string;
+    look_principles: string[];
+    primary_colors: string[];
+    accent_colors: Array<{ color: string; use: string }>;
+    fonts_primary: string[];
+    fonts_fallback: string[];
+    fonts_avoid: string[];
+    good_motifs: string[];
+    bad_motifs: string[];
+  };
+  language: {
+    primary: string;
+    available: string[];
+    topic_language_map: Record<string, string[]>;
+    subtitle_default: string;
+    subtitle_rule: string;
+  };
+  posting_rhythm: {
+    frequency: Record<string, any>;
+    content_mix_percent: Record<string, any>;
+    timing_test_windows: Record<string, string>;
+    timing_rule: string;
+  };
+  weekly_structure: Array<{ day: string; format: string; topic: string; effort: string }>;
+  weekly_redaction_rule: string[];
+  formats: ContentFormat[];
+  caption_templates: CaptionTemplate[];
+  reel_rules: {
+    length_seconds: Record<string, any>;
+    structure: string[];
+  };
+  story_rules: {
+    purpose: string[];
+    tone_note: string;
+    formats: StoryFormat[];
+  };
+  hashtag_strategy: {
+    count_per_post: [number, number];
+    placement: string;
+    structure_per_post: Record<string, any>;
+    pools: Record<string, string[]>;
+  };
+  interaction_rules: {
+    comments: Record<string, any>;
+    dms: Record<string, any>;
+  };
+  manychat: {
+    principle: string;
+    triggers: Array<{ keyword: string; response: string | null }>;
+    no_gos: string[];
+    default_phrasing: string;
+  };
+  kpis: {
+    primary: Array<{ name: string; meaning: string }>;
+    anti_goals: string[];
+    real_goals: string[];
+  };
+  content_examples: ContentExample[];
+  reference_accounts: ReferenceAccount[];
+  checklist: string[];
+  traffic_light: {
+    green: string[];
+    yellow: string[];
+    red: string[];
+  };
+  ai_generator_prompt: string;
 }
 
 const STYLE_PROFILE_FILE = path.join(INSTA_DIR, 'style-profile.json');
 
-const DEFAULT_STYLE_PROFILE: StyleProfile = {
-  voice: { tone: 'authentisch, direkt, executive', perspective: 'Ich-Form', humor: 'trocken, situativ' },
-  pillars: ['Personal Brand', 'Was ich gerade tue'],
-  do: ['Konkrete Beobachtungen statt Floskeln', 'Eigene Meinung zeigen', 'Kurze Sätze'],
-  dont: ['Generische Motivationssprüche', 'Übertriebene Emojis', 'Buzzwords ohne Substanz'],
-  hashtag_strategy: { broad: 5, niche: 10, branded: 3 },
-  signature_phrases: [],
-  language: 'de',
-  updated: new Date().toISOString(),
-};
+const REQUIRED_PILLAR_IDS = ['culture', 'technology', 'style', 'health', 'freedom'] as const;
 
 export function loadStyleProfile(): StyleProfile {
-  try {
-    if (fs.existsSync(STYLE_PROFILE_FILE)) {
-      return JSON.parse(fs.readFileSync(STYLE_PROFILE_FILE, 'utf-8'));
-    }
-  } catch (e: any) {
-    console.error('[instagram-store] Style-Profil laden fehlgeschlagen:', e.message);
+  if (!fs.existsSync(STYLE_PROFILE_FILE)) {
+    throw new Error('Style-Profil nicht gefunden. Datei anlegen unter: artifacts/personal/instagram/style-profile.json');
   }
-  // Create default
-  saveStyleProfile(DEFAULT_STYLE_PROFILE);
-  return { ...DEFAULT_STYLE_PROFILE };
+  try {
+    const data = JSON.parse(fs.readFileSync(STYLE_PROFILE_FILE, 'utf-8'));
+    const sv = data?.schema_version;
+    if (sv !== 2) {
+      throw new Error(`Style-Profil v2 erwartet, gefunden v${sv ?? '1 (legacy)'}. Bitte Datei auf schema_version: 2 migrieren.`);
+    }
+    return data as StyleProfile;
+  } catch (e: any) {
+    if (e.message.includes('v2 erwartet') || e.message.includes('nicht gefunden')) throw e;
+    throw new Error(`Style-Profil laden fehlgeschlagen: ${e.message}`);
+  }
 }
 
 export function saveStyleProfile(profile: StyleProfile): void {
@@ -432,9 +622,74 @@ export function saveStyleProfile(profile: StyleProfile): void {
 
 export function validateStyleProfile(data: any): string | null {
   if (!data || typeof data !== 'object') return 'JSON muss ein Objekt sein';
-  if (!data.voice?.tone) return 'voice.tone ist Pflichtfeld';
-  if (!Array.isArray(data.pillars) || data.pillars.length === 0) return 'pillars muss ein nicht-leeres Array sein';
-  if (!data.language || typeof data.language !== 'string') return 'language ist Pflichtfeld (z.B. "de")';
+  if (data.schema_version !== 2) return `schema_version muss 2 sein (gefunden: ${data.schema_version ?? 'fehlt'})`;
+
+  // Required top-level fields
+  const requiredFields = [
+    'version', 'schema_version', 'meta', 'positioning', 'voice',
+    'main_formula', 'pillars', 'signature_phrases', 'cannabis_rules',
+    'dos', 'donts', 'visual_identity', 'language', 'posting_rhythm',
+    'weekly_structure', 'weekly_redaction_rule', 'formats',
+    'caption_templates', 'reel_rules', 'story_rules', 'hashtag_strategy',
+    'interaction_rules', 'manychat', 'kpis', 'content_examples',
+    'reference_accounts', 'checklist', 'traffic_light', 'ai_generator_prompt',
+  ];
+  for (const f of requiredFields) {
+    if (data[f] === undefined || data[f] === null) return `Pflichtfeld fehlt: ${f}`;
+  }
+
+  // meta
+  if (!data.meta?.name) return 'meta.name fehlt';
+  if (!data.meta?.principle) return 'meta.principle fehlt';
+
+  // voice
+  if (!Array.isArray(data.voice?.core_adjectives) || data.voice.core_adjectives.length === 0) {
+    return 'voice.core_adjectives muss ein nicht-leeres Array sein';
+  }
+
+  // pillars: exactly 5 with correct ids
+  if (!Array.isArray(data.pillars)) return 'pillars muss ein Array sein';
+  if (data.pillars.length !== 5) return `pillars: genau 5 Eintraege erwartet, ${data.pillars.length} gefunden`;
+  for (let i = 0; i < REQUIRED_PILLAR_IDS.length; i++) {
+    const expected = REQUIRED_PILLAR_IDS[i];
+    const pillar = data.pillars.find((p: any) => p.id === expected);
+    if (!pillar) return `pillars: Eintrag mit id "${expected}" fehlt`;
+    if (!pillar.name) return `pillars[${expected}].name fehlt`;
+    if (!pillar.description) return `pillars[${expected}].description fehlt`;
+    if (!Array.isArray(pillar.content_ideas)) return `pillars[${expected}].content_ideas fehlt`;
+    if (!pillar.example_caption) return `pillars[${expected}].example_caption fehlt`;
+  }
+
+  // dos: exactly 8
+  if (!Array.isArray(data.dos)) return 'dos muss ein Array sein';
+  if (data.dos.length !== 8) return `dos: genau 8 Eintraege erwartet, ${data.dos.length} gefunden`;
+  for (let i = 0; i < data.dos.length; i++) {
+    const d = data.dos[i];
+    if (!d.title) return `dos[${i}].title fehlt`;
+    if (!d.rule) return `dos[${i}].rule fehlt`;
+  }
+
+  // donts: exactly 8
+  if (!Array.isArray(data.donts)) return 'donts muss ein Array sein';
+  if (data.donts.length !== 8) return `donts: genau 8 Eintraege erwartet, ${data.donts.length} gefunden`;
+  for (let i = 0; i < data.donts.length; i++) {
+    const d = data.donts[i];
+    if (!d.title) return `donts[${i}].title fehlt`;
+    if (!d.alternative) return `donts[${i}].alternative fehlt`;
+  }
+
+  // formats: at least 5
+  if (!Array.isArray(data.formats)) return 'formats muss ein Array sein';
+  if (data.formats.length < 5) return `formats: mindestens 5 erwartet, ${data.formats.length} gefunden`;
+
+  // language
+  if (!data.language?.primary) return 'language.primary fehlt';
+  if (!Array.isArray(data.language?.available)) return 'language.available fehlt';
+
+  // hashtag_strategy
+  if (!Array.isArray(data.hashtag_strategy?.count_per_post)) return 'hashtag_strategy.count_per_post fehlt';
+  if (!data.hashtag_strategy?.pools) return 'hashtag_strategy.pools fehlt';
+
   return null;
 }
 
@@ -442,52 +697,64 @@ export function getStyleProfileSummary(): string {
   const p = loadStyleProfile();
   const lines: string[] = [];
 
-  lines.push('📸 *Style-Profil*');
+  // Header
+  lines.push(`Style-Profil: ${p.meta.name}`);
+  lines.push(`Version ${p.version} | Stand: ${p.updated?.slice(0, 10) || '?'}`);
   lines.push('');
 
   // Voice
-  lines.push('🎤 *Voice*');
-  lines.push(`Ton: ${p.voice.tone}`);
-  if (p.voice.perspective) lines.push(`Perspektive: ${p.voice.perspective}`);
-  if (p.voice.humor) lines.push(`Humor: ${p.voice.humor}`);
+  lines.push('Voice');
+  lines.push(p.voice.core_adjectives.join(' | '));
+  if (p.voice.extended_tone?.length) {
+    lines.push(p.voice.extended_tone.slice(0, 4).join(' | '));
+  }
   lines.push('');
 
   // Pillars
-  lines.push('🏛 *Pillars*');
-  lines.push(p.pillars.map(pi => `• ${pi}`).join('\n'));
+  lines.push('Pillars');
+  lines.push(p.pillars.map(pi => pi.name).join(' | '));
   lines.push('');
 
-  // Do / Don't
-  if (p.do?.length) {
-    lines.push('✅ *Do*');
-    lines.push(p.do.map(d => `• ${d}`).join('\n'));
-    lines.push('');
-  }
-  if (p.dont?.length) {
-    lines.push('🚫 *Don\'t*');
-    lines.push(p.dont.map(d => `• ${d}`).join('\n'));
-    lines.push('');
-  }
+  // Cannabis
+  lines.push('Cannabis-Anteil');
+  lines.push(`Ziel: ${p.cannabis_rules.share_target_percent}%`);
+  lines.push('');
+
+  // Dos
+  lines.push(`Dos (${p.dos.length})`);
+  lines.push(p.dos.slice(0, 3).map(d => d.title).join(' | '));
+  if (p.dos.length > 3) lines.push(`... +${p.dos.length - 3} weitere`);
+  lines.push('');
+
+  // Donts
+  lines.push(`Donts (${p.donts.length})`);
+  lines.push(p.donts.slice(0, 3).map(d => d.title).join(' | '));
+  if (p.donts.length > 3) lines.push(`... +${p.donts.length - 3} weitere`);
+  lines.push('');
+
+  // Language
+  lines.push('Sprachen');
+  lines.push(p.language.available.join(' | '));
+  lines.push('');
 
   // Hashtag Strategy
-  if (p.hashtag_strategy) {
-    const hs = p.hashtag_strategy;
-    lines.push('# *Hashtag-Strategie*');
-    lines.push(`Broad ${hs.broad || 0} | Niche ${hs.niche || 0} | Branded ${hs.branded || 0}`);
+  const hs = p.hashtag_strategy;
+  const poolCount = Object.keys(hs.pools || {}).length;
+  lines.push('Hashtag-Strategie');
+  lines.push(`${hs.count_per_post[0]}-${hs.count_per_post[1]} pro Post | ${poolCount} Pools`);
+  lines.push('');
+
+  // Reference Accounts
+  if (p.reference_accounts?.length) {
+    lines.push('Reference Accounts');
+    lines.push(p.reference_accounts.map(r => r.name).join(' | '));
     lines.push('');
   }
 
-  // Signature Phrases
-  if (p.signature_phrases?.length) {
-    lines.push('✍️ *Signature Phrases*');
-    lines.push(p.signature_phrases.map(s => `"${s}"`).join(' | '));
-    lines.push('');
-  }
+  // Commands hint
+  lines.push('Befehle: /instastyle pillar <id> | dos | donts | export | reload');
+  lines.push('Edit via VS Code Remote SSH, dann /instastyle reload');
 
-  // Footer
-  lines.push(`Sprache: ${p.language} | Stand: ${p.updated.slice(0, 16).replace('T', ' ')}`);
-
-  // Truncate to 3500 chars for Telegram
   const result = lines.join('\n');
   return result.length > 3500 ? result.slice(0, 3497) + '...' : result;
 }
