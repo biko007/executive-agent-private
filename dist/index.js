@@ -1308,8 +1308,8 @@ export default function (api) {
     // before_agent_start: fires before every AI agent turn.
     // - For registered commands: instructs AI to stay silent (NO_REPLY) so plugin handler responds.
     // - For voice messages: transcribes audio via Whisper and injects transcript as context.
-    // - For bare media: saves to raw session and injects confirmation.
-    api.registerHook('before_agent_start', async (event) => {
+    // - For bare media (image/video): saves to raw session and suppresses AI commentary.
+    api.on('before_agent_start', async (event) => {
         const prompt = event?.prompt ?? '';
         // Suppress AI for registered commands
         const match = prompt.match(/^\s*\/([a-z_]+)/i);
@@ -1329,14 +1329,12 @@ export default function (api) {
         if (hasAudio) {
             api.logger.info(`[executive-agent] command-guard: Audio erkannt — starte Whisper-Transkription`);
             try {
-                // Extract audio file path from prompt (format: [media attached: /path/to/file.ogg ...])
                 const pathMatch = prompt.match(/\[media attached:\s*([^\s(|]+\.(?:ogg|oga|opus|mp3|wav|m4a))/i);
                 let audioPath = null;
                 if (pathMatch) {
                     audioPath = pathMatch[1];
                 }
                 else {
-                    // Fallback: find most recent audio in inbound dir
                     const recent = findRecentAudioFile();
                     audioPath = recent?.path ?? null;
                 }
@@ -1357,10 +1355,108 @@ export default function (api) {
             }
             catch (e) {
                 api.logger.error(`[executive-agent] command-guard: Whisper-Transkription fehlgeschlagen: ${e?.message}`);
-                // Let AI respond naturally — it will say it can't process audio, which is acceptable as fallback
             }
         }
-    }, { name: 'command-guard', priority: 100 });
+        // Bare media (image/video): save to raw session and suppress AI commentary.
+        // The prompt contains [media attached: /path/to/file.jpg (image/jpeg) | ...] after media understanding.
+        const IMAGE_VIDEO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'mp4', 'mov', 'avi', 'mkv', 'webm'];
+        const mediaMatches = [...prompt.matchAll(/\[media attached(?:\s+\d+\/\d+)?:\s*([^\s|)]+)/gi)];
+        const mediaFiles = mediaMatches
+            .map(m => m[1])
+            .filter(p => {
+            const ext = p.split('.').pop()?.toLowerCase() || '';
+            return IMAGE_VIDEO_EXTS.includes(ext);
+        });
+        if (mediaFiles.length > 0) {
+            // Bare media detection: the gateway uses <media:image>/<media:video> placeholders
+            // ONLY when the message has no user-provided text (no caption).
+            // If the user sends an image with a caption, the placeholder is replaced by the caption text.
+            const isBareMedia = prompt.includes('<media:image>') || prompt.includes('<media:video>');
+            api.logger.info(`[executive-agent] command-guard: Media erkannt (${mediaFiles.length} Dateien), bare=${isBareMedia}`);
+            if (isBareMedia) {
+                // Skip if instasubmit flow is active
+                if (instaSubmitActive.size > 0 || Date.now() - instaSubmitLastActivatedAt < 120_000) {
+                    api.logger.info(`[executive-agent] command-guard: Media übersprungen — instasubmit aktiv`);
+                    return; // Let AI handle normally (instasubmit flow)
+                }
+                // Check for pending instasubmit
+                for (const [, pending] of pendingInstaSubmits) {
+                    if (Date.now() < pending.expiresAt) {
+                        api.logger.info(`[executive-agent] command-guard: Media übersprungen — pending instasubmit`);
+                        return; // Let instasubmit-media-handler deal with it
+                    }
+                }
+                // Extract chatId from prompt metadata
+                const chatIdMatch = prompt.match(/id:(\d{5,})/);
+                const chatId = chatIdMatch?.[1] || '';
+                try {
+                    // Find or create active raw session for this sender
+                    const senderId = chatId;
+                    let sessionId = senderId ? activeRawSessions.get(senderId) : undefined;
+                    let session = sessionId ? loadRawSession(sessionId) : null;
+                    if (!session || session.status !== 'active') {
+                        sessionId = generateRawSessionId();
+                        session = createRawSession(sessionId);
+                        if (senderId)
+                            activeRawSessions.set(senderId, sessionId);
+                        api.logger.info(`[executive-agent] command-guard: Neue Raw-Session erstellt: ${sessionId}`);
+                    }
+                    // Copy each media file to session/original/ with speaking names
+                    const saved = [];
+                    const origDir = path.join(sessionDir(session.id), 'original');
+                    const existingCount = fs.existsSync(origDir)
+                        ? fs.readdirSync(origDir).filter(f => !f.startsWith('.')).length
+                        : 0;
+                    let fileNum = existingCount;
+                    for (const filePath of mediaFiles) {
+                        if (!fs.existsSync(filePath)) {
+                            api.logger.warn(`[executive-agent] command-guard: Media-Datei nicht gefunden: ${filePath}`);
+                            continue;
+                        }
+                        fileNum++;
+                        const ext = path.extname(filePath).toLowerCase() || '.bin';
+                        const newName = `${session.id}-${String(fileNum).padStart(2, '0')}${ext}`;
+                        const destPath = path.join(origDir, newName);
+                        fs.copyFileSync(filePath, destPath);
+                        const fileSize = fs.statSync(destPath).size;
+                        const fileType = detectMediaType(newName) || 'document';
+                        session.files.push({
+                            name: newName,
+                            size: fileSize,
+                            type: fileType,
+                            addedAt: new Date().toISOString(),
+                        });
+                        saved.push(`${newName} (${formatFileSize(fileSize)})`);
+                    }
+                    if (saved.length > 0) {
+                        saveRawSession(session);
+                        api.logger.info(`[executive-agent] command-guard: ${saved.length} Dateien → ${session.id}`);
+                        // Send Telegram confirmation directly (bypass AI)
+                        if (chatId) {
+                            const msg = saved.length === 1
+                                ? `📥 ${saved[0]} → Session ${session.id}`
+                                : `📥 ${saved.length} Dateien → Session ${session.id}`;
+                            sendTelegram(chatId, msg).catch(err => {
+                                api.logger.error(`[executive-agent] command-guard: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
+                            });
+                        }
+                        // Suppress AI commentary — media was handled
+                        return {
+                            prependContext: `SYSTEM: The user sent ${saved.length} media file(s) which have been automatically saved to raw material session "${session.id}". ` +
+                                `A confirmation message has already been sent to the user. ` +
+                                `You MUST NOT describe, analyze, or comment on the image/video content. ` +
+                                `Reply with exactly: NO_REPLY`,
+                        };
+                    }
+                }
+                catch (e) {
+                    api.logger.error(`[executive-agent] command-guard: Raw-Session-Speicherung fehlgeschlagen: ${e?.message}\n${e?.stack || ''}`);
+                    // Fall through — let AI handle normally
+                }
+            }
+            // If not bare media (has caption text), let AI respond normally
+        }
+    }, { priority: 100 });
     /* ---------------- Commands ---------------- */
     api.registerCommand({
         name: "mailstatus",
@@ -4316,7 +4412,7 @@ export default function (api) {
         },
     });
     // Hook: craft dialog — text input handler
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
             const content = event?.content ?? '';
             if (!content || content.startsWith('/') || content.includes('<media:'))
@@ -4351,9 +4447,9 @@ export default function (api) {
         catch (e) {
             api.logger.error(`[executive-agent] craft-text-handler Fehler: ${e?.message}`);
         }
-    }, { name: 'craft-text-handler' });
+    });
     // Hook: craft dialog — voice input handler
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
             const content = event?.content ?? '';
             if (!content.includes('<media:audio>'))
@@ -4396,10 +4492,10 @@ export default function (api) {
         catch (e) {
             api.logger.error(`[executive-agent] craft-voice-handler Fehler: ${e?.message}`);
         }
-    }, { name: 'craft-voice-handler' });
+    });
     // Hook: catch bare photo/video AFTER /instasubmit (pending state flow)
     // Event structure: { from, content, timestamp, metadata: { senderId, ... } }
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
             const content = event?.content ?? '';
             // Detect bare media message: gateway sets content to "<media:image>" or "<media:video>"
@@ -4439,63 +4535,10 @@ export default function (api) {
         catch (e) {
             api.logger.error(`[executive-agent] instasubmit Hook-Fehler: ${e?.message}\n${e?.stack || ''}`);
         }
-    }, { name: 'instasubmit-media-handler' });
-    // Hook: catch bare media (image/video/document) and save to raw material inbox
-    // Voice messages are handled in before_agent_start (command-guard) via Whisper transcription.
-    api.registerHook('message_received', async (event) => {
-        try {
-            const content = event?.content ?? '';
-            const isMediaMsg = content.includes('<media:image>') || content.includes('<media:video>') || content.includes('<media:document>');
-            if (!isMediaMsg)
-                return;
-            // Skip audio — voice handler is responsible
-            if (content.includes('<media:audio>'))
-                return;
-            const senderId = String(event?.metadata?.senderId || '');
-            if (!senderId)
-                return;
-            // Skip if instasubmit flow is active
-            if (instaSubmitActive.has(senderId))
-                return;
-            const pending = pendingInstaSubmits.get(senderId);
-            if (pending && Date.now() < pending.expiresAt)
-                return;
-            if (Date.now() - instaSubmitLastActivatedAt < 120_000)
-                return;
-            const chatId = senderId;
-            const file = findRecentInboundFile();
-            if (!file) {
-                api.logger.warn(`[executive-agent] raw-handler: Keine Datei gefunden nach media-event`);
-                return;
-            }
-            // Find or create session for this sender
-            let sessionId = activeRawSessions.get(senderId);
-            let session = sessionId ? loadRawSession(sessionId) : null;
-            if (!session || session.status === 'closed') {
-                sessionId = generateRawSessionId();
-                session = createRawSession(sessionId);
-                activeRawSessions.set(senderId, sessionId);
-                api.logger.info(`[executive-agent] raw-handler: Neue Session erstellt: ${sessionId}`);
-            }
-            // Copy file to session/original/
-            const destPath = path.join(sessionDir(session.id), 'original', file.name);
-            fs.copyFileSync(file.path, destPath);
-            const fileSize = fs.statSync(destPath).size;
-            // Update session
-            session.files.push({
-                name: file.name,
-                size: fileSize,
-                type: file.type,
-                addedAt: new Date().toISOString(),
-            });
-            saveRawSession(session);
-            api.logger.info(`[executive-agent] raw-handler: ${file.name} → ${session.id} (${formatFileSize(fileSize)})`);
-            await sendTelegram(chatId, `✅ ${file.name} (${formatFileSize(fileSize)}) gespeichert. Session: ${session.id}`);
-        }
-        catch (e) {
-            api.logger.error(`[executive-agent] raw-handler Fehler: ${e?.message}\n${e?.stack || ''}`);
-        }
-    }, { name: 'raw-material-handler' });
+    });
+    // Raw material saving is now handled in before_agent_start (command-guard).
+    // The before_agent_start hook has direct access to file paths from the prompt
+    // and can suppress AI commentary via prependContext + NO_REPLY.
     // ── Cut Engine ─────────────────────────────────────────────────────────────
     function probeVideo(filePath) {
         const raw = execSync(`ffprobe -v quiet -print_format json -show_format -show_streams "${filePath}"`, { timeout: 15_000, stdio: 'pipe' }).toString();
@@ -7009,9 +7052,9 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         },
     });
     // Handle numeric replies for pending SP link selections
-    api.registerHook('message_received', (event) => {
+    api.on('message_received', (event) => {
         try {
-            const chatId = String(event?.chatId || event?.threadId || event?.conversationId || event?.senderId || '');
+            const chatId = String(event?.metadata?.senderId || '');
             if (!chatId)
                 return;
             const pending = pendingLinkSelections.get(chatId);
@@ -7020,7 +7063,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                     pendingLinkSelections.delete(chatId);
                 return;
             }
-            const text = String(event?.text || '').trim();
+            const text = String(event?.content || '').trim();
             const num = parseInt(text, 10);
             if (isNaN(num) || num < 1 || num > pending.results.length)
                 return;
@@ -7034,16 +7077,12 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             }
         }
         catch { }
-    }, { name: 'link-selection-handler' });
+    });
     // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
-    api.registerHook('message_received', (event) => {
+    api.on('message_received', (event) => {
         try {
             // Prefer real chat id; fallback to sender id.
-            const id = String(event?.chatId ||
-                event?.threadId ||
-                event?.conversationId ||
-                event?.senderId ||
-                '').trim();
+            const id = String(event?.metadata?.senderId || '').trim();
             if (!id)
                 return;
             const s = loadSettings();
@@ -7054,9 +7093,9 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             }
         }
         catch { }
-    }, { name: 'capture-telegram-chat-id' });
+    });
     // ── Standort via Telegram Location Message speichern ──────────────────────
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
             // The gateway formats location messages as text in event.content:
             //   Live:  "🛰 Live location: LAT, LON ±Xm"
@@ -7103,7 +7142,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         catch (e) {
             api.logger.error(`[executive-agent] Location-Handler Fehler: ${e?.message}`);
         }
-    }, { name: 'capture-telegram-location' });
+    });
     // ── Booking Callback Handler (Telegram Inline Buttons) ─────────────────────
     async function addBookingAsSegment(tripId, booking) {
         const segmentType = BOOKING_TO_SEGMENT[booking.type];
@@ -7196,9 +7235,9 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         }
     }
     // Hook to handle numeric replies for trip selection (text message after inline button)
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
-            const chatId = String(event?.chatId || event?.threadId || event?.conversationId || event?.senderId || '');
+            const chatId = String(event?.metadata?.senderId || '');
             if (!chatId)
                 return;
             const pending = pendingTripSelections.get(chatId);
@@ -7207,7 +7246,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                     pendingTripSelections.delete(chatId);
                 return;
             }
-            const text = String(event?.text || '').trim();
+            const text = String(event?.content || '').trim();
             const num = parseInt(text, 10);
             if (isNaN(num) || num < 1 || num > pending.trips.length)
                 return;
@@ -7225,9 +7264,9 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             sendTelegram(chatId, `✅ ${emoji} ${booking.title} zu Reise *${selectedTrip.name}* hinzugefügt.`).catch(() => { });
         }
         catch { }
-    }, { name: 'booking-trip-selection-handler' });
+    });
     // Hook to handle callback_query from Telegram (if framework routes them)
-    api.registerHook('message_received', async (event) => {
+    api.on('message_received', async (event) => {
         try {
             const cbq = event?.raw?.callback_query;
             if (!cbq)
@@ -7278,7 +7317,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         catch (e) {
             api.logger.error(`[executive-agent] callback Fehler: ${e?.message}`);
         }
-    }, { name: 'booking-callback-handler' });
+    });
     // ── Mail-Scanner Hintergrund-Task (alle 30 Minuten) ───────────────────────
     setInterval(async () => {
         try {

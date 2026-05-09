@@ -188,6 +188,19 @@ UUIDs oder andere nicht-lesbare Formate.
 
 Diese Regel gilt für ALLE neuen und bestehenden ID-Generierungen im System.
 
+### Dateinamen (PFLICHT)
+
+Dateien bekommen sprechende Namen: `<kontext>-<nummer>.<ext>`
+
+Beispiele:
+- `raw-0509-01.jpg`   (erste Datei in Raw-Session raw-0509)
+- `raw-0509-02.mp4`   (zweite Datei)
+- `sub-strand-0506-01.jpg`  (Submission-Bild)
+
+Nummerierung in Upload-Reihenfolge, zweistellig (01, 02, ...).
+Niemals: Hashes, UUIDs, Timestamps allein, Telegram-interne Dateinamen
+(z.B. `file_60---AgACAgIAAxkDAAIC.jpg`).
+
 ## Trading Safety
 
 - Paper Trading Account: DUP514636 — kein echtes Geld
