@@ -195,8 +195,8 @@ nicht-lesbare Formate.
 Format: `YYMMDD-<kontext>-<nummer>.<ext>`
 
 Beispiele:
-- `260509-raw-0905-01.jpg`   (erste Datei in Raw-Session raw-0905)
-- `260509-raw-0905-02.mp4`   (zweite Datei)
+- `260509-jb-0905-01.jpg`   (erste Datei in Session jb-0905)
+- `260509-jb-0905-02.mp4`   (zweite Datei)
 - `260506-sub-strand-01.jpg` (Submission-Bild)
 
 Nummerierung in Upload-Reihenfolge, zweistellig (01, 02, ...).

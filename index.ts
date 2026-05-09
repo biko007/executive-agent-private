@@ -4340,10 +4340,10 @@ for (const k of days) {
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
-    let base = 'raw';
+    let base = 'jb';
     if (context) {
       const slug = context.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12);
-      if (slug) base = `raw-${slug}`;
+      if (slug) base = `jb-${slug}`;
     }
     const candidate = `${base}-${dd}${mm}`;
     // Duplicate check
@@ -4765,8 +4765,8 @@ for (const k of days) {
       instaSubmitActive.add(senderId);
       setTimeout(() => instaSubmitActive.delete(senderId), 120_000);
 
-      // Check if note references a raw session (e.g. "raw-0905" or "raw-strand-0509")
-      const rawSessionMatch = note.match(/\b(raw-[a-z0-9-]+)\b/i);
+      // Check if note references a session (e.g. "jb-0905", "raw-0905", "jb-strand-0509")
+      const rawSessionMatch = note.match(/\b((?:jb|raw)-[a-z0-9-]+)\b/i);
       if (rawSessionMatch) {
         const refSessionId = rawSessionMatch[1].toLowerCase();
         const refSession = loadRawSession(refSessionId);
@@ -4838,7 +4838,7 @@ for (const k of days) {
         note,
       });
       return {
-        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.\nOder: /instasubmit raw-<session-id> für Session-basierte Analyse.',
+        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.\nOder: /instasubmit jb-<session-id> für Session-basierte Analyse.',
       };
     },
   });
