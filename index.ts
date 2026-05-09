@@ -4763,6 +4763,50 @@ for (const k of days) {
       instaSubmitActive.add(senderId);
       setTimeout(() => instaSubmitActive.delete(senderId), 120_000);
 
+      // Check if note references a raw session (e.g. "raw-0905" or "raw-strand-0509")
+      const rawSessionMatch = note.match(/\b(raw-[a-z0-9-]+)\b/i);
+      if (rawSessionMatch) {
+        const refSessionId = rawSessionMatch[1].toLowerCase();
+        const refSession = loadRawSession(refSessionId);
+        if (refSession) {
+          const sessionMediaFiles = refSession.files
+            .filter(f => f.type === 'image' || f.type === 'video')
+            .map(f => ({
+              path: path.join(sessionDir(refSessionId), 'original', f.name),
+              type: f.type as 'image' | 'video',
+              name: f.name,
+            }))
+            .filter(f => fs.existsSync(f.path));
+
+          if (sessionMediaFiles.length > 0) {
+            api.logger.info(`[executive-agent] /instasubmit: Raw-Session "${refSessionId}" referenziert — ${sessionMediaFiles.length} Dateien`);
+            // Use first media file for submission pipeline
+            const firstMedia = sessionMediaFiles[0];
+            sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse laeuft...`).catch(() => {});
+
+            // Run pipeline for each media file sequentially
+            (async () => {
+              try {
+                for (const mf of sessionMediaFiles) {
+                  await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type });
+                }
+              } catch (err: any) {
+                api.logger.error(`[executive-agent] /instasubmit session-pipeline CRASH: ${err?.message}\n${err?.stack || ''}`);
+                sendTelegram(chatId, `❌ Pipeline-Fehler: ${err?.message}`).catch(() => {});
+              } finally {
+                instaSubmitActive.delete(senderId);
+              }
+            })();
+
+            return {
+              text: `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Medien-Datei(en) — Vision-Analyse gestartet. Ergebnisse folgen per Telegram.`,
+            };
+          } else {
+            api.logger.warn(`[executive-agent] /instasubmit: Raw-Session "${refSessionId}" hat keine Medien`);
+          }
+        }
+      }
+
       // Try to find recent inbound media (gateway already downloaded it)
       const media = findRecentInboundMedia();
       if (media) {
@@ -4792,7 +4836,7 @@ for (const k of days) {
         note,
       });
       return {
-        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.',
+        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.\nOder: /instasubmit raw-<session-id> für Session-basierte Analyse.',
       };
     },
   });
