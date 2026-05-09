@@ -1796,12 +1796,17 @@ if (conflicts.length && !force) {
             saveRawSession(session);
             api.logger.info(`[executive-agent] command-guard: ${saved.length} Dateien → ${session.id}`);
 
-            // Send Telegram confirmation directly (bypass AI)
+            // Send Telegram confirmation with inline submit button
             if (chatId) {
               const msg = saved.length === 1
                 ? `📥 ${saved[0]} → Session ${session.id}`
                 : `📥 ${saved.length} Dateien → Session ${session.id}`;
-              sendTelegram(chatId, msg).catch(err => {
+              const keyboard = [[
+                { text: '▶️ Jetzt submitten', callback_data: `isub_${session.id}`.slice(0, 64) },
+              ]];
+              sendTelegramWithKeyboard(chatId, msg, keyboard).catch(err => {
+                // Fallback to plain text if keyboard fails
+                sendTelegram(chatId, msg).catch(() => {});
                 api.logger.error(`[executive-agent] command-guard: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
               });
             }
@@ -5496,6 +5501,52 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
     return msg.length > 4000 ? msg.slice(0, 3997) + '...' : msg;
   }
 
+  async function handleInstasubmitCallback(callbackQueryId: string, chatId: string, sessionId: string): Promise<void> {
+    await answerCallbackQuery(callbackQueryId, 'Wird gestartet...');
+
+    const session = loadRawSession(sessionId);
+    if (!session) {
+      await sendTelegram(chatId, `❌ Session "${sessionId}" nicht gefunden.`);
+      return;
+    }
+
+    const origDir = path.join(sessionDir(sessionId), 'original');
+    if (!fs.existsSync(origDir)) {
+      await sendTelegram(chatId, `❌ Keine Dateien in Session "${sessionId}".`);
+      return;
+    }
+
+    const mediaFiles = fs.readdirSync(origDir)
+      .filter(f => !f.startsWith('.'))
+      .map(f => ({
+        path: path.join(origDir, f),
+        type: detectMediaType(f) as 'image' | 'video',
+      }))
+      .filter(f => f.type === 'image' || f.type === 'video');
+
+    if (mediaFiles.length === 0) {
+      await sendTelegram(chatId, `❌ Keine Bild/Video-Dateien in Session "${sessionId}".`);
+      return;
+    }
+
+    const senderId = chatId;
+    instaSubmitActive.add(senderId);
+    instaSubmitLastActivatedAt = Date.now();
+
+    await sendTelegram(chatId, `📥 Session ${sessionId}: ${mediaFiles.length} Datei(en) — Analyse laeuft...`);
+
+    try {
+      for (const mf of mediaFiles) {
+        await runInstaSubmitPipeline(chatId, sessionId, mf);
+      }
+    } catch (err: any) {
+      api.logger.error(`[executive-agent] instasubmit callback CRASH: ${err?.message}\n${err?.stack || ''}`);
+      sendTelegram(chatId, `❌ Pipeline-Fehler: ${err?.message}`).catch(() => {});
+    } finally {
+      instaSubmitActive.delete(senderId);
+    }
+  }
+
   function buildProposalKeyboard(sessionId: string, proposals: ContentProposal[]): Array<Array<{ text: string; callback_data: string }>> {
     return proposals.map(p => {
       const formatLabel = p.format === 'reel' ? 'Reel' : p.format === 'feed-video' ? 'Feed' : 'Foto';
@@ -8109,6 +8160,14 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
 
       if (data.startsWith('iscan_')) {
         await handleInstascanCallback(callbackQueryId, chatId, data);
+        return;
+      }
+
+      if (data.startsWith('isub_')) {
+        const sessionId = data.slice(5); // skip "isub_"
+        handleInstasubmitCallback(callbackQueryId, chatId, sessionId).catch(err => {
+          api.logger.error(`[executive-agent] isub callback CRASH: ${err?.message}`);
+        });
         return;
       }
 
