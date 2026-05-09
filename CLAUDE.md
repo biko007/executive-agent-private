@@ -170,32 +170,34 @@ engineering best practices.
 
 ## Naming Conventions (PFLICHT — gilt für alle Entities)
 
-IDs sind immer sprechend: `<prefix>-<kontext>-<DDMM>`
+Alle IDs und Dateinamen starten mit YYMMDD.
+
+### IDs
+
+Format: `YYMMDD-<subject>-<location>`
 
 Kontext = erster bedeutsamer Begriff aus: Ort, Anlass, Thema, Caption, Titel.
-Kleinbuchstaben, nur a-z und Bindestriche, max 20 Zeichen gesamt.
+Kleinbuchstaben, nur a-z und Bindestriche, max 30 Zeichen gesamt.
 
 Beispiele:
-- `sub-sannicandro-0506`   (Instagram Submission)
-- `insta-solaredge-0506`   (Instagram Draft)
-- `trip-barcelona-0415`    (Reise)
-- `fleet-service-0304`     (Fuhrpark-Eintrag)
-- `lease-mueller-0101`     (Mietvertrag)
+- `260506-sub-sannicandro`   (Instagram Submission)
+- `260506-insta-solaredge`   (Instagram Draft)
+- `260415-trip-barcelona`    (Reise)
+- `260304-fleet-service`     (Fuhrpark-Eintrag)
+- `260101-lease-mueller`     (Mietvertrag)
 
-Fallback wenn kein Kontext: `<prefix>-<DDMMYY>`
-Niemals: zufällige Zeichenketten (`insta-nqx2n5mj`), reine Timestamps (`sub_1234567890`),
-UUIDs oder andere nicht-lesbare Formate.
-
-Diese Regel gilt für ALLE neuen und bestehenden ID-Generierungen im System.
+Fallback wenn kein Kontext: `YYMMDD-<prefix>`
+Niemals: zufällige Zeichenketten, reine Timestamps, UUIDs oder andere
+nicht-lesbare Formate.
 
 ### Dateinamen (PFLICHT)
 
-Dateien bekommen sprechende Namen: `<kontext>-<nummer>.<ext>`
+Format: `YYMMDD-<kontext>-<nummer>.<ext>`
 
 Beispiele:
-- `raw-0509-01.jpg`   (erste Datei in Raw-Session raw-0509)
-- `raw-0509-02.mp4`   (zweite Datei)
-- `sub-strand-0506-01.jpg`  (Submission-Bild)
+- `260509-raw-0905-01.jpg`   (erste Datei in Raw-Session raw-0905)
+- `260509-raw-0905-02.mp4`   (zweite Datei)
+- `260506-sub-strand-01.jpg` (Submission-Bild)
 
 Nummerierung in Upload-Reihenfolge, zweistellig (01, 02, ...).
 Niemals: Hashes, UUIDs, Timestamps allein, Telegram-interne Dateinamen

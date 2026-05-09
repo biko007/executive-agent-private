@@ -1415,7 +1415,9 @@ export default function (api) {
                         }
                         fileNum++;
                         const ext = path.extname(filePath).toLowerCase() || '.bin';
-                        const newName = `${session.id}-${String(fileNum).padStart(2, '0')}${ext}`;
+                        const now = new Date();
+                        const yymmdd = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+                        const newName = `${yymmdd}-${session.id}-${String(fileNum).padStart(2, '0')}${ext}`;
                         const destPath = path.join(origDir, newName);
                         fs.copyFileSync(filePath, destPath);
                         const fileSize = fs.statSync(destPath).size;
