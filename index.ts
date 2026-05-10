@@ -4453,6 +4453,9 @@ for (const k of days) {
   // Track pending /instasubmit states (user sends command first, then media)
   const pendingInstaSubmits = new Map<string, { expiresAt: number; note: string }>();
 
+  // Pending scan response: after proposals are shown, user can reply with text/voice as direction
+  const pendingScanResponse = new Map<string, { sessionId: string; expiresAt: number }>();
+
   /** Find the most recent image or video in the gateway's inbound media dir (max 60s old). */
   function findRecentInboundMedia(): { path: string; type: 'image' | 'video' } | null {
     if (!fs.existsSync(GATEWAY_MEDIA_DIR)) {
@@ -4976,8 +4979,10 @@ for (const k of days) {
       if (session.status === 'scanned' && session.scan_result?.proposals?.length) {
         const msg = formatProposalMessage(sessionId, session.scan_result.proposals);
         const keyboard = buildProposalKeyboard(sessionId, session.scan_result.proposals);
+        keyboard.push([{ text: '🎤 Eigene Richtung (Text/Sprache senden)', callback_data: `iscan_dir_${sessionId}`.slice(0, 64) }]);
         await sendTelegramWithKeyboard(chatId, msg, keyboard);
-        return { text: `📋 Vorschläge für ${sessionId} erneut angezeigt.` };
+        pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
+        return { text: '' };
       }
 
       // Check for media files
@@ -5104,6 +5109,105 @@ for (const k of days) {
         return { text: `🎨 Craft-Dialog gestartet für ${sessionId}\n\nSende deine kreative Richtung (Text oder Sprachnachricht):` };
       }
     },
+  });
+
+  // Hook: scan response — text input triggers craft with direction
+  api.on('message_received', async (event: any) => {
+    try {
+      const content: string = event?.content ?? '';
+      if (!content || content.startsWith('/') || content.includes('<media:')) return;
+
+      const senderId = String(event?.metadata?.senderId || '');
+      if (!senderId) return;
+
+      const pending = pendingScanResponse.get(senderId);
+      if (!pending || Date.now() > pending.expiresAt) return;
+
+      pendingScanResponse.delete(senderId);
+      const chatId = senderId;
+      const { sessionId } = pending;
+
+      api.logger.info(`[executive-agent] scan-response: Text von ${senderId} als Richtung für ${sessionId}: "${content.slice(0, 50)}"`);
+
+      // Start craft workflow with the text as direction
+      const session = loadRawSession(sessionId);
+      if (!session) {
+        await sendTelegram(chatId, `❌ Session "${sessionId}" nicht mehr vorhanden.`);
+        return;
+      }
+
+      const fileAnalyses = session.scan_result?.file_analyses || [];
+      const state: CraftDialogState = {
+        sessionId,
+        direction: content,
+        fileAnalyses,
+        step: 'generating',
+        expiresAt: Date.now() + 15 * 60_000,
+      };
+      activeCraftDialogs.set(chatId, state);
+
+      runCraftPlanGeneration(chatId, sessionId, content).catch(err => {
+        api.logger.error(`[executive-agent] scan-response craft CRASH: ${err?.message}`);
+        sendTelegram(chatId, `❌ Craft-Plan fehlgeschlagen: ${err?.message}`).catch(() => {});
+        activeCraftDialogs.delete(chatId);
+      });
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] scan-response-handler Fehler: ${e?.message}`);
+    }
+  });
+
+  // Hook: scan response — voice input triggers craft with transcribed direction
+  api.on('message_received', async (event: any) => {
+    try {
+      const content: string = event?.content ?? '';
+      if (!content.includes('<media:audio>')) return;
+
+      const senderId = String(event?.metadata?.senderId || '');
+      if (!senderId) return;
+
+      const pending = pendingScanResponse.get(senderId);
+      if (!pending || Date.now() > pending.expiresAt) return;
+
+      pendingScanResponse.delete(senderId);
+      const chatId = senderId;
+      const { sessionId } = pending;
+
+      const audioFile = findRecentAudioFile();
+      if (!audioFile) {
+        await sendTelegram(chatId, '❌ Audio-Datei nicht gefunden.');
+        return;
+      }
+
+      await sendTelegram(chatId, '🎤 Transkribiere Sprachnachricht...');
+      const transcription = await transcribeVoice(audioFile.path);
+      await sendTelegram(chatId, `🎤 "${transcription}"`);
+
+      api.logger.info(`[executive-agent] scan-response: Voice von ${senderId} als Richtung für ${sessionId}: "${transcription.slice(0, 50)}"`);
+
+      const session = loadRawSession(sessionId);
+      if (!session) {
+        await sendTelegram(chatId, `❌ Session "${sessionId}" nicht mehr vorhanden.`);
+        return;
+      }
+
+      const fileAnalyses = session.scan_result?.file_analyses || [];
+      const state: CraftDialogState = {
+        sessionId,
+        direction: transcription,
+        fileAnalyses,
+        step: 'generating',
+        expiresAt: Date.now() + 15 * 60_000,
+      };
+      activeCraftDialogs.set(chatId, state);
+
+      runCraftPlanGeneration(chatId, sessionId, transcription).catch(err => {
+        api.logger.error(`[executive-agent] scan-response voice craft CRASH: ${err?.message}`);
+        sendTelegram(chatId, `❌ Craft-Plan fehlgeschlagen: ${err?.message}`).catch(() => {});
+        activeCraftDialogs.delete(chatId);
+      });
+    } catch (e: any) {
+      api.logger.error(`[executive-agent] scan-response-voice-handler Fehler: ${e?.message}`);
+    }
   });
 
   // Hook: craft dialog — text input handler
@@ -5764,7 +5868,9 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
 
       const msg = formatProposalMessage(sessionId, proposals);
       const keyboard = buildProposalKeyboard(sessionId, proposals);
+      keyboard.push([{ text: '🎤 Eigene Richtung (Text/Sprache senden)', callback_data: `iscan_dir_${sessionId}`.slice(0, 64) }]);
       await sendTelegramWithKeyboard(chatId, msg, keyboard);
+      pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
     } catch (err: any) {
       api.logger.error(`[executive-agent] instascan pipeline Fehler: ${err.message}\n${err.stack || ''}`);
       // Reset session status
@@ -8208,6 +8314,14 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         const sessionId = data.slice(10); // skip "icraft_go_"
         await answerCallbackQuery(callbackQueryId, 'Craft wird gestartet...');
         await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
+        return;
+      }
+
+      if (data.startsWith('iscan_dir_')) {
+        const sessionId = data.slice(10); // skip "iscan_dir_"
+        await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
+        pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
+        await sendTelegram(chatId, `🎤 Sende deine kreative Richtung für Session ${sessionId} als Text oder Sprachnachricht.`);
         return;
       }
 
