@@ -5060,7 +5060,7 @@ for (const k of days) {
       // Guard: active dialog already running
       const existing = activeCraftDialogs.get(chatId);
       if (existing && Date.now() < existing.expiresAt) {
-        return { text: `⏳ Craft-Dialog bereits aktiv (Session: ${existing.sessionId}, Step: ${existing.step}).\n\n→ /instacraft cancel zum Abbrechen` };
+        return { text: `⏳ Craft-Dialog bereits aktiv (Session: ${existing.sessionId}, Step: ${existing.step}).\n\nAbbrechen: \`/instacraft cancel\`` };
       }
 
       const session = loadRawSession(sessionId);
@@ -5923,6 +5923,12 @@ Anpassungswunsch des Users: "${adjustmentNote}"
 `;
     }
 
+    const videoFiles = fileAnalyses.filter(fa => fa.type === 'video');
+    const imageFiles = fileAnalyses.filter(fa => fa.type === 'image');
+    const mediaHint = videoFiles.length > 0
+      ? `\n\nWICHTIG: Es sind ${videoFiles.length} Video-Datei(en) und ${imageFiles.length} Foto(s) verfügbar. Berücksichtige ALLE Medientypen. Wenn Videos vorhanden sind, bevorzuge ein Video-Format (reel/feed-video) mit cut_plan, das die Videos einbezieht. source_files muss ALLE verwendeten Dateien enthalten — sowohl Videos als auch Fotos.`
+      : '';
+
     const prompt = `Du bist ein Instagram-Content-Stratege. Der User hat eine kreative Richtung vorgegeben. Erstelle EINEN maßgeschneiderten Content-Vorschlag.
 
 Session: ${sessionId}
@@ -5942,7 +5948,7 @@ Erstelle EINEN Vorschlag als JSON-Objekt (kein Array). Der Vorschlag:
 - "title": kurzer Titel (max 40 Zeichen)
 - "rationale": warum dieser Content funktioniert (1-2 Sätze)
 - "pillar_match": passende Pillars aus dem Style-Profil
-- "source_files": welche Dateien verwendet werden
+- "source_files": ALLE verwendeten Dateien (Videos UND Fotos) — muss existierende Dateinamen sein
 - "estimated_duration_s": geschätzte Dauer (nur bei Video)
 - "cut_plan": nur bei Video — Objekt mit "output_file" (string) und "segments" (Array von {"source": Dateiname, "start_s": number, "end_s": number})
 
@@ -5952,6 +5958,7 @@ Regeln für cut_plan:
 - Reel max 90s, Feed-Video max 60s
 - output_file: "<format>-${sessionId}.mp4"
 - Bei Foto-Vorschlägen: kein cut_plan
+- Wenn Video-Dateien verfügbar sind: bevorzuge Video-Format und verwende die Videos im cut_plan${mediaHint}
 
 Der Vorschlag muss die kreative Richtung des Users widerspiegeln.
 
@@ -6113,8 +6120,8 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             `📝 Draft: ${draft.id}\n` +
             `📋 Submission: ${submissionId}\n\n` +
             `${variantsText}\n\n` +
-            `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-            `→ /instaedit ${draft.id} zum Bearbeiten`
+            `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+            `Bearbeiten: \`/instaedit ${draft.id}\``
           );
         } else {
           // Photo proposal — use cached analysis + variants + draft
@@ -6158,8 +6165,8 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             `📝 Draft: ${draft.id}\n` +
             `📋 Submission: ${submissionId}\n\n` +
             `${variantsText}\n\n` +
-            `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-            `→ /instaedit ${draft.id} zum Bearbeiten`
+            `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+            `Bearbeiten: \`/instaedit ${draft.id}\``
           );
         }
       } catch (err: any) {

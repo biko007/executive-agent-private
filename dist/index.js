@@ -1417,7 +1417,7 @@ export default function (api) {
                         const ext = path.extname(filePath).toLowerCase() || '.bin';
                         const now = new Date();
                         const yymmdd = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-                        const newName = `${yymmdd}-${session.id}-${String(fileNum).padStart(2, '0')}${ext}`;
+                        const newName = `${yymmdd}-jb-${String(fileNum).padStart(2, '0')}${ext}`;
                         const destPath = path.join(origDir, newName);
                         fs.copyFileSync(filePath, destPath);
                         const fileSize = fs.statSync(destPath).size;
@@ -1433,12 +1433,17 @@ export default function (api) {
                     if (saved.length > 0) {
                         saveRawSession(session);
                         api.logger.info(`[executive-agent] command-guard: ${saved.length} Dateien → ${session.id}`);
-                        // Send Telegram confirmation directly (bypass AI)
+                        // Send Telegram confirmation with inline submit button
                         if (chatId) {
                             const msg = saved.length === 1
                                 ? `📥 ${saved[0]} → Session ${session.id}`
                                 : `📥 ${saved.length} Dateien → Session ${session.id}`;
-                            sendTelegram(chatId, msg).catch(err => {
+                            const keyboard = [[
+                                    { text: '▶️ Jetzt submitten', callback_data: `isub_${session.id}`.slice(0, 64) },
+                                ]];
+                            sendTelegramWithKeyboard(chatId, msg, keyboard).catch(err => {
+                                // Fallback to plain text if keyboard fails
+                                sendTelegram(chatId, msg).catch(() => { });
                                 api.logger.error(`[executive-agent] command-guard: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
                             });
                         }
@@ -3185,7 +3190,7 @@ export default function (api) {
                 const lines = entries.map((e) => `${e.nr}. 📅 ${e.date} | ${e.format}\n   ${e.topic}\n   💡 "${e.caption_idea.slice(0, 60)}…"`);
                 return {
                     text: `📅 *Content-Kalender* (${entries.length} Einträge)\n\n${lines.join('\n\n')}\n\n` +
-                        `→ /instadraft <nr> um einen Draft zu erstellen`,
+                        `Einen Draft erstellen:\n\`/instadraft <nr>\``,
                 };
             }
             catch (e) {
@@ -3263,7 +3268,7 @@ export default function (api) {
                             `🆔 ${draft.id}\n📅 Geplant: ${entry.date}\n📝 Format: ${entry.format}\n\n` +
                             `Caption:\n${caption.slice(0, 300)}${caption.length > 300 ? '…' : ''}\n\n` +
                             `#️⃣ ${entry.hashtags.map((h) => '#' + h).join(' ')}\n\n` +
-                            `→ /instaedit ${draft.id} zum Bearbeiten`,
+                            `Bearbeiten: \`/instaedit ${draft.id}\``,
                     };
                 }
                 else {
@@ -3271,7 +3276,7 @@ export default function (api) {
                     const draft = createInstaDraft({ caption: input });
                     return {
                         text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
-                            `→ /instaedit ${draft.id} zum Bearbeiten`,
+                            `Bearbeiten: \`/instaedit ${draft.id}\``,
                     };
                 }
             }
@@ -3571,7 +3576,7 @@ export default function (api) {
                         `Draft: ${draft.id}\n\n` +
                         `Caption:\n${chosen.caption.slice(0, 300)}${chosen.caption.length > 300 ? '…' : ''}\n\n` +
                         `Tags: ${chosen.hashtags.map(h => '#' + h).join(' ')}\n\n` +
-                        `→ /instaedit ${draft.id} zum Bearbeiten`,
+                        `Bearbeiten: \`/instaedit ${draft.id}\``,
                 };
             }
             catch (e) {
@@ -3884,6 +3889,8 @@ export default function (api) {
     const activeCraftDialogs = new Map();
     // Track pending /instasubmit states (user sends command first, then media)
     const pendingInstaSubmits = new Map();
+    // Pending scan response: after proposals are shown, user can reply with text/voice as direction
+    const pendingScanResponse = new Map();
     /** Find the most recent image or video in the gateway's inbound media dir (max 60s old). */
     function findRecentInboundMedia() {
         if (!fs.existsSync(GATEWAY_MEDIA_DIR)) {
@@ -4101,8 +4108,8 @@ export default function (api) {
         }
     }
     /** Run Vision Analysis pipeline on a media file. Sends results/errors via Telegram. */
-    async function runInstaSubmitPipeline(chatId, userNote, mediaFile) {
-        const submissionId = generateSubmissionId(userNote);
+    async function runInstaSubmitPipeline(chatId, userNote, mediaFile, overrideSubmissionId) {
+        const submissionId = overrideSubmissionId || generateSubmissionId(userNote);
         const mediaType = mediaFile.type;
         api.logger.info(`[executive-agent] instasubmit pipeline START: id=${submissionId} type=${mediaType} source=${mediaFile.path} chatId=${chatId}`);
         // Copy media to submission directory
@@ -4148,12 +4155,12 @@ export default function (api) {
             submission.status = 'analyzed';
             await saveSubmission(submission);
             const summary = formatAnalysisSummary(analysis, mediaType);
-            await sendTelegram(chatId, `✅ Analyse abgeschlossen\n\n${summary}\n\nSubmission-ID: ${submissionId}\n\nNaechste Schritte: /instavariants ${submissionId} (kommt in Schritt 2)`);
+            await sendTelegram(chatId, `✅ Analyse abgeschlossen\n\n${summary}\n\nSubmission-ID: \`${submissionId}\`\n\nNaechste Schritte:\n\`/instavariants ${submissionId}\``);
             api.logger.info(`[executive-agent] instasubmit pipeline DONE: ${submissionId}`);
         }
         catch (analysisErr) {
             api.logger.error(`[executive-agent] instasubmit Vision-Fehler: ${analysisErr.message}\n${analysisErr.stack || ''}`);
-            await sendTelegram(chatId, `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: ${submissionId} (Status: received)\nBitte erneut versuchen mit /instasubmit`);
+            await sendTelegram(chatId, `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: \`${submissionId}\` (Status: received)\nBitte erneut versuchen mit \`/instasubmit\``);
         }
     }
     api.registerCommand({
@@ -4195,14 +4202,35 @@ export default function (api) {
                         .filter(f => fs.existsSync(f.path));
                     if (sessionMediaFiles.length > 0) {
                         api.logger.info(`[executive-agent] /instasubmit: Raw-Session "${refSessionId}" referenziert — ${sessionMediaFiles.length} Dateien`);
-                        // Use first media file for submission pipeline
-                        const firstMedia = sessionMediaFiles[0];
                         sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse laeuft...`).catch(() => { });
+                        // Generate unique submission IDs per file — prevent overwrites
+                        const baseSubId = generateSubmissionId(refSessionId);
                         // Run pipeline for each media file sequentially
                         (async () => {
+                            let ok = 0;
+                            let fail = 0;
                             try {
-                                for (const mf of sessionMediaFiles) {
-                                    await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type });
+                                for (let i = 0; i < sessionMediaFiles.length; i++) {
+                                    const mf = sessionMediaFiles[i];
+                                    const subId = sessionMediaFiles.length === 1
+                                        ? baseSubId
+                                        : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
+                                    try {
+                                        await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type }, subId);
+                                        ok++;
+                                    }
+                                    catch (fileErr) {
+                                        fail++;
+                                        api.logger.error(`[executive-agent] /instasubmit session-pipeline Datei ${i + 1} CRASH: ${fileErr?.message}`);
+                                        sendTelegram(chatId, `❌ Datei ${i + 1}/${sessionMediaFiles.length} fehlgeschlagen: ${fileErr?.message}`).catch(() => { });
+                                    }
+                                }
+                                // Summary
+                                if (ok > 0) {
+                                    const summary = fail > 0
+                                        ? `📊 Session ${refSessionId}: ${ok}/${sessionMediaFiles.length} analysiert, ${fail} fehlgeschlagen.`
+                                        : `✅ Session ${refSessionId}: alle ${ok} Dateien analysiert.`;
+                                    sendTelegram(chatId, summary).catch(() => { });
                                 }
                             }
                             catch (err) {
@@ -4250,7 +4278,7 @@ export default function (api) {
                 note,
             });
             return {
-                text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.\nOder: /instasubmit jb-<session-id> für Session-basierte Analyse.',
+                text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption senden:\n`/instasubmit <text>`\n\nOder Session-basiert:\n`/instasubmit jb-<session-id>`',
             };
         },
     });
@@ -4333,7 +4361,11 @@ export default function (api) {
                     const scanTag = s.status === 'scanned' ? ' ✅ gescannt' : '';
                     return `📁 ${s.id} [${s.status}]${scanTag}\n   ${mediaFiles.length} Medien-Datei(en)`;
                 });
-                return { text: `📁 Scanbare Sessions:\n\n${lines.join('\n\n')}\n\n→ /instascan <session-id>` };
+                const keyboard = sessions.map(s => ([
+                    { text: `🔍 ${s.id}`, callback_data: `iscan_go_${s.id}`.slice(0, 64) },
+                ]));
+                await sendTelegramWithKeyboard(chatId, `📁 Scanbare Sessions:\n\n${lines.join('\n\n')}`, keyboard);
+                return { text: '' };
             }
             const sessionId = args;
             // Concurrency guard
@@ -4342,28 +4374,31 @@ export default function (api) {
             }
             const session = loadRawSession(sessionId);
             if (!session) {
-                return { text: `❌ Session "${sessionId}" nicht gefunden.\n\n→ /instaraw für alle Sessions` };
+                return { text: `❌ Session "${sessionId}" nicht gefunden.\n\nAlle Sessions: \`/instaraw\`` };
             }
             // If already scanned with results — show proposals again without re-scanning
             if (session.status === 'scanned' && session.scan_result?.proposals?.length) {
                 const msg = formatProposalMessage(sessionId, session.scan_result.proposals);
                 const keyboard = buildProposalKeyboard(sessionId, session.scan_result.proposals);
+                keyboard.push([{ text: '🎤 Eigene Richtung (Text/Sprache senden)', callback_data: `iscan_dir_${sessionId}`.slice(0, 64) }]);
                 await sendTelegramWithKeyboard(chatId, msg, keyboard);
-                return { text: `📋 Vorschläge für ${sessionId} erneut angezeigt.` };
+                pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
+                return { text: '' };
             }
             // Check for media files
             const mediaFiles = session.files.filter(f => f.type === 'image' || f.type === 'video');
             if (mediaFiles.length === 0) {
                 return { text: `❌ Session "${sessionId}" hat keine Medien-Dateien.\n\nSende Fotos/Videos in die Session.` };
             }
-            // Start scan pipeline async
-            instaScanActive.add(chatId);
-            runInstascanPipeline(sessionId, chatId).catch(err => {
-                api.logger.error(`[executive-agent] instascan pipeline CRASH: ${err?.message}\n${err?.stack || ''}`);
-                sendTelegram(chatId, `❌ Scan-Pipeline abgestürzt: ${err?.message}`).catch(() => { });
-                instaScanActive.delete(chatId);
-            });
-            return { text: `🔍 Scan gestartet für Session ${sessionId} (${mediaFiles.length} Datei(en)).\nFortschritt folgt per Telegram.` };
+            // Ask user: own direction or auto-proposals?
+            const keyboard = [
+                [
+                    { text: '🎯 Ja, eigene Richtung', callback_data: `iscan_ask_${sessionId}::craft`.slice(0, 64) },
+                    { text: '💡 Nein, Vorschläge', callback_data: `iscan_ask_${sessionId}::scan`.slice(0, 64) },
+                ],
+            ];
+            await sendTelegramWithKeyboard(chatId, `📁 Session ${sessionId} — ${mediaFiles.length} Medien-Datei(en)\n\nHast du eine konkrete Vorstellung, was daraus werden soll?`, keyboard);
+            return { text: '' };
         },
     });
     // ── /instacraft — Guided Content Dialog ──────────────────────────────────
@@ -4401,7 +4436,11 @@ export default function (api) {
                     const scanTag = s.status === 'scanned' ? ' ✅ gescannt' : '';
                     return `📁 ${s.id} [${s.status}]${scanTag}\n   ${mediaFiles.length} Medien-Datei(en)`;
                 });
-                return { text: `🎨 Craftbare Sessions:\n\n${lines.join('\n\n')}\n\n→ /instacraft <session-id> [kreative Richtung]` };
+                const keyboard = sessions.map(s => ([
+                    { text: `🎨 ${s.id}`, callback_data: `icraft_go_${s.id}`.slice(0, 64) },
+                ]));
+                await sendTelegramWithKeyboard(chatId, `🎨 Craftbare Sessions:\n\n${lines.join('\n\n')}`, keyboard);
+                return { text: '' };
             }
             // Parse: first word = session-id, rest = direction
             const spaceIdx = args.indexOf(' ');
@@ -4410,11 +4449,11 @@ export default function (api) {
             // Guard: active dialog already running
             const existing = activeCraftDialogs.get(chatId);
             if (existing && Date.now() < existing.expiresAt) {
-                return { text: `⏳ Craft-Dialog bereits aktiv (Session: ${existing.sessionId}, Step: ${existing.step}).\n\n→ /instacraft cancel zum Abbrechen` };
+                return { text: `⏳ Craft-Dialog bereits aktiv (Session: ${existing.sessionId}, Step: ${existing.step}).\n\nAbbrechen: \`/instacraft cancel\`` };
             }
             const session = loadRawSession(sessionId);
             if (!session) {
-                return { text: `❌ Session "${sessionId}" nicht gefunden.\n\n→ /instaraw für alle Sessions` };
+                return { text: `❌ Session "${sessionId}" nicht gefunden.\n\nAlle Sessions: \`/instaraw\`` };
             }
             if (session.status === 'crafting') {
                 return { text: `❌ Session "${sessionId}" wird bereits bearbeitet.` };
@@ -4455,6 +4494,95 @@ export default function (api) {
                 return { text: `🎨 Craft-Dialog gestartet für ${sessionId}\n\nSende deine kreative Richtung (Text oder Sprachnachricht):` };
             }
         },
+    });
+    // Hook: scan response — text input triggers craft with direction
+    api.on('message_received', async (event) => {
+        try {
+            const content = event?.content ?? '';
+            if (!content || content.startsWith('/') || content.includes('<media:'))
+                return;
+            const senderId = String(event?.metadata?.senderId || '');
+            if (!senderId)
+                return;
+            const pending = pendingScanResponse.get(senderId);
+            if (!pending || Date.now() > pending.expiresAt)
+                return;
+            pendingScanResponse.delete(senderId);
+            const chatId = senderId;
+            const { sessionId } = pending;
+            api.logger.info(`[executive-agent] scan-response: Text von ${senderId} als Richtung für ${sessionId}: "${content.slice(0, 50)}"`);
+            // Start craft workflow with the text as direction
+            const session = loadRawSession(sessionId);
+            if (!session) {
+                await sendTelegram(chatId, `❌ Session "${sessionId}" nicht mehr vorhanden.`);
+                return;
+            }
+            const fileAnalyses = session.scan_result?.file_analyses || [];
+            const state = {
+                sessionId,
+                direction: content,
+                fileAnalyses,
+                step: 'generating',
+                expiresAt: Date.now() + 15 * 60_000,
+            };
+            activeCraftDialogs.set(chatId, state);
+            runCraftPlanGeneration(chatId, sessionId, content).catch(err => {
+                api.logger.error(`[executive-agent] scan-response craft CRASH: ${err?.message}`);
+                sendTelegram(chatId, `❌ Craft-Plan fehlgeschlagen: ${err?.message}`).catch(() => { });
+                activeCraftDialogs.delete(chatId);
+            });
+        }
+        catch (e) {
+            api.logger.error(`[executive-agent] scan-response-handler Fehler: ${e?.message}`);
+        }
+    });
+    // Hook: scan response — voice input triggers craft with transcribed direction
+    api.on('message_received', async (event) => {
+        try {
+            const content = event?.content ?? '';
+            if (!content.includes('<media:audio>'))
+                return;
+            const senderId = String(event?.metadata?.senderId || '');
+            if (!senderId)
+                return;
+            const pending = pendingScanResponse.get(senderId);
+            if (!pending || Date.now() > pending.expiresAt)
+                return;
+            pendingScanResponse.delete(senderId);
+            const chatId = senderId;
+            const { sessionId } = pending;
+            const audioFile = findRecentAudioFile();
+            if (!audioFile) {
+                await sendTelegram(chatId, '❌ Audio-Datei nicht gefunden.');
+                return;
+            }
+            await sendTelegram(chatId, '🎤 Transkribiere Sprachnachricht...');
+            const transcription = await transcribeVoice(audioFile.path);
+            await sendTelegram(chatId, `🎤 "${transcription}"`);
+            api.logger.info(`[executive-agent] scan-response: Voice von ${senderId} als Richtung für ${sessionId}: "${transcription.slice(0, 50)}"`);
+            const session = loadRawSession(sessionId);
+            if (!session) {
+                await sendTelegram(chatId, `❌ Session "${sessionId}" nicht mehr vorhanden.`);
+                return;
+            }
+            const fileAnalyses = session.scan_result?.file_analyses || [];
+            const state = {
+                sessionId,
+                direction: transcription,
+                fileAnalyses,
+                step: 'generating',
+                expiresAt: Date.now() + 15 * 60_000,
+            };
+            activeCraftDialogs.set(chatId, state);
+            runCraftPlanGeneration(chatId, sessionId, transcription).catch(err => {
+                api.logger.error(`[executive-agent] scan-response voice craft CRASH: ${err?.message}`);
+                sendTelegram(chatId, `❌ Craft-Plan fehlgeschlagen: ${err?.message}`).catch(() => { });
+                activeCraftDialogs.delete(chatId);
+            });
+        }
+        catch (e) {
+            api.logger.error(`[executive-agent] scan-response-voice-handler Fehler: ${e?.message}`);
+        }
     });
     // Hook: craft dialog — text input handler
     api.on('message_received', async (event) => {
@@ -4845,6 +4973,67 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
         const msg = lines.join('\n\n');
         return msg.length > 4000 ? msg.slice(0, 3997) + '...' : msg;
     }
+    async function handleInstasubmitCallback(callbackQueryId, chatId, sessionId) {
+        await answerCallbackQuery(callbackQueryId, 'Wird gestartet...');
+        const session = loadRawSession(sessionId);
+        if (!session) {
+            await sendTelegram(chatId, `❌ Session "${sessionId}" nicht gefunden.`);
+            return;
+        }
+        const origDir = path.join(sessionDir(sessionId), 'original');
+        if (!fs.existsSync(origDir)) {
+            await sendTelegram(chatId, `❌ Keine Dateien in Session "${sessionId}".`);
+            return;
+        }
+        const mediaFiles = fs.readdirSync(origDir)
+            .filter(f => !f.startsWith('.'))
+            .map(f => ({
+            path: path.join(origDir, f),
+            type: detectMediaType(f),
+        }))
+            .filter(f => f.type === 'image' || f.type === 'video');
+        if (mediaFiles.length === 0) {
+            await sendTelegram(chatId, `❌ Keine Bild/Video-Dateien in Session "${sessionId}".`);
+            return;
+        }
+        const senderId = chatId;
+        instaSubmitActive.add(senderId);
+        instaSubmitLastActivatedAt = Date.now();
+        await sendTelegram(chatId, `📥 Session ${sessionId}: ${mediaFiles.length} Datei(en) — Analyse laeuft...`);
+        const baseSubId = generateSubmissionId(sessionId);
+        let ok = 0;
+        let fail = 0;
+        try {
+            for (let i = 0; i < mediaFiles.length; i++) {
+                const mf = mediaFiles[i];
+                const subId = mediaFiles.length === 1
+                    ? baseSubId
+                    : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
+                try {
+                    await runInstaSubmitPipeline(chatId, sessionId, mf, subId);
+                    ok++;
+                }
+                catch (fileErr) {
+                    fail++;
+                    api.logger.error(`[executive-agent] instasubmit callback Datei ${i + 1} CRASH: ${fileErr?.message}`);
+                    sendTelegram(chatId, `❌ Datei ${i + 1}/${mediaFiles.length} fehlgeschlagen: ${fileErr?.message}`).catch(() => { });
+                }
+            }
+            if (ok > 0) {
+                const summary = fail > 0
+                    ? `📊 Session ${sessionId}: ${ok}/${mediaFiles.length} analysiert, ${fail} fehlgeschlagen.`
+                    : `✅ Session ${sessionId}: alle ${ok} Dateien analysiert.`;
+                sendTelegram(chatId, summary).catch(() => { });
+            }
+        }
+        catch (err) {
+            api.logger.error(`[executive-agent] instasubmit callback CRASH: ${err?.message}\n${err?.stack || ''}`);
+            sendTelegram(chatId, `❌ Pipeline-Fehler: ${err?.message}`).catch(() => { });
+        }
+        finally {
+            instaSubmitActive.delete(senderId);
+        }
+    }
     function buildProposalKeyboard(sessionId, proposals) {
         return proposals.map(p => {
             const formatLabel = p.format === 'reel' ? 'Reel' : p.format === 'feed-video' ? 'Feed' : 'Foto';
@@ -4912,8 +5101,8 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
                     `📝 Draft: ${draft.id}\n` +
                     `📋 Submission: ${submissionId}\n\n` +
                     `${variantsText}\n\n` +
-                    `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-                    `→ /instaedit ${draft.id} zum Bearbeiten`);
+                    `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+                    `Bearbeiten: \`/instaedit ${draft.id}\``);
             }
             else {
                 // Photo proposal — use cached analysis + variants + draft
@@ -4949,8 +5138,8 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
                     `📝 Draft: ${draft.id}\n` +
                     `📋 Submission: ${submissionId}\n\n` +
                     `${variantsText}\n\n` +
-                    `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-                    `→ /instaedit ${draft.id} zum Bearbeiten`);
+                    `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+                    `Bearbeiten: \`/instaedit ${draft.id}\``);
             }
         }
         catch (err) {
@@ -4985,7 +5174,9 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
             saveRawSession(session);
             const msg = formatProposalMessage(sessionId, proposals);
             const keyboard = buildProposalKeyboard(sessionId, proposals);
+            keyboard.push([{ text: '🎤 Eigene Richtung (Text/Sprache senden)', callback_data: `iscan_dir_${sessionId}`.slice(0, 64) }]);
             await sendTelegramWithKeyboard(chatId, msg, keyboard);
+            pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
         }
         catch (err) {
             api.logger.error(`[executive-agent] instascan pipeline Fehler: ${err.message}\n${err.stack || ''}`);
@@ -5025,6 +5216,11 @@ ${previousPlan.cut_plan ? `- Cut-Plan: ${previousPlan.cut_plan.segments.map(s =>
 Anpassungswunsch des Users: "${adjustmentNote}"
 `;
         }
+        const videoFiles = fileAnalyses.filter(fa => fa.type === 'video');
+        const imageFiles = fileAnalyses.filter(fa => fa.type === 'image');
+        const mediaHint = videoFiles.length > 0
+            ? `\n\nWICHTIG: Es sind ${videoFiles.length} Video-Datei(en) und ${imageFiles.length} Foto(s) verfügbar. Berücksichtige ALLE Medientypen. Wenn Videos vorhanden sind, bevorzuge ein Video-Format (reel/feed-video) mit cut_plan, das die Videos einbezieht. source_files muss ALLE verwendeten Dateien enthalten — sowohl Videos als auch Fotos.`
+            : '';
         const prompt = `Du bist ein Instagram-Content-Stratege. Der User hat eine kreative Richtung vorgegeben. Erstelle EINEN maßgeschneiderten Content-Vorschlag.
 
 Session: ${sessionId}
@@ -5044,7 +5240,7 @@ Erstelle EINEN Vorschlag als JSON-Objekt (kein Array). Der Vorschlag:
 - "title": kurzer Titel (max 40 Zeichen)
 - "rationale": warum dieser Content funktioniert (1-2 Sätze)
 - "pillar_match": passende Pillars aus dem Style-Profil
-- "source_files": welche Dateien verwendet werden
+- "source_files": ALLE verwendeten Dateien (Videos UND Fotos) — muss existierende Dateinamen sein
 - "estimated_duration_s": geschätzte Dauer (nur bei Video)
 - "cut_plan": nur bei Video — Objekt mit "output_file" (string) und "segments" (Array von {"source": Dateiname, "start_s": number, "end_s": number})
 
@@ -5054,6 +5250,7 @@ Regeln für cut_plan:
 - Reel max 90s, Feed-Video max 60s
 - output_file: "<format>-${sessionId}.mp4"
 - Bei Foto-Vorschlägen: kein cut_plan
+- Wenn Video-Dateien verfügbar sind: bevorzuge Video-Format und verwende die Videos im cut_plan${mediaHint}
 
 Der Vorschlag muss die kreative Richtung des Users widerspiegeln.
 
@@ -5192,8 +5389,8 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                         `📝 Draft: ${draft.id}\n` +
                         `📋 Submission: ${submissionId}\n\n` +
                         `${variantsText}\n\n` +
-                        `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-                        `→ /instaedit ${draft.id} zum Bearbeiten`);
+                        `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+                        `Bearbeiten: \`/instaedit ${draft.id}\``);
                 }
                 else {
                     // Photo proposal — use cached analysis + variants + draft
@@ -5229,8 +5426,8 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                         `📝 Draft: ${draft.id}\n` +
                         `📋 Submission: ${submissionId}\n\n` +
                         `${variantsText}\n\n` +
-                        `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-                        `→ /instaedit ${draft.id} zum Bearbeiten`);
+                        `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+                        `Bearbeiten: \`/instaedit ${draft.id}\``);
                 }
             }
             catch (err) {
@@ -7345,12 +7542,73 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                 }
                 return;
             }
+            // Quick-launch buttons from session lists
+            if (data.startsWith('icraft_go_')) {
+                const sessionId = data.slice(10); // skip "icraft_go_"
+                await answerCallbackQuery(callbackQueryId, 'Craft wird gestartet...');
+                await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
+                return;
+            }
+            if (data.startsWith('iscan_ask_')) {
+                const sepIdx2 = data.indexOf('::');
+                if (sepIdx2 === -1) {
+                    await answerCallbackQuery(callbackQueryId, 'Ungültig');
+                    return;
+                }
+                const askSessionId = data.slice(10, sepIdx2); // skip "iscan_ask_"
+                const askAction = data.slice(sepIdx2 + 2);
+                if (askAction === 'craft') {
+                    await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
+                    pendingScanResponse.set(chatId, { sessionId: askSessionId, expiresAt: Date.now() + 10 * 60_000 });
+                    await sendTelegram(chatId, `🎯 Sende deine Vorstellung als Text oder Sprachnachricht für Session ${askSessionId}.`);
+                }
+                else {
+                    // askAction === 'scan' → run scan pipeline
+                    if (instaScanActive.has(chatId)) {
+                        await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
+                        return;
+                    }
+                    await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
+                    instaScanActive.add(chatId);
+                    runInstascanPipeline(askSessionId, chatId).catch(err => {
+                        api.logger.error(`[executive-agent] iscan_ask scan CRASH: ${err?.message}`);
+                    });
+                }
+                return;
+            }
+            if (data.startsWith('iscan_dir_')) {
+                const sessionId = data.slice(10); // skip "iscan_dir_"
+                await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
+                pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
+                await sendTelegram(chatId, `🎤 Sende deine kreative Richtung für Session ${sessionId} als Text oder Sprachnachricht.`);
+                return;
+            }
+            if (data.startsWith('iscan_go_')) {
+                const sessionId = data.slice(9); // skip "iscan_go_"
+                if (instaScanActive.has(chatId)) {
+                    await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
+                    return;
+                }
+                await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
+                instaScanActive.add(chatId);
+                runInstascanPipeline(sessionId, chatId).catch(err => {
+                    api.logger.error(`[executive-agent] iscan_go callback CRASH: ${err?.message}`);
+                });
+                return;
+            }
             if (data.startsWith('icraft_')) {
                 await handleCraftCallback(callbackQueryId, chatId, data);
                 return;
             }
             if (data.startsWith('iscan_')) {
                 await handleInstascanCallback(callbackQueryId, chatId, data);
+                return;
+            }
+            if (data.startsWith('isub_')) {
+                const sessionId = data.slice(5); // skip "isub_"
+                handleInstasubmitCallback(callbackQueryId, chatId, sessionId).catch(err => {
+                    api.logger.error(`[executive-agent] isub callback CRASH: ${err?.message}`);
+                });
                 return;
             }
             if (!data.startsWith('booking_'))
