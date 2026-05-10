@@ -3641,7 +3641,7 @@ for (const k of days) {
         );
         return {
           text: `📅 *Content-Kalender* (${entries.length} Einträge)\n\n${lines.join('\n\n')}\n\n` +
-            `→ /instadraft <nr> um einen Draft zu erstellen`,
+            `Einen Draft erstellen:\n\`/instadraft <nr>\``,
         };
       } catch (e: any) {
         return { text: `❌ /instaplan Fehler: ${e.message}` };
@@ -3723,14 +3723,14 @@ for (const k of days) {
               `🆔 ${draft.id}\n📅 Geplant: ${entry.date}\n📝 Format: ${entry.format}\n\n` +
               `Caption:\n${caption.slice(0, 300)}${caption.length > 300 ? '…' : ''}\n\n` +
               `#️⃣ ${entry.hashtags.map((h: string) => '#' + h).join(' ')}\n\n` +
-              `→ /instaedit ${draft.id} zum Bearbeiten`,
+              `Bearbeiten: \`/instaedit ${draft.id}\``,
           };
         } else {
           // Freitext-Draft
           const draft = createInstaDraft({ caption: input });
           return {
             text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
-              `→ /instaedit ${draft.id} zum Bearbeiten`,
+              `Bearbeiten: \`/instaedit ${draft.id}\``,
           };
         }
       } catch (e: any) {
@@ -4045,7 +4045,7 @@ for (const k of days) {
             `Draft: ${draft.id}\n\n` +
             `Caption:\n${chosen.caption.slice(0, 300)}${chosen.caption.length > 300 ? '…' : ''}\n\n` +
             `Tags: ${chosen.hashtags.map(h => '#' + h).join(' ')}\n\n` +
-            `→ /instaedit ${draft.id} zum Bearbeiten`,
+            `Bearbeiten: \`/instaedit ${draft.id}\``,
         };
       } catch (e: any) {
         return { text: `❌ /instaapprove Fehler: ${e.message}` };
@@ -4732,14 +4732,14 @@ for (const k of days) {
       const summary = formatAnalysisSummary(analysis, mediaType);
       await sendTelegram(
         chatId,
-        `✅ Analyse abgeschlossen\n\n${summary}\n\nSubmission-ID: ${submissionId}\n\nNaechste Schritte: /instavariants ${submissionId} (kommt in Schritt 2)`,
+        `✅ Analyse abgeschlossen\n\n${summary}\n\nSubmission-ID: \`${submissionId}\`\n\nNaechste Schritte:\n\`/instavariants ${submissionId}\``,
       );
       api.logger.info(`[executive-agent] instasubmit pipeline DONE: ${submissionId}`);
     } catch (analysisErr: any) {
       api.logger.error(`[executive-agent] instasubmit Vision-Fehler: ${analysisErr.message}\n${analysisErr.stack || ''}`);
       await sendTelegram(
         chatId,
-        `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: ${submissionId} (Status: received)\nBitte erneut versuchen mit /instasubmit`,
+        `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: \`${submissionId}\` (Status: received)\nBitte erneut versuchen mit \`/instasubmit\``,
       );
     }
   }
@@ -4865,7 +4865,7 @@ for (const k of days) {
         note,
       });
       return {
-        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption /instasubmit <text> senden fuer sofortige Analyse.\nOder: /instasubmit jb-<session-id> für Session-basierte Analyse.',
+        text: '📷 Kein Foto/Video gefunden — sende jetzt ein Foto oder Video.\n\nTipp: Foto direkt mit Caption senden:\n`/instasubmit <text>`\n\nOder Session-basiert:\n`/instasubmit jb-<session-id>`',
       };
     },
   });
@@ -4953,7 +4953,11 @@ for (const k of days) {
           const scanTag = s.status === 'scanned' ? ' ✅ gescannt' : '';
           return `📁 ${s.id} [${s.status}]${scanTag}\n   ${mediaFiles.length} Medien-Datei(en)`;
         });
-        return { text: `📁 Scanbare Sessions:\n\n${lines.join('\n\n')}\n\n→ /instascan <session-id>` };
+        const keyboard = sessions.map(s => ([
+          { text: `🔍 ${s.id}`, callback_data: `iscan_go_${s.id}`.slice(0, 64) },
+        ]));
+        await sendTelegramWithKeyboard(chatId, `📁 Scanbare Sessions:\n\n${lines.join('\n\n')}`, keyboard);
+        return { text: '' };
       }
 
       const sessionId = args;
@@ -4965,7 +4969,7 @@ for (const k of days) {
 
       const session = loadRawSession(sessionId);
       if (!session) {
-        return { text: `❌ Session "${sessionId}" nicht gefunden.\n\n→ /instaraw für alle Sessions` };
+        return { text: `❌ Session "${sessionId}" nicht gefunden.\n\nAlle Sessions: \`/instaraw\`` };
       }
 
       // If already scanned with results — show proposals again without re-scanning
@@ -5032,7 +5036,11 @@ for (const k of days) {
           const scanTag = s.status === 'scanned' ? ' ✅ gescannt' : '';
           return `📁 ${s.id} [${s.status}]${scanTag}\n   ${mediaFiles.length} Medien-Datei(en)`;
         });
-        return { text: `🎨 Craftbare Sessions:\n\n${lines.join('\n\n')}\n\n→ /instacraft <session-id> [kreative Richtung]` };
+        const keyboard = sessions.map(s => ([
+          { text: `🎨 ${s.id}`, callback_data: `icraft_go_${s.id}`.slice(0, 64) },
+        ]));
+        await sendTelegramWithKeyboard(chatId, `🎨 Craftbare Sessions:\n\n${lines.join('\n\n')}`, keyboard);
+        return { text: '' };
       }
 
       // Parse: first word = session-id, rest = direction
@@ -5048,7 +5056,7 @@ for (const k of days) {
 
       const session = loadRawSession(sessionId);
       if (!session) {
-        return { text: `❌ Session "${sessionId}" nicht gefunden.\n\n→ /instaraw für alle Sessions` };
+        return { text: `❌ Session "${sessionId}" nicht gefunden.\n\nAlle Sessions: \`/instaraw\`` };
       }
 
       if (session.status === 'crafting') {
@@ -5668,8 +5676,8 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
           `📝 Draft: ${draft.id}\n` +
           `📋 Submission: ${submissionId}\n\n` +
           `${variantsText}\n\n` +
-          `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-          `→ /instaedit ${draft.id} zum Bearbeiten`
+          `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+          `Bearbeiten: \`/instaedit ${draft.id}\``
         );
       } else {
         // Photo proposal — use cached analysis + variants + draft
@@ -5713,8 +5721,8 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
           `📝 Draft: ${draft.id}\n` +
           `📋 Submission: ${submissionId}\n\n` +
           `${variantsText}\n\n` +
-          `→ /instaapprove ${submissionId} <nr> für andere Variante\n` +
-          `→ /instaedit ${draft.id} zum Bearbeiten`
+          `Andere Variante: \`/instaapprove ${submissionId} <nr>\`\n` +
+          `Bearbeiten: \`/instaedit ${draft.id}\``
         );
       }
     } catch (err: any) {
@@ -8192,6 +8200,28 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           await answerCallbackQuery(callbackQueryId, 'Beibehalten');
           await sendTelegram(chatId, '📅 Kalendereintrag beibehalten.');
         }
+        return;
+      }
+
+      // Quick-launch buttons from session lists
+      if (data.startsWith('icraft_go_')) {
+        const sessionId = data.slice(10); // skip "icraft_go_"
+        await answerCallbackQuery(callbackQueryId, 'Craft wird gestartet...');
+        await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
+        return;
+      }
+
+      if (data.startsWith('iscan_go_')) {
+        const sessionId = data.slice(9); // skip "iscan_go_"
+        if (instaScanActive.has(chatId)) {
+          await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
+          return;
+        }
+        await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
+        instaScanActive.add(chatId);
+        runInstascanPipeline(sessionId, chatId).catch(err => {
+          api.logger.error(`[executive-agent] iscan_go callback CRASH: ${err?.message}`);
+        });
         return;
       }
 
