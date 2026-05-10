@@ -8967,11 +8967,31 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
         'Access-Control-Allow-Headers': 'Authorization, Content-Type',
       });
       res.end();
       return;
+    }
+
+    // ── Health / Ready / Version endpoints (GET, no auth) ──
+    if (req.method === 'GET') {
+      const url = (req.url || '').split('?')[0];
+      if (url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, service: 'executive-agent', uptime: process.uptime() }));
+        return;
+      }
+      if (url === '/ready') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, service: 'executive-agent' }));
+        return;
+      }
+      if (url === '/version') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
+        return;
+      }
     }
 
     if (req.method !== 'POST' || (req.url && !req.url.startsWith('/location'))) {
