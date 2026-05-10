@@ -162,12 +162,22 @@ async function pollContainerStatus(
 
 // ── Publishing ─────────────────────────────────────────────────────────────
 
+async function enforceRateLimit(token: string, igBusinessId: string): Promise<void> {
+  const { withinLimit, quota, used } = await checkPublishingLimit(token, igBusinessId);
+  if (!withinLimit) {
+    throw new Error(`Instagram Rate-Limit erreicht (${used}/${quota} Posts in 24h). Bitte später erneut versuchen.`);
+  }
+}
+
 export async function publishSingleImage(
   token: string,
   igBusinessId: string,
   imageUrl: string,
   caption: string,
 ): Promise<{ postId: string; permalink: string }> {
+  // 0. Rate-limit check
+  await enforceRateLimit(token, igBusinessId);
+
   // 1. Create media container
   const container = await graphPost(`/${igBusinessId}/media`, token, {
     image_url: imageUrl,
@@ -195,6 +205,9 @@ export async function publishCarousel(
   items: Array<{ url: string; type: 'image' | 'video' }>,
   caption: string,
 ): Promise<{ postId: string; permalink: string }> {
+  // 0. Rate-limit check
+  await enforceRateLimit(token, igBusinessId);
+
   // 1. Create item containers
   const childIds: string[] = [];
   for (const item of items) {
@@ -243,6 +256,9 @@ export async function publishReel(
   videoUrl: string,
   caption: string,
 ): Promise<{ postId: string; permalink: string }> {
+  // 0. Rate-limit check
+  await enforceRateLimit(token, igBusinessId);
+
   // 1. Create reel container
   const container = await graphPost(`/${igBusinessId}/media`, token, {
     video_url: videoUrl,
