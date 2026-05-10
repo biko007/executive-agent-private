@@ -1,6 +1,21 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-03-03**
+**Stand: 2026-05-10**
+
+## Architektur-Disziplin (Manifest)
+
+Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen wird:
+
+1. **Eine Schraube pro Sprint.** Niemals zwei Module gleichzeitig migrieren.
+2. **n8n bleibt dumm.** Nur Trigger an `/api/n8n/trigger/*`. Linter erzwingt das.
+3. **Modul-Grenzen sind heilig.** ESLint erzwingt — nicht Disziplin.
+4. **Backup-Restore vor Backup-Schreiben.** Jedes neue Backup-Ziel: erst Restore-Test.
+5. **Tests für Geld.** Alles, was IBANs oder Posts ins Internet schickt, hat Tests.
+6. **Audit-Log ist Pflicht.** Wer hat was wann geändert? Immer beantwortbar.
+7. **Klein anfangen, groß denken.** Modularer Monolith jetzt — Microservices wenn Wartung wehtut.
+8. **Idempotency vor Side-Effects.** Jeder externe Call braucht einen Idempotency-Key.
+9. **Sensitive Daten klassifiziert.** Nie in Logs, callback_data oder n8n-Logs.
+10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst.
 
 ## Projekt
 
