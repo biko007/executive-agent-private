@@ -4748,6 +4748,154 @@ for (const k of days) {
     }
   }
 
+  // ── Carousel Submit Pipeline (single submission for all session files) ───
+  async function runCarouselSubmitPipeline(
+    chatId: string,
+    sessionId: string,
+    mediaFiles: Array<{ path: string; type: 'image' | 'video'; name: string }>,
+    userNote: string,
+  ): Promise<void> {
+    const submissionId = generateSubmissionId(sessionId);
+    api.logger.info(`[executive-agent] carousel pipeline START: id=${submissionId} session=${sessionId} files=${mediaFiles.length}`);
+
+    // Copy all media files to submission directory
+    const mediaDir = getMediaDir(submissionId);
+    const submissionMedia: Array<{ type: 'image' | 'video'; path: string; mimeType: string }> = [];
+    for (const mf of mediaFiles) {
+      try {
+        const destPath = path.join(mediaDir, mf.name);
+        fs.copyFileSync(mf.path, destPath);
+        submissionMedia.push({
+          type: mf.type,
+          path: destPath,
+          mimeType: mf.type === 'image' ? 'image/jpeg' : 'video/mp4',
+        });
+      } catch (cpErr: any) {
+        api.logger.error(`[executive-agent] carousel: Kopie fehlgeschlagen fuer ${mf.name}: ${cpErr.message}`);
+        await sendTelegram(chatId, `❌ Kopie fehlgeschlagen: ${mf.name} — ${cpErr.message}`);
+        return;
+      }
+    }
+
+    // Analyze each file individually
+    const allAnalyses: VisionAnalysis[] = [];
+    for (let i = 0; i < submissionMedia.length; i++) {
+      const sm = submissionMedia[i];
+      const fileLabel = mediaFiles[i].name;
+      try {
+        await sendTelegram(chatId, `🔍 Analyse ${i + 1}/${submissionMedia.length}: ${fileLabel}...`);
+        const analysis = sm.type === 'image'
+          ? await analyzeImage(sm.path)
+          : await analyzeVideo(sm.path);
+        allAnalyses.push(analysis);
+        api.logger.info(`[executive-agent] carousel: Analyse ${i + 1}/${submissionMedia.length} OK — subjects=${analysis.subjects?.join(',')}`);
+      } catch (err: any) {
+        api.logger.error(`[executive-agent] carousel: Analyse fehlgeschlagen fuer ${fileLabel}: ${err.message}`);
+        await sendTelegram(chatId, `❌ Analyse fehlgeschlagen: ${fileLabel} — ${err.message}`);
+        return;
+      }
+    }
+
+    // Aggregate analyses (same pattern as analyzeVideo in instagram-content-engine.ts)
+    const moodCounts = new Map<string, number>();
+    const settingCounts = new Map<string, number>();
+    const allColors = new Set<string>();
+    const allHooks = new Set<string>();
+    const allPillars = new Set<string>();
+    const subjectCounts = new Map<string, number>();
+    const compositions: string[] = [];
+    let bestQuality: 'high' | 'medium' | 'low' = 'low';
+    const qualityOrder: Record<string, number> = { high: 3, medium: 2, low: 1 };
+
+    for (const a of allAnalyses) {
+      moodCounts.set(a.mood, (moodCounts.get(a.mood) || 0) + 1);
+      settingCounts.set(a.setting, (settingCounts.get(a.setting) || 0) + 1);
+      a.colors.forEach(c => allColors.add(c));
+      a.narrative_hooks.forEach(h => allHooks.add(h));
+      a.pillar_match.forEach(p => allPillars.add(p));
+      a.subjects.forEach(s => subjectCounts.set(s, (subjectCounts.get(s) || 0) + 1));
+      if (a.composition && !compositions.includes(a.composition)) compositions.push(a.composition);
+      if (qualityOrder[a.visual_quality] > qualityOrder[bestQuality]) {
+        bestQuality = a.visual_quality;
+      }
+    }
+
+    const dominant = (m: Map<string, number>) => {
+      let best = ''; let max = 0;
+      for (const [k, v] of m) { if (v > max) { max = v; best = k; } }
+      return best;
+    };
+
+    const topSubjects = [...subjectCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([s]) => s);
+
+    const aggregatedAnalysis: VisionAnalysis = {
+      subjects: topSubjects,
+      mood: dominant(moodCounts),
+      setting: dominant(settingCounts),
+      composition: compositions.join(', '),
+      colors: [...allColors].slice(0, 8),
+      narrative_hooks: [...allHooks].slice(0, 6),
+      visual_quality: bestQuality,
+      pillar_match: [...allPillars],
+    };
+
+    // Save submission with all media and aggregated analysis
+    const submission: Submission = {
+      id: submissionId,
+      media: submissionMedia,
+      context: { user_note: `Karussell (${mediaFiles.length} Medien): ${userNote}` },
+      status: 'analyzed',
+      analysis: aggregatedAnalysis,
+      created: new Date().toISOString(),
+    };
+    await saveSubmission(submission);
+    api.logger.info(`[executive-agent] carousel: Submission gespeichert: ${submissionId} (${submissionMedia.length} Medien)`);
+
+    // Generate variants
+    try {
+      await sendTelegram(chatId, `🎨 Karussell-Analyse abgeschlossen — generiere Varianten...`);
+      const variants = await generateVariants(submission);
+      submission.variants = variants;
+      submission.status = 'generated';
+      await saveSubmission(submission);
+
+      const output = formatVariantsOutput(submissionId, variants);
+      const fileList = mediaFiles.map(f => f.name).join(', ');
+      await sendTelegram(
+        chatId,
+        `🎠 Karussell-Submission erstellt\n${mediaFiles.length} Dateien: ${fileList}\n\n${output}\n\nBearbeiten: \`/instaedit ${submissionId}\``,
+      );
+      api.logger.info(`[executive-agent] carousel pipeline DONE: ${submissionId}`);
+    } catch (varErr: any) {
+      api.logger.error(`[executive-agent] carousel: Varianten-Fehler: ${varErr.message}`);
+      const summary = formatAnalysisSummary(aggregatedAnalysis, 'image');
+      await sendTelegram(
+        chatId,
+        `✅ Karussell-Analyse abgeschlossen\n\n${summary}\n\nSubmission-ID: \`${submissionId}\`\n\nVarianten manuell generieren:\n\`/instavariants ${submissionId}\``,
+      );
+    }
+
+    // Create draft
+    try {
+      const fileList = mediaFiles.map(f => f.name).join(', ');
+      const chosen = submission.variants?.[0];
+      if (chosen) {
+        const draft = createInstaDraft({
+          caption: chosen.caption,
+          hashtags: chosen.hashtags,
+          mediaPath: path.join(sessionDir(sessionId), 'original'),
+          notes: `Karussell: ${fileList}`,
+        });
+        api.logger.info(`[executive-agent] carousel: Draft erstellt: ${draft.id}`);
+      }
+    } catch (draftErr: any) {
+      api.logger.error(`[executive-agent] carousel: Draft-Erstellung fehlgeschlagen: ${draftErr.message}`);
+    }
+  }
+
   api.registerCommand({
     name: 'instasubmit',
     description: 'Instagram Content einreichen: Foto/Video mit Caption /instasubmit <kontext>',
@@ -4792,6 +4940,32 @@ for (const k of days) {
 
           if (sessionMediaFiles.length > 0) {
             api.logger.info(`[executive-agent] /instasubmit: Raw-Session "${refSessionId}" referenziert — ${sessionMediaFiles.length} Dateien`);
+
+            // Carousel detection: "karussell" or "carousel" in note
+            const isCarousel = /karussell|carousel/i.test(note);
+            if (isCarousel && sessionMediaFiles.length > 1) {
+              api.logger.info(`[executive-agent] /instasubmit: Karussell-Modus — ${sessionMediaFiles.length} Dateien`);
+              sendTelegram(chatId, `🎠 Karussell-Modus: ${sessionMediaFiles.length} Dateien aus Session ${refSessionId}. Analyse laeuft...`).catch(() => {});
+
+              (async () => {
+                try {
+                  await runCarouselSubmitPipeline(chatId, refSessionId, sessionMediaFiles, note);
+                } catch (err: any) {
+                  api.logger.error(`[executive-agent] /instasubmit carousel CRASH: ${err?.message}\n${err?.stack || ''}`);
+                  sendTelegram(chatId, `❌ Karussell-Pipeline-Fehler: ${err?.message}`).catch(() => {});
+                } finally {
+                  instaSubmitActive.delete(senderId);
+                }
+              })();
+
+              return {
+                text: `🎠 Karussell: ${sessionMediaFiles.length} Dateien aus Session ${refSessionId} — Analyse + Varianten werden generiert. Ergebnisse folgen per Telegram.`,
+              };
+            } else if (isCarousel && sessionMediaFiles.length <= 1) {
+              api.logger.info(`[executive-agent] /instasubmit: Karussell angefordert aber nur ${sessionMediaFiles.length} Datei — Fallback auf per-file`);
+              sendTelegram(chatId, `⚠️ Karussell braucht mindestens 2 Dateien — fahre mit Einzel-Analyse fort.`).catch(() => {});
+            }
+
             sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse laeuft...`).catch(() => {});
 
             // Generate unique submission IDs per file — prevent overwrites
