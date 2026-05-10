@@ -4991,15 +4991,19 @@ for (const k of days) {
         return { text: `❌ Session "${sessionId}" hat keine Medien-Dateien.\n\nSende Fotos/Videos in die Session.` };
       }
 
-      // Start scan pipeline async
-      instaScanActive.add(chatId);
-      runInstascanPipeline(sessionId, chatId).catch(err => {
-        api.logger.error(`[executive-agent] instascan pipeline CRASH: ${err?.message}\n${err?.stack || ''}`);
-        sendTelegram(chatId, `❌ Scan-Pipeline abgestürzt: ${err?.message}`).catch(() => {});
-        instaScanActive.delete(chatId);
-      });
-
-      return { text: `🔍 Scan gestartet für Session ${sessionId} (${mediaFiles.length} Datei(en)).\nFortschritt folgt per Telegram.` };
+      // Ask user: own direction or auto-proposals?
+      const keyboard = [
+        [
+          { text: '🎯 Ja, eigene Richtung', callback_data: `iscan_ask_${sessionId}::craft`.slice(0, 64) },
+          { text: '💡 Nein, Vorschläge', callback_data: `iscan_ask_${sessionId}::scan`.slice(0, 64) },
+        ],
+      ];
+      await sendTelegramWithKeyboard(
+        chatId,
+        `📁 Session ${sessionId} — ${mediaFiles.length} Medien-Datei(en)\n\nHast du eine konkrete Vorstellung, was daraus werden soll?`,
+        keyboard,
+      );
+      return { text: '' };
     },
   });
 
@@ -8314,6 +8318,31 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         const sessionId = data.slice(10); // skip "icraft_go_"
         await answerCallbackQuery(callbackQueryId, 'Craft wird gestartet...');
         await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
+        return;
+      }
+
+      if (data.startsWith('iscan_ask_')) {
+        const sepIdx2 = data.indexOf('::');
+        if (sepIdx2 === -1) { await answerCallbackQuery(callbackQueryId, 'Ungültig'); return; }
+        const askSessionId = data.slice(10, sepIdx2); // skip "iscan_ask_"
+        const askAction = data.slice(sepIdx2 + 2);
+
+        if (askAction === 'craft') {
+          await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
+          pendingScanResponse.set(chatId, { sessionId: askSessionId, expiresAt: Date.now() + 10 * 60_000 });
+          await sendTelegram(chatId, `🎯 Sende deine Vorstellung als Text oder Sprachnachricht für Session ${askSessionId}.`);
+        } else {
+          // askAction === 'scan' → run scan pipeline
+          if (instaScanActive.has(chatId)) {
+            await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
+            return;
+          }
+          await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
+          instaScanActive.add(chatId);
+          runInstascanPipeline(askSessionId, chatId).catch(err => {
+            api.logger.error(`[executive-agent] iscan_ask scan CRASH: ${err?.message}`);
+          });
+        }
         return;
       }
 
