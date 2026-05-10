@@ -3669,13 +3669,13 @@ for (const k of days) {
         }
 
         const input = String(ctx.args || '').trim();
-        if (!input) return { text: '❌ Nutzung: /instadraft <plan-nr> oder /instadraft <freitext>' };
+        if (!input) return { text: '❌ Nutzung: `/instadraft <plan-nr>` oder `/instadraft <freitext>`' };
 
         const planNr = parseInt(input);
         if (!isNaN(planNr)) {
           // Draft aus Content-Kalender
           const cal = loadCalendar();
-          if (!cal) return { text: '❌ Kein Content-Kalender vorhanden. Zuerst /instaplan ausführen.' };
+          if (!cal) return { text: '❌ Kein Content-Kalender vorhanden. Zuerst `/instaplan` ausführen.' };
           const entry = cal.entries.find((e: ContentCalendarEntry) => e.nr === planNr);
           if (!entry) return { text: `❌ Plan-Nr. ${planNr} nicht gefunden (${cal.entries.length} Einträge vorhanden).` };
 
@@ -3770,7 +3770,7 @@ for (const k of days) {
       try {
         const parts = String(ctx.args || '').trim().split(/\s+/);
         const id = parts[0];
-        if (!id) return { text: '❌ Nutzung: /instaedit <id> [caption=...|status=...|hashtags=...]' };
+        if (!id) return { text: '❌ Nutzung: `/instaedit <id> [caption=...|status=...|hashtags=...]`' };
 
         const draft = loadInstaDraft(id);
         if (!draft) return { text: `❌ Draft "${id}" nicht gefunden.` };
@@ -3922,7 +3922,7 @@ for (const k of days) {
     handler: async () => {
       return {
         text: '🚧 *Auto-Posting (Phase 2) noch nicht aktiv*\n\n' +
-          'Drafts können aktuell über /instadrafts eingesehen und manuell gepostet werden.\n' +
+          'Drafts können aktuell über `/instadrafts` eingesehen und manuell gepostet werden.\n' +
           'Phase 2 wird Container-basiertes Publishing mit Bild-Upload unterstützen.',
       };
     },
@@ -3940,7 +3940,7 @@ for (const k of days) {
       const chatId = senderId;
       try {
         const id = String(ctx.args || '').trim();
-        if (!id) return { text: '❌ Nutzung: /instavariants <submission-id>\nBeispiel: /instavariants sub-bvcw-0605' };
+        if (!id) return { text: '❌ Nutzung: `/instavariants <submission-id>`\nBeispiel: `/instavariants sub-bvcw-0605`' };
 
         // Pre-flight check
         const pf = await preFlightInstagram(id);
@@ -4000,7 +4000,7 @@ for (const k of days) {
         const variantNr = parseInt(args[1]);
 
         if (!id || isNaN(variantNr)) {
-          return { text: '❌ Nutzung: /instaapprove <submission-id> <1|2|3>\nBeispiel: /instaapprove sub-bvcw-0605 2' };
+          return { text: '❌ Nutzung: `/instaapprove <submission-id> <1|2|3>`\nBeispiel: `/instaapprove sub-bvcw-0605 2`' };
         }
 
         // Pre-flight check
@@ -4015,7 +4015,7 @@ for (const k of days) {
         }
 
         if (!submission.variants || submission.variants.length === 0) {
-          return { text: `❌ Submission ${id} hat keine Varianten. Zuerst /instavariants ${id} ausfuehren.` };
+          return { text: `❌ Submission ${id} hat keine Varianten. Zuerst \`/instavariants ${id}\` ausfuehren.` };
         }
 
         const idx = variantNr - 1;
@@ -4070,7 +4070,7 @@ for (const k of days) {
       lines.push('');
     }
 
-    lines.push(`Antwort: /instaapprove ${submissionId} <1|2|3>`);
+    lines.push(`Antwort: \`/instaapprove ${submissionId} <1|2|3>\``);
     return lines.join('\n');
   }
 
@@ -4187,14 +4187,14 @@ for (const k of days) {
         // /instastyle edit — hint to use file editor
         if (arg === 'edit') {
           return {
-            text: 'Style-Profil bearbeiten:\n\nEdit via VS Code Remote SSH unter\nartifacts/personal/instagram/style-profile.json\n\nDanach: /instastyle reload',
+            text: 'Style-Profil bearbeiten:\n\nEdit via VS Code Remote SSH unter\nartifacts/personal/instagram/style-profile.json\n\nDanach: `/instastyle reload`',
           };
         }
 
         // /instastyle set — deactivated
         if (arg.startsWith('set')) {
           return {
-            text: 'Inline-Edit deaktiviert. Pflege erfolgt per Datei-Edit.\n\nSiehe: /instastyle edit',
+            text: 'Inline-Edit deaktiviert. Pflege erfolgt per Datei-Edit.\n\nSiehe: `/instastyle edit`',
           };
         }
 
@@ -4683,6 +4683,7 @@ for (const k of days) {
   async function runInstaSubmitPipeline(
     chatId: string, userNote: string, mediaFile: { path: string; type: 'image' | 'video' },
     overrideSubmissionId?: string,
+    sourceSessionId?: string,
   ): Promise<void> {
     const submissionId = overrideSubmissionId || generateSubmissionId(userNote);
     const mediaType = mediaFile.type;
@@ -4742,7 +4743,7 @@ for (const k of days) {
       api.logger.error(`[executive-agent] instasubmit Vision-Fehler: ${analysisErr.message}\n${analysisErr.stack || ''}`);
       await sendTelegram(
         chatId,
-        `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: \`${submissionId}\` (Status: received)\nBitte erneut versuchen mit \`/instasubmit\``,
+        `❌ Vision-Analyse fehlgeschlagen: ${analysisErr.message}\n\nSubmission-ID: \`${submissionId}\` (Status: received)\nBitte erneut versuchen mit \`/instasubmit${sourceSessionId ? ' ' + sourceSessionId : ''}\``,
       );
     }
   }
@@ -4807,7 +4808,7 @@ for (const k of days) {
                     ? baseSubId
                     : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
                   try {
-                    await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type }, subId);
+                    await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type }, subId, refSessionId);
                     ok++;
                   } catch (fileErr: any) {
                     fail++;
@@ -4897,7 +4898,7 @@ for (const k of days) {
       // /instaraw del <id>
       if (subCmd === 'del' || subCmd === 'delete') {
         const id = parts[1];
-        if (!id) return { text: '❌ Bitte Session-ID angeben: /instaraw del <id>' };
+        if (!id) return { text: '❌ Bitte Session-ID angeben: `/instaraw del <id>`' };
         const deleted = deleteRawSession(id);
         if (!deleted) return { text: `❌ Session "${id}" nicht gefunden.` };
         return { text: `🗑️ Session "${id}" und alle Dateien gelöscht.` };
@@ -4919,7 +4920,7 @@ for (const k of days) {
 
       // /instaraw — list all sessions
       const sessions = listRawSessions();
-      if (sessions.length === 0) return { text: '📁 Keine Raw-Sessions vorhanden.\n\nErstelle eine neue: /instaraw new [kontext]' };
+      if (sessions.length === 0) return { text: '📁 Keine Raw-Sessions vorhanden.\n\nErstelle eine neue: `/instaraw new [kontext]`' };
 
       const activeSids = new Set(activeRawSessions.values());
       const lines = sessions.map(s => {
@@ -4949,7 +4950,7 @@ for (const k of days) {
           (s.status === 'active' || s.status === 'closed' || s.status === 'scanned') && s.files.some(f => f.type === 'image' || f.type === 'video')
         );
         if (sessions.length === 0) {
-          return { text: '📁 Keine scanbaren Sessions vorhanden.\n\nErstelle eine Session: /instaraw new [kontext]\nDann sende Fotos/Videos.' };
+          return { text: '📁 Keine scanbaren Sessions vorhanden.\n\nErstelle eine Session: `/instaraw new [kontext]`\nDann sende Fotos/Videos.' };
         }
         const lines = sessions.map(s => {
           const mediaFiles = s.files.filter(f => f.type === 'image' || f.type === 'video');
@@ -5038,7 +5039,7 @@ for (const k of days) {
           s.files.some(f => f.type === 'image' || f.type === 'video')
         );
         if (sessions.length === 0) {
-          return { text: '📁 Keine craftbaren Sessions vorhanden.\n\nErstelle eine Session: /instaraw new [kontext]\nDann sende Fotos/Videos.' };
+          return { text: '📁 Keine craftbaren Sessions vorhanden.\n\nErstelle eine Session: `/instaraw new [kontext]`\nDann sende Fotos/Videos.' };
         }
         const lines = sessions.map(s => {
           const mediaFiles = s.files.filter(f => f.type === 'image' || f.type === 'video');
@@ -5331,7 +5332,7 @@ for (const k of days) {
       const media = findRecentInboundMedia();
       if (!media) {
         api.logger.warn(`[executive-agent] instasubmit Hook: Kein Media gefunden nach bare-media-event`);
-        await sendTelegram(chatId, '❌ Mediendatei nicht gefunden.\n\nBitte erneut senden: Foto direkt mit Caption /instasubmit <text>');
+        await sendTelegram(chatId, '❌ Mediendatei nicht gefunden.\n\nBitte erneut senden: Foto direkt mit Caption `\/instasubmit <text>`');
         instaSubmitActive.delete(senderId);
         return;
       }
@@ -5683,7 +5684,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
           ? baseSubId
           : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
         try {
-          await runInstaSubmitPipeline(chatId, sessionId, mf, subId);
+          await runInstaSubmitPipeline(chatId, sessionId, mf, subId, sessionId);
           ok++;
         } catch (fileErr: any) {
           fail++;
