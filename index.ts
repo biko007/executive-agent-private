@@ -4679,8 +4679,9 @@ for (const k of days) {
   /** Run Vision Analysis pipeline on a media file. Sends results/errors via Telegram. */
   async function runInstaSubmitPipeline(
     chatId: string, userNote: string, mediaFile: { path: string; type: 'image' | 'video' },
+    overrideSubmissionId?: string,
   ): Promise<void> {
-    const submissionId = generateSubmissionId(userNote);
+    const submissionId = overrideSubmissionId || generateSubmissionId(userNote);
     const mediaType = mediaFile.type;
     api.logger.info(`[executive-agent] instasubmit pipeline START: id=${submissionId} type=${mediaType} source=${mediaFile.path} chatId=${chatId}`);
 
@@ -4787,15 +4788,36 @@ for (const k of days) {
 
           if (sessionMediaFiles.length > 0) {
             api.logger.info(`[executive-agent] /instasubmit: Raw-Session "${refSessionId}" referenziert — ${sessionMediaFiles.length} Dateien`);
-            // Use first media file for submission pipeline
-            const firstMedia = sessionMediaFiles[0];
             sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse laeuft...`).catch(() => {});
+
+            // Generate unique submission IDs per file — prevent overwrites
+            const baseSubId = generateSubmissionId(refSessionId);
 
             // Run pipeline for each media file sequentially
             (async () => {
+              let ok = 0;
+              let fail = 0;
               try {
-                for (const mf of sessionMediaFiles) {
-                  await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type });
+                for (let i = 0; i < sessionMediaFiles.length; i++) {
+                  const mf = sessionMediaFiles[i];
+                  const subId = sessionMediaFiles.length === 1
+                    ? baseSubId
+                    : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
+                  try {
+                    await runInstaSubmitPipeline(chatId, note, { path: mf.path, type: mf.type }, subId);
+                    ok++;
+                  } catch (fileErr: any) {
+                    fail++;
+                    api.logger.error(`[executive-agent] /instasubmit session-pipeline Datei ${i + 1} CRASH: ${fileErr?.message}`);
+                    sendTelegram(chatId, `❌ Datei ${i + 1}/${sessionMediaFiles.length} fehlgeschlagen: ${fileErr?.message}`).catch(() => {});
+                  }
+                }
+                // Summary
+                if (ok > 0) {
+                  const summary = fail > 0
+                    ? `📊 Session ${refSessionId}: ${ok}/${sessionMediaFiles.length} analysiert, ${fail} fehlgeschlagen.`
+                    : `✅ Session ${refSessionId}: alle ${ok} Dateien analysiert.`;
+                  sendTelegram(chatId, summary).catch(() => {});
                 }
               } catch (err: any) {
                 api.logger.error(`[executive-agent] /instasubmit session-pipeline CRASH: ${err?.message}\n${err?.stack || ''}`);
@@ -5535,9 +5557,29 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
 
     await sendTelegram(chatId, `📥 Session ${sessionId}: ${mediaFiles.length} Datei(en) — Analyse laeuft...`);
 
+    const baseSubId = generateSubmissionId(sessionId);
+    let ok = 0;
+    let fail = 0;
     try {
-      for (const mf of mediaFiles) {
-        await runInstaSubmitPipeline(chatId, sessionId, mf);
+      for (let i = 0; i < mediaFiles.length; i++) {
+        const mf = mediaFiles[i];
+        const subId = mediaFiles.length === 1
+          ? baseSubId
+          : `${baseSubId}-${String(i + 1).padStart(2, '0')}`;
+        try {
+          await runInstaSubmitPipeline(chatId, sessionId, mf, subId);
+          ok++;
+        } catch (fileErr: any) {
+          fail++;
+          api.logger.error(`[executive-agent] instasubmit callback Datei ${i + 1} CRASH: ${fileErr?.message}`);
+          sendTelegram(chatId, `❌ Datei ${i + 1}/${mediaFiles.length} fehlgeschlagen: ${fileErr?.message}`).catch(() => {});
+        }
+      }
+      if (ok > 0) {
+        const summary = fail > 0
+          ? `📊 Session ${sessionId}: ${ok}/${mediaFiles.length} analysiert, ${fail} fehlgeschlagen.`
+          : `✅ Session ${sessionId}: alle ${ok} Dateien analysiert.`;
+        sendTelegram(chatId, summary).catch(() => {});
       }
     } catch (err: any) {
       api.logger.error(`[executive-agent] instasubmit callback CRASH: ${err?.message}\n${err?.stack || ''}`);
