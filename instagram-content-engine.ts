@@ -8,6 +8,11 @@ const INSTA_DIR = path.join(process.env.HOME || '/root', '.openclaw/workspace/ar
 const INBOX_DIR = path.join(INSTA_DIR, 'inbox');
 const MEDIA_DIR = path.join(INBOX_DIR, 'media');
 const FRAMES_TMP = '/tmp/openclaw-frames';
+const STATIC_DIR = path.join(
+  process.env.HOME || '/root',
+  '.openclaw/workspace/.openclaw/extensions/executive-agent/artifacts/personal/instagram/static',
+);
+const STATIC_BASE_URL = 'https://app.bikobickel.de/static/instagram';
 
 // ── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -586,4 +591,61 @@ export async function generateVariants(submission: Submission): Promise<ContentV
   await saveSubmission(submission);
 
   return variants;
+}
+
+// ── Media Staging (copy to public static URL for Meta Graph API) ──────────
+
+export interface StagedMedia {
+  localPath: string;   // absolute path in static dir
+  publicUrl: string;   // https://app.bikobickel.de/static/instagram/<file>
+  filename: string;    // filename only
+}
+
+/**
+ * Copy a single media file to the nginx static directory and return its public URL.
+ * Filename format: <submissionId>-<index>.<ext> to avoid collisions.
+ */
+export function stageMediaFile(
+  sourcePath: string,
+  submissionId: string,
+  index: number,
+): StagedMedia {
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Quelldatei nicht gefunden: ${sourcePath}`);
+  }
+  fs.mkdirSync(STATIC_DIR, { recursive: true });
+
+  const ext = path.extname(sourcePath).toLowerCase() || '.jpg';
+  const filename = `${submissionId}-${String(index).padStart(2, '0')}${ext}`;
+  const destPath = path.join(STATIC_DIR, filename);
+  fs.copyFileSync(sourcePath, destPath);
+
+  return {
+    localPath: destPath,
+    publicUrl: `${STATIC_BASE_URL}/${filename}`,
+    filename,
+  };
+}
+
+/**
+ * Stage multiple media files for a submission. Returns array of staged media in order.
+ */
+export function stageAllMedia(
+  files: Array<{ path: string }>,
+  submissionId: string,
+): StagedMedia[] {
+  return files.map((f, i) => stageMediaFile(f.path, submissionId, i + 1));
+}
+
+/**
+ * Remove staged files for a submission (cleanup after publish or failure).
+ */
+export function cleanupStagedMedia(submissionId: string): number {
+  if (!fs.existsSync(STATIC_DIR)) return 0;
+  const prefix = `${submissionId}-`;
+  const files = fs.readdirSync(STATIC_DIR).filter(f => f.startsWith(prefix));
+  for (const f of files) {
+    try { fs.unlinkSync(path.join(STATIC_DIR, f)); } catch {}
+  }
+  return files.length;
 }
