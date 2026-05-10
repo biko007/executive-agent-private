@@ -8958,137 +8958,140 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
     }
   }, 60_000);
 
-  // ── Location HTTP Endpoint (POST /location) ──────────────────────────────
-  const locationPort = 18791;
+  // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────
+  // Register /health, /ready, /version, /location via api.registerHttpRoute()
+  // so they run on the gateway's main port. The gateway checks plugin routes
+  // BEFORE the Control UI SPA fallback, so JSON endpoints coexist with HTML.
   const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 
-  const locationServer = http.createServer(async (req: any, res: any) => {
-    // CORS preflight
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-      });
-      res.end();
-      return;
-    }
+  api.registerHttpRoute({
+    path: '/health',
+    handler: (_req: any, res: any) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, service: 'executive-agent', uptime: process.uptime() }));
+    },
+  });
 
-    // ── Health / Ready / Version endpoints (GET, no auth) ──
-    if (req.method === 'GET') {
-      const url = (req.url || '').split('?')[0];
-      if (url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, service: 'executive-agent', uptime: process.uptime() }));
+  api.registerHttpRoute({
+    path: '/ready',
+    handler: (_req: any, res: any) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, service: 'executive-agent' }));
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/version',
+    handler: (_req: any, res: any) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/location',
+    handler: async (req: any, res: any) => {
+      // CORS preflight
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        });
+        res.end();
         return;
       }
-      if (url === '/ready') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, service: 'executive-agent' }));
+
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
         return;
       }
-      if (url === '/version') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
+
+      // Auth check
+      const authHeader = req.headers['authorization'] || '';
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      if (!gatewayToken || token !== gatewayToken) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
         return;
       }
-    }
 
-    if (req.method !== 'POST' || (req.url && !req.url.startsWith('/location'))) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Not found' }));
-      return;
-    }
-
-    // Auth check
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '');
-    if (!gatewayToken || token !== gatewayToken) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-      return;
-    }
-
-    // Parse JSON body
-    let body = '';
-    try {
-      await new Promise<void>((resolve, reject) => {
-        req.on('data', (chunk: any) => { body += chunk; });
-        req.on('end', resolve);
-        req.on('error', reject);
-        setTimeout(() => reject(new Error('timeout')), 10000);
-      });
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
-      return;
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON' }));
-      return;
-    }
-
-    const lat = parseFloat(String(parsed.lat));
-    const lon = parseFloat(String(parsed.lon));
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
-      return;
-    }
-
-    // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-    const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-    let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-    if (!label) {
-      label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      // Parse JSON body
+      let body = '';
       try {
-        const geoRes = await fetchWithTimeout(
-          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
-          { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
-          10000,
-        );
-        if (geoRes.ok) {
-          const geo: any = await geoRes.json();
-          label = geo?.address?.city
-            || geo?.address?.town
-            || geo?.address?.village
-            || geo?.address?.municipality
-            || geo?.display_name?.split(',')[0]
-            || label;
-        }
-      } catch { /* geocoding optional, keep coordinate label */ }
-    }
+        await new Promise<void>((resolve, reject) => {
+          req.on('data', (chunk: any) => { body += chunk; });
+          req.on('end', resolve);
+          req.on('error', reject);
+          setTimeout(() => reject(new Error('timeout')), 10000);
+        });
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
+        return;
+      }
 
-    const s = loadSettings();
-    s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-    saveSettings(s);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON' }));
+        return;
+      }
 
-    const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-    if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
-    fs.appendFileSync(
-      path.join(locHistoryDir, 'history.jsonl'),
-      JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
-      'utf-8',
-    );
+      const lat = parseFloat(String(parsed.lat));
+      const lon = parseFloat(String(parsed.lon));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
+        return;
+      }
 
-    api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
+      // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
+      const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
+      let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
+      if (!label) {
+        label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        try {
+          const geoRes = await fetchWithTimeout(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
+            { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
+            10000,
+          );
+          if (geoRes.ok) {
+            const geo: any = await geoRes.json();
+            label = geo?.address?.city
+              || geo?.address?.town
+              || geo?.address?.village
+              || geo?.address?.municipality
+              || geo?.display_name?.split(',')[0]
+              || label;
+          }
+        } catch { /* geocoding optional, keep coordinate label */ }
+      }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, label }));
+      const s = loadSettings();
+      s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
+      saveSettings(s);
+
+      const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
+      if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
+      fs.appendFileSync(
+        path.join(locHistoryDir, 'history.jsonl'),
+        JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
+        'utf-8',
+      );
+
+      api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, label }));
+    },
   });
 
-  locationServer.on('error', (e: any) => {
-    api.logger.error(`[executive-agent] Location-Server Fehler: ${e.message}`);
-  });
-
-  locationServer.listen(locationPort, '127.0.0.1', () => {
-    api.logger.info(`[executive-agent] Location-API (intern) gestartet auf Port ${locationPort}`);
-  });
+  api.logger.info('[executive-agent] HTTP routes registered on gateway port 18789 (/health, /ready, /version, /location)');
 
   // ── Public Location HTTP Endpoint (POST /location, 0.0.0.0:18790) ────────
   const publicLocationPort = 18790;
