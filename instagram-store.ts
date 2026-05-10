@@ -43,13 +43,17 @@ export interface InstaDraft {
   id: string;
   createdAt: string;        // ISO 8601
   updatedAt: string;        // ISO 8601
-  status: 'entwurf' | 'freigegeben';
+  status: 'entwurf' | 'freigegeben' | 'veröffentlicht';
   caption: string;
   hashtags: string[];
   scheduledFor?: string;    // ISO date
   planNr?: number;
   mediaPath?: string;
   notes?: string;
+  published_at?: string;       // ISO 8601 — wann veröffentlicht
+  instagram_post_id?: string;  // Meta Post-ID
+  instagram_url?: string;      // Instagram Permalink
+  publish_error?: string;      // letzter Fehler bei Veröffentlichung
 }
 
 export interface ContentCalendarEntry {
@@ -109,17 +113,19 @@ const GRAPH_BASE = 'https://graph.facebook.com/v21.0';
 const GRAPH_OAUTH_BASE = 'https://graph.facebook.com';
 
 async function graphGet(endpoint: string, token: string, params?: Record<string, string>): Promise<any> {
-  const url = new URL(`${GRAPH_BASE}${endpoint}`);
-  url.searchParams.set('access_token', token);
-  if (params) {
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  }
-  const res = await fetchWithTimeout(url.toString(), { method: 'GET' }, 15000);
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Meta Graph API ${res.status}: ${body.slice(0, 300)}`);
-  }
-  return res.json();
+  return withRetry(async () => {
+    const url = new URL(`${GRAPH_BASE}${endpoint}`);
+    url.searchParams.set('access_token', token);
+    if (params) {
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    }
+    const res = await fetchWithTimeout(url.toString(), { method: 'GET' }, 15000);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Meta Graph API ${res.status}: ${body.slice(0, 300)}`);
+    }
+    return res.json();
+  }, `GET ${endpoint}`);
 }
 
 async function graphPost(
@@ -127,18 +133,40 @@ async function graphPost(
   token: string,
   params: Record<string, string>,
 ): Promise<any> {
-  const url = `${GRAPH_BASE}${endpoint}`;
-  const body = new URLSearchParams({ access_token: token, ...params });
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  }, 15000);
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Meta Graph API POST ${res.status}: ${text.slice(0, 300)}`);
+  return withRetry(async () => {
+    const url = `${GRAPH_BASE}${endpoint}`;
+    const body = new URLSearchParams({ access_token: token, ...params });
+    const res = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    }, 15000);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Meta Graph API POST ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return res.json();
+  }, `POST ${endpoint}`);
+}
+
+/** Retry wrapper: 3 attempts with exponential backoff for network/timeout errors. */
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  const delays = [2000, 5000, 10000];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const isNetwork = e.message?.includes('fetch_timeout') ||
+        e.message?.includes('ECONNRESET') ||
+        e.message?.includes('ENOTFOUND') ||
+        e.message?.includes('ETIMEDOUT') ||
+        e.message?.includes('socket hang up');
+      if (!isNetwork || attempt === 2) throw e;
+      console.log(`[instagram-store] ${label}: Netzwerkfehler (Versuch ${attempt + 1}/3), Retry in ${delays[attempt]}ms`);
+      await new Promise(r => setTimeout(r, delays[attempt]));
+    }
   }
-  return res.json();
+  throw new Error('unreachable');
 }
 
 async function pollContainerStatus(

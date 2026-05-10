@@ -42,6 +42,7 @@ import {
   listDrafts as listInstaDrafts, createDraft as createInstaDraft,
   loadCalendar, saveCalendar,
   loadStyleProfile, saveStyleProfile, validateStyleProfile, getStyleProfileSummary,
+  publishSingleImage, publishCarousel, publishReel, checkPublishingLimit,
 } from "./instagram-store.js";
 import type { InstaDraft, ContentCalendarEntry, StyleProfile } from "./instagram-store.js";
 import { openPage, extractText, screenshot, closeBrowser } from "./browser-agent.js";
@@ -49,6 +50,7 @@ import {
   saveSubmission, loadSubmission, analyzeImage, analyzeVideo,
   formatAnalysisSummary, getMediaDir, generateSubmissionId, generateDraftId,
   getTopPerformerContext, generateVariants,
+  stageAllMedia, cleanupStagedMedia,
 } from "./instagram-content-engine.js";
 import type { Submission, ContentVariant, VisionAnalysis } from "./instagram-content-engine.js";
 import {
@@ -1647,7 +1649,7 @@ if (conflicts.length && !force) {
     'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
     'pe', 'peedit', 'penew', 'peshow', 'pevalue',
     'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
-    'instaplan', 'instapost', 'instastyle', 'instasubmit', 'instasync',
+    'instaplan', 'instapost', 'instaposts', 'instastyle', 'instasubmit', 'instasync',
     'instacraft', 'instaforensic', 'instaraw', 'instascan', 'instatokentest', 'instatop', 'instatrend', 'instavariants',
     'trade', 'tradedebug', 'tradeindex', 'trademode', 'tradeorders',
     'tradepaper', 'tradeperf', 'tradepos', 'tradescan', 'tradescanstatus',
@@ -3747,7 +3749,7 @@ for (const k of days) {
       try {
         const drafts = listInstaDrafts();
         if (!drafts.length) return { text: '📝 Keine Instagram-Drafts vorhanden.' };
-        const icons: Record<string, string> = { entwurf: '📝', freigegeben: '✅' };
+        const icons: Record<string, string> = { entwurf: '📝', freigegeben: '✅', 'veröffentlicht': '📸' };
         const lines = drafts.map(d => {
           const icon = icons[d.status] || '📝';
           const preview = d.caption.length > 50 ? d.caption.slice(0, 50) + '…' : d.caption;
@@ -3915,16 +3917,164 @@ for (const k of days) {
     },
   });
 
-  // 4.9 /instapost — Phase 2 (deaktiviert)
+  // 4.9 /instapost — Draft auf Instagram veröffentlichen
   api.registerCommand({
     name: 'instapost',
-    description: 'Instagram Post veröffentlichen (Phase 2): /instapost',
+    description: 'Instagram Post veröffentlichen: /instapost <draft-id>',
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
+      try {
+        const draftId = String(ctx.args || '').trim();
+        if (!draftId) return { text: '❌ Nutzung: `/instapost <draft-id>`' };
+
+        const draft = loadInstaDraft(draftId);
+        if (!draft) return { text: `❌ Draft "${draftId}" nicht gefunden.` };
+
+        if (draft.status === 'veröffentlicht') {
+          return { text: `ℹ️ Draft "${draftId}" wurde bereits veröffentlicht.\n📸 ${draft.instagram_url || '(kein Link)'}` };
+        }
+        if (draft.status !== 'freigegeben') {
+          return { text: `❌ Draft "${draftId}" hat Status "${draft.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+        }
+
+        // Token
+        if (!instaAuthorized()) return { text: '❌ Instagram nicht verbunden. Bitte Tokens in env setzen.' };
+        const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+
+        // Resolve media files from draft
+        const mediaFiles: Array<{ path: string; type: 'image' | 'video' }> = [];
+        if (draft.mediaPath) {
+          if (!fs.existsSync(draft.mediaPath)) {
+            return { text: `❌ Media-Pfad nicht gefunden: ${draft.mediaPath}` };
+          }
+          const stat = fs.statSync(draft.mediaPath);
+          if (stat.isDirectory()) {
+            const entries = fs.readdirSync(draft.mediaPath).filter(f => !f.startsWith('.')).sort();
+            for (const name of entries) {
+              const t = detectMediaType(name);
+              if (t === 'image' || t === 'video') {
+                mediaFiles.push({ path: path.join(draft.mediaPath, name), type: t });
+              }
+            }
+          } else {
+            const t = detectMediaType(draft.mediaPath);
+            if (t === 'image' || t === 'video') {
+              mediaFiles.push({ path: draft.mediaPath, type: t });
+            }
+          }
+        }
+        // Fallback: check submission reference in notes
+        if (mediaFiles.length === 0 && draft.notes) {
+          const match = draft.notes.match(/Submission ([\w-]+)/i);
+          if (match) {
+            try {
+              const sub = await loadSubmission(match[1]);
+              for (const m of sub.media || []) {
+                if ((m.type === 'image' || m.type === 'video') && fs.existsSync(m.path)) {
+                  mediaFiles.push({ path: m.path, type: m.type });
+                }
+              }
+            } catch { /* submission not found — continue */ }
+          }
+        }
+        if (mediaFiles.length === 0) {
+          return { text: `❌ Keine Mediendateien für Draft "${draftId}" gefunden.\n\nMedia zuweisen: \`/instaedit ${draftId} media=/pfad/zur/datei\`` };
+        }
+
+        // Caption + Hashtags
+        const fullCaption = draft.hashtags.length > 0
+          ? `${draft.caption}\n\n${draft.hashtags.map(h => '#' + h).join(' ')}`
+          : draft.caption;
+
+        // Stage media for public URLs
+        const staged = stageAllMedia(
+          mediaFiles.map(f => ({ path: f.path })),
+          draftId,
+        );
+
+        try {
+          // Publish with token-refresh retry on code 190 (session expired)
+          async function doPublish(accessToken: string, igId: string) {
+            if (mediaFiles.length === 1 && mediaFiles[0].type === 'video') {
+              return publishReel(accessToken, igId, staged[0].publicUrl, fullCaption);
+            } else if (mediaFiles.length === 1) {
+              return publishSingleImage(accessToken, igId, staged[0].publicUrl, fullCaption);
+            } else {
+              const items = staged.map((s, i) => ({ url: s.publicUrl, type: mediaFiles[i].type }));
+              return publishCarousel(accessToken, igId, items, fullCaption);
+            }
+          }
+
+          let result: { postId: string; permalink: string };
+          try {
+            result = await doPublish(tokens.access_token, tokens.ig_business_id);
+          } catch (pubErr: any) {
+            // Token expired (code 190) → refresh + retry once
+            if (pubErr.message?.includes('"code":190') || pubErr.message?.includes('"code": 190')) {
+              api.logger.warn('[executive-agent] /instapost: Token expired (code 190), refreshing...');
+              markInstaTokenFailed();
+              const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+              result = await doPublish(refreshed.access_token, refreshed.ig_business_id);
+            } else {
+              throw pubErr;
+            }
+          }
+
+          // Update draft
+          draft.status = 'veröffentlicht';
+          draft.published_at = new Date().toISOString();
+          draft.instagram_post_id = result.postId;
+          draft.instagram_url = result.permalink;
+          draft.publish_error = undefined;
+          saveInstaDraft(draft);
+
+          const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
+          return {
+            text: `✅ *Gepostet!*\n\n` +
+              `🆔 ${draft.id}\n` +
+              `📸 ${result.permalink}\n` +
+              `📋 Format: ${format} (${mediaFiles.length} Datei${mediaFiles.length > 1 ? 'en' : ''})\n\n` +
+              `Caption: ${draft.caption.slice(0, 150)}${draft.caption.length > 150 ? '…' : ''}`,
+          };
+        } finally {
+          cleanupStagedMedia(draftId);
+        }
+      } catch (e: any) {
+        // Save error to draft
+        const draftId = String(ctx.args || '').trim();
+        if (draftId) {
+          try {
+            const d = loadInstaDraft(draftId);
+            if (d && d.status !== 'veröffentlicht') {
+              d.publish_error = e.message;
+              saveInstaDraft(d);
+            }
+          } catch { /* ignore */ }
+        }
+        return { text: `❌ /instapost Fehler: ${e.message}` };
+      }
+    },
+  });
+
+  // 4.9b /instaposts — Veröffentlichte Posts auflisten
+  api.registerCommand({
+    name: 'instaposts',
+    description: 'Veröffentlichte Instagram Posts auflisten: /instaposts',
     handler: async () => {
-      return {
-        text: '🚧 *Auto-Posting (Phase 2) noch nicht aktiv*\n\n' +
-          'Drafts können aktuell über `/instadrafts` eingesehen und manuell gepostet werden.\n' +
-          'Phase 2 wird Container-basiertes Publishing mit Bild-Upload unterstützen.',
-      };
+      try {
+        const drafts = listInstaDrafts('veröffentlicht', 50);
+        if (!drafts.length) return { text: '📸 Noch keine veröffentlichten Posts.' };
+
+        const lines = drafts.map(d => {
+          const date = d.published_at ? d.published_at.slice(0, 10) : d.updatedAt.slice(0, 10);
+          const preview = d.caption.length > 40 ? d.caption.slice(0, 40) + '…' : d.caption;
+          const link = d.instagram_url || '(kein Link)';
+          return `📸 ${date} | ${d.id}\n   ${link}\n   "${preview}"`;
+        });
+        return { text: `📸 *Veröffentlichte Posts* (${drafts.length})\n\n${lines.join('\n\n')}` };
+      } catch (e: any) {
+        return { text: `❌ /instaposts Fehler: ${e.message}` };
+      }
     },
   });
 
