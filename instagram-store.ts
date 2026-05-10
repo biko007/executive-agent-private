@@ -122,6 +122,159 @@ async function graphGet(endpoint: string, token: string, params?: Record<string,
   return res.json();
 }
 
+async function graphPost(
+  endpoint: string,
+  token: string,
+  params: Record<string, string>,
+): Promise<any> {
+  const url = `${GRAPH_BASE}${endpoint}`;
+  const body = new URLSearchParams({ access_token: token, ...params });
+  const res = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  }, 15000);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Meta Graph API POST ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+async function pollContainerStatus(
+  containerId: string,
+  token: string,
+  maxWaitMs: number,
+): Promise<{ status: string; id: string }> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const data = await graphGet(`/${containerId}`, token, { fields: 'status_code' });
+    const status = data.status_code;
+    if (status === 'FINISHED') return { status, id: containerId };
+    if (status === 'ERROR' || status === 'EXPIRED') {
+      throw new Error(`Container ${containerId} failed: ${status}`);
+    }
+    // IN_PROGRESS — wait 3s then retry
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error(`Container ${containerId} timed out after ${maxWaitMs}ms`);
+}
+
+// ── Publishing ─────────────────────────────────────────────────────────────
+
+export async function publishSingleImage(
+  token: string,
+  igBusinessId: string,
+  imageUrl: string,
+  caption: string,
+): Promise<{ postId: string; permalink: string }> {
+  // 1. Create media container
+  const container = await graphPost(`/${igBusinessId}/media`, token, {
+    image_url: imageUrl,
+    caption,
+  });
+  const containerId = container.id;
+
+  // 2. Poll until FINISHED
+  await pollContainerStatus(containerId, token, 60_000);
+
+  // 3. Publish
+  const published = await graphPost(`/${igBusinessId}/media_publish`, token, {
+    creation_id: containerId,
+  });
+  const postId = published.id;
+
+  // 4. Get permalink
+  const post = await graphGet(`/${postId}`, token, { fields: 'permalink' });
+  return { postId, permalink: post.permalink };
+}
+
+export async function publishCarousel(
+  token: string,
+  igBusinessId: string,
+  items: Array<{ url: string; type: 'image' | 'video' }>,
+  caption: string,
+): Promise<{ postId: string; permalink: string }> {
+  // 1. Create item containers
+  const childIds: string[] = [];
+  for (const item of items) {
+    const params: Record<string, string> = { is_carousel_item: 'true' };
+    if (item.type === 'video') {
+      params.media_type = 'VIDEO';
+      params.video_url = item.url;
+    } else {
+      params.image_url = item.url;
+    }
+    const child = await graphPost(`/${igBusinessId}/media`, token, params);
+    childIds.push(child.id);
+  }
+
+  // 2. Poll each item container until FINISHED
+  for (let i = 0; i < childIds.length; i++) {
+    const timeoutMs = items[i].type === 'video' ? 300_000 : 60_000;
+    await pollContainerStatus(childIds[i], token, timeoutMs);
+  }
+
+  // 3. Create carousel container
+  const carousel = await graphPost(`/${igBusinessId}/media`, token, {
+    media_type: 'CAROUSEL',
+    children: childIds.join(','),
+    caption,
+  });
+  const carouselId = carousel.id;
+
+  // 4. Poll carousel container
+  await pollContainerStatus(carouselId, token, 60_000);
+
+  // 5. Publish
+  const published = await graphPost(`/${igBusinessId}/media_publish`, token, {
+    creation_id: carouselId,
+  });
+  const postId = published.id;
+
+  // 6. Get permalink
+  const post = await graphGet(`/${postId}`, token, { fields: 'permalink' });
+  return { postId, permalink: post.permalink };
+}
+
+export async function publishReel(
+  token: string,
+  igBusinessId: string,
+  videoUrl: string,
+  caption: string,
+): Promise<{ postId: string; permalink: string }> {
+  // 1. Create reel container
+  const container = await graphPost(`/${igBusinessId}/media`, token, {
+    video_url: videoUrl,
+    caption,
+    media_type: 'REELS',
+  });
+  const containerId = container.id;
+
+  // 2. Poll until FINISHED (5 min for video processing)
+  await pollContainerStatus(containerId, token, 300_000);
+
+  // 3. Publish
+  const published = await graphPost(`/${igBusinessId}/media_publish`, token, {
+    creation_id: containerId,
+  });
+  const postId = published.id;
+
+  // 4. Get permalink
+  const post = await graphGet(`/${postId}`, token, { fields: 'permalink' });
+  return { postId, permalink: post.permalink };
+}
+
+export async function checkPublishingLimit(
+  token: string,
+  igBusinessId: string,
+): Promise<{ withinLimit: boolean; quota: number; used: number }> {
+  const data = await graphGet(`/${igBusinessId}/content_publishing_limit`, token);
+  const used = data.data?.[0]?.quota_usage ?? 0;
+  const quota = data.data?.[0]?.config?.quota_total ?? 25;
+  return { withinLimit: used < quota, quota, used };
+}
+
 // ── Token Management ───────────────────────────────────────────────────────
 
 export function loadTokens(): MetaTokens | null {
@@ -759,7 +912,3 @@ export function getStyleProfileSummary(): string {
   return result.length > 3500 ? result.slice(0, 3497) + '...' : result;
 }
 
-// ── Phase 2 Stubs (Publishing) ─────────────────────────────────────────────
-// TODO Phase 2: Auto-Posting
-// export async function publishDraft(draft: InstaDraft, token: string, igId: string): Promise<string> { ... }
-// export async function uploadMedia(imagePath: string, token: string, igId: string, caption: string): Promise<string> { ... }
