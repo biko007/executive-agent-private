@@ -26,6 +26,12 @@ import {
 } from "./link-store.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
+import {
+  registerMailCommands, initMailCommands,
+  m365Unread, yahooUnread, listDrafts,
+  scanMailsForBookings, pendingBookings, pendingTripSelections,
+} from "./src/modules/mail/index.js";
+import type { UnifiedMsg, MailDraft } from "./src/modules/mail/index.js";
 import type { SpSearchResult } from "./link-store.js";
 import {
   registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken,
@@ -68,35 +74,6 @@ import {
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
-import { ImapFlow } from "imapflow";
-import nodemailer from "nodemailer";
-
-type DraftStatus = "draft" | "approved" | "sent";
-type Account = "m365" | "yahoo";
-
-type MailDraft = {
-  id: string;
-  createdAt: string;
-  status: DraftStatus;
-  account: Account;
-  user: string;
-  to: string[];
-  subject: string;
-  bodyText: string;
-};
-
-type UnifiedMsg = {
-  source: Account;
-  id: string;          // m365 message id OR yahoo UID
-  dateIso: string;     // ISO timestamp
-  from: string;
-  subject: string;
-};
-
-interface ProcessedMails {
-  version: 1;
-  ids: string[];  // "m365::<msgId>" or "yahoo::<uid>"
-}
 
 /* ---------------- Settings + Helpers ---------------- */
 // Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
@@ -173,8 +150,6 @@ export default function (api: any) {
   });
 
   const workspace: string = api?.config?.agents?.defaults?.workspace || "/home/biko/.openclaw/workspace";
-  const draftsDir = path.join(workspace, "artifacts", "mail-drafts");
-  fs.mkdirSync(draftsDir, { recursive: true });
 
   // pluginConfig maps to: plugins.entries.executive-agent.config
   const pcfg = api.pluginConfig || {};
@@ -373,360 +348,15 @@ export default function (api: any) {
     }
   }
 
-  /* --- Pending-Booking State (mail scanner → travel integration) --- */
-
-  const pendingBookings = new Map<string, {
-    booking: ParsedBooking;
-    source: Account;
-    mailId: string;
-    expiresAt: number;
-  }>();
-
-  // Pending trip-selection state (user picked "Zu bestehender Reise")
-  const pendingTripSelections = new Map<string, {
-    bookingKey: string;
-    trips: { id: string; name: string }[];
-    expiresAt: number;
-  }>();
-
-  const draftPath = (id: string) => path.join(draftsDir, `${id}.json`);
-  function saveDraft(d: MailDraft) { fs.writeFileSync(draftPath(d.id), JSON.stringify(d, null, 2), "utf-8"); }
-  function loadDraft(id: string): MailDraft | null {
-    const p = draftPath(id);
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, "utf-8"));
-  }
-
-  function listDrafts(status?: MailDraft["status"], limit: number = 5): MailDraft[] {
-    if (!fs.existsSync(draftsDir)) return [];
-    const files = fs.readdirSync(draftsDir).filter(f => f.endsWith(".json"));
-    const out: MailDraft[] = [];
-
-    for (const f of files) {
-      try {
-        const raw = fs.readFileSync(path.join(draftsDir, f), "utf-8");
-        const d = JSON.parse(raw);
-        if (!d?.id || !d?.status) continue;
-        if (status && d.status !== status) continue;
-        out.push(d as MailDraft);
-      } catch {
-        // ignore broken draft file
-      }
-    }
-
-    out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-    return out.slice(0, Math.max(1, Math.min(20, limit)));
-  }
-
-  function ensureM365Configured() {
-    if (!m365Enabled) throw new Error("m365_disabled");
-    if (!tenantId || !clientId || !m365User) throw new Error("m365_not_configured");
-    if (!m365Secret) throw new Error("m365_secret_missing");
-  }
-  function ensureYahooConfigured() {
-    if (!yahooEnabled) throw new Error("yahoo_disabled");
-    if (!yahooUser || !yahooImapHost || !yahooSmtpHost) throw new Error("yahoo_not_configured");
-    if (!yahooPass) throw new Error("yahoo_secret_missing (YAHOO_APP_PASSWORD)");
-  }
-
-  /* ---------------- Processed-Mail Store (Duplikat-Tracking) ---------------- */
-
-  const processedMailPath = path.join(workspace, 'artifacts', 'personal', 'mail-parsing', 'processed.json');
-
-  function loadProcessed(): ProcessedMails {
-    try {
-      if (fs.existsSync(processedMailPath)) {
-        return JSON.parse(fs.readFileSync(processedMailPath, 'utf-8'));
-      }
-    } catch {}
-    return { version: 1, ids: [] };
-  }
-
-  function saveProcessed(p: ProcessedMails): void {
-    fs.mkdirSync(path.dirname(processedMailPath), { recursive: true });
-    fs.writeFileSync(processedMailPath, JSON.stringify(p, null, 2), 'utf-8');
-  }
-
-  function isProcessed(source: Account, id: string): boolean {
-    const key = `${source}::${id}`;
-    return loadProcessed().ids.includes(key);
-  }
-
-  function markProcessed(source: Account, id: string): void {
-    const p = loadProcessed();
-    const key = `${source}::${id}`;
-    if (!p.ids.includes(key)) {
-      p.ids.push(key);
-      // Keep last 2000 entries to avoid unbounded growth
-      if (p.ids.length > 2000) p.ids = p.ids.slice(-2000);
-      saveProcessed(p);
-    }
-  }
-
-  /* ---------------- Unified: unread fetchers ---------------- */
-
-  async function m365Unread(limit: number): Promise<UnifiedMsg[]> {
-    ensureM365Configured();
-    const token = await graphToken(tenantId, clientId, m365Secret);
-
-    // unread only, newest first
-    const url =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-      `/mailFolders/Inbox/messages?$top=${limit}` +
-      `&$select=receivedDateTime,from,subject,id,isRead` +
-      `&$filter=isRead eq false` +
-      `&$orderby=receivedDateTime desc`;
-
-    const data = await graphGet(tenantId, clientId, m365Secret, url);
-    const vals = data.value || [];
-
-    return vals.map((m: any) => ({
-      source: "m365",
-      id: String(m.id),
-      dateIso: String(m.receivedDateTime || nowIso()),
-      from: m?.from?.emailAddress?.address || "?",
-      subject: m?.subject || "(no subject)",
-    }));
-  }
-
-
-  async function m365Recent(limit: number, hours?: number): Promise<UnifiedMsg[]> {
-    ensureM365Configured();
-
-    // newest first, optional time filter
-    const base =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-      `/mailFolders/Inbox/messages?$top=${limit}` +
-      `&$select=receivedDateTime,from,subject,id,isRead` +
-      `&$orderby=receivedDateTime desc`;
-
-    let url = base;
-    if (hours && Number.isFinite(hours) && hours > 0) {
-      const sinceIso = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-      url += `&$filter=receivedDateTime ge ${sinceIso}`;
-    }
-
-    const data = await graphGet(tenantId, clientId, m365Secret, url);
-    const vals = data.value || [];
-
-    return vals.map((m: any) => ({
-      source: "m365",
-      id: String(m.id),
-      dateIso: String(m.receivedDateTime || nowIso()),
-      from: m?.from?.emailAddress?.address || "?",
-      subject: m?.subject || "(no subject)",
-    }));
-  }
-
-  /**
-   * Create an ImapFlow client with error handler to prevent uncaught exceptions.
-   * Always use try/finally with client.logout() when using this.
-   */
-  function createSafeImapClient(opts?: { socketTimeout?: number }): InstanceType<typeof ImapFlow> {
-    const client = new ImapFlow({
-      host: yahooImapHost,
-      port: yahooImapPort,
-      secure: true,
-      auth: { user: yahooUser, pass: yahooPass },
-      socketTimeout: opts?.socketTimeout ?? 15000,
-      logger: false,
-    });
-    // Prevent unhandled 'error' events from crashing the process
-    client.on('error', (err: any) => {
-      api.logger.warn(`[executive-agent] IMAP connection error (handled): ${err.message}`);
-    });
-    return client;
-  }
-
-  async function yahooUnread(limit: number): Promise<UnifiedMsg[]> {
-    ensureYahooConfigured();
-    const client = createSafeImapClient();
-
-    try {
-      await client.connect();
-      await client.mailboxOpen("INBOX");
-
-      const out: UnifiedMsg[] = [];
-      for await (const msg of client.fetch({ seen: false }, { uid: true, envelope: true, internalDate: true })) {
-        out.push({
-          source: "yahoo",
-          id: String(msg.uid),
-          dateIso: msg.internalDate ? new Date(msg.internalDate).toISOString() : nowIso(),
-          from: msg.envelope?.from?.[0]?.address || "?",
-          subject: msg.envelope?.subject || "(no subject)",
-        });
-        if (out.length >= limit) break;
-      }
-      return out;
-    } finally {
-      await client.logout().catch(() => {});
-    }
-  }
-
-
-  async function yahooRecent(limit: number, hours?: number): Promise<UnifiedMsg[]> {
-    ensureYahooConfigured();
-    const client = createSafeImapClient();
-
-    try {
-      await client.connect();
-      await client.mailboxOpen("INBOX");
-
-      // Without a time bound, IMAP "recent" can be heavy; use safe default window.
-      const effectiveHours = (hours && Number.isFinite(hours) && hours > 0) ? hours : (24 * 30);
-      const since = new Date(Date.now() - effectiveHours * 60 * 60 * 1000);
-
-      const searchRes = await client.search({ since });
-      const uids: number[] = Array.isArray(searchRes) ? searchRes : [];
-      uids.sort((a: number, b: number) => b - a);
-      const pick = uids.slice(0, limit);
-
-      const out: UnifiedMsg[] = [];
-      if (pick.length) {
-        for await (const msg of client.fetch(pick, { uid: true, envelope: true, internalDate: true })) {
-          out.push({
-            source: "yahoo",
-            id: String(msg.uid),
-            dateIso: msg.internalDate ? new Date(msg.internalDate).toISOString() : nowIso(),
-            from: msg.envelope?.from?.[0]?.address || "?",
-            subject: msg.envelope?.subject || "(no subject)",
-          });
-        }
-      }
-      return out;
-    } finally {
-      await client.logout().catch(() => {});
-    }
-  }
-
-  /* ---------------- Mail Body Fetchers (für Buchungserkennung) ---------------- */
-
-  function stripHtml(html: string): string {
-    return html
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/?(p|div|tr|li|h[1-6])[^>]*>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  }
-
-  async function m365FetchBody(messageId: string): Promise<string> {
-    ensureM365Configured();
-    const url =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
-      `/messages/${encodeURIComponent(messageId)}?$select=body,subject,from`;
-
-    const data = await graphGet(tenantId, clientId, m365Secret, url);
-    const bodyContent: string = data?.body?.content || '';
-    const contentType: string = data?.body?.contentType || 'html';
-
-    if (contentType.toLowerCase() === 'text') return bodyContent;
-    return stripHtml(bodyContent);
-  }
-
-  async function yahooFetchBody(uid: string): Promise<string> {
-    ensureYahooConfigured();
-
-    const client = createSafeImapClient({ socketTimeout: 20000 });
-
-    try {
-      await client.connect();
-      await client.mailboxOpen('INBOX');
-
-      const msg: any = await client.fetchOne(uid, { source: true });
-      if (!msg || !msg.source) return '';
-
-      // source is a Buffer containing the raw RFC822 message
-      const raw = msg.source.toString('utf-8');
-
-      // Simple extraction: find the text/plain part or strip HTML from body
-      // Look for the body after headers (double CRLF)
-      const headerEnd = raw.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return raw.slice(0, 2000);
-
-      const body = raw.slice(headerEnd + 4);
-
-      // Check if it looks like HTML
-      if (body.includes('<html') || body.includes('<HTML') || body.includes('<body')) {
-        return stripHtml(body).slice(0, 5000);
-      }
-
-      // For multipart messages, try to extract text/plain part
-      const contentTypeMatch = raw.match(/Content-Type:\s*multipart\/[^;]+;\s*boundary="?([^"\r\n]+)"?/i);
-      if (contentTypeMatch) {
-        const boundary = contentTypeMatch[1];
-        const parts = body.split(`--${boundary}`);
-        for (const part of parts) {
-          if (part.match(/Content-Type:\s*text\/plain/i)) {
-            const partBody = part.indexOf('\r\n\r\n');
-            if (partBody !== -1) return part.slice(partBody + 4).replace(/--\s*$/, '').trim().slice(0, 5000);
-          }
-        }
-        // Fallback: look for text/html part and strip
-        for (const part of parts) {
-          if (part.match(/Content-Type:\s*text\/html/i)) {
-            const partBody = part.indexOf('\r\n\r\n');
-            if (partBody !== -1) return stripHtml(part.slice(partBody + 4)).slice(0, 5000);
-          }
-        }
-      }
-
-      return body.slice(0, 5000);
-    } catch (e: any) {
-      api.logger.warn(`[executive-agent] yahooFetchBody(${uid}) Fehler: ${e.message}`);
-      return '';
-    } finally {
-      await client.logout().catch(() => {});
-    }
-  }
-
-  // analyzeMailForBooking → src/modules/travel/enrichment.ts
-
-  /* ---------------- SMTP (Yahoo) ---------------- */
-
-  function yahooTransport() {
-    // Port 587 => STARTTLS (secure:false), Port 465 => SMTPS (secure:true)
-    return nodemailer.createTransport({
-      host: yahooSmtpHost,
-      port: yahooSmtpPort,
-      secure: yahooSmtpSecure,
-      auth: { user: yahooUser, pass: yahooPass },
-      // timeouts to avoid hanging calls
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 20000,
-      // for STARTTLS, enforce TLS upgrade
-      requireTLS: !yahooSmtpSecure,
-      tls: { servername: "smtp.mail.yahoo.com", minVersion: "TLSv1.2" },
-    });
-  }
-
-  async function yahooSend(d: MailDraft) {
-    ensureYahooConfigured();
-    const transporter = yahooTransport();
-    await transporter.sendMail({
-      from: yahooUser,
-      to: d.to.join(", "),
-      subject: d.subject,
-      text: d.bodyText,
-    });
-  }
-
   /* ---------------- Command Guard: suppress AI agent for registered commands ---------------- */
 
   // All registered plugin commands. When user sends one of these,
   // the AI agent must NOT respond — the command handler handles it.
   const REGISTERED_COMMANDS = new Set([
     'calendar', 'meet', 'meetf', 'free',
-    'mailstatus', 'scanmail', 'screenshot', 'browse',
+    'inbox', 'yinbox', 'yverify', 'mailstatus', 'scanmail',
+    'draftcreate', 'draftedit', 'draftlist', 'draftshow', 'draftapprove', 'draftsend', 'ytest',
+    'screenshot', 'browse',
     'costs', 'lease', 'leaseset', 'nebenkostenabrechnung',
     'properties', 'property', 'propertyrent',
     'healthalerts', 'healthreportday', 'healthsync', 'healthtrend',
@@ -921,24 +551,6 @@ export default function (api: any) {
 
   /* ---------------- Commands ---------------- */
 
-  api.registerCommand({
-    name: "mailstatus",
-    description: "Mail status (Executive-Agent only)",
-    requireAuth: true,
-    handler: () => {
-      const m365Ok = m365Enabled && tenantId && clientId && m365User && m365Secret;
-      const yOk = yahooEnabled && yahooUser && yahooImapHost && yahooSmtpHost && yahooPass;
-
-      return {
-        text:
-          "📬 Mail-Status (Executive-Agent)\n\n" +
-          `• M365: ${m365Ok ? "✅" : "❌"}  (${m365User || "(unset)"})\n` +
-          `• Yahoo: ${yOk ? "✅" : "❌"}  (${yahooUser || "(unset)"})\n` +
-          `• Send-Policy: ${requireApproval ? "requireApproval=true ✅" : "requireApproval=false ⚠️"}\n\n` +
-          "Hinweis: prüft nur plugins.entries.executive-agent.config + ENV Secrets (nicht daily-briefing/skills)."
-      };
-    },
-  });
 
   // Executive brief: inbox unread + next events + open drafts
   api.registerCommand({
@@ -991,8 +603,7 @@ export default function (api: any) {
 
       // (B) Next events (top 3, next 7 days)
       try {
-        if (!m365Enabled) throw new Error("m365_disabled");
-        ensureM365Configured();
+        if (!m365Enabled || !tenantId || !clientId || !m365User || !m365Secret) throw new Error("m365_disabled");
 
         const start = new Date();
         const end = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -1071,360 +682,6 @@ export default function (api: any) {
     },
   });
 
-  // Unified inbox: unread + chronological
-  api.registerCommand({
-    name: "inbox",
-    description: "Unified inbox (default: unread). Usage: /inbox [n] | /inbox last [24h] [n]",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: async (ctx: any) => {
-      try {
-        const raw = String(ctx.args || "").trim();
-        const tokens = raw ? raw.split(/\s+/) : [];
-
-        let mode: "unread" | "last" = "unread";
-        let hours: number | undefined = undefined;
-        let n: any = 10;
-
-        if (tokens[0]?.toLowerCase() === "last") {
-          mode = "last";
-          const t1 = tokens[1];
-          const t2 = tokens[2];
-
-          if (t1 && /h$/i.test(t1)) {
-            const h = Number(t1.replace(/h$/i, ""));
-            if (Number.isFinite(h) && h > 0) hours = h;
-            if (t2) n = Number(t2);
-          } else if (t1) {
-            n = Number(t1);
-          }
-        } else if (tokens[0]) {
-          n = Number(tokens[0]);
-        }
-
-        n = Math.max(1, Math.min(20, Number.isFinite(n) ? Number(n) : 10));
-        const perSource = Math.max(10, n); // fetch a bit more per source for better merge
-
-        const [mMsgs, yMsgs] =
-          mode === "last"
-            ? await Promise.all([
-                m365Enabled ? m365Recent(perSource, hours) : Promise.resolve([]),
-                yahooEnabled ? yahooRecent(perSource, hours) : Promise.resolve([]),
-              ])
-            : await Promise.all([
-                m365Enabled ? m365Unread(perSource) : Promise.resolve([]),
-                yahooEnabled ? yahooUnread(perSource) : Promise.resolve([]),
-              ]);
-
-        const combined = [...mMsgs, ...yMsgs]
-          .sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1))
-          .slice(0, n);
-
-        if (!combined.length) {
-          return {
-            text:
-              mode === "last"
-                ? "📥 Unified Inbox: keine Mails im gewählten Zeitraum."
-                : "📥 Unified Inbox: keine ungelesenen Mails."
-          };
-        }
-
-        const lines = combined.map(m => {
-          const src = m.source === "m365" ? "[M365]" : "[YAHOO]";
-          const dt = m.dateIso.replace("T", " ").replace("Z", "Z");
-          return `${src} ${dt} | ${m.from}\n${m.subject}\n(id: ${m.id})`;
-        });
-
-        const title =
-          mode === "last"
-            ? `📥 Unified Inbox (last${hours ? " " + hours + "h" : ""}, top ${n})`
-            : `📥 Unified Inbox (unread, top ${n})`;
-
-        return { text: `${title}\n\n${lines.join("\n\n")}` };
-      } catch (e: any) {
-        return { text: `❌ /inbox failed: ${e.message}` };
-      }
-    },
-  });
-
-  // Yahoo-only inbox (unread)
-  api.registerCommand({
-    name: "yinbox",
-    description: "Yahoo unread. Usage: /yinbox [n]",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: async (ctx: any) => {
-      try {
-        const n = Math.max(1, Math.min(20, Number(String(ctx.args || "5").trim() || "5")));
-        const msgs = await yahooUnread(n);
-        if (!msgs.length) return { text: "📥 Yahoo: keine ungelesenen Mails." };
-        return { text: "📥 Yahoo (unread)\n\n" + msgs.map(m => `${m.id}\n  ${m.dateIso} | ${m.from}\n  ${m.subject}`).join("\n\n") };
-      } catch (e: any) {
-        return { text: `❌ /yinbox failed: ${e.message}` };
-      }
-    },
-  });
-
-  // Verify Yahoo SMTP
-  api.registerCommand({
-    name: "yverify",
-    description: "Verify Yahoo SMTP connectivity. Usage: /yverify",
-    requireAuth: true,
-    handler: async () => {
-      try {
-        ensureYahooConfigured();
-        const t = yahooTransport();
-        await t.verify();
-        return { text: `✅ Yahoo SMTP verify: OK (port ${yahooSmtpPort}, secure=${yahooSmtpSecure})` };
-      } catch (e: any) {
-        return { text: `❌ Yahoo SMTP verify FAILED: ${e.message}` };
-      }
-    },
-  });
-
-  // Draft ops (avoid collision with OpenClaw /approve)
-
-  function parseKvArgs(inputRaw: string): Record<string, string> {
-    const s = String(inputRaw || "").trim();
-    const out: Record<string, string> = {};
-    if (!s) return out;
-
-    // Tokenize: key=value where value may be "..." or '...'
-    const re = /(\w+)=("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(s))) {
-      const key = m[1].toLowerCase();
-      let val = m[2] || "";
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      val = val.replace(/\\n/g, "\n");
-      out[key] = val;
-    }
-    return out;
-  }
-
-  api.registerCommand({
-    name: "draftcreate",
-    description: 'Create draft quickly. Usage: /draftcreate account=yahoo|m365 to=a@b.com[,c@d.com] subject=... body=...',
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      try {
-        const kv = parseKvArgs(ctx.args || "");
-        const account = (kv.account || "").toLowerCase();
-        if (account !== "yahoo" && account !== "m365") return { text: 'Usage: /draftcreate account=yahoo|m365 to=... subject=... body=...' };
-
-        if (account === "yahoo") ensureYahooConfigured();
-        if (account === "m365") ensureM365Configured();
-
-        const toRaw = kv.to || "";
-        const to = toRaw.split(/[;,]/).map(x => x.trim()).filter(Boolean);
-        if (!to.length || !to.every(x => x.includes("@"))) return { text: "❌ Invalid to=. Use: to=a@b.com[,c@d.com]" };
-
-        const subject = kv.subject || "";
-        const body = kv.body || "";
-        if (!subject) return { text: '❌ Missing subject=. Example: subject=Hello' };
-        if (!body) return { text: '❌ Missing body=. Example: body=Line1\\n\\nLine2' };
-
-        const d: MailDraft = {
-          id: makeId(account),
-          createdAt: nowIso(),
-          status: "draft",
-          account: account as any,
-          user: account === "yahoo" ? yahooUser : m365User,
-          to,
-          subject,
-          bodyText: body,
-        };
-
-        saveDraft(d);
-        return {
-          text:
-            `✅ Draft created: ${d.id} [${d.account}]
-` +
-            `/draftshow ${d.id}
-` +
-            `/draftedit ${d.id} subject="..."
-` +
-            `/draftedit ${d.id} body="..."
-` +
-            `/draftapprove ${d.id}
-` +
-            `/draftsend ${d.id}`
-        };
-      } catch (e: any) {
-        return { text: `❌ /draftcreate failed: ${e.message}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: "draftedit",
-    description: 'Edit draft fields. Usage: /draftedit <id> [to=...] [subject=...] [body=...]',
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      try {
-        const raw = String(ctx.args || "").trim();
-        const m = raw.match(/^(\S+)\s*(.*)$/);
-        if (!m) return { text: 'Usage: /draftedit <id> subject=... | body=... | to=a@b.com[,c@d.com]' };
-        const id = m[1];
-        const rest = m[2] || "";
-
-        const d = loadDraft(id);
-        if (!d) return { text: `Draft not found: ${id}` };
-        if (d.status === "sent") return { text: `❌ Draft already sent: ${id}` };
-
-        const kv = parseKvArgs(rest);
-
-        if (kv.to !== undefined) {
-          const to = String(kv.to || "").split(/[;,]/).map(x => x.trim()).filter(Boolean);
-          if (!to.length || !to.every(x => x.includes("@"))) return { text: "❌ Invalid to=. Use: to=a@b.com[,c@d.com]" };
-          d.to = to;
-        }
-        if (kv.subject !== undefined) {
-          const subject = String(kv.subject || "");
-          if (!subject) return { text: "❌ subject= cannot be empty" };
-          d.subject = subject;
-        }
-        if (kv.body !== undefined) {
-          const body = String(kv.body || "");
-          if (!body) return { text: "❌ body= cannot be empty" };
-          d.bodyText = body;
-        }
-
-        saveDraft(d);
-        return { text: `✅ Draft updated: ${id} (${d.status})
-/draftshow ${id}` };
-      } catch (e: any) {
-        return { text: `❌ /draftedit failed: ${e.message}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: "draftlist",
-    description: "List open drafts. Usage: /draftlist [n]",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      const nRaw = String(ctx.args || "").trim();
-      const nNum = nRaw ? Number(nRaw) : 5;
-      const n = Math.max(1, Math.min(20, Number.isFinite(nNum) ? nNum : 5));
-
-      const ds = listDrafts("draft", n);
-      if (!ds.length) return { text: "📝 Drafts: keine offenen Drafts." };
-
-      const lines = ds.map(d => {
-        const to = (d.to || []).join(", ");
-        const when = String(d.createdAt || "").replace("T", " ").replace("Z", "Z");
-        return `• ${d.id} [${d.account}] ${when}\n  To: ${to}\n  ${d.subject}`;
-      });
-
-      return { text: `📝 Drafts (open, top ${n})\n\n${lines.join("\n\n")}` };
-    },
-  });
-
-  api.registerCommand({
-    name: "draftshow",
-    description: "Show draft. Usage: /draftshow <draftId>",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      const id = String(ctx.args || "").trim();
-      if (!id) return { text: "Usage: /draftshow <draftId>" };
-      const d = loadDraft(id);
-      if (!d) return { text: `Draft not found: ${id}` };
-      return { text: `🧾 ${d.id} (${d.status}) [${d.account}]\nTo: ${d.to.join(", ")}\nSubject: ${d.subject}\n\n${d.bodyText}` };
-    },
-  });
-
-  api.registerCommand({
-    name: "draftapprove",
-    description: "Approve draft (plugin). Usage: /draftapprove <draftId>",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      const id = String(ctx.args || "").trim();
-      if (!id) return { text: "Usage: /draftapprove <draftId>" };
-      const d = loadDraft(id);
-      if (!d) return { text: `Draft not found: ${id}` };
-      d.status = "approved";
-      saveDraft(d);
-      return { text: `✅ Draft approved: ${id}\nNow: /draftsend ${id}` };
-    },
-  });
-
-  api.registerCommand({
-    name: "draftsend",
-    description: "Send approved draft. Usage: /draftsend <draftId>",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: async (ctx: any) => {
-      try {
-        const id = String(ctx.args || "").trim();
-        if (!id) return { text: "Usage: /draftsend <draftId>" };
-        const d = loadDraft(id);
-        if (!d) return { text: `Draft not found: ${id}` };
-        if (requireApproval && d.status !== "approved") return { text: `❌ Draft not approved. Run /draftapprove ${id}` };
-        if (d.status === "sent") return { text: `ℹ️ Draft already sent: ${id}` };
-
-        if (d.account === "yahoo") {
-          await yahooSend(d);
-        } else {
-  ensureM365Configured();
-  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/sendMail`;
- const payload = {
-    message: {
-      subject: d.subject,
-      body: { contentType: "Text", content: d.bodyText },
-      toRecipients: d.to.map(addr => ({ emailAddress: { address: addr } })),
-    },
-    saveToSentItems: true,
-  };
-  await graphPost(tenantId, clientId, m365Secret, url, payload);
-        }
-
-        d.status = "sent";
-        saveDraft(d);
-        return { text: `📤 Sent draft: ${id} via ${d.account}` };
-      } catch (e: any) {
-        return { text: `❌ /draftsend failed: ${e.message}` };
-      }
-    },
-  });
-
-  // Create Yahoo test draft
-  api.registerCommand({
-    name: "ytest",
-    description: "Create Yahoo test draft. Usage: /ytest <email>",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: (ctx: any) => {
-      try {
-        ensureYahooConfigured();
-        const to = String(ctx.args || "").trim();
-        if (!to.includes("@")) return { text: "Usage: /ytest <email>" };
-
-        const d: MailDraft = {
-          id: makeId("yahoo"),
-          createdAt: nowIso(),
-          status: "draft",
-          account: "yahoo",
-          user: yahooUser,
-          to: [to],
-          subject: "Yahoo Test (Hans Dampf)",
-          bodyText: "Hallo,\n\nDies ist eine Yahoo-Testmail.\n\n—\n" + sigYahoo + "\n",
-        };
-        saveDraft(d);
-        return { text: `✅ Yahoo Draft: ${d.id}\n/draftshow ${d.id}\n/draftapprove ${d.id}\n/draftsend ${d.id}` };
-      } catch (e: any) {
-        return { text: `❌ /ytest failed: ${e.message}` };
-      }
-    },
-  });
-
   // ── Travel → src/modules/travel/commands.ts ──────────────────────────────
   initTravelCommands({
     sendTelegram,
@@ -1445,6 +702,18 @@ export default function (api: any) {
   // ── Calendar → src/modules/calendar/commands.ts ──────────────────────────
   initCalendarCommands({ m365Enabled, tenantId, clientId, m365Secret, m365User });
   registerCalendarCommands(api);
+
+  // ── Mail → src/modules/mail/commands.ts ───────────────────────────────────
+  initMailCommands({
+    m365Enabled, tenantId, clientId, m365Secret, m365User,
+    yahooEnabled, yahooUser, yahooPass,
+    yahooImapHost, yahooImapPort, yahooSmtpHost, yahooSmtpPort, yahooSmtpSecure,
+    sigM365, sigYahoo, requireApproval, workspace,
+    sendTelegram, sendTelegramWithKeyboard,
+    analyzeMailForBooking, formatBookingMessage,
+    logger: api.logger,
+  });
+  registerMailCommands(api);
 
   // ── Health + Withings → src/modules/health/commands.ts ────────────────────
   initHealthCommands({ sendTelegram });
@@ -2268,124 +1537,6 @@ export default function (api: any) {
   // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
   // formatBookingMessage → src/modules/travel/enrichment.ts
 
-  /**
-   * Scans unread mails for booking confirmations.
-   * Returns number of bookings found.
-   */
-  async function scanMailsForBookings(reportChatId?: string): Promise<{ scanned: number; found: number; details: string[] }> {
-    const details: string[] = [];
-    let scanned = 0;
-    let found = 0;
-
-    // Collect unread mails from enabled accounts
-    const allMails: UnifiedMsg[] = [];
-
-    if (m365Enabled) {
-      try {
-        const msgs = await m365Unread(20);
-        allMails.push(...msgs);
-      } catch (e: any) {
-        api.logger.warn(`[executive-agent] mail-scanner m365 Fehler: ${e.message}`);
-      }
-    }
-
-    if (yahooEnabled) {
-      try {
-        const msgs = await yahooUnread(20);
-        allMails.push(...msgs);
-      } catch (e: any) {
-        api.logger.warn(`[executive-agent] mail-scanner yahoo Fehler: ${e.message}`);
-      }
-    }
-
-    for (const mail of allMails) {
-      if (isProcessed(mail.source, mail.id)) continue;
-
-      scanned++;
-
-      try {
-        // Fetch body
-        let bodyText = '';
-        if (mail.source === 'm365') {
-          bodyText = await m365FetchBody(mail.id);
-        } else {
-          bodyText = await yahooFetchBody(mail.id);
-        }
-
-        // Analyze with Haiku
-        const booking = await analyzeMailForBooking(mail.subject, mail.from, bodyText);
-
-        // Mark as processed regardless of result
-        markProcessed(mail.source, mail.id);
-
-        if (booking) {
-          found++;
-          const msg = formatBookingMessage(booking);
-          details.push(msg);
-
-          // Send Telegram notification with inline keyboard
-          if (reportChatId) {
-            const bookingKey = `booking_${crypto.randomBytes(6).toString('hex')}`;
-            pendingBookings.set(bookingKey, {
-              booking,
-              source: mail.source,
-              mailId: mail.id,
-              expiresAt: Date.now() + 30 * 60_000, // 30 min expiry
-            });
-
-            const keyboard = [
-              [
-                { text: '🆕 Neue Reise', callback_data: `${bookingKey}::new` },
-                { text: '📋 Zu bestehender Reise', callback_data: `${bookingKey}::existing` },
-              ],
-              [
-                { text: '❌ Ignorieren', callback_data: `${bookingKey}::ignore` },
-              ],
-            ];
-
-            await sendTelegramWithKeyboard(
-              reportChatId,
-              `${msg}\n\nZu Reise hinzufügen?`,
-              keyboard,
-            );
-          }
-        }
-      } catch (e: any) {
-        api.logger.warn(`[executive-agent] mail-scanner Fehler bei ${mail.source}:${mail.id}: ${e.message}`);
-        // Mark as processed to avoid retrying broken mails forever
-        markProcessed(mail.source, mail.id);
-      }
-    }
-
-    return { scanned, found, details };
-  }
-
-  api.registerCommand({
-    name: 'scanmail',
-    description: 'Manueller Mail-Scan auf Buchungsbestätigungen',
-    handler: async (ctx: any) => {
-      if (!m365Enabled && !yahooEnabled) {
-        return { text: '❌ Kein Mail-Account aktiviert (m365/yahoo).' };
-      }
-
-      const chatId = String(ctx?.chatId || ctx?.threadId || ctx?.conversationId || ctx?.senderId || '');
-
-      try {
-        const { scanned, found, details } = await scanMailsForBookings(chatId);
-
-        if (found === 0) {
-          return { text: `✅ ${scanned} neue Mails gescannt — keine Buchungen erkannt.` };
-        }
-
-        // When chatId is available, notifications are sent via keyboard messages.
-        // Return summary only.
-        return { text: `📬 ${scanned} Mails gescannt, ${found} Buchung(en) erkannt.` };
-      } catch (e: any) {
-        return { text: `❌ Mail-Scan Fehler: ${e.message}` };
-      }
-    },
-  });
-
   // ── Dokumenten-Verknüpfung (Link-Store) ──────────────────────────────────
 
   // Pending SP link selection state (per chat)
@@ -2680,7 +1831,7 @@ export default function (api: any) {
     }
 
     const { booking } = pending;
-    const emoji = BOOKING_EMOJI[booking.type] || '📧';
+    const emoji = (BOOKING_EMOJI as any)[booking.type] || '📧';
 
     if (action === 'ignore') {
       pendingBookings.delete(bookingKey);
@@ -2781,7 +1932,7 @@ export default function (api: any) {
       const { booking } = bookingEntry;
       pendingBookings.delete(pending.bookingKey);
 
-      const emoji = BOOKING_EMOJI[booking.type] || '📧';
+      const emoji = (BOOKING_EMOJI as any)[booking.type] || '📧';
       await addBookingAsSegment(selectedTrip.id, booking);
       sendTelegram(chatId,
         `✅ ${emoji} ${booking.title} zu Reise *${selectedTrip.name}* hinzugefügt.`
