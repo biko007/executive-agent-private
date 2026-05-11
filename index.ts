@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import SunCalc from "suncalc";
-import { createTrip, getTrip, listTrips, addSegment, removeSegment, updateSegment, generatePacklist, updateTrip } from "./travel-store.js";
+import {
+  createTrip, getTrip, listTrips,
+  fetchWeatherBriefing,
+  analyzeMailForBooking, formatBookingMessage,
+  registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback,
+  BOOKING_EMOJI,
+} from "./src/modules/travel/index.js";
+import type { ParsedBooking } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import {
   readEntries, lastEntry, getWeightTrend, checkHealthAlerts,
@@ -88,359 +95,9 @@ type UnifiedMsg = {
   subject: string;
 };
 
-/* ---------------- Mail-Parsing: Buchungserkennung ---------------- */
-
-type BookingType = 'FLIGHT' | 'HOTEL' | 'TRAIN' | 'CAR' | 'EVENT';
-
-interface ParsedBooking {
-  type: BookingType;
-  title: string;
-  destination: string;
-  startDate: string;       // ISO8601
-  endDate: string | null;
-  confirmationNumber: string | null;
-  provider: string;
-}
-
 interface ProcessedMails {
   version: 1;
   ids: string[];  // "m365::<msgId>" or "yahoo::<uid>"
-}
-
-const BOOKING_TO_SEGMENT: Record<BookingType, 'flight' | 'hotel' | 'activity' | 'transfer'> = {
-  FLIGHT: 'flight',
-  HOTEL: 'hotel',
-  TRAIN: 'transfer',
-  CAR: 'transfer',
-  EVENT: 'activity',
-};
-
-const BOOKING_EMOJI: Record<BookingType, string> = {
-  FLIGHT: '✈️',
-  HOTEL: '🏨',
-  TRAIN: '🚆',
-  CAR: '🚗',
-  EVENT: '🎫',
-};
-
-const SEGMENT_EMOJI: Record<string, string> = {
-  flight: '✈️', hotel: '🏨', transfer: '🚆', activity: '🎫', note: '📝',
-};
-
-/* ---------------- Anthropic Trip Enrichment ---------------- */
-
-interface TripEnrichment {
-  destination: string;
-  country_code: string;
-  lat: number;
-  lon: number;
-  climate: string;
-  activities: string[];
-  currency: string;
-  visa_de: string;
-  distance_km: number;
-  travel_mode: string;
-  door_to_door_estimate: string;
-  exchange_rate_eur: string;
-}
-
-interface WeatherDay {
-  date: string;
-  tmax: number;
-  tmin: number;
-  precip: number;
-}
-
-interface WeatherDayData {
-  min: number;
-  max: number;
-  desc: string;
-  wind: number;       // km/h max
-  precip: number;     // mm
-  uv: number;
-}
-
-interface WeatherBriefing {
-  currentTemp: number;
-  currentDesc: string;
-  todayRainHour: number | null;  // first hour with rain, or null
-  days: [WeatherDayData, WeatherDayData, WeatherDayData]; // heute, morgen, übermorgen
-  pressureHpa: number;     // current pressure_msl
-  pressureTrend: '↑ steigend' | '↓ fallend' | '→ stabil';
-  // legacy compat
-  todayMin: number; todayMax: number;
-  tomorrowMin: number; tomorrowMax: number; tomorrowDesc: string;
-}
-
-const WMO_CODES: Record<number, string> = {
-  0: 'sonnig ☀️', 1: 'überwiegend sonnig ☀️', 2: 'leicht bewölkt ⛅', 3: 'bewölkt ☁️',
-  45: 'Nebel 🌫️', 48: 'Reifnebel 🌫️',
-  51: 'leichter Niesel 🌦️', 53: 'Niesel 🌦️', 55: 'starker Niesel 🌧️',
-  56: 'gefrierender Niesel 🌧️', 57: 'starker gef. Niesel 🌧️',
-  61: 'leichter Regen 🌧️', 63: 'Regen 🌧️', 65: 'starker Regen 🌧️',
-  66: 'gefrierender Regen 🌧️', 67: 'starker gef. Regen 🌧️',
-  71: 'leichter Schneefall 🌨️', 73: 'Schneefall 🌨️', 75: 'starker Schneefall 🌨️',
-  77: 'Schneegriesel 🌨️',
-  80: 'Regenschauer 🌦️', 81: 'starke Schauer 🌧️', 82: 'Sturzregen 🌧️',
-  85: 'Schneeschauer 🌨️', 86: 'starke Schneeschauer 🌨️',
-  95: 'Gewitter ⛈️', 96: 'Gewitter mit Hagel ⛈️', 99: 'starkes Hagelgewitter ⛈️',
-};
-
-function wmoToText(code: number): string {
-  return WMO_CODES[code] ?? `Code ${code}`;
-}
-
-async function fetchWeatherBriefing(lat: number, lon: number): Promise<WeatherBriefing> {
-  const url =
-    `https://api.open-meteo.com/v1/forecast` +
-    `?latitude=${lat}&longitude=${lon}` +
-    `&current=temperature_2m,weather_code,pressure_msl` +
-    `&hourly=precipitation,pressure_msl&forecast_hours=24&past_hours=3` +
-    `&daily=temperature_2m_max,temperature_2m_min,weather_code,wind_speed_10m_max,precipitation_sum,uv_index_max` +
-    `&timezone=Europe%2FBerlin&forecast_days=3`;
-
-  const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
-  if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
-
-  const data: any = await res.json();
-
-  const currentTemp = Math.round(data.current?.temperature_2m ?? 0);
-  const currentDesc = wmoToText(data.current?.weather_code ?? 0);
-
-  const d = data.daily;
-  const days: [WeatherDayData, WeatherDayData, WeatherDayData] = [0, 1, 2].map(i => ({
-    min: Math.round(d?.temperature_2m_min?.[i] ?? 0),
-    max: Math.round(d?.temperature_2m_max?.[i] ?? 0),
-    desc: wmoToText(d?.weather_code?.[i] ?? 0),
-    wind: Math.round(d?.wind_speed_10m_max?.[i] ?? 0),
-    precip: Math.round((d?.precipitation_sum?.[i] ?? 0) * 10) / 10,
-    uv: Math.round(d?.uv_index_max?.[i] ?? 0),
-  })) as [WeatherDayData, WeatherDayData, WeatherDayData];
-
-  // Pressure + trend from hourly data (last 3h)
-  const pressureHpa = Math.round(data.current?.pressure_msl ?? 0);
-  const hourlyPressure: number[] = data.hourly?.pressure_msl ?? [];
-  let pressureTrend: WeatherBriefing['pressureTrend'] = '→ stabil';
-  if (hourlyPressure.length >= 4) {
-    const oldest = hourlyPressure[0];
-    const newest = hourlyPressure[hourlyPressure.length - 1];
-    const diff = newest - oldest;
-    if (diff > 1.5) pressureTrend = '↑ steigend';
-    else if (diff < -1.5) pressureTrend = '↓ fallend';
-  }
-
-  // Find first hour with precipitation > 0
-  let todayRainHour: number | null = null;
-  const hourlyPrecip: number[] = data.hourly?.precipitation ?? [];
-  const hourlyTimes: string[] = data.hourly?.time ?? [];
-  for (let i = 0; i < hourlyPrecip.length; i++) {
-    if (hourlyPrecip[i] > 0) {
-      const h = new Date(hourlyTimes[i]).getHours();
-      todayRainHour = h;
-      break;
-    }
-  }
-
-  return {
-    currentTemp, currentDesc, todayRainHour, days, pressureHpa, pressureTrend,
-    // legacy compat
-    todayMin: days[0].min, todayMax: days[0].max,
-    tomorrowMin: days[1].min, tomorrowMax: days[1].max, tomorrowDesc: days[1].desc,
-  };
-}
-
-async function fetchWeatherForecast(lat: number, lon: number): Promise<WeatherDay[]> {
-  const url =
-    `https://api.open-meteo.com/v1/forecast` +
-    `?latitude=${lat}&longitude=${lon}` +
-    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum` +
-    `&timezone=auto&forecast_days=7`;
-
-  const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
-  if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
-
-  const data: any = await res.json();
-  const d = data?.daily;
-  if (!d?.time?.length) return [];
-
-  return (d.time as string[]).map((date: string, i: number) => ({
-    date,
-    tmax:   Math.round(d.temperature_2m_max[i] ?? 0),
-    tmin:   Math.round(d.temperature_2m_min[i] ?? 0),
-    precip: Math.round((d.precipitation_sum[i] ?? 0) * 10) / 10,
-  }));
-}
-
-async function enrichTripWithOpenAI(name: string): Promise<TripEnrichment> {
-  const apiKey = readAnthropicKey();
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY nicht gesetzt (in ~/.config/openclaw/env eintragen)');
-
-  const prompt =
-    `Du hilfst bei der Reiseplanung. Der Nutzer plant eine Reise nach "${name}".\n` +
-    `Antworte NUR mit einem JSON-Objekt (kein Markdown, kein Text davor/danach):\n` +
-    `{\n` +
-    `  "destination": "<Hauptstadt oder bekannteste Stadt des Ziels>",\n` +
-    `  "country": "<Land auf Deutsch>",\n` +
-    `  "country_code": "<ISO-3166-1-Alpha-2-Ländercode, z.B. JP>",\n` +
-    `  "lat": <Breitengrad der Destination als Dezimalzahl, z.B. 35.6895>,\n` +
-    `  "lon": <Längengrad der Destination als Dezimalzahl, z.B. 139.6917>,\n` +
-    `  "climate": "<eines von: tropical|temperate|cold|desert|mixed>",\n` +
-    `  "activities": ["<eines oder mehrere von: business|leisure|outdoor|beach|city>"],\n` +
-    `  "currency": "<Währungsname und Symbol, z.B. Japanischer Yen (¥)>",\n` +
-    `  "visa_de": "<Visapflicht für deutschen Pass, z.B. 'kein Visum erforderlich (bis 90 Tage)'>",\n` +
-    `  "distance_km": <Luftlinie in km von Tuttlingen (48.0641°N, 8.8236°E) als ganze Zahl>,\n` +
-    `  "travel_mode": "<Empfohlenes Hauptverkehrsmittel, z.B. Flugzeug, Zug, Auto>",\n` +
-    `  "door_to_door_estimate": "<Haustür-zu-Haustür Zeitschätzung ab Tuttlingen, z.B. 'ca. 14-16 Stunden (Flug FRA + Transfers)'>",\n` +
-    `  "exchange_rate_eur": "<Wechselkurs: wie viel Landeswährung bekommt man für 1 EUR, z.B. '1 EUR ≈ 160 JPY' oder '1 EUR ≈ 1,08 USD'>"\n` +
-    `}`;
-
-  const res = await fetchWithTimeout(
-    'https://api.anthropic.com/v1/messages',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    },
-    30000
-  );
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`Anthropic API Fehler: ${res.status} — ${err.slice(0, 200)}`);
-  }
-
-  const data: any = await res.json();
-  const content: string = data?.content?.[0]?.text || '';
-
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error(`Anthropic: kein JSON in Antwort — ${content.slice(0, 200)}`);
-
-  let parsed: any;
-  try { parsed = JSON.parse(jsonMatch[0]); } catch (e: any) {
-    throw new Error(`Anthropic: JSON parse fehlgeschlagen — ${e.message}`);
-  }
-
-  return {
-    destination:           String(parsed.destination || name),
-    country_code:          String(parsed.country_code || '').toUpperCase(),
-    lat:                   Number(parsed.lat) || 0,
-    lon:                   Number(parsed.lon) || 0,
-    climate:               String(parsed.climate || 'temperate'),
-    activities:            Array.isArray(parsed.activities) ? parsed.activities.map(String) : ['leisure'],
-    currency:              String(parsed.currency || ''),
-    visa_de:               String(parsed.visa_de || ''),
-    distance_km:           Number(parsed.distance_km) || 0,
-    travel_mode:           String(parsed.travel_mode || ''),
-    door_to_door_estimate: String(parsed.door_to_door_estimate || ''),
-    exchange_rate_eur:     String(parsed.exchange_rate_eur || ''),
-  };
-}
-
-/* ---------------- /trip: Free-text → Haiku date parser ---------------- */
-
-interface TripParseResult {
-  destination: string;
-  start: string; // YYYY-MM-DD (Europe/Berlin)
-  end: string;   // YYYY-MM-DD (Europe/Berlin)
-}
-
-async function parseTripFreeText(
-  text: string
-): Promise<TripParseResult | { unclear: true; question: string }> {
-  const apiKey = readAnthropicKey();
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY nicht gesetzt');
-
-  const todayBerlin = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date());
-
-  // Compute concrete Monday anchors so Haiku has no ambiguity
-  const [ty, tm, td] = todayBerlin.split('-').map(Number);
-  const todayUtc = new Date(Date.UTC(ty, tm - 1, td));
-  const isoDow = todayUtc.getUTCDay() === 0 ? 7 : todayUtc.getUTCDay(); // Mon=1…Sun=7
-  const daysToNextMon = 8 - isoDow; // always 2..8
-  const msDay = 86_400_000;
-  const nextMonMs     = todayUtc.getTime() + daysToNextMon * msDay;
-  const nextNextMonMs = nextMonMs + 7 * msDay;
-  const monNext     = new Date(nextMonMs).toISOString().slice(0, 10);
-  const monNextNext = new Date(nextNextMonMs).toISOString().slice(0, 10);
-
-  const prompt =
-    `Heute ist der ${todayBerlin} (Wochentag: ${['So','Mo','Di','Mi','Do','Fr','Sa'][todayUtc.getUTCDay()]}, Zeitzone Europe/Berlin).\n\n` +
-    `WICHTIG — Deutsche Wochenreferenzen (verbindlich):\n` +
-    `  "nächste Woche"      = Montag ${monNext} bis Sonntag (7 Tage ab ${monNext})\n` +
-    `  "übernächste Woche"  = Montag ${monNextNext} bis Sonntag — das ist ZWEI Wochen ab heute, NICHT eine\n` +
-    `  "übermorgen"         = ${new Date(todayUtc.getTime() + 2 * msDay).toISOString().slice(0, 10)}\n` +
-    `  "Anfang <Monat>"     = 1. des Monats\n` +
-    `  "Mitte <Monat>"      = 15. des Monats\n` +
-    `  "Ende <Monat>"       = letzter Tag des Monats\n` +
-    `  "nächsten <Wochentag>"     = der kommende <Wochentag> in der Woche ab ${monNext}\n` +
-    `  "übernächsten <Wochentag>" = der <Wochentag> in der Woche ab ${monNextNext}\n\n` +
-    `Der Nutzer beschreibt eine Reise in freiem Text:\n` +
-    `"${text}"\n\n` +
-    `Extrahiere Reiseziel, Startdatum und Enddatum. Wende die obigen Regeln exakt an.\n` +
-    `Antworte NUR mit einem JSON-Objekt (kein Markdown, kein Text davor/danach).\n\n` +
-    `Wenn alle drei Felder eindeutig erkennbar sind:\n` +
-    `{ "destination": "<Reiseziel>", "start": "<YYYY-MM-DD>", "end": "<YYYY-MM-DD>" }\n\n` +
-    `Wenn etwas unklar oder fehlend ist:\n` +
-    `{ "unclear": true, "question": "<kurze Rückfrage auf Deutsch>" }`;
-
-  const res = await fetchWithTimeout(
-    'https://api.anthropic.com/v1/messages',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 256,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    },
-    20000
-  );
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`Anthropic API Fehler: ${res.status} — ${err.slice(0, 200)}`);
-  }
-
-  const data: any = await res.json();
-  const content: string = data?.content?.[0]?.text || '';
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error(`Haiku: kein JSON in Antwort — ${content.slice(0, 200)}`);
-
-  let parsed: any;
-  try { parsed = JSON.parse(jsonMatch[0]); } catch (e: any) {
-    throw new Error(`Haiku: JSON parse fehlgeschlagen — ${e.message}`);
-  }
-
-  if (parsed.unclear) {
-    return { unclear: true, question: String(parsed.question || 'Bitte Reiseziel und Daten angeben.') };
-  }
-
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-  if (!parsed.destination || !dateRe.test(parsed.start) || !dateRe.test(parsed.end)) {
-    return { unclear: true, question: 'Ich konnte Ziel oder Datum nicht eindeutig erkennen. Bitte nochmal mit Reiseziel und konkreten Daten.' };
-  }
-
-  return {
-    destination: String(parsed.destination),
-    start: String(parsed.start),
-    end: String(parsed.end),
-  };
 }
 
 /* ---------------- Settings + Helpers ---------------- */
@@ -718,7 +375,7 @@ export default function (api: any) {
     }
   }
 
-  /* --- Pending-Booking State --- */
+  /* --- Pending-Booking State (mail scanner → travel integration) --- */
 
   const pendingBookings = new Map<string, {
     booking: ParsedBooking;
@@ -733,74 +390,6 @@ export default function (api: any) {
     trips: { id: string; name: string }[];
     expiresAt: number;
   }>();
-
-  /* --- Pending Segment-Deletion State (Telegram Inline Keyboard) --- */
-  const pendingSegmentDeletions = new Map<string, {
-    tripId: string;
-    segmentId: string;
-    calendarEventId: string;
-    expiresAt: number;
-  }>();
-
-  /* --- Calendar Sync for Trip Segments --- */
-
-  async function createSegmentCalendarEvent(
-    tripId: string,
-    segmentId: string,
-  ): Promise<{ eventId: string; webLink: string } | null> {
-    if (!m365Enabled || !tenantId || !clientId || !m365Secret || !m365User) return null;
-    const trip = getTrip(tripId);
-    if (!trip) return null;
-    const seg = trip.segments.find(s => s.id === segmentId);
-    if (!seg) return null;
-
-    const emoji = SEGMENT_EMOJI[seg.type] || '📋';
-    const subject = `${trip.name} — ${emoji} ${seg.title}`;
-    const isHotel = seg.type === 'hotel';
-    const startDt = seg.datetime_local || trip.start_date + 'T12:00:00';
-    const endDate = new Date(startDt);
-    endDate.setHours(endDate.getHours() + (isHotel ? 24 : 1));
-    const endDt = endDate.toISOString().replace('Z', '');
-
-    const bodyParts = [
-      seg.confirmation && `Bestätigung: ${seg.confirmation}`,
-      seg.notes && `Notizen: ${seg.notes}`,
-      `Trip: ${trip.name} (${trip.id})`,
-    ].filter(Boolean);
-
-    try {
-      const calUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/events`;
-      const event = await graphPost(tenantId, clientId, m365Secret, calUrl, {
-        subject,
-        start: { dateTime: startDt, timeZone: seg.timezone || 'Europe/Berlin' },
-        end: { dateTime: endDt, timeZone: seg.timezone || 'Europe/Berlin' },
-        location: trip.destination ? { displayName: trip.destination } : undefined,
-        body: bodyParts.length ? { contentType: 'Text', content: bodyParts.join('\n') } : undefined,
-      });
-      if (event?.id) {
-        updateSegment(tripId, segmentId, {
-          calendarEventId: event.id,
-          calendarWebLink: event.webLink || '',
-        });
-        return { eventId: event.id, webLink: event.webLink || '' };
-      }
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] createSegmentCalendarEvent failed: ${e.message}`);
-    }
-    return null;
-  }
-
-  async function deleteSegmentCalendarEvent(calendarEventId: string): Promise<boolean> {
-    if (!m365Enabled || !tenantId || !clientId || !m365Secret || !m365User) return false;
-    try {
-      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/events/${encodeURIComponent(calendarEventId)}`;
-      await graphDelete(tenantId, clientId, m365Secret, url);
-      return true;
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] deleteSegmentCalendarEvent failed: ${e.message}`);
-      return false;
-    }
-  }
 
   const draftPath = (id: string) => path.join(draftsDir, `${id}.json`);
   function saveDraft(d: MailDraft) { fs.writeFileSync(draftPath(d.id), JSON.stringify(d, null, 2), "utf-8"); }
@@ -1101,86 +690,7 @@ export default function (api: any) {
     }
   }
 
-  /* ---------------- Haiku: Buchungsanalyse ---------------- */
-
-  async function analyzeMailForBooking(subject: string, from: string, bodyText: string): Promise<ParsedBooking | null> {
-    const apiKey = readAnthropicKey();
-    if (!apiKey) return null;
-
-    const prompt =
-      `Analysiere die folgende E-Mail. Handelt es sich um eine Reise-Buchungsbestätigung ` +
-      `(Flug, Hotel, Bahn, Mietwagen, Event/Veranstaltung)?\n\n` +
-      `Falls JA, antworte NUR mit einem JSON-Objekt:\n` +
-      `{\n` +
-      `  "type": "FLIGHT" | "HOTEL" | "TRAIN" | "CAR" | "EVENT",\n` +
-      `  "title": "<Kurzbezeichnung, z.B. 'LH1234 München → Frankfurt'>",\n` +
-      `  "destination": "<Zielort>",\n` +
-      `  "startDate": "<ISO8601 Datum/Zeit>",\n` +
-      `  "endDate": "<ISO8601 Datum/Zeit oder null>",\n` +
-      `  "confirmationNumber": "<Buchungsnummer oder null>",\n` +
-      `  "provider": "<Anbieter, z.B. Lufthansa, Booking.com>"\n` +
-      `}\n\n` +
-      `Falls NEIN (Newsletter, Werbung, normale Korrespondenz), antworte NUR mit: null\n\n` +
-      `--- E-Mail ---\n` +
-      `Von: ${from}\n` +
-      `Betreff: ${subject}\n\n` +
-      `${bodyText.slice(0, 3000)}\n` +
-      `--- Ende ---`;
-
-    try {
-      const res = await fetchWithTimeout(
-        'https://api.anthropic.com/v1/messages',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-haiku-4-5-20251001',
-            max_tokens: 512,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-        },
-        30000,
-      );
-
-      if (!res.ok) {
-        const err = await res.text().catch(() => '');
-        api.logger.warn(`[executive-agent] Haiku booking-analysis HTTP ${res.status}: ${err.slice(0, 200)}`);
-        return null;
-      }
-
-      const data: any = await res.json();
-      const content: string = data?.content?.[0]?.text || '';
-
-      // "null" response means no booking
-      if (content.trim() === 'null' || content.trim() === '`null`') return null;
-
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return null;
-
-      const parsed: any = JSON.parse(jsonMatch[0]);
-
-      const validTypes: BookingType[] = ['FLIGHT', 'HOTEL', 'TRAIN', 'CAR', 'EVENT'];
-      const type = validTypes.includes(parsed.type) ? parsed.type as BookingType : null;
-      if (!type) return null;
-
-      return {
-        type,
-        title: String(parsed.title || subject),
-        destination: String(parsed.destination || ''),
-        startDate: String(parsed.startDate || ''),
-        endDate: parsed.endDate ? String(parsed.endDate) : null,
-        confirmationNumber: parsed.confirmationNumber ? String(parsed.confirmationNumber) : null,
-        provider: String(parsed.provider || ''),
-      };
-    } catch (e: any) {
-      api.logger.warn(`[executive-agent] analyzeMailForBooking Fehler: ${e.message}`);
-      return null;
-    }
-  }
+  // analyzeMailForBooking → src/modules/travel/enrichment.ts
 
   /* ---------------- SMTP (Yahoo) ---------------- */
 
@@ -2474,291 +1984,22 @@ for (const k of days) {
   });
 
 
-  // ── Travel Module ─────────────────────────────────────────────────────────
-
-  api.registerCommand({
-    name: "trips",
-    description: "Alle Reisen anzeigen",
-    handler: async () => {
-      const trips = listTrips();
-      if (!trips.length) return { text: "📭 Keine Reisen gespeichert. Mit /tripnew anlegen." };
-      const lines = trips.map(t =>
-        `✈️ *${t.name}* (${t.id})\n   📅 ${t.start_date} → ${t.end_date}\n   📍 ${t.destination || "–"}  🌡 ${t.climate}  🎯 ${t.activities.join(", ")}\n   📦 ${t.segments.length} Segment(e)`
-      );
-      return { text: `🗺 Deine Reisen:\n\n${lines.join("\n\n")}` };
-    },
+  // ── Travel → src/modules/travel/commands.ts ──────────────────────────────
+  initTravelCommands({
+    sendTelegram,
+    sendTelegramWithKeyboard,
+    answerCallbackQuery,
+    graphPost,
+    graphDelete,
+    getLinksForEntity,
+    formatLinksForTelegram,
+    m365Enabled,
+    tenantId,
+    clientId,
+    m365Secret,
+    m365User,
   });
-
-  api.registerCommand({
-    name: "tripnew",
-    acceptsArgs: true,
-    description: "Neue Reise anlegen: /tripnew <name> <start> <end> — bei nur 3 Args: KI-Anreicherung via OpenAI",
-    handler: async (ctx: any) => {
-      const raw = (ctx.args || "").trim();
-      const tokens = raw.split(/\s+/);
-
-      // Finde den ersten Token im Format YYYY-MM-DD → alles davor ist der Name
-      const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-      const firstDateIdx = tokens.findIndex((t: string) => datePattern.test(t));
-      if (firstDateIdx < 1 || firstDateIdx + 1 >= tokens.length) {
-        return { text: "❌ Verwendung: /tripnew New York 2026-03-03 2026-03-05\nOder manuell: /tripnew Tokyo 2026-03-10 2026-03-18 Japan temperate leisure,city" };
-      }
-
-      const name       = tokens.slice(0, firstDateIdx).join(" ");
-      const start_date = tokens[firstDateIdx];
-      const end_date   = tokens[firstDateIdx + 1];
-      const rest       = tokens.slice(firstDateIdx + 2); // optionale manuelle Params
-
-      const isAutoMode = rest.length === 0;
-
-      if (isAutoMode) {
-        // ── KI-Anreicherung ──
-        try {
-          const info = await enrichTripWithOpenAI(name);
-
-          // ── Wettervorschau (7 Tage) ──
-          let weatherLines = '(nicht verfügbar)';
-          if (info.lat && info.lon) {
-            try {
-              const forecast = await fetchWeatherForecast(info.lat, info.lon);
-              if (forecast.length) {
-                weatherLines = forecast
-                  .map(d => `  ${d.date}: ${d.tmin}–${d.tmax}°C, 🌧 ${d.precip} mm`)
-                  .join('\n');
-              }
-            } catch (_) { /* Wetter optional */ }
-          }
-
-          const trip = createTrip(name, start_date, end_date, info.destination, info.climate as any, info.activities as any[]);
-          updateTrip(trip.id, {
-            country_code:          info.country_code,
-            currency:              info.currency,
-            visa_de:               info.visa_de,
-            distance_km:           info.distance_km,
-            travel_mode:           info.travel_mode,
-            door_to_door_estimate: info.door_to_door_estimate,
-            exchange_rate_eur:     info.exchange_rate_eur,
-          } as any);
-
-          return {
-            text:
-              `✅ Reise *${trip.name}* angelegt (KI-angereichert)!\n` +
-              `📅 ${trip.start_date} → ${trip.end_date}\n` +
-              `📍 ${info.destination} (${info.country_code})\n` +
-              `💶 Währung: ${info.currency}\n` +
-              `💱 Wechselkurs: ${info.exchange_rate_eur}\n` +
-              `🛂 Visum (DE-Pass): ${info.visa_de}\n` +
-              `📏 Luftlinie ab Tuttlingen: ${info.distance_km} km\n` +
-              `🚀 Verkehrsmittel: ${info.travel_mode}\n` +
-              `⏱ Haustür-zu-Haustür: ${info.door_to_door_estimate}\n` +
-              `🌡 Klima: ${info.climate}\n` +
-              `🎯 Aktivitäten: ${info.activities.join(", ")}\n` +
-              `☁️ Wetter (7-Tage-Vorschau):\n${weatherLines}\n` +
-              `🔑 ID: ${trip.id}`,
-          };
-        } catch (e: any) {
-          return { text: `❌ KI-Anreicherung fehlgeschlagen: ${e.message}\nTipp: /tripnew ${name} ${start_date} ${end_date} <destination> <climate> <activities>` };
-        }
-      }
-
-      // ── Manueller Modus ──
-      const destination   = rest[0] || "";
-      const climate       = rest[1] || "temperate";
-      const activitiesRaw = rest[2] || "leisure";
-      const activities = activitiesRaw.split(",").map((a: string) => a.trim()) as any[];
-      const trip = createTrip(name, start_date, end_date, destination, climate as any, activities);
-      return { text: `✅ Reise *${trip.name}* angelegt!\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 Klima: ${trip.climate}\n🎯 Aktivitäten: ${trip.activities.join(", ")}\n🔑 ID: ${trip.id}` };
-    },
-  });
-
-  // ── /trip: Free-text Reise anlegen via Haiku ──────────────────────────────
-  api.registerCommand({
-    name: "trip",
-    acceptsArgs: true,
-    description: "Reise per Freitext anlegen: /trip Ich fahre nächste Woche nach Barcelona bis zum 3. März",
-    handler: async (ctx: any) => {
-      const raw = (ctx.args || "").trim();
-      if (!raw) {
-        return { text: "Bitte beschreibe deine Reise, z. B.:\n/trip Ich fliege nächsten Montag nach Tokyo und komme am 15. März zurück" };
-      }
-
-      // Haiku parst Freitext → { destination, start, end } oder { unclear, question }
-      let parsed: TripParseResult | { unclear: true; question: string };
-      try {
-        parsed = await parseTripFreeText(raw);
-      } catch (e: any) {
-        return { text: `❌ Haiku-Parsing fehlgeschlagen: ${e.message}` };
-      }
-
-      if ("unclear" in parsed) {
-        return { text: `❓ ${parsed.question}` };
-      }
-
-      const { destination, start, end } = parsed;
-
-      // KI-Anreicherung via enrichTripWithOpenAI (gleiche Logik wie /tripnew auto)
-      try {
-        const info = await enrichTripWithOpenAI(destination);
-
-        let weatherLines = '(nicht verfügbar)';
-        if (info.lat && info.lon) {
-          try {
-            const forecast = await fetchWeatherForecast(info.lat, info.lon);
-            if (forecast.length) {
-              weatherLines = forecast
-                .map(d => `  ${d.date}: ${d.tmin}–${d.tmax}°C, 🌧 ${d.precip} mm`)
-                .join('\n');
-            }
-          } catch (_) { /* Wetter optional */ }
-        }
-
-        const trip = createTrip(destination, start, end, info.destination, info.climate as any, info.activities as any[]);
-        updateTrip(trip.id, {
-          country_code:          info.country_code,
-          currency:              info.currency,
-          visa_de:               info.visa_de,
-          distance_km:           info.distance_km,
-          travel_mode:           info.travel_mode,
-          door_to_door_estimate: info.door_to_door_estimate,
-          exchange_rate_eur:     info.exchange_rate_eur,
-        } as any);
-
-        return {
-          text:
-            `✅ Reise *${trip.name}* angelegt (via Freitext + KI)!\n` +
-            `📅 ${trip.start_date} → ${trip.end_date}\n` +
-            `📍 ${info.destination} (${info.country_code})\n` +
-            `💶 Währung: ${info.currency}\n` +
-            `💱 Wechselkurs: ${info.exchange_rate_eur}\n` +
-            `🛂 Visum (DE-Pass): ${info.visa_de}\n` +
-            `📏 Luftlinie ab Tuttlingen: ${info.distance_km} km\n` +
-            `🚀 Verkehrsmittel: ${info.travel_mode}\n` +
-            `⏱ Haustür-zu-Haustür: ${info.door_to_door_estimate}\n` +
-            `🌡 Klima: ${info.climate}\n` +
-            `🎯 Aktivitäten: ${info.activities.join(", ")}\n` +
-            `☁️ Wetter (7-Tage-Vorschau):\n${weatherLines}\n` +
-            `🔑 ID: ${trip.id}`,
-        };
-      } catch (e: any) {
-        return { text: `❌ KI-Anreicherung fehlgeschlagen: ${e.message}\nFallback: /tripnew ${destination} ${start} ${end}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: "tripshow",
-    acceptsArgs: true,
-    description: "Reise anzeigen: /tripshow <id>",
-    handler: async (ctx: any) => {
-      const id = (ctx.args || "").trim();
-      if (!id) return { text: "❌ Verwendung: /tripshow <trip-id>" };
-      const trip = getTrip(id);
-      if (!trip) return { text: `❌ Reise "${id}" nicht gefunden. /trips zeigt alle IDs.` };
-      const segs = trip.segments.length
-        ? trip.segments.map((s: any) => `  • [${s.type}] ${s.title} — ${s.datetime_local}${s.confirmation ? " ✔ " + s.confirmation : ""}`).join("\n")
-        : "  (noch keine Segmente)";
-      let text = `✈️ *${trip.name}*\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 ${trip.climate} | 🎯 ${trip.activities.join(", ")}\n\n📋 Segmente:\n${segs}`;
-      const links = getLinksForEntity("trip", id);
-      if (links.length) {
-        text += `\n\n📎 Verknüpfte Dokumente:\n${formatLinksForTelegram(links)}`;
-      }
-      return { text };
-    },
-  });
-
-  api.registerCommand({
-    name: "tripadd",
-    acceptsArgs: true,
-    description: "Segment hinzufügen: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]",
-    handler: async (ctx: any) => {
-      const parts = (ctx.args || "").trim().split(/\s+/);
-      if (parts.length < 5) return { text: "❌ Verwendung: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]\nBeispiel: /tripadd tokyo-2026-03 flight 2026-03-10T10:30 Europe/Berlin LH716-FRA-NRT ABC123" };
-      const [tripId, type, datetime_local, timezone, ...rest] = parts;
-      const confirmation = rest.length > 1 ? rest[rest.length - 1] : undefined;
-      const title = confirmation ? rest.slice(0, -1).join(" ") : rest.join(" ");
-      const dt = new Date(datetime_local);
-      const datetime_utc = isNaN(dt.getTime()) ? datetime_local : dt.toISOString();
-      const trip = addSegment(tripId, { type: type as any, datetime_local, datetime_utc, timezone, title, confirmation });
-      if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
-      const newSeg = trip.segments[trip.segments.length - 1];
-      let calInfo = '';
-      if (newSeg) {
-        const cal = await createSegmentCalendarEvent(tripId, newSeg.id);
-        if (cal) calInfo = `\n  📅 Kalendereintrag erstellt`;
-      }
-      return { text: `✅ Segment hinzugefügt zu *${trip.name}*:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestaetigung: " + confirmation : ""}${calInfo}` };
-    },
-  });
-
-  api.registerCommand({
-    name: "tripdel",
-    acceptsArgs: true,
-    description: "Segment entfernen: /tripdel <trip-id> <segment-id>",
-    handler: async (ctx: any) => {
-      const parts = (ctx.args || "").trim().split(/\s+/);
-      if (parts.length < 2) return { text: "❌ Verwendung: /tripdel <trip-id> <segment-id>" };
-      const [tripId, segmentId] = parts;
-      const result = removeSegment(tripId, segmentId);
-      if (!result) return { text: `❌ Segment "${segmentId}" in Reise "${tripId}" nicht gefunden.` };
-      const { trip, removed } = result;
-      const emoji = SEGMENT_EMOJI[removed.type] || '📋';
-
-      if (removed.calendarEventId) {
-        const delKey = `segdel_${crypto.randomBytes(6).toString('hex')}`;
-        pendingSegmentDeletions.set(delKey, {
-          tripId,
-          segmentId,
-          calendarEventId: removed.calendarEventId,
-          expiresAt: Date.now() + 30 * 60_000,
-        });
-        const chatId = ctx.chatId || ctx.threadId || ctx.conversationId || '';
-        if (chatId) {
-          await sendTelegramWithKeyboard(
-            chatId,
-            `✅ Segment entfernt: ${emoji} ${removed.title}\n\n📅 Kalendereintrag ebenfalls löschen?`,
-            [[
-              { text: '✅ Ja, löschen', callback_data: `${delKey}::yes` },
-              { text: '❌ Nein, behalten', callback_data: `${delKey}::no` },
-            ]],
-          );
-          return { text: '' };
-        }
-      }
-      return { text: `✅ Segment entfernt aus *${trip.name}*:\n${emoji} ${removed.title}` };
-    },
-  });
-
-  api.registerCommand({
-    name: "tripsync",
-    acceptsArgs: true,
-    description: "Kalender-Sync für alle Segmente: /tripsync <trip-id>",
-    handler: async (ctx: any) => {
-      const tripId = (ctx.args || "").trim();
-      if (!tripId) return { text: "❌ Verwendung: /tripsync <trip-id>" };
-      const trip = getTrip(tripId);
-      if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
-      let created = 0, skipped = 0, failed = 0;
-      for (const seg of trip.segments) {
-        if (seg.calendarEventId) { skipped++; continue; }
-        const cal = await createSegmentCalendarEvent(tripId, seg.id);
-        if (cal) { created++; } else { failed++; }
-      }
-      return { text: `📅 Kalender-Sync für *${trip.name}*:\n✅ ${created} erstellt, ⏭ ${skipped} vorhanden, ❌ ${failed} fehlgeschlagen` };
-    },
-  });
-
-  api.registerCommand({
-    name: "pack",
-    acceptsArgs: true,
-    description: "Packliste für eine Reise: /pack <trip-id>",
-    handler: async (ctx: any) => {
-      const id = (ctx.args || "").trim();
-      if (!id) return { text: "❌ Verwendung: /pack <trip-id>" };
-      const trip = getTrip(id);
-      if (!trip) return { text: `❌ Reise "${id}" nicht gefunden. /trips zeigt alle IDs.` };
-      return { text: generatePacklist(trip) };
-    },
-  });
+  registerTravelCommands(api);
 
   // ── Health + Withings → src/modules/health/commands.ts ────────────────────
   initHealthCommands({ sendTelegram });
@@ -6730,38 +5971,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
   registerAssetsCommands(api);
 
   // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
-
-  function formatBookingMessage(booking: ParsedBooking): string {
-    const emoji = BOOKING_EMOJI[booking.type] || '📧';
-    const lines = [`${emoji} *Buchungsbestätigung erkannt*`];
-    lines.push(`${booking.provider} — ${booking.title}`);
-
-    if (booking.startDate) {
-      try {
-        const start = new Date(booking.startDate);
-        const fmtDate = new Intl.DateTimeFormat('de-DE', {
-          weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
-          hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
-        }).format(start);
-        let dateLine = fmtDate;
-        if (booking.endDate) {
-          const end = new Date(booking.endDate);
-          const fmtEnd = new Intl.DateTimeFormat('de-DE', {
-            hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
-          }).format(end);
-          dateLine += ` → ${fmtEnd}`;
-        }
-        lines.push(dateLine);
-      } catch {
-        lines.push(booking.startDate);
-      }
-    }
-
-    if (booking.destination) lines.push(`Ziel: ${booking.destination}`);
-    if (booking.confirmationNumber) lines.push(`Bestätigung: ${booking.confirmationNumber}`);
-
-    return lines.join('\n');
-  }
+  // formatBookingMessage → src/modules/travel/enrichment.ts
 
   /**
    * Scans unread mails for booking confirmations.
@@ -7153,24 +6363,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
 
   // ── Booking Callback Handler (Telegram Inline Buttons) ─────────────────────
 
-  async function addBookingAsSegment(tripId: string, booking: ParsedBooking): Promise<string | null> {
-    const segmentType = BOOKING_TO_SEGMENT[booking.type];
-    const seg = addSegment(tripId, {
-      type: segmentType,
-      datetime_local: booking.startDate,
-      datetime_utc: booking.startDate, // best effort; mail data usually has local time
-      timezone: 'Europe/Berlin',
-      title: booking.title,
-      confirmation: booking.confirmationNumber || undefined,
-      notes: `Provider: ${booking.provider}${booking.destination ? ' | Ziel: ' + booking.destination : ''}`,
-    });
-    if (!seg) return null;
-    const newSegId = seg.segments[seg.segments.length - 1].id;
-    createSegmentCalendarEvent(tripId, newSegId).catch(e => {
-      api.logger.error(`[executive-agent] calendar event for booking segment failed: ${e?.message}`);
-    });
-    return newSegId;
-  }
+  // addBookingAsSegment → src/modules/travel/commands.ts
 
   async function handleBookingCallback(
     callbackQueryId: string,
@@ -7312,28 +6505,8 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
       const data = String(cbq.data || '');
 
       if (data.startsWith('segdel_')) {
-        const sepIdx = data.indexOf('::');
-        if (sepIdx === -1) return;
-        const delKey = data.slice(0, sepIdx);
-        const action = data.slice(sepIdx + 2);
-        const pending = pendingSegmentDeletions.get(delKey);
-        if (!pending || Date.now() > pending.expiresAt) {
-          pendingSegmentDeletions.delete(delKey);
-          await answerCallbackQuery(callbackQueryId, 'Abgelaufen.');
-          return;
-        }
-        pendingSegmentDeletions.delete(delKey);
-        if (action === 'yes') {
-          await answerCallbackQuery(callbackQueryId, 'Wird gelöscht...');
-          const ok = await deleteSegmentCalendarEvent(pending.calendarEventId);
-          await sendTelegram(chatId, ok
-            ? '✅ Kalendereintrag gelöscht.'
-            : '❌ Kalendereintrag konnte nicht gelöscht werden.');
-        } else {
-          await answerCallbackQuery(callbackQueryId, 'Beibehalten');
-          await sendTelegram(chatId, '📅 Kalendereintrag beibehalten.');
-        }
-        return;
+        const handled = await handleSegmentDeletionCallback(callbackQueryId, chatId, data);
+        if (handled) return;
       }
 
       // Quick-launch buttons from session lists
