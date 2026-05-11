@@ -27,6 +27,7 @@
     "check:node": "node --check dist/index.js",
     "dev:check": "bash ./dev-check.sh",
     "lint": "eslint 'src/**/*.ts'",
+    "migrate:sprint3": "bun run scripts/migrate-sprint3-instagram.ts",
     "test": "bun test"
   }
 }
