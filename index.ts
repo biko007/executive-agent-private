@@ -61,7 +61,7 @@ import {
 } from "./system-health.js";
 import type { HealthReport, Escalation } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
-import { runMigrations } from "./src/shared/db/index.js";
+import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -8987,6 +8987,101 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
     handler: (_req: any, res: any) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
+    },
+  });
+
+  // ── System Status (aggregated data for Dashboard Status Widget) ───────────
+  api.registerHttpRoute({
+    path: '/api/system-status',
+    handler: async (_req: any, res: any) => {
+      try {
+        // 1. Service health from DB + live checks for Postgres and IB Gateway
+        const serviceRows = await dbQuery<{
+          service: string; status: string; last_change: Date | null;
+        }>('SELECT service, status, last_change FROM service_health').then(r => r.rows).catch(() => []);
+
+        const services = serviceRows.map(r => ({
+          name: r.service,
+          status: r.status,
+          uptime_seconds: r.status === 'up' && r.last_change
+            ? Math.round((Date.now() - new Date(r.last_change).getTime()) / 1000) : 0,
+        }));
+
+        // Live-check Postgres
+        let pgOk = false;
+        try { await dbQuery('SELECT 1'); pgOk = true; } catch {}
+        const pgEntry = services.find(s => s.name === 'Postgres');
+        if (!pgEntry) services.push({ name: 'Postgres', status: pgOk ? 'up' : 'down', uptime_seconds: pgOk ? Math.round(process.uptime()) : 0 });
+
+        // Live-check IB Gateway (port 7497)
+        let ibOk = false;
+        try {
+          const r = await fetch('http://127.0.0.1:18793/health', { signal: AbortSignal.timeout(3000) });
+          if (r.ok) {
+            const data = await r.json();
+            ibOk = data.ibkr?.connected === true;
+          }
+        } catch {}
+        const ibEntry = services.find(s => s.name === 'IB Gateway');
+        if (!ibEntry) services.push({ name: 'IB Gateway', status: ibOk ? 'up' : 'down', uptime_seconds: 0 });
+
+        // 2. Token expiry
+        const tokens: { name: string; days_remaining: number }[] = [];
+        const artifactsBase = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal');
+        try {
+          const it = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'instagram/tokens.json'), 'utf-8'));
+          if (it.expires_at) tokens.push({ name: 'Meta', days_remaining: Math.floor((it.expires_at - Date.now()) / 86_400_000) });
+        } catch {}
+        try {
+          const wt = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'health/withings-tokens.json'), 'utf-8'));
+          if (wt.expires_at) tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
+        } catch {}
+
+        // 3. Workflows pending
+        let workflowsPending = 0;
+        let workflowTypes: string[] = [];
+        try {
+          const wf = await dbQuery<{ count: string; types: string[] }>(
+            `SELECT count(*)::text, array_agg(DISTINCT type) as types FROM workflows WHERE status IN ('pending','running','awaiting_approval')`
+          );
+          if (wf.rows[0]) {
+            workflowsPending = parseInt(wf.rows[0].count, 10);
+            workflowTypes = (wf.rows[0].types || []).filter(Boolean);
+          }
+        } catch {}
+
+        // 4. Last backup (from systemd timer)
+        let lastBackup: string | null = null;
+        try {
+          const timerOut = execSync(
+            "systemctl --user show openclaw-backup-daily.service --property=ExecMainStartTimestamp --value",
+            { encoding: 'utf-8', timeout: 3000 }
+          ).trim();
+          if (timerOut) lastBackup = new Date(timerOut).toISOString();
+        } catch {}
+        // Fallback: check borg list (slow, only if no systemd data)
+        if (!lastBackup) {
+          try {
+            const borgOut = execSync(
+              'BORG_PASSPHRASE=$(grep BORG_PASSPHRASE ~/.config/openclaw/env | cut -d= -f2) BORG_RSH="ssh -p 23" borg list ssh://u591557@u591557.your-storagebox.de:23/./openclaw/daily --last 1 --format "{time}" 2>/dev/null',
+              { encoding: 'utf-8', timeout: 15000, shell: '/bin/bash' }
+            ).trim();
+            if (borgOut) lastBackup = new Date(borgOut).toISOString();
+          } catch {}
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          services,
+          tokens,
+          workflows: { pending: workflowsPending, types: workflowTypes },
+          backup: { last: lastBackup },
+          timestamp: new Date().toISOString(),
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     },
   });
 
