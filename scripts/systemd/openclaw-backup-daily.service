@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenClaw Daily Backup (borg)
+
+[Service]
+Type=oneshot
+ExecStart=/home/biko/.scripts/openclaw-backup daily
+EnvironmentFile=%h/.config/openclaw/env
+Nice=19
+IOSchedulingClass=idle

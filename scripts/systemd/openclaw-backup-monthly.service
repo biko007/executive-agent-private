@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenClaw Monthly Backup (borg)
+
+[Service]
+Type=oneshot
+ExecStart=/home/biko/.scripts/openclaw-backup monthly
+EnvironmentFile=%h/.config/openclaw/env
+Nice=19
+IOSchedulingClass=idle
