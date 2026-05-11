@@ -38,11 +38,20 @@ Sprint 1 + 2 vollständig abgeschlossen.
 
 ### Offene TODOs
 
-- n8n-Postgres separat im Borg-Backup (Spec §15.4) — Batch 4
-- Helper-Endpoint POST /api/internal/notify — Batch 5
-- Spec V3 §3 erweitern um 5 neue Module — Batch 3
+- ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
+- ~~Helper-Endpoint POST /api/internal/notify~~ — erledigt 2026-05-11
+- ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Sprint 3 vorbereiten (Instagram-Modul auf Postgres)
+
+## Telegram-Notify aus Skripten/Claude Code
+
+```bash
+~/.scripts/notify 'Nachricht' [info|warn|error]
+```
+
+Endpoint: `POST /api/internal/notify` (localhost only, nginx-Whitelist).
+Body: `{ "message": "...", "severity": "info"|"warn"|"error" }`
 
 ## Architektur-Disziplin (Manifest)
 

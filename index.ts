@@ -57,6 +57,7 @@ import {
 } from "./system-health.js";
 import type { HealthReport, Escalation } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
+import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import {
   nowIso, makeId, sleep, fetchWithTimeout, parseRetryAfterMs,
@@ -1882,6 +1883,84 @@ export default function (api: any) {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    },
+  });
+
+  // ── Internal Notify (localhost only — nginx allow 127.0.0.1; deny all) ─────
+  api.registerHttpRoute({
+    path: '/api/internal/notify',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+        return;
+      }
+
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+
+        const message = body.message;
+        if (!message || typeof message !== 'string' || message.length > 4000) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'message required (string, max 4000 chars)' }));
+          return;
+        }
+
+        const severity: string = ['info', 'warn', 'error'].includes(body.severity) ? body.severity : 'info';
+        const defaultEmoji: Record<string, string> = { info: 'ℹ️', warn: '⚠️', error: '🔴' };
+        const emoji = typeof body.emoji === 'string' && body.emoji.length > 0 ? body.emoji : defaultEmoji[severity];
+        const text = `${emoji} ${message}`;
+
+        const s = loadSettings();
+        const chatId = s.telegramChatId;
+        if (!chatId) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'telegramChatId not configured' }));
+          return;
+        }
+
+        // Send via direct Telegram API to capture message_id
+        if (!telegramBotToken) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'no bot token available' }));
+          return;
+        }
+
+        const tgRes = await fetchWithTimeout(
+          `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+          },
+          15000,
+        );
+
+        const tgBody = await tgRes.json();
+        if (!tgRes.ok) {
+          api.logger.error(`[notify] Telegram error: ${JSON.stringify(tgBody)}`);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Telegram send failed', details: tgBody.description }));
+          return;
+        }
+
+        audit.log({
+          module: 'executive',
+          action: 'executive.internal_notify',
+          entityType: 'notification',
+          source: 'system',
+          after: { severity, sent: true },
+        }).catch(() => {});
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, message_id: tgBody.result?.message_id }));
+      } catch (err: any) {
+        api.logger.error(`[notify] Error: ${err.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
       }
     },
   });
