@@ -1,6 +1,48 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-10**
+**Stand: 2026-05-11**
+
+## Stand 2026-05-11
+
+Sprint 1 + 2 vollständig abgeschlossen.
+
+- **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
+  Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
+  Health Monitor mit Telegram-Alerts, Sub-Commands, Smoke-Test, Deploy-Skript,
+  Dashboard Status-Widget.
+- **Sprint 2 (Code-Refactor):** index.ts 9.357 → 2.165 Zeilen (-77%), 10 Module extrahiert,
+  19 audit.log() Calls in 4 Modulen, Approval-Hard-Rule im Code + CI-Test (11/11 grün).
+
+### Module (10)
+
+| Modul | Pfad | Commands | DI |
+|-------|------|----------|----|
+| executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
+| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice |
+| assets | src/modules/assets/ | 7 | self-contained |
+| health | src/modules/health/ | 12 | sendTelegram |
+| fleet | src/modules/fleet/ | 10 | Links |
+| travel | src/modules/travel/ | 8 | M365, Telegram, Links |
+| pe | src/modules/pe/ | 5 | self-contained |
+| mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
+| calendar | src/modules/calendar/ | 4 | M365 |
+| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram |
+
+(Spec V3 §3 listete nur 5 — wird in Batch 3 ergänzt.)
+
+### Daten-Hygiene
+
+- `artifacts/personal/*` ist .gitignore'd. Tokens nicht mehr im Repo.
+- Daten via borg auf Hetzner Storage Box gesichert (daily/weekly/monthly).
+- Secrets ausschließlich in `~/.config/openclaw/env`.
+
+### Offene TODOs
+
+- n8n-Postgres separat im Borg-Backup (Spec §15.4) — Batch 4
+- Helper-Endpoint POST /api/internal/notify — Batch 5
+- Spec V3 §3 erweitern um 5 neue Module — Batch 3
+- Optional: Meta-Token rotieren (User-Entscheidung)
+- Sprint 3 vorbereiten (Instagram-Modul auf Postgres)
 
 ## Architektur-Disziplin (Manifest)
 
@@ -145,28 +187,8 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 2 VOLLSTÄNDIG abgeschlossen (2026-05-11), Etappe a-g + h1 + h2 + h3:
-- Etappe a: src/shared/ (utils, settings, m365, links), module skeletons, K1-Fix
-- Etappe b: Fleet-Modul extrahiert (store, types, commands), K2-Fix
-- Etappe c: Assets-Modul extrahiert (store, types, commands), keine DI nötig
-- Etappe d: Health+Withings-Modul extrahiert (store, withings, types, commands), DI für sendTelegram
-- Etappe e: PE-Modul extrahiert (store, types, commands), self-contained
-- Etappe f: Travel-Modul extrahiert (store, weather, enrichment, commands), DI für M365/Telegram/Links
-- Etappe g: Instagram-Modul extrahiert (types, commands, index), DI für Telegram/Meta/Voice
-- Etappe h1: Calendar, Mail, SharePoint Module extrahiert — Executive Cleanup
-- index.ts: 9.357 → 2.165 Zeilen (-7.192)
-- 10 Fleet-Commands via registerFleetCommands(), DI für Links
-- 7 Assets-Commands via registerAssetsCommands(), self-contained
-- 12 Health/Withings-Commands via registerHealthCommands(), inkl. Weekly Report Timer
-- 5 PE-Commands via registerPECommands(), self-contained
-- 8 Travel-Commands via registerTravelCommands(), DI für M365/Telegram/Links
-- 21 Instagram-Commands via registerInstagramCommands(), DI für sendTelegram/Meta/Voice
-- 4 Calendar-Commands via registerCalendarCommands(), DI für M365
-- 12 Mail-Commands via registerMailCommands(), DI für M365/Yahoo/Telegram
-- 8 SharePoint-Commands via registerSharePointCommands(), DI für M365/Telegram
-- Etappe h2: Audit-Log-Integration (19 Aufrufe: Instagram 11, Assets 2, Health 4, Auth 2)
-- Etappe h3: Approval-Hard-Rule CI-Test (spec §17.2), publish() validation + 5 Tests
-- Smoke Test: 13/13 PASS, npm test: 11/11 PASS
+Sprint 1 + 2 vollständig abgeschlossen (2026-05-11). Details siehe "Stand" oben.
+Smoke Test: 13/13 PASS, npm test: 11/11 PASS.
 
 ## Role
 
