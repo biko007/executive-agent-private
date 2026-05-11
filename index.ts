@@ -60,6 +60,8 @@ import {
   runDailyHealthCheck,
 } from "./system-health.js";
 import type { HealthReport, Escalation } from "./system-health.js";
+import { HealthMonitor } from "./src/modules/executive/index.js";
+import { runMigrations } from "./src/shared/db/index.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -9239,6 +9241,22 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
       }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
+    }
+
+    // ── Health Monitor ────────────────────────────────────────────────────
+    try {
+      const migrationsDir = path.join(__dirname, 'src/modules/executive/migrations');
+      const applied = await runMigrations(migrationsDir, 'executive');
+      api.logger.info(`[health-monitor] Applied ${applied} migration(s)`);
+
+      const monitor = new HealthMonitor({
+        sendTelegram,
+        getChatId: () => loadSettings().telegramChatId,
+        logger: api.logger,
+      });
+      await monitor.start();
+    } catch (e: any) {
+      api.logger.error(`[health-monitor] Failed to start: ${e.message}`);
     }
   })();
 }

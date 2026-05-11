@@ -9,10 +9,12 @@ import { listSites, listDrives, getRecentFiles, pollForChanges, fullSync, search
 import { getAllVehicles, getVehicle, createVehicle, updateVehicle, deleteVehicle, addServiceEntry, setInsurance, setTuevDate, checkDeadlines, formatVehicleList, formatVehicleDetail, changeVehicleId, migrateHexIds, } from "./fleet-store.js";
 import { getLinksForEntity, addSharePointLink, removeLink, searchSharePointForLinking, formatLinksForTelegram, } from "./link-store.js";
 import { getAllInvestments, getInvestment, createInvestment, updateInvestment, addValuation, getValuationHistory, calculateIRR, formatInvestmentList, formatInvestmentDetail, } from "./pe-store.js";
-import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, markTokenFailed as markInstaTokenFailed, fetchInsights, fetchMedia, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, loadStyleProfile, validateStyleProfile, getStyleProfileSummary, } from "./instagram-store.js";
+import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, markTokenFailed as markInstaTokenFailed, fetchInsights, fetchMedia, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, loadStyleProfile, validateStyleProfile, getStyleProfileSummary, publishSingleImage, publishCarousel, publishReel, } from "./instagram-store.js";
 import { openPage, screenshot, closeBrowser } from "./browser-agent.js";
-import { saveSubmission, loadSubmission, analyzeImage, analyzeVideo, formatAnalysisSummary, getMediaDir, generateSubmissionId, getTopPerformerContext, generateVariants, } from "./instagram-content-engine.js";
+import { saveSubmission, loadSubmission, analyzeImage, analyzeVideo, formatAnalysisSummary, getMediaDir, generateSubmissionId, getTopPerformerContext, generateVariants, stageAllMedia, cleanupStagedMedia, } from "./instagram-content-engine.js";
 import { runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, preFlightInstagram, formatPreFlightFailure, runDailyHealthCheck, } from "./system-health.js";
+import { HealthMonitor } from "./src/modules/executive/index.js";
+import { runMigrations } from "./src/shared/db/index.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -1298,7 +1300,7 @@ export default function (api) {
         'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
         'pe', 'peedit', 'penew', 'peshow', 'pevalue',
         'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
-        'instaplan', 'instapost', 'instastyle', 'instasubmit', 'instasync',
+        'instaplan', 'instapost', 'instaposts', 'instastyle', 'instasubmit', 'instasync',
         'instacraft', 'instaforensic', 'instaraw', 'instascan', 'instatokentest', 'instatop', 'instatrend', 'instavariants',
         'trade', 'tradedebug', 'tradeindex', 'trademode', 'tradeorders',
         'tradepaper', 'tradeperf', 'tradepos', 'tradescan', 'tradescanstatus',
@@ -3294,7 +3296,7 @@ export default function (api) {
                 const drafts = listInstaDrafts();
                 if (!drafts.length)
                     return { text: '📝 Keine Instagram-Drafts vorhanden.' };
-                const icons = { entwurf: '📝', freigegeben: '✅' };
+                const icons = { entwurf: '📝', freigegeben: '✅', 'veröffentlicht': '📸' };
                 const lines = drafts.map(d => {
                     const icon = icons[d.status] || '📝';
                     const preview = d.caption.length > 50 ? d.caption.slice(0, 50) + '…' : d.caption;
@@ -3459,16 +3461,163 @@ export default function (api) {
             }
         },
     });
-    // 4.9 /instapost — Phase 2 (deaktiviert)
+    // 4.9 /instapost — Draft auf Instagram veröffentlichen
     api.registerCommand({
         name: 'instapost',
-        description: 'Instagram Post veröffentlichen (Phase 2): /instapost',
+        description: 'Instagram Post veröffentlichen: /instapost <draft-id>',
+        acceptsArgs: true,
+        handler: async (ctx) => {
+            try {
+                const draftId = String(ctx.args || '').trim();
+                if (!draftId)
+                    return { text: '❌ Nutzung: `/instapost <draft-id>`' };
+                const draft = loadInstaDraft(draftId);
+                if (!draft)
+                    return { text: `❌ Draft "${draftId}" nicht gefunden.` };
+                if (draft.status === 'veröffentlicht') {
+                    return { text: `ℹ️ Draft "${draftId}" wurde bereits veröffentlicht.\n📸 ${draft.instagram_url || '(kein Link)'}` };
+                }
+                if (draft.status !== 'freigegeben') {
+                    return { text: `❌ Draft "${draftId}" hat Status "${draft.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+                }
+                // Token
+                if (!instaAuthorized())
+                    return { text: '❌ Instagram nicht verbunden. Bitte Tokens in env setzen.' };
+                const tokens = await ensureInstaToken(metaAppId, metaAppSecret);
+                // Resolve media files from draft
+                const mediaFiles = [];
+                if (draft.mediaPath) {
+                    if (!fs.existsSync(draft.mediaPath)) {
+                        return { text: `❌ Media-Pfad nicht gefunden: ${draft.mediaPath}` };
+                    }
+                    const stat = fs.statSync(draft.mediaPath);
+                    if (stat.isDirectory()) {
+                        const entries = fs.readdirSync(draft.mediaPath).filter(f => !f.startsWith('.')).sort();
+                        for (const name of entries) {
+                            const t = detectMediaType(name);
+                            if (t === 'image' || t === 'video') {
+                                mediaFiles.push({ path: path.join(draft.mediaPath, name), type: t });
+                            }
+                        }
+                    }
+                    else {
+                        const t = detectMediaType(draft.mediaPath);
+                        if (t === 'image' || t === 'video') {
+                            mediaFiles.push({ path: draft.mediaPath, type: t });
+                        }
+                    }
+                }
+                // Fallback: check submission reference in notes
+                if (mediaFiles.length === 0 && draft.notes) {
+                    const match = draft.notes.match(/Submission ([\w-]+)/i);
+                    if (match) {
+                        try {
+                            const sub = await loadSubmission(match[1]);
+                            for (const m of sub.media || []) {
+                                if ((m.type === 'image' || m.type === 'video') && fs.existsSync(m.path)) {
+                                    mediaFiles.push({ path: m.path, type: m.type });
+                                }
+                            }
+                        }
+                        catch { /* submission not found — continue */ }
+                    }
+                }
+                if (mediaFiles.length === 0) {
+                    return { text: `❌ Keine Mediendateien für Draft "${draftId}" gefunden.\n\nMedia zuweisen: \`/instaedit ${draftId} media=/pfad/zur/datei\`` };
+                }
+                // Caption + Hashtags
+                const fullCaption = draft.hashtags.length > 0
+                    ? `${draft.caption}\n\n${draft.hashtags.map(h => '#' + h).join(' ')}`
+                    : draft.caption;
+                // Stage media for public URLs
+                const staged = stageAllMedia(mediaFiles.map(f => ({ path: f.path })), draftId);
+                try {
+                    // Publish with token-refresh retry on code 190 (session expired)
+                    async function doPublish(accessToken, igId) {
+                        if (mediaFiles.length === 1 && mediaFiles[0].type === 'video') {
+                            return publishReel(accessToken, igId, staged[0].publicUrl, fullCaption);
+                        }
+                        else if (mediaFiles.length === 1) {
+                            return publishSingleImage(accessToken, igId, staged[0].publicUrl, fullCaption);
+                        }
+                        else {
+                            const items = staged.map((s, i) => ({ url: s.publicUrl, type: mediaFiles[i].type }));
+                            return publishCarousel(accessToken, igId, items, fullCaption);
+                        }
+                    }
+                    let result;
+                    try {
+                        result = await doPublish(tokens.access_token, tokens.ig_business_id);
+                    }
+                    catch (pubErr) {
+                        // Token expired (code 190) → refresh + retry once
+                        if (pubErr.message?.includes('"code":190') || pubErr.message?.includes('"code": 190')) {
+                            api.logger.warn('[executive-agent] /instapost: Token expired (code 190), refreshing...');
+                            markInstaTokenFailed();
+                            const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+                            result = await doPublish(refreshed.access_token, refreshed.ig_business_id);
+                        }
+                        else {
+                            throw pubErr;
+                        }
+                    }
+                    // Update draft
+                    draft.status = 'veröffentlicht';
+                    draft.published_at = new Date().toISOString();
+                    draft.instagram_post_id = result.postId;
+                    draft.instagram_url = result.permalink;
+                    draft.publish_error = undefined;
+                    saveInstaDraft(draft);
+                    const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
+                    return {
+                        text: `✅ *Gepostet!*\n\n` +
+                            `🆔 ${draft.id}\n` +
+                            `📸 ${result.permalink}\n` +
+                            `📋 Format: ${format} (${mediaFiles.length} Datei${mediaFiles.length > 1 ? 'en' : ''})\n\n` +
+                            `Caption: ${draft.caption.slice(0, 150)}${draft.caption.length > 150 ? '…' : ''}`,
+                    };
+                }
+                finally {
+                    cleanupStagedMedia(draftId);
+                }
+            }
+            catch (e) {
+                // Save error to draft
+                const draftId = String(ctx.args || '').trim();
+                if (draftId) {
+                    try {
+                        const d = loadInstaDraft(draftId);
+                        if (d && d.status !== 'veröffentlicht') {
+                            d.publish_error = e.message;
+                            saveInstaDraft(d);
+                        }
+                    }
+                    catch { /* ignore */ }
+                }
+                return { text: `❌ /instapost Fehler: ${e.message}` };
+            }
+        },
+    });
+    // 4.9b /instaposts — Veröffentlichte Posts auflisten
+    api.registerCommand({
+        name: 'instaposts',
+        description: 'Veröffentlichte Instagram Posts auflisten: /instaposts',
         handler: async () => {
-            return {
-                text: '🚧 *Auto-Posting (Phase 2) noch nicht aktiv*\n\n' +
-                    'Drafts können aktuell über `/instadrafts` eingesehen und manuell gepostet werden.\n' +
-                    'Phase 2 wird Container-basiertes Publishing mit Bild-Upload unterstützen.',
-            };
+            try {
+                const drafts = listInstaDrafts('veröffentlicht', 50);
+                if (!drafts.length)
+                    return { text: '📸 Noch keine veröffentlichten Posts.' };
+                const lines = drafts.map(d => {
+                    const date = d.published_at ? d.published_at.slice(0, 10) : d.updatedAt.slice(0, 10);
+                    const preview = d.caption.length > 40 ? d.caption.slice(0, 40) + '…' : d.caption;
+                    const link = d.instagram_url || '(kein Link)';
+                    return `📸 ${date} | ${d.id}\n   ${link}\n   "${preview}"`;
+                });
+                return { text: `📸 *Veröffentlichte Posts* (${drafts.length})\n\n${lines.join('\n\n')}` };
+            }
+            catch (e) {
+                return { text: `❌ /instaposts Fehler: ${e.message}` };
+            }
         },
     });
     // 4.10 /instavariants — Varianten generieren aus Submission
@@ -7999,100 +8148,121 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             api.logger.error(`[executive-agent] Weekly Health-Report Fehler: ${e.message}`);
         }
     }, 60_000);
-    // ── Location HTTP Endpoint (POST /location) ──────────────────────────────
-    const locationPort = 18791;
+    // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────
+    // Register /health, /ready, /version, /location via api.registerHttpRoute()
+    // so they run on the gateway's main port. The gateway checks plugin routes
+    // BEFORE the Control UI SPA fallback, so JSON endpoints coexist with HTML.
     const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
-    const locationServer = http.createServer(async (req, res) => {
-        // CORS preflight
-        if (req.method === 'OPTIONS') {
-            res.writeHead(204, {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-            });
-            res.end();
-            return;
-        }
-        if (req.method !== 'POST' || (req.url && !req.url.startsWith('/location'))) {
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'Not found' }));
-            return;
-        }
-        // Auth check
-        const authHeader = req.headers['authorization'] || '';
-        const token = authHeader.replace(/^Bearer\s+/i, '');
-        if (!gatewayToken || token !== gatewayToken) {
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-            return;
-        }
-        // Parse JSON body
-        let body = '';
-        try {
-            await new Promise((resolve, reject) => {
-                req.on('data', (chunk) => { body += chunk; });
-                req.on('end', resolve);
-                req.on('error', reject);
-                setTimeout(() => reject(new Error('timeout')), 10000);
-            });
-        }
-        catch {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
-            return;
-        }
-        let parsed;
-        try {
-            parsed = JSON.parse(body);
-        }
-        catch {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'Invalid JSON' }));
-            return;
-        }
-        const lat = parseFloat(String(parsed.lat));
-        const lon = parseFloat(String(parsed.lon));
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
-            return;
-        }
-        // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-        const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-        let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-        if (!label) {
-            label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-            try {
-                const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
-                if (geoRes.ok) {
-                    const geo = await geoRes.json();
-                    label = geo?.address?.city
-                        || geo?.address?.town
-                        || geo?.address?.village
-                        || geo?.address?.municipality
-                        || geo?.display_name?.split(',')[0]
-                        || label;
-                }
+    api.registerHttpRoute({
+        path: '/health',
+        handler: (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, service: 'executive-agent', uptime: process.uptime() }));
+        },
+    });
+    api.registerHttpRoute({
+        path: '/ready',
+        handler: (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, service: 'executive-agent' }));
+        },
+    });
+    api.registerHttpRoute({
+        path: '/version',
+        handler: (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
+        },
+    });
+    api.registerHttpRoute({
+        path: '/location',
+        handler: async (req, res) => {
+            // CORS preflight
+            if (req.method === 'OPTIONS') {
+                res.writeHead(204, {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+                });
+                res.end();
+                return;
             }
-            catch { /* geocoding optional, keep coordinate label */ }
-        }
-        const s = loadSettings();
-        s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-        saveSettings(s);
-        const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-        if (!fs.existsSync(locHistoryDir))
-            fs.mkdirSync(locHistoryDir, { recursive: true });
-        fs.appendFileSync(path.join(locHistoryDir, 'history.jsonl'), JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n', 'utf-8');
-        api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, label }));
+            if (req.method !== 'POST') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            // Auth check
+            const authHeader = req.headers['authorization'] || '';
+            const token = authHeader.replace(/^Bearer\s+/i, '');
+            if (!gatewayToken || token !== gatewayToken) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            // Parse JSON body
+            let body = '';
+            try {
+                await new Promise((resolve, reject) => {
+                    req.on('data', (chunk) => { body += chunk; });
+                    req.on('end', resolve);
+                    req.on('error', reject);
+                    setTimeout(() => reject(new Error('timeout')), 10000);
+                });
+            }
+            catch {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
+                return;
+            }
+            let parsed;
+            try {
+                parsed = JSON.parse(body);
+            }
+            catch {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid JSON' }));
+                return;
+            }
+            const lat = parseFloat(String(parsed.lat));
+            const lon = parseFloat(String(parsed.lon));
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
+                return;
+            }
+            // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
+            const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
+            let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
+            if (!label) {
+                label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+                try {
+                    const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
+                    if (geoRes.ok) {
+                        const geo = await geoRes.json();
+                        label = geo?.address?.city
+                            || geo?.address?.town
+                            || geo?.address?.village
+                            || geo?.address?.municipality
+                            || geo?.display_name?.split(',')[0]
+                            || label;
+                    }
+                }
+                catch { /* geocoding optional, keep coordinate label */ }
+            }
+            const s = loadSettings();
+            s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
+            saveSettings(s);
+            const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
+            if (!fs.existsSync(locHistoryDir))
+                fs.mkdirSync(locHistoryDir, { recursive: true });
+            fs.appendFileSync(path.join(locHistoryDir, 'history.jsonl'), JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n', 'utf-8');
+            api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, label }));
+        },
     });
-    locationServer.on('error', (e) => {
-        api.logger.error(`[executive-agent] Location-Server Fehler: ${e.message}`);
-    });
-    locationServer.listen(locationPort, '127.0.0.1', () => {
-        api.logger.info(`[executive-agent] Location-API (intern) gestartet auf Port ${locationPort}`);
-    });
+    api.logger.info('[executive-agent] HTTP routes registered on gateway port 18789 (/health, /ready, /version, /location)');
     // ── Public Location HTTP Endpoint (POST /location, 0.0.0.0:18790) ────────
     const publicLocationPort = 18790;
     const publicLocationServer = http.createServer(async (req, res) => {
@@ -8219,6 +8389,21 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         }
         catch (e) {
             api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
+        }
+        // ── Health Monitor ────────────────────────────────────────────────────
+        try {
+            const migrationsDir = path.join(__dirname, 'src/modules/executive/migrations');
+            const applied = await runMigrations(migrationsDir, 'executive');
+            api.logger.info(`[health-monitor] Applied ${applied} migration(s)`);
+            const monitor = new HealthMonitor({
+                sendTelegram,
+                getChatId: () => loadSettings().telegramChatId,
+                logger: api.logger,
+            });
+            await monitor.start();
+        }
+        catch (e) {
+            api.logger.error(`[health-monitor] Failed to start: ${e.message}`);
         }
     })();
 }
