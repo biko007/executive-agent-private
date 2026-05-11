@@ -45,6 +45,8 @@ import {
   // Store re-exports for system-health DI
   tokenDaysRemaining,
   loadInstaTokens, ensureInstaToken,
+  // Token Guardian (Sprint 3 §5.2)
+  getTokenHealth,
 } from "./src/modules/instagram/index.js";
 import type { RawSession } from "./src/modules/instagram/index.js";
 import { openPage, extractText, screenshot, closeBrowser } from "./browser-agent.js";
@@ -1767,6 +1769,7 @@ export default function (api: any) {
   // so they run on the gateway's main port. The gateway checks plugin routes
   // BEFORE the Control UI SPA fallback, so JSON endpoints coexist with HTML.
   const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
+  const coreServiceToken = process.env.CORE_SERVICE_TOKEN || '';
 
   api.registerHttpRoute({
     path: '/health',
@@ -1883,6 +1886,65 @@ export default function (api: any) {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    },
+  });
+
+  // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
+  api.registerHttpRoute({
+    path: '/api/instagram/token-health',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+        return;
+      }
+      // Bearer token auth
+      const auth = req.headers?.authorization || '';
+      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+        return;
+      }
+      try {
+        const health = await getTokenHealth();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(health));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/api/instagram/token-refresh',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+        return;
+      }
+      // Bearer token auth
+      const auth = req.headers?.authorization || '';
+      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+        return;
+      }
+      try {
+        if (!metaAppId || !metaAppSecret) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'META_APP_ID/META_APP_SECRET not configured' }));
+          return;
+        }
+        const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+        audit.log({ module: 'instagram', action: 'instagram.token_refreshed', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString(), source: 'api' } }).catch(() => {});
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, expires_at: new Date(refreshed.expires_at).toISOString() }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
       }
     },
   });

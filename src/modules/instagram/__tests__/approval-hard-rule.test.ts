@@ -6,10 +6,10 @@
  *
  * Three scenarios:
  * a) Draft without approval → publish() throws "approval required"
- * b) Draft with approval (status=freigegeben) → publish() passes validation
+ * b) Draft with approval (status=approved) → publish() passes validation
  * c) Draft with revoked approval → publish() throws "approval required"
  */
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, afterAll } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -29,30 +29,30 @@ describe('Approval-Hard-Rule (Spec §17.2)', () => {
     try { fs.rmSync(TEST_HOME, { recursive: true, force: true }); } catch {}
   });
 
-  test('a) cannot post without approval — draft status "entwurf"', async () => {
+  test('a) cannot post without approval — draft status "draft"', async () => {
     const draft = createDraft({ caption: 'Test post without approval' });
-    expect(draft.status).toBe('entwurf');
+    expect(draft.status).toBe('draft');
 
     await expect(publish(draft.id)).rejects.toThrow('approval required');
   });
 
-  test('b) can post with approval — draft status "freigegeben"', async () => {
+  test('b) can post with approval — draft status "approved"', async () => {
     const draft = createDraft({ caption: 'Test post with approval' });
-    draft.status = 'freigegeben';
+    draft.status = 'approved';
     saveDraft(draft);
 
     // publish() should pass approval validation and return the draft
     const result = await publish(draft.id);
-    expect(result.status).toBe('freigegeben');
+    expect(result.status).toBe('approved');
     expect(result.id).toBe(draft.id);
   });
 
-  test('c) cannot post with revoked approval — status reset to "entwurf"', async () => {
+  test('c) cannot post with revoked approval — status reset to "draft"', async () => {
     const draft = createDraft({ caption: 'Test post with revoked approval' });
     // First approve, then revoke
-    draft.status = 'freigegeben';
+    draft.status = 'approved';
     saveDraft(draft);
-    draft.status = 'entwurf';
+    draft.status = 'draft';
     saveDraft(draft);
 
     await expect(publish(draft.id)).rejects.toThrow('approval required');
@@ -65,7 +65,7 @@ describe('Approval-Hard-Rule (Spec §17.2)', () => {
 
   test('validateDraftApproval passes for approved draft', () => {
     const draft = createDraft({ caption: 'Direct validation approved' });
-    draft.status = 'freigegeben';
+    draft.status = 'approved';
     expect(() => validateDraftApproval(draft)).not.toThrow();
   });
 });

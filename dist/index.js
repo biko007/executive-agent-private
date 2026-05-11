@@ -17,10 +17,13 @@ detectMediaType, formatFileSize, loadRawSession, saveRawSession, createRawSessio
 // Briefing
 getInstagramBriefingLines, 
 // Store re-exports for system-health DI
-tokenDaysRemaining, loadInstaTokens, ensureInstaToken, } from "./src/modules/instagram/index.js";
+tokenDaysRemaining, loadInstaTokens, ensureInstaToken, 
+// Token Guardian (Sprint 3 §5.2)
+getTokenHealth, } from "./src/modules/instagram/index.js";
 import { closeBrowser } from "./browser-agent.js";
 import { initSystemHealth, runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, runDailyHealthCheck, } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
+import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { sleep, fetchWithTimeout, berlinDate, } from "./src/shared/utils/index.js";
 import { loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION, } from "./src/shared/settings/index.js";
@@ -1606,6 +1609,7 @@ export default function (api) {
     // so they run on the gateway's main port. The gateway checks plugin routes
     // BEFORE the Control UI SPA fallback, so JSON endpoints coexist with HTML.
     const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
+    const coreServiceToken = process.env.CORE_SERVICE_TOKEN || '';
     api.registerHttpRoute({
         path: '/health',
         handler: (_req, res) => {
@@ -1718,6 +1722,131 @@ export default function (api) {
             catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
+    api.registerHttpRoute({
+        path: '/api/instagram/token-health',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            // Bearer token auth
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const health = await getTokenHealth();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(health));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    api.registerHttpRoute({
+        path: '/api/instagram/token-refresh',
+        handler: async (req, res) => {
+            if (req.method !== 'POST') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            // Bearer token auth
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                if (!metaAppId || !metaAppSecret) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'META_APP_ID/META_APP_SECRET not configured' }));
+                    return;
+                }
+                const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
+                audit.log({ module: 'instagram', action: 'instagram.token_refreshed', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString(), source: 'api' } }).catch(() => { });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, expires_at: new Date(refreshed.expires_at).toISOString() }));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+        },
+    });
+    // ── Internal Notify (localhost only — nginx allow 127.0.0.1; deny all) ─────
+    api.registerHttpRoute({
+        path: '/api/internal/notify',
+        handler: async (req, res) => {
+            if (req.method !== 'POST') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            try {
+                const chunks = [];
+                for await (const chunk of req)
+                    chunks.push(chunk);
+                const body = JSON.parse(Buffer.concat(chunks).toString());
+                const message = body.message;
+                if (!message || typeof message !== 'string' || message.length > 4000) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'message required (string, max 4000 chars)' }));
+                    return;
+                }
+                const severity = ['info', 'warn', 'error'].includes(body.severity) ? body.severity : 'info';
+                const defaultEmoji = { info: 'ℹ️', warn: '⚠️', error: '🔴' };
+                const emoji = typeof body.emoji === 'string' && body.emoji.length > 0 ? body.emoji : defaultEmoji[severity];
+                const text = `${emoji} ${message}`;
+                const s = loadSettings();
+                const chatId = s.telegramChatId;
+                if (!chatId) {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'telegramChatId not configured' }));
+                    return;
+                }
+                // Send via direct Telegram API to capture message_id
+                if (!telegramBotToken) {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'no bot token available' }));
+                    return;
+                }
+                const tgRes = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+                }, 15000);
+                const tgBody = await tgRes.json();
+                if (!tgRes.ok) {
+                    api.logger.error(`[notify] Telegram error: ${JSON.stringify(tgBody)}`);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'Telegram send failed', details: tgBody.description }));
+                    return;
+                }
+                audit.log({
+                    module: 'executive',
+                    action: 'executive.internal_notify',
+                    entityType: 'notification',
+                    source: 'system',
+                    after: { severity, sent: true },
+                }).catch(() => { });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, message_id: tgBody.result?.message_id }));
+            }
+            catch (err) {
+                api.logger.error(`[notify] Error: ${err.message}`);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
             }
         },
     });

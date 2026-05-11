@@ -659,7 +659,7 @@ export function registerInstagramCommands(api: any): void {
       try {
         const drafts = listInstaDrafts();
         if (!drafts.length) return { text: '📝 Keine Instagram-Drafts vorhanden.' };
-        const icons: Record<string, string> = { entwurf: '📝', freigegeben: '✅', 'veröffentlicht': '📸' };
+        const icons: Record<string, string> = { draft: '📝', review: '🔍', approved: '✅', published: '📸', archived: '📦' };
         const lines = drafts.map(d => {
           const icon = icons[d.status] || '📝';
           const preview = d.caption.length > 50 ? d.caption.slice(0, 50) + '…' : d.caption;
@@ -713,11 +713,11 @@ export function registerInstagramCommands(api: any): void {
               updates.push('Caption aktualisiert');
               break;
             case 'status':
-              if (val === 'entwurf' || val === 'freigegeben') {
-                draft.status = val;
+              if (val === 'draft' || val === 'review' || val === 'approved') {
+                draft.status = val as any;
                 updates.push(`Status → ${val}`);
               } else {
-                return { text: '❌ Status muss "entwurf" oder "freigegeben" sein.' };
+                return { text: '❌ Status muss "draft", "review" oder "approved" sein.' };
               }
               break;
             case 'hashtags':
@@ -846,7 +846,7 @@ export function registerInstagramCommands(api: any): void {
           if (valErr.message === 'approval required') {
             const d = loadInstaDraft(draftId);
             audit.log({ module: 'instagram', action: 'instagram.post_failed', entityType: 'draft', entityId: draftId, after: { error: 'approval required', status: d?.status } }).catch(() => {});
-            return { text: `❌ Draft "${draftId}" hat Status "${d?.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+            return { text: `❌ Draft "${draftId}" hat Status "${d?.status}" — nur "approved" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=approved\`` };
           }
           if (valErr.message === 'already published') {
             const d = loadInstaDraft(draftId);
@@ -939,13 +939,13 @@ export function registerInstagramCommands(api: any): void {
           }
 
           // Update draft
-          draft.status = 'veröffentlicht';
+          draft.status = 'published';
           draft.published_at = new Date().toISOString();
           draft.instagram_post_id = result.postId;
           draft.instagram_url = result.permalink;
           draft.publish_error = undefined;
           saveInstaDraft(draft);
-          audit.log({ module: 'instagram', action: 'instagram.post_published', entityType: 'draft', entityId: draft.id, before: { status: 'freigegeben' }, after: { status: 'veröffentlicht', instagram_post_id: result.postId, format: mediaFiles.length > 1 ? 'carousel' : mediaFiles[0].type } }).catch(() => {});
+          audit.log({ module: 'instagram', action: 'instagram.post_published', entityType: 'draft', entityId: draft.id, before: { status: 'approved' }, after: { status: 'published', instagram_post_id: result.postId, format: mediaFiles.length > 1 ? 'carousel' : mediaFiles[0].type } }).catch(() => {});
 
           const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
           return {
@@ -964,7 +964,7 @@ export function registerInstagramCommands(api: any): void {
         if (draftId) {
           try {
             const d = loadInstaDraft(draftId);
-            if (d && d.status !== 'veröffentlicht') {
+            if (d && d.status !== 'published') {
               d.publish_error = e.message;
               saveInstaDraft(d);
             }
@@ -982,7 +982,7 @@ export function registerInstagramCommands(api: any): void {
     description: 'Veröffentlichte Instagram Posts auflisten: /instaposts',
     handler: async () => {
       try {
-        const drafts = listInstaDrafts('veröffentlicht', 50);
+        const drafts = listInstaDrafts('published', 50);
         if (!drafts.length) return { text: '📸 Noch keine veröffentlichten Posts.' };
 
         const lines = drafts.map(d => {
@@ -3244,7 +3244,7 @@ export async function getInstagramBriefingLines(metaAppId: string, metaAppSecret
       instaLines.push(`⚠️ Nicht verbunden — Token fehlt`);
     }
 
-    const openInstaDrafts = listInstaDrafts('entwurf');
+    const openInstaDrafts = listInstaDrafts('draft');
     if (openInstaDrafts.length > 0) {
       instaLines.push(`- ${openInstaDrafts.length} Draft${openInstaDrafts.length > 1 ? 's' : ''} offen`);
     }
