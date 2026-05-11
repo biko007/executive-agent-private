@@ -130,7 +130,7 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 2 Etappe a+b+c+d+e+f+g abgeschlossen (2026-05-11):
+Sprint 2 Etappe a-g + h1 abgeschlossen (2026-05-11):
 - Etappe a: src/shared/ (utils, settings, m365, links), module skeletons, K1-Fix
 - Etappe b: Fleet-Modul extrahiert (store, types, commands), K2-Fix
 - Etappe c: Assets-Modul extrahiert (store, types, commands), keine DI nötig
@@ -138,13 +138,17 @@ Sprint 2 Etappe a+b+c+d+e+f+g abgeschlossen (2026-05-11):
 - Etappe e: PE-Modul extrahiert (store, types, commands), self-contained
 - Etappe f: Travel-Modul extrahiert (store, weather, enrichment, commands), DI für M365/Telegram/Links
 - Etappe g: Instagram-Modul extrahiert (types, commands, index), DI für Telegram/Meta/Voice
-- index.ts: 9.357 → 3.923 Zeilen (-5.434)
+- Etappe h1: Calendar, Mail, SharePoint Module extrahiert — Executive Cleanup
+- index.ts: 9.357 → 2.165 Zeilen (-7.192)
 - 10 Fleet-Commands via registerFleetCommands(), DI für Links
 - 7 Assets-Commands via registerAssetsCommands(), self-contained
 - 12 Health/Withings-Commands via registerHealthCommands(), inkl. Weekly Report Timer
 - 5 PE-Commands via registerPECommands(), self-contained
 - 8 Travel-Commands via registerTravelCommands(), DI für M365/Telegram/Links
 - 21 Instagram-Commands via registerInstagramCommands(), DI für sendTelegram/Meta/Voice
+- 4 Calendar-Commands via registerCalendarCommands(), DI für M365
+- 12 Mail-Commands via registerMailCommands(), DI für M365/Yahoo/Telegram
+- 8 SharePoint-Commands via registerSharePointCommands(), DI für M365/Telegram
 - Smoke Test: 13/13 PASS
 
 ## Role
