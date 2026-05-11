@@ -36,6 +36,16 @@ Sprint 1 + 2 vollständig abgeschlossen.
 - Daten via borg auf Hetzner Storage Box gesichert (daily/weekly/monthly).
 - Secrets ausschließlich in `~/.config/openclaw/env`.
 
+### Postgres-User-Modell (Stand 2026-05-11)
+
+EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
+- **n8n:** Bootstrap-Superuser, nur für pg_dump
+- **n8n_app:** App-User für n8n-Service, nur Rechte auf n8n-DB
+- **openclaw:** App-User für Core, nur Rechte auf openclaw_core
+- **postgres:** Notfall-Superuser (Maintenance), Passwort in 1P
+
+Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
@@ -43,6 +53,11 @@ Sprint 1 + 2 vollständig abgeschlossen.
 - ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Sprint 3 vorbereiten (Instagram-Modul auf Postgres)
+
+### Lessons
+
+- **Postgres-Bootstrap-User:** `ALTER ROLE n8n NOSUPERUSER` → `permission denied to alter role`.
+  Lösung: separater App-User `n8n_app` mit GRANT-Modell. Smoke-Test verhindert Rückfall.
 
 ## Telegram-Notify aus Skripten/Claude Code
 

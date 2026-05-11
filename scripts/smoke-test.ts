@@ -341,6 +341,50 @@ function checkDiskSpace() {
   }
 }
 
+// ── 8. POSTGRES PRIVILEGE ISOLATION ──────────────────────────────────────────
+
+function checkPostgresIsolation() {
+  try {
+    const output = execSync(
+      'sudo docker exec n8n-docker-postgres-1 psql -U n8n_app -d openclaw_core -c "SELECT count(*) FROM audit_log;" 2>&1',
+      { timeout: 10_000, stdio: 'pipe' },
+    ).toString();
+    if (output.includes('permission denied')) {
+      pass('Postgres-Isolation', 'n8n_app hat keinen Zugriff auf openclaw_core');
+    } else {
+      fail('Postgres-Isolation', `n8n_app kann openclaw_core lesen — Privileg-Lücke! Output: ${output.trim()}`);
+    }
+  } catch (e: any) {
+    const combined = [e.stdout?.toString(), e.stderr?.toString(), e.message].filter(Boolean).join(' ');
+    if (combined.includes('permission denied') || combined.includes('does not exist')) {
+      pass('Postgres-Isolation', 'n8n_app hat keinen Zugriff auf openclaw_core');
+    } else {
+      fail('Postgres-Isolation', `Check fehlgeschlagen: ${combined.slice(0, 200)}`);
+    }
+  }
+}
+
+function checkPostgresAppUser() {
+  try {
+    const output = execSync(
+      `sudo docker exec n8n-docker-postgres-1 psql -U postgres -d postgres -c "SELECT usename FROM pg_stat_activity WHERE datname='n8n' AND usename IN ('n8n','n8n_app');"`,
+      { timeout: 10_000, stdio: 'pipe' },
+    ).toString();
+    const lines = output.split('\n').map(l => l.trim()).filter(Boolean);
+    const hasN8nApp = lines.some(l => l === 'n8n_app');
+    const hasN8nRaw = lines.some(l => l === 'n8n' && !l.includes('n8n_app'));
+    if (hasN8nApp && !hasN8nRaw) {
+      pass('Postgres App-User', 'n8n-Service connectet als n8n_app');
+    } else if (hasN8nRaw) {
+      fail('Postgres App-User', 'n8n-Service connectet als Superuser "n8n" statt "n8n_app"');
+    } else {
+      fail('Postgres App-User', `Unerwartete Ausgabe: ${output.trim().slice(0, 200)}`);
+    }
+  } catch (e: any) {
+    fail('Postgres App-User', `Check fehlgeschlagen: ${(e.stderr?.toString() || e.message).slice(0, 200)}`);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -375,6 +419,10 @@ async function main() {
 
   // 7. Disk Space
   checkDiskSpace();
+
+  // 8. Postgres Privilege Isolation
+  checkPostgresIsolation();
+  checkPostgresAppUser();
 
   // ── Report ──────────────────────────────────────────────────────────────
 
