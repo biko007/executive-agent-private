@@ -16,6 +16,7 @@ import {
   loadSettings, saveSettings,
 } from '../../shared/settings/index.js';
 import { berlinDate } from '../../shared/utils/index.js';
+import * as audit from '../../shared/audit/index.js';
 
 // ── Dependency injection ───────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ export function registerHealthCommands(api: any): void {
       const kg = parseFloat(raw.replace(',', '.'));
       if (isNaN(kg) || kg < 20 || kg > 300) return { text: '❌ Verwendung: /weight 78.5' };
       const e = appendEntry({ type: 'weight', value: kg, unit: 'kg' });
+      audit.log({ module: 'health', action: 'health.weight_logged', entityType: 'health_entry', entityId: e.id, after: { type: 'weight', source: 'manual' } }).catch(() => {});
       return { text: `⚖️ Gewicht gespeichert: ${kg.toFixed(1)} kg\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
   });
@@ -170,6 +172,7 @@ export function registerHealthCommands(api: any): void {
         return { text: '❌ Qualität muss zwischen 1 und 5 liegen.' };
       }
       const e = appendEntry({ type: 'sleep', value: hours, unit: 'h', quality });
+      audit.log({ module: 'health', action: 'health.sleep_logged', entityType: 'health_entry', entityId: e.id, after: { type: 'sleep', source: 'manual' } }).catch(() => {});
       const qStr = quality !== undefined ? `  |  Qualität: ${quality}/5` : '';
       return { text: `😴 Schlaf gespeichert: ${hours.toFixed(1)} h${qStr}\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
@@ -184,6 +187,7 @@ export function registerHealthCommands(api: any): void {
       const text = String(ctx.args || '').trim();
       if (!text) return { text: '❌ Verwendung: /symptom Kopfschmerzen seit heute Mittag' };
       const e = appendEntry({ type: 'symptom', text });
+      audit.log({ module: 'health', action: 'health.symptom_added', entityType: 'health_entry', entityId: e.id, after: { type: 'symptom', source: 'manual' } }).catch(() => {});
       return { text: `🤒 Symptom gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
   });
@@ -197,6 +201,7 @@ export function registerHealthCommands(api: any): void {
       const text = String(ctx.args || '').trim();
       if (!text) return { text: '❌ Verwendung: /healthlog Heute Sport gemacht, fühle mich gut.' };
       const e = appendEntry({ type: 'log', text });
+      audit.log({ module: 'health', action: 'health.log_added', entityType: 'health_entry', entityId: e.id, after: { type: 'log', source: 'manual' } }).catch(() => {});
       return { text: `📝 Health-Log gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
   });

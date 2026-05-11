@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { generateDraftId } from './instagram-content-engine.js';
+import * as audit from './src/shared/audit/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -419,6 +420,7 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
     console.warn(`[instagram-store] Env-Update fehlgeschlagen (Token nur in tokens.json): ${envErr.message}`);
   }
 
+  audit.log({ module: 'auth', action: 'auth.token_rotated', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString().slice(0, 10), forced: force } }).catch(() => {});
   console.log(`[instagram-store] Token erfolgreich erneuert — gültig bis ${new Date(refreshed.expires_at).toISOString().slice(0, 10)}`);
   return refreshed;
 }

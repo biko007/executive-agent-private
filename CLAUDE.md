@@ -130,7 +130,7 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 2 Etappe a-g + h1 abgeschlossen (2026-05-11):
+Sprint 2 Etappe a-g + h1 + h2 abgeschlossen (2026-05-11):
 - Etappe a: src/shared/ (utils, settings, m365, links), module skeletons, K1-Fix
 - Etappe b: Fleet-Modul extrahiert (store, types, commands), K2-Fix
 - Etappe c: Assets-Modul extrahiert (store, types, commands), keine DI nötig
@@ -149,6 +149,7 @@ Sprint 2 Etappe a-g + h1 abgeschlossen (2026-05-11):
 - 4 Calendar-Commands via registerCalendarCommands(), DI für M365
 - 12 Mail-Commands via registerMailCommands(), DI für M365/Yahoo/Telegram
 - 8 SharePoint-Commands via registerSharePointCommands(), DI für M365/Telegram
+- Etappe h2: Audit-Log-Integration (19 Aufrufe: Instagram 11, Assets 2, Health 4, Auth 2)
 - Smoke Test: 13/13 PASS
 
 ## Role

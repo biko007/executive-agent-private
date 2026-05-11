@@ -28,6 +28,7 @@ import {
   preFlightInstagram, formatPreFlightFailure,
 } from '../../../system-health.js';
 import { fetchWithTimeout, readAnthropicKey, readOpenAIKey } from '../../shared/utils/index.js';
+import * as audit from '../../shared/audit/index.js';
 import type {
   CutSegment, CutPlan, InstaFormat, CutResult, VideoProbe,
   FileAnalysis, ContentProposal, ScanResult, CraftDialogState,
@@ -625,6 +626,7 @@ export function registerInstagramCommands(api: any): void {
             planNr: entry.nr,
             notes: `Aus Content-Kalender #${entry.nr}: ${entry.topic}`,
           });
+          audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, planNr: entry.nr, source: 'calendar' } }).catch(() => {});
 
           return {
             text: `✅ *Draft erstellt*\n\n` +
@@ -636,6 +638,7 @@ export function registerInstagramCommands(api: any): void {
         } else {
           // Freitext-Draft
           const draft = createInstaDraft({ caption: input });
+          audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'freetext' } }).catch(() => {});
           return {
             text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
               `Bearbeiten: \`/instaedit ${draft.id}\``,
@@ -725,6 +728,7 @@ export function registerInstagramCommands(api: any): void {
           }
         }
         saveInstaDraft(draft);
+        audit.log({ module: 'instagram', action: 'instagram.draft_edited', entityType: 'draft', entityId: id, after: { updates } }).catch(() => {});
         return { text: `✅ Draft ${id} aktualisiert:\n${updates.join('\n')}` };
       } catch (e: any) {
         return { text: `❌ /instaedit Fehler: ${e.message}` };
@@ -933,6 +937,7 @@ export function registerInstagramCommands(api: any): void {
           draft.instagram_url = result.permalink;
           draft.publish_error = undefined;
           saveInstaDraft(draft);
+          audit.log({ module: 'instagram', action: 'instagram.post_published', entityType: 'draft', entityId: draft.id, before: { status: 'freigegeben' }, after: { status: 'veröffentlicht', instagram_post_id: result.postId, format: mediaFiles.length > 1 ? 'carousel' : mediaFiles[0].type } }).catch(() => {});
 
           const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
           return {
@@ -956,6 +961,7 @@ export function registerInstagramCommands(api: any): void {
               saveInstaDraft(d);
             }
           } catch { /* ignore */ }
+          audit.log({ module: 'instagram', action: 'instagram.post_failed', entityType: 'draft', entityId: draftId, after: { error: String(e.message).slice(0, 200) } }).catch(() => {});
         }
         return { text: `❌ /instapost Fehler: ${e.message}` };
       }
@@ -1085,6 +1091,7 @@ export function registerInstagramCommands(api: any): void {
         submission.selected_variant = idx;
         submission.status = 'approved';
         await saveSubmission(submission);
+        audit.log({ module: 'instagram', action: 'instagram.draft_approved', entityType: 'submission', entityId: id, before: { status: 'generated' }, after: { status: 'approved', selected_variant: variantNr, variant_type: chosen.type } }).catch(() => {});
 
         // Create draft from chosen variant
         const draft = createInstaDraft({
@@ -1092,6 +1099,7 @@ export function registerInstagramCommands(api: any): void {
           hashtags: chosen.hashtags,
           notes: `Aus Submission ${id}, Variante ${variantNr} (${chosen.type})`,
         });
+        audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'approval', submission_id: id } }).catch(() => {});
 
         api.logger.info(`[executive-agent] /instaapprove: Variante ${variantNr} (${chosen.type}) gewaehlt fuer ${id} → Draft ${draft.id}`);
 
@@ -1562,6 +1570,7 @@ export function registerInstagramCommands(api: any): void {
           mediaPath: path.join(sessionDir(sessionId), 'original'),
           notes: `Karussell: ${fileList}`,
         });
+        audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'carousel' } }).catch(() => {});
         api.logger.info(`[executive-agent] carousel: Draft erstellt: ${draft.id}`);
       }
     } catch (draftErr: any) {
@@ -2624,6 +2633,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
           mediaPath: cutResult.output_path,
           notes: `Scan ${sessionId} → Vorschlag ${proposalId}: ${proposal.title}`,
         });
+        audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'scan' } }).catch(() => {});
 
         const variantsText = formatVariantsOutput(submissionId, variants);
         await sendTelegram(chatId,
@@ -2669,6 +2679,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
           mediaPath: sourcePath,
           notes: `Scan ${sessionId} → Vorschlag ${proposalId}: ${proposal.title}`,
         });
+        audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'scan' } }).catch(() => {});
 
         const variantsText = formatVariantsOutput(submissionId, variants);
         await sendTelegram(chatId,
@@ -2960,6 +2971,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             mediaPath: cutResult.output_path,
             notes: `Craft ${sessionId}: ${plan.title}`,
           });
+          audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'craft' } }).catch(() => {});
 
           const variantsText = formatVariantsOutput(submissionId, variants);
           await sendTelegram(chatId,
@@ -3005,6 +3017,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             mediaPath: sourcePath,
             notes: `Craft ${sessionId}: ${plan.title}`,
           });
+          audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'craft' } }).catch(() => {});
 
           const variantsText = formatVariantsOutput(submissionId, variants);
           await sendTelegram(chatId,

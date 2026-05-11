@@ -7,6 +7,7 @@ import type {
   WithingsTokens, WithingsMeasure, WithingsSleep,
   WithingsActivity, WithingsWorkout,
 } from './types.js';
+import * as audit from '../../shared/audit/index.js';
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ export async function exchangeCode(
     userid:        String(b.userid),
   };
   saveTokens(tokens);
+  audit.log({ module: 'auth', action: 'auth.withings_reauthorized', entityType: 'token', entityId: 'withings', after: { userid: tokens.userid } }).catch(() => {});
   return tokens;
 }
 

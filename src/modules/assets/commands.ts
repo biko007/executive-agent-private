@@ -1,6 +1,7 @@
 /**
  * assets/commands — Telegram command handlers for the Assets (Immobilien) module.
  */
+import { createHash } from 'node:crypto';
 import {
   listProperties, getProperty, getLeaseByUnit, setLease,
   getOperatingCosts, setOperatingCosts, calculateNk, seedInitialData,
@@ -8,6 +9,16 @@ import {
 } from './store.js';
 import type { CostCategory } from './types.js';
 import { COST_CATEGORIES } from './types.js';
+import * as audit from '../../shared/audit/index.js';
+
+/** Hash a tenant name for audit payload — never log Klarnamen (§14.2). */
+function hashTenant(name: string): string {
+  return createHash('sha256').update(name).digest('hex').slice(0, 12);
+}
+/** Mask a financial amount for audit: "1200" → "***" (§14.2). */
+function maskAmount(val: number | undefined): string {
+  return val != null ? '***' : '(leer)';
+}
 
 // ── Command handlers ───────────────────────────────────────────────────────
 
@@ -69,6 +80,9 @@ export function handleLeaseSet(argsStr: string): { text: string } {
   if (!prop) return { text: `❌ Einheit "${unitId}" nicht gefunden.` };
 
   const existing = getLeaseByUnit(unitId);
+  const beforePayload = existing
+    ? { tenant_hash: hashTenant(existing.tenant), unitId, rentNet: maskAmount(existing.rentNet), nk: maskAmount(existing.operatingCosts) }
+    : null;
   const lease = setLease(prop.id, unitId, {
     tenant: fields.mieter || existing?.tenant || '',
     startDate: fields.beginn || existing?.startDate || new Date().toISOString().slice(0, 10),
@@ -78,6 +92,8 @@ export function handleLeaseSet(argsStr: string): { text: string } {
     depositAmount: fields.kaution != null ? Number(fields.kaution) : (existing?.depositAmount || 0),
     linkedDocs: existing?.linkedDocs || [],
   });
+  const action = existing ? 'assets.lease_changed' : 'assets.lease_created';
+  audit.log({ module: 'assets', action, entityType: 'lease', entityId: lease.id, before: beforePayload, after: { tenant_hash: hashTenant(lease.tenant), unitId, rentNet: maskAmount(lease.rentNet), nk: maskAmount(lease.operatingCosts), startDate: lease.startDate } }).catch(() => {});
   return { text: `✅ Mietvertrag ${lease.id} gespeichert.\nMieter: ${lease.tenant} | Miete: ${lease.rentNet} € | NK: ${lease.operatingCosts} €` };
 }
 
@@ -114,6 +130,8 @@ export function handleCosts(argsStr: string): { text: string } {
 
   const oc = setOperatingCosts(propertyId, year, costs, dkId);
   const total = Object.values(oc.costs).reduce((s, v) => s + (v || 0), 0);
+  const changedCategories = Object.keys(costs).filter(k => costs[k as CostCategory] != null);
+  audit.log({ module: 'assets', action: 'assets.nk_created', entityType: 'operating_costs', entityId: `${propertyId}-${year}`, after: { propertyId, year, categories_count: changedCategories.length, total: maskAmount(total) } }).catch(() => {});
   return { text: `✅ Nebenkosten ${propertyId}/${year} gespeichert.\nGesamt: ${total.toLocaleString('de-DE')} €` };
 }
 
