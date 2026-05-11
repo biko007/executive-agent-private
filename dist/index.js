@@ -12,9 +12,12 @@ import { getAllInvestments, getInvestment, createInvestment, updateInvestment, a
 import { loadTokens as loadInstaTokens, saveTokens as saveInstaTokens, isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken, tokenDaysRemaining, markTokenFailed as markInstaTokenFailed, fetchInsights, fetchMedia, saveDraft as saveInstaDraft, loadDraft as loadInstaDraft, listDrafts as listInstaDrafts, createDraft as createInstaDraft, loadCalendar, saveCalendar, loadStyleProfile, validateStyleProfile, getStyleProfileSummary, publishSingleImage, publishCarousel, publishReel, } from "./instagram-store.js";
 import { openPage, screenshot, closeBrowser } from "./browser-agent.js";
 import { saveSubmission, loadSubmission, analyzeImage, analyzeVideo, formatAnalysisSummary, getMediaDir, generateSubmissionId, getTopPerformerContext, generateVariants, stageAllMedia, cleanupStagedMedia, } from "./instagram-content-engine.js";
-import { runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, preFlightInstagram, formatPreFlightFailure, runDailyHealthCheck, } from "./system-health.js";
+import { initSystemHealth, runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, preFlightInstagram, formatPreFlightFailure, runDailyHealthCheck, } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
-import { runMigrations } from "./src/shared/db/index.js";
+import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
+import { nowIso, makeId, sleep, fetchWithTimeout, berlinDate, readAnthropicKey, readOpenAIKey, } from "./src/shared/utils/index.js";
+import { loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION, } from "./src/shared/settings/index.js";
+import { graphToken, graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -37,205 +40,6 @@ const BOOKING_EMOJI = {
 const SEGMENT_EMOJI = {
     flight: '✈️', hotel: '🏨', transfer: '🚆', activity: '🎫', note: '📝',
 };
-function nowIso() { return new Date().toISOString(); }
-function makeId(prefix) { return `${prefix}_${crypto.randomBytes(6).toString("hex")}`; }
-const graphTokenCache = new Map();
-function cacheKey(tenantId, clientId) {
-    return `${tenantId}::${clientId}`;
-}
-function nowMs() {
-    return Date.now();
-}
-function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-}
-function parseRetryAfterMs(res) {
-    const ra = res.headers.get("retry-after");
-    if (!ra)
-        return null;
-    // retry-after can be seconds or HTTP date; we handle seconds robustly
-    const secs = Number(ra);
-    if (Number.isFinite(secs) && secs >= 0)
-        return Math.min(secs * 1000, 30_000);
-    return null;
-}
-async function fetchWithTimeout(url, init, timeoutMs) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        return await fetch(url, { ...(init || {}), signal: controller.signal });
-    }
-    catch (e) {
-        // normalize abort to a readable error
-        if (e?.name === "AbortError") {
-            throw new Error(`fetch_timeout_after_${timeoutMs}ms`);
-        }
-        throw e;
-    }
-    finally {
-        clearTimeout(t);
-    }
-}
-async function graphToken(tenantId, clientId, clientSecret) {
-    const key = cacheKey(tenantId, clientId);
-    const cached = graphTokenCache.get(key);
-    if (cached && cached.expiresAtMs > nowMs()) {
-        return cached.accessToken;
-    }
-    const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-    const form = new URLSearchParams();
-    form.set("client_id", clientId);
-    form.set("scope", "https://graph.microsoft.com/.default");
-    form.set("client_secret", clientSecret);
-    form.set("grant_type", "client_credentials");
-    const res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: form,
-    }, 20000);
-    const text = await res.text().catch(() => "");
-    let parsed = null;
-    try {
-        parsed = text ? JSON.parse(text) : null;
-    }
-    catch { }
-    if (!res.ok) {
-        throw new Error(`token_error: status=${res.status} body=${parsed ? JSON.stringify(parsed) : text || "(empty)"}`);
-    }
-    const json = parsed ?? {};
-    const accessToken = json.access_token;
-    const expiresInSec = json.expires_in;
-    // Safety buffer: refresh 60s before expiry (min 5s)
-    const safetyMs = 60_000;
-    const ttlMs = typeof expiresInSec === "number" && Number.isFinite(expiresInSec) && expiresInSec > 0
-        ? Math.max(expiresInSec * 1000 - safetyMs, 5_000)
-        : 45 * 60_000; // fallback 45 minutes if expires_in missing
-    graphTokenCache.set(key, {
-        accessToken,
-        expiresAtMs: nowMs() + ttlMs,
-    });
-    return accessToken;
-}
-// Generic request with retry handling (429/503/504) + one-time 401 refresh
-async function graphRequest(tenantId, clientId, clientSecret, method, url, body) {
-    const maxRetries = 3;
-    // Helper to get a fresh token (optionally force refresh)
-    const getToken = async (forceRefresh) => {
-        if (forceRefresh)
-            graphTokenCache.delete(cacheKey(tenantId, clientId));
-        return graphToken(tenantId, clientId, clientSecret);
-    };
-    let token;
-    try {
-        token = await getToken(false);
-    }
-    catch {
-        // Token fetch failed (network error) → one retry after 2s
-        await sleep(2000);
-        token = await getToken(false);
-    }
-    let didRefreshOn401 = false;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        const headers = { Authorization: `Bearer ${token}` };
-        let fetchBody = undefined;
-        if (method === "POST" || method === "PATCH") {
-            headers["Content-Type"] = "application/json";
-            fetchBody = JSON.stringify(body ?? {});
-        }
-        let res;
-        try {
-            res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 20000);
-        }
-        catch (e) {
-            // Network error (TypeError: fetch failed, DNS, connection reset, etc.) → retry
-            if (attempt < maxRetries) {
-                await sleep(Math.min(2000 * Math.pow(2, attempt), 10000));
-                continue;
-            }
-            throw new Error(`graph_${method.toLowerCase()}_network_error: ${e.message}`);
-        }
-        // 401: token expired/revoked → refresh once and retry immediately
-        if (res.status === 401 && !didRefreshOn401) {
-            didRefreshOn401 = true;
-            token = await getToken(true);
-            continue;
-        }
-        // Retry on throttling / transient gateway issues
-        if ((res.status === 429 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
-            const retryAfterMs = parseRetryAfterMs(res);
-            const backoffMs = retryAfterMs ?? Math.min(1000 * Math.pow(2, attempt), 8000);
-            await sleep(backoffMs);
-            continue;
-        }
-        // Parse response
-        const contentType = res.headers.get("content-type") || "";
-        const isJson = contentType.includes("application/json");
-        if (!res.ok) {
-            const errText = isJson ? JSON.stringify(await res.json().catch(() => ({}))) : await res.text().catch(() => "");
-            throw new Error(`graph_${method.toLowerCase()}_error: status=${res.status} body=${errText}`);
-        }
-        if (res.status === 204)
-            return null; // no content
-        if (isJson)
-            return await res.json().catch(() => null);
-        const text = await res.text().catch(() => "");
-        try {
-            return text ? JSON.parse(text) : null;
-        }
-        catch {
-            return text || null;
-        }
-    }
-    throw new Error(`graph_${method.toLowerCase()}_error: exceeded_retries`);
-}
-async function graphGet(tenantId, clientId, clientSecret, url) {
-    return graphRequest(tenantId, clientId, clientSecret, "GET", url);
-}
-async function graphPost(tenantId, clientId, clientSecret, url, body) {
-    return graphRequest(tenantId, clientId, clientSecret, "POST", url, body);
-}
-async function graphDelete(tenantId, clientId, clientSecret, url) {
-    return graphRequest(tenantId, clientId, clientSecret, "DELETE", url);
-}
-/* ---------------- Anthropic Trip Enrichment ---------------- */
-function readAnthropicKey() {
-    if (process.env.ANTHROPIC_API_KEY)
-        return process.env.ANTHROPIC_API_KEY;
-    try {
-        const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
-        const content = fs.readFileSync(envPath, 'utf-8');
-        for (const line of content.split('\n')) {
-            if (line.startsWith('#') || !line.includes('='))
-                continue;
-            const eq = line.indexOf('=');
-            const key = line.slice(0, eq).trim();
-            const val = line.slice(eq + 1).trim();
-            if (key === 'ANTHROPIC_API_KEY' && val)
-                return val;
-        }
-    }
-    catch { }
-    return '';
-}
-function readOpenAIKey() {
-    if (process.env.OPENAI_API_KEY)
-        return process.env.OPENAI_API_KEY;
-    try {
-        const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
-        const content = fs.readFileSync(envPath, 'utf-8');
-        for (const line of content.split('\n')) {
-            if (line.startsWith('#') || !line.includes('='))
-                continue;
-            const eq = line.indexOf('=');
-            const key = line.slice(0, eq).trim();
-            const val = line.slice(eq + 1).trim();
-            if (key === 'OPENAI_API_KEY' && val)
-                return val;
-        }
-    }
-    catch { }
-    return '';
-}
 const WMO_CODES = {
     0: 'sonnig ☀️', 1: 'überwiegend sonnig ☀️', 2: 'leicht bewölkt ⛅', 3: 'bewölkt ☁️',
     45: 'Nebel 🌫️', 48: 'Reifnebel 🌫️',
@@ -466,39 +270,6 @@ async function parseTripFreeText(text) {
         start: String(parsed.start),
         end: String(parsed.end),
     };
-}
-/* ---------------- Settings + Helpers ---------------- */
-const SETTINGS_FILE = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/health/settings.json');
-function loadSettings() {
-    try {
-        if (fs.existsSync(SETTINGS_FILE)) {
-            return { briefingTime: '07:00', ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8')) };
-        }
-    }
-    catch { }
-    return { briefingTime: '07:00' };
-}
-function saveSettings(s) {
-    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), 'utf-8');
-}
-/** Returns YYYY-MM-DD in Europe/Berlin, with optional day offset */
-function berlinDate(offsetDays = 0) {
-    return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Europe/Berlin',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(new Date(Date.now() + offsetDays * 86_400_000));
-}
-const DEFAULT_LOCATION = { lat: 47.9838, lon: 8.8234, label: "Tuttlingen" };
-function getLocationSettings() {
-    try {
-        const s = loadSettings();
-        if (s.location && s.location.lat != null && s.location.lon != null) {
-            return s.location;
-        }
-    }
-    catch { }
-    return DEFAULT_LOCATION;
 }
 function getAstroData(date, location = DEFAULT_LOCATION) {
     const tz = 'Europe/Berlin';
@@ -8174,6 +7945,100 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
             res.end(JSON.stringify({ service: 'executive-agent', node: process.version, uptime: process.uptime() }));
         },
     });
+    // ── System Status (aggregated data for Dashboard Status Widget) ───────────
+    api.registerHttpRoute({
+        path: '/api/system-status',
+        handler: async (_req, res) => {
+            try {
+                // 1. Service health from DB + live checks for Postgres and IB Gateway
+                const serviceRows = await dbQuery('SELECT service, status, last_change FROM service_health').then(r => r.rows).catch(() => []);
+                const services = serviceRows.map(r => ({
+                    name: r.service,
+                    status: r.status,
+                    uptime_seconds: r.status === 'up' && r.last_change
+                        ? Math.round((Date.now() - new Date(r.last_change).getTime()) / 1000) : 0,
+                }));
+                // Live-check Postgres
+                let pgOk = false;
+                try {
+                    await dbQuery('SELECT 1');
+                    pgOk = true;
+                }
+                catch { }
+                const pgEntry = services.find(s => s.name === 'Postgres');
+                if (!pgEntry)
+                    services.push({ name: 'Postgres', status: pgOk ? 'up' : 'down', uptime_seconds: pgOk ? Math.round(process.uptime()) : 0 });
+                // Live-check IB Gateway (port 7497)
+                let ibOk = false;
+                try {
+                    const r = await fetch('http://127.0.0.1:18793/health', { signal: AbortSignal.timeout(3000) });
+                    if (r.ok) {
+                        const data = await r.json();
+                        ibOk = data.ibkr?.connected === true;
+                    }
+                }
+                catch { }
+                const ibEntry = services.find(s => s.name === 'IB Gateway');
+                if (!ibEntry)
+                    services.push({ name: 'IB Gateway', status: ibOk ? 'up' : 'down', uptime_seconds: 0 });
+                // 2. Token expiry
+                const tokens = [];
+                const artifactsBase = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal');
+                try {
+                    const it = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'instagram/tokens.json'), 'utf-8'));
+                    if (it.expires_at)
+                        tokens.push({ name: 'Meta', days_remaining: Math.floor((it.expires_at - Date.now()) / 86_400_000) });
+                }
+                catch { }
+                try {
+                    const wt = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'health/withings-tokens.json'), 'utf-8'));
+                    if (wt.expires_at)
+                        tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
+                }
+                catch { }
+                // 3. Workflows pending
+                let workflowsPending = 0;
+                let workflowTypes = [];
+                try {
+                    const wf = await dbQuery(`SELECT count(*)::text, array_agg(DISTINCT type) as types FROM workflows WHERE status IN ('pending','running','awaiting_approval')`);
+                    if (wf.rows[0]) {
+                        workflowsPending = parseInt(wf.rows[0].count, 10);
+                        workflowTypes = (wf.rows[0].types || []).filter(Boolean);
+                    }
+                }
+                catch { }
+                // 4. Last backup (from systemd timer)
+                let lastBackup = null;
+                try {
+                    const timerOut = execSync("systemctl --user show openclaw-backup-daily.service --property=ExecMainStartTimestamp --value", { encoding: 'utf-8', timeout: 3000 }).trim();
+                    if (timerOut)
+                        lastBackup = new Date(timerOut).toISOString();
+                }
+                catch { }
+                // Fallback: check borg list (slow, only if no systemd data)
+                if (!lastBackup) {
+                    try {
+                        const borgOut = execSync('BORG_PASSPHRASE=$(grep BORG_PASSPHRASE ~/.config/openclaw/env | cut -d= -f2) BORG_RSH="ssh -p 23" borg list ssh://u591557@u591557.your-storagebox.de:23/./openclaw/daily --last 1 --format "{time}" 2>/dev/null', { encoding: 'utf-8', timeout: 15000, shell: '/bin/bash' }).trim();
+                        if (borgOut)
+                            lastBackup = new Date(borgOut).toISOString();
+                    }
+                    catch { }
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    services,
+                    tokens,
+                    workflows: { pending: workflowsPending, types: workflowTypes },
+                    backup: { last: lastBackup },
+                    timestamp: new Date().toISOString(),
+                }));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
     api.registerHttpRoute({
         path: '/location',
         handler: async (req, res) => {
@@ -8359,6 +8224,12 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
     // ── Browser Cleanup ──────────────────────────────────────────────────────
     process.on("beforeExit", () => { closeBrowser().catch(() => { }); });
     process.on("SIGTERM", () => { closeBrowser().catch(() => { }); });
+    // ── Inject Instagram token adapter into system-health (K1 fix) ──────────
+    initSystemHealth({
+        loadTokens: loadInstaTokens,
+        tokenDaysRemaining,
+        ensureFreshToken: ensureInstaToken,
+    });
     api.logger.info("[executive-agent] loaded v33 (craft engine)");
     // ── Startup Self-Test (async, non-blocking) ────────────────────────────
     (async () => {

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { updateEntityId } from './link-store.js';
+import { updateEntityId } from './src/shared/links/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

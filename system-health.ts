@@ -1,9 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import {
-  loadTokens as loadInstaTokens, tokenDaysRemaining, ensureFreshToken,
-} from "./instagram-store.js";
+import { readAnthropicKey } from "./src/shared/utils/index.js";
+
+// ── Instagram token dependency injection (breaks K1 cross-domain) ─────
+
+export interface InstaTokenAdapter {
+  loadTokens: () => { access_token: string; expires_at: number; refreshed_at?: number } | null;
+  tokenDaysRemaining: () => number;
+  ensureFreshToken: (appId: string, appSecret: string, force?: boolean) => Promise<any>;
+}
+
+let _insta: InstaTokenAdapter | null = null;
+
+export function initSystemHealth(adapter: InstaTokenAdapter): void {
+  _insta = adapter;
+}
+
+function loadInstaTokens() { return _insta?.loadTokens() ?? null; }
+function tokenDaysRemaining() { return _insta?.tokenDaysRemaining() ?? 0; }
+async function ensureFreshToken(appId: string, appSecret: string, force = false) {
+  if (!_insta) throw new Error('system-health: InstaTokenAdapter not initialised');
+  return _insta.ensureFreshToken(appId, appSecret, force);
+}
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -68,23 +87,7 @@ export function formatEscalation(e: Escalation): string | null {
   }
 }
 
-// ── Anthropic Key Reader ───────────────────────────────────────────────
-
-function readAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  try {
-    const envPath = path.join(HOME, '.config/openclaw/env');
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      if (line.startsWith('#') || !line.includes('=')) continue;
-      const eq = line.indexOf('=');
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key === 'ANTHROPIC_API_KEY' && val) return val;
-    }
-  } catch {}
-  return '';
-}
+// readAnthropicKey → src/shared/utils
 
 // ── Live Token Validation ─────────────────────────────────────────────
 

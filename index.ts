@@ -54,6 +54,7 @@ import {
 } from "./instagram-content-engine.js";
 import type { Submission, ContentVariant, VisionAnalysis } from "./instagram-content-engine.js";
 import {
+  initSystemHealth,
   runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken,
   evaluateTokenAlert, safeTelegramSend, formatEscalation,
   preFlightInstagram, preFlightTrading, formatPreFlightFailure,
@@ -62,6 +63,17 @@ import {
 import type { HealthReport, Escalation } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
+import {
+  nowIso, makeId, sleep, fetchWithTimeout, parseRetryAfterMs,
+  berlinDate, readAnthropicKey, readOpenAIKey,
+} from "./src/shared/utils/index.js";
+import {
+  loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION,
+} from "./src/shared/settings/index.js";
+import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
+import {
+  graphToken, graphRequest, graphGet, graphPost, graphDelete,
+} from "./src/shared/m365/index.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -129,256 +141,7 @@ const SEGMENT_EMOJI: Record<string, string> = {
   flight: '✈️', hotel: '🏨', transfer: '🚆', activity: '🎫', note: '📝',
 };
 
-function nowIso() { return new Date().toISOString(); }
-function makeId(prefix: string) { return `${prefix}_${crypto.randomBytes(6).toString("hex")}`; }
-
-/* ---------------- Graph helpers (M365) ---------------- */
-
-// Simple in-memory token cache (per tenant+client)
-type GraphTokenCacheEntry = {
-  accessToken: string;
-  // epoch ms when we consider token expired (includes safety buffer)
-  expiresAtMs: number;
-};
-
-const graphTokenCache = new Map<string, GraphTokenCacheEntry>();
-
-function cacheKey(tenantId: string, clientId: string) {
-  return `${tenantId}::${clientId}`;
-}
-
-function nowMs() {
-  return Date.now();
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function parseRetryAfterMs(res: Response): number | null {
-  const ra = res.headers.get("retry-after");
-  if (!ra) return null;
-  // retry-after can be seconds or HTTP date; we handle seconds robustly
-  const secs = Number(ra);
-  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, 30_000);
-  return null;
-}
-
-async function fetchWithTimeout(url: string, init: any, timeoutMs: number) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, { ...(init || {}), signal: controller.signal });
-  } catch (e: any) {
-    // normalize abort to a readable error
-    if (e?.name === "AbortError") {
-      throw new Error(`fetch_timeout_after_${timeoutMs}ms`);
-    }
-    throw e;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-
-async function graphToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
-  const key = cacheKey(tenantId, clientId);
-  const cached = graphTokenCache.get(key);
-  if (cached && cached.expiresAtMs > nowMs()) {
-    return cached.accessToken;
-  }
-
-  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const form = new URLSearchParams();
-  form.set("client_id", clientId);
-  form.set("scope", "https://graph.microsoft.com/.default");
-  form.set("client_secret", clientSecret);
-  form.set("grant_type", "client_credentials");
-
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form,
-  }, 20000);
-
-  const text = await res.text().catch(() => "");
-  let parsed: any = null;
-  try { parsed = text ? JSON.parse(text) : null; } catch {}
-
-  if (!res.ok) {
-    throw new Error(
-      `token_error: status=${res.status} body=${parsed ? JSON.stringify(parsed) : text || "(empty)"}`
-    );
-  }
-
-
-  const json: any = parsed ?? {};
-  const accessToken: string = json.access_token;
-  const expiresInSec: number | undefined = json.expires_in;
-
-  // Safety buffer: refresh 60s before expiry (min 5s)
-  const safetyMs = 60_000;
-  const ttlMs =
-    typeof expiresInSec === "number" && Number.isFinite(expiresInSec) && expiresInSec > 0
-      ? Math.max(expiresInSec * 1000 - safetyMs, 5_000)
-      : 45 * 60_000; // fallback 45 minutes if expires_in missing
-
-  graphTokenCache.set(key, {
-    accessToken,
-    expiresAtMs: nowMs() + ttlMs,
-  });
-
-  return accessToken;
-}
-
-// Generic request with retry handling (429/503/504) + one-time 401 refresh
-async function graphRequest(
-  tenantId: string,
-  clientId: string,
-  clientSecret: string,
-  method: "GET" | "POST" | "DELETE" | "PATCH",
-  url: string,
-  body?: any
-): Promise<any> {
-  const maxRetries = 3;
-
-  // Helper to get a fresh token (optionally force refresh)
-  const getToken = async (forceRefresh: boolean) => {
-    if (forceRefresh) graphTokenCache.delete(cacheKey(tenantId, clientId));
-    return graphToken(tenantId, clientId, clientSecret);
-  };
-
-  let token: string;
-  try {
-    token = await getToken(false);
-  } catch {
-    // Token fetch failed (network error) → one retry after 2s
-    await sleep(2000);
-    token = await getToken(false);
-  }
-  let didRefreshOn401 = false;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    let fetchBody: any = undefined;
-
-    if (method === "POST" || method === "PATCH") {
-      headers["Content-Type"] = "application/json";
-      fetchBody = JSON.stringify(body ?? {});
-    }
-
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(url, { method, headers, body: fetchBody }, 20000);
-    } catch (e: any) {
-      // Network error (TypeError: fetch failed, DNS, connection reset, etc.) → retry
-      if (attempt < maxRetries) {
-        await sleep(Math.min(2000 * Math.pow(2, attempt), 10000));
-        continue;
-      }
-      throw new Error(`graph_${method.toLowerCase()}_network_error: ${e.message}`);
-    }
-
-    // 401: token expired/revoked → refresh once and retry immediately
-    if (res.status === 401 && !didRefreshOn401) {
-      didRefreshOn401 = true;
-      token = await getToken(true);
-      continue;
-    }
-
-    // Retry on throttling / transient gateway issues
-    if ((res.status === 429 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
-      const retryAfterMs = parseRetryAfterMs(res);
-      const backoffMs = retryAfterMs ?? Math.min(1000 * Math.pow(2, attempt), 8000);
-      await sleep(backoffMs);
-      continue;
-    }
-
-    // Parse response
-    const contentType = res.headers.get("content-type") || "";
-    const isJson = contentType.includes("application/json");
-
-    if (!res.ok) {
-      const errText = isJson ? JSON.stringify(await res.json().catch(() => ({}))) : await res.text().catch(() => "");
-      throw new Error(`graph_${method.toLowerCase()}_error: status=${res.status} body=${errText}`);
-    }
-
-    if (res.status === 204) return null; // no content
-    if (isJson) return await res.json().catch(() => null);
-
-    const text = await res.text().catch(() => "");
-    try {
-      return text ? JSON.parse(text) : null;
-    } catch {
-      return text || null;
-    }
-  }
-
-  throw new Error(`graph_${method.toLowerCase()}_error: exceeded_retries`);
-}
-
-async function graphGet(
-  tenantId: string,
-  clientId: string,
-  clientSecret: string,
-  url: string
-): Promise<any> {
-  return graphRequest(tenantId, clientId, clientSecret, "GET", url);
-}
-
-async function graphPost(
-  tenantId: string,
-  clientId: string,
-  clientSecret: string,
-  url: string,
-  body: any
-): Promise<any> {
-  return graphRequest(tenantId, clientId, clientSecret, "POST", url, body);
-}
-
-async function graphDelete(
-  tenantId: string,
-  clientId: string,
-  clientSecret: string,
-  url: string
-): Promise<any> {
-  return graphRequest(tenantId, clientId, clientSecret, "DELETE", url);
-}
-
 /* ---------------- Anthropic Trip Enrichment ---------------- */
-
-function readAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  try {
-    const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      if (line.startsWith('#') || !line.includes('=')) continue;
-      const eq = line.indexOf('=');
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key === 'ANTHROPIC_API_KEY' && val) return val;
-    }
-  } catch {}
-  return '';
-}
-
-function readOpenAIKey(): string {
-  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
-  try {
-    const envPath = path.join(process.env.HOME || '/root', '.config/openclaw/env');
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      if (line.startsWith('#') || !line.includes('=')) continue;
-      const eq = line.indexOf('=');
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key === 'OPENAI_API_KEY' && val) return val;
-    }
-  } catch {}
-  return '';
-}
 
 interface TripEnrichment {
   destination: string;
@@ -695,59 +458,8 @@ async function parseTripFreeText(
 }
 
 /* ---------------- Settings + Helpers ---------------- */
-
-const SETTINGS_FILE = path.join(
-  process.env.HOME || '/root',
-  '.openclaw/workspace/artifacts/personal/health/settings.json'
-);
-
-interface LocationSetting {
-  lat: number;
-  lon: number;
-  label: string;
-  updatedAt?: string; // ISO timestamp
-}
-
-interface Settings {
-  briefingTime: string;    // "HH:MM" Europe/Berlin
-  telegramChatId?: string; // captured from first incoming message
-  healthReportDay?: number; // 0=So, 1=Mo, ..., 6=Sa (default: 1=Mo)
-  location?: LocationSetting;
-}
-
-function loadSettings(): Settings {
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      return { briefingTime: '07:00', ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8')) };
-    }
-  } catch {}
-  return { briefingTime: '07:00' };
-}
-
-function saveSettings(s: Settings): void {
-  fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), 'utf-8');
-}
-
-/** Returns YYYY-MM-DD in Europe/Berlin, with optional day offset */
-function berlinDate(offsetDays = 0): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(Date.now() + offsetDays * 86_400_000));
-}
-
-const DEFAULT_LOCATION: LocationSetting = { lat: 47.9838, lon: 8.8234, label: "Tuttlingen" };
-
-function getLocationSettings(): LocationSetting {
-  try {
-    const s = loadSettings();
-    if (s.location && s.location.lat != null && s.location.lon != null) {
-      return s.location;
-    }
-  } catch {}
-  return DEFAULT_LOCATION;
-}
+// Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
+// berlinDate → src/shared/utils
 
 interface AstroData {
   sunrise: string;   // HH:MM
@@ -9304,6 +9016,13 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
   // ── Browser Cleanup ──────────────────────────────────────────────────────
   process.on("beforeExit", () => { closeBrowser().catch(() => {}); });
   process.on("SIGTERM", () => { closeBrowser().catch(() => {}); });
+
+  // ── Inject Instagram token adapter into system-health (K1 fix) ──────────
+  initSystemHealth({
+    loadTokens: loadInstaTokens,
+    tokenDaysRemaining,
+    ensureFreshToken: ensureInstaToken,
+  });
 
   api.logger.info("[executive-agent] loaded v33 (craft engine)");
 
