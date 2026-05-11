@@ -130,19 +130,21 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 2 Etappe a+b+c+d+e+f abgeschlossen (2026-05-11):
+Sprint 2 Etappe a+b+c+d+e+f+g abgeschlossen (2026-05-11):
 - Etappe a: src/shared/ (utils, settings, m365, links), module skeletons, K1-Fix
 - Etappe b: Fleet-Modul extrahiert (store, types, commands), K2-Fix
 - Etappe c: Assets-Modul extrahiert (store, types, commands), keine DI nötig
 - Etappe d: Health+Withings-Modul extrahiert (store, withings, types, commands), DI für sendTelegram
 - Etappe e: PE-Modul extrahiert (store, types, commands), self-contained
 - Etappe f: Travel-Modul extrahiert (store, weather, enrichment, commands), DI für M365/Telegram/Links
-- index.ts: 9.357 → 7.147 Zeilen (-2.210)
+- Etappe g: Instagram-Modul extrahiert (types, commands, index), DI für Telegram/Meta/Voice
+- index.ts: 9.357 → 3.923 Zeilen (-5.434)
 - 10 Fleet-Commands via registerFleetCommands(), DI für Links
 - 7 Assets-Commands via registerAssetsCommands(), self-contained
 - 12 Health/Withings-Commands via registerHealthCommands(), inkl. Weekly Report Timer
 - 5 PE-Commands via registerPECommands(), self-contained
 - 8 Travel-Commands via registerTravelCommands(), DI für M365/Telegram/Links
+- 21 Instagram-Commands via registerInstagramCommands(), DI für sendTelegram/Meta/Voice
 - Smoke Test: 13/13 PASS
 
 ## Role
