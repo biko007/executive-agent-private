@@ -1,3 +1,42 @@
-// Public interface for the instagram module
-// Other modules MUST import from here — never from internal files
-export {};
+/**
+ * instagram module — public interface.
+ * Other modules MUST import from here — never from internal files.
+ */
+
+// Types
+export type {
+  CutSegment, CutPlan, InstaFormat, CutResult, VideoProbe,
+  FileAnalysis, ContentProposal, ScanResult, CraftDialogState,
+  RawSessionFile, RawSession,
+} from './types.js';
+
+// Commands (Telegram registration)
+export {
+  registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken,
+  // State exports for command-guard in index.ts
+  instaSubmitActive, instaSubmitLastActivatedAt, setInstaSubmitLastActivatedAt,
+  pendingInstaSubmits, activeRawSessions,
+  // Helpers used by command-guard in index.ts
+  detectMediaType, formatFileSize, loadRawSession, saveRawSession, createRawSession,
+  generateRawSessionId, sessionDir,
+  // Voice / audio helpers used by command-guard in index.ts
+  findRecentAudioFile, transcribeVoice,
+  // Briefing helper
+  getInstagramBriefingLines,
+} from './commands.js';
+
+export type { InstagramDeps } from './commands.js';
+
+// Re-export store functions needed by other modules (Dashboard API, system-health)
+export {
+  isAuthorized as instaAuthorized,
+  tokenDaysRemaining,
+  loadInsightsCache, loadMediaCache,
+  listDrafts as listInstaDrafts,
+  loadDraft as loadInstaDraft,
+  saveDraft as saveInstaDraft,
+  loadTokens as loadInstaTokens,
+  ensureFreshToken as ensureInstaToken,
+  markTokenFailed as markInstaTokenFailed,
+  fetchInsights,
+} from '../../../instagram-store.js';
