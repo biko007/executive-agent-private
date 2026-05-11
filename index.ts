@@ -741,7 +741,7 @@ export default function (api: any) {
     metaAppSecret,
     igBusinessId,
   });
-  bootstrapInstagramToken(api);
+  bootstrapInstagramToken(api).catch(() => {});
   registerInstagramCommands(api);
 
   // ── Briefing ───────────────────────────────────────────────────────────────

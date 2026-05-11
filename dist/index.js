@@ -650,7 +650,7 @@ export default function (api) {
         metaAppSecret,
         igBusinessId,
     });
-    bootstrapInstagramToken(api);
+    bootstrapInstagramToken(api).catch(() => { });
     registerInstagramCommands(api);
     // ── Briefing ───────────────────────────────────────────────────────────────
     // syncWithingsForBriefing → src/modules/health/commands.ts (imported)

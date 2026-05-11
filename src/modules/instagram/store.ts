@@ -132,15 +132,13 @@ const INSTA_DIR = path.join(
   process.env.HOME || '/root',
   '.openclaw/workspace/artifacts/personal/instagram'
 );
-const DRAFTS_DIR = path.join(INSTA_DIR, 'drafts');
-const TOKENS_FILE = path.join(INSTA_DIR, 'tokens.json');
+// DRAFTS_DIR + TOKENS_FILE removed — data lives in Postgres (Sprint 3)
 const INSIGHTS_CACHE_FILE = path.join(INSTA_DIR, 'insights-cache.json');
 const MEDIA_CACHE_FILE = path.join(INSTA_DIR, 'media-cache.json');
 const CALENDAR_FILE = path.join(INSTA_DIR, 'content-calendar.json');
 
 function ensureDir() {
   fs.mkdirSync(INSTA_DIR, { recursive: true });
-  fs.mkdirSync(DRAFTS_DIR, { recursive: true });
 }
 
 // ── Internal: fetchWithTimeout ─────────────────────────────────────────────
@@ -339,62 +337,36 @@ export async function checkPublishingLimit(
   return { withinLimit: used < quota, quota, used };
 }
 
-// ── Token Management (DB-backed) ──────────────────────────────────────────
-
-/** Load active token from DB. Falls back to JSON file for migration compat. */
-export function loadTokens(): MetaTokens | null {
-  // Sync wrapper — try DB first, fall back to file
-  // Note: DB operations are async. For sync callers, we cache.
-  return _tokenCache;
-}
+// ── Token Management (DB-primary) ─────────────────────────────────────────
 
 let _tokenCache: MetaTokens | null = null;
 
-/** Async token loader from DB. */
+/**
+ * Sync token accessor (returns cached value).
+ * Call loadTokensAsync() first to populate cache from DB.
+ */
+export function loadTokens(): MetaTokens | null {
+  return _tokenCache;
+}
+
+/** Load active token from DB. Populates sync cache. */
 export async function loadTokensAsync(): Promise<MetaTokens | null> {
-  try {
-    const { rows } = await dbQuery<{
-      access_token: string;
-      expires_at: Date;
-      rotated_at: Date;
-    }>('SELECT access_token, expires_at, rotated_at FROM insta_tokens WHERE active = true LIMIT 1');
-    if (rows.length === 0) {
-      // Fallback to JSON file (pre-migration)
-      return _loadTokensFromFile();
-    }
-    const row = rows[0];
-    // We need ig_business_id and page_id from env or JSON file
-    const fileFallback = _loadTokensFromFile();
-    const t: MetaTokens = {
-      access_token: row.access_token,
-      expires_at: new Date(row.expires_at).getTime(),
-      refreshed_at: new Date(row.rotated_at).getTime(),
-      ig_business_id: fileFallback?.ig_business_id || process.env.IG_BUSINESS_ID || '',
-      page_id: fileFallback?.page_id || process.env.IG_PAGE_ID || '',
-    };
-    _tokenCache = t;
-    return t;
-  } catch {
-    return _loadTokensFromFile();
-  }
-}
-
-function _loadTokensFromFile(): MetaTokens | null {
-  if (!fs.existsSync(TOKENS_FILE)) return null;
-  try {
-    const t = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf-8'));
-    _tokenCache = t;
-    return t;
-  } catch { return null; }
-}
-
-// Initialize cache on load
-_loadTokensFromFile();
-
-export function saveTokens(t: MetaTokens): void {
+  const { rows } = await dbQuery<{
+    access_token: string;
+    expires_at: Date;
+    rotated_at: Date;
+  }>('SELECT access_token, expires_at, rotated_at FROM insta_tokens WHERE active = true LIMIT 1');
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  const t: MetaTokens = {
+    access_token: row.access_token,
+    expires_at: new Date(row.expires_at).getTime(),
+    refreshed_at: new Date(row.rotated_at).getTime(),
+    ig_business_id: process.env.INSTAGRAM_BUSINESS_ID || '',
+    page_id: process.env.META_PAGE_ID || '',
+  };
   _tokenCache = t;
-  ensureDir();
-  fs.writeFileSync(TOKENS_FILE, JSON.stringify(t, null, 2), 'utf-8');
+  return t;
 }
 
 /** Save token to DB (new row with active=true, deactivate old). */
@@ -415,8 +387,6 @@ export async function saveTokensToDb(t: MetaTokens): Promise<void> {
   } finally {
     client.release();
   }
-  // Also save to JSON file for backward compat
-  saveTokens(t);
 }
 
 export function isAuthorized(): boolean { return loadTokens() !== null; }
@@ -431,16 +401,17 @@ export function tokenExpiringSoon(): boolean {
   return tokenDaysRemaining() < 7;
 }
 
-export function markTokenFailed(): void {
-  const tokens = loadTokens();
-  if (!tokens) return;
-  tokens.refreshed_at = 0;
-  saveTokens(tokens);
+export async function markTokenFailed(): Promise<void> {
+  await dbQuery(
+    'UPDATE insta_tokens SET rotated_at = $1 WHERE active = true',
+    [new Date(0)],
+  );
+  if (_tokenCache) _tokenCache.refreshed_at = 0;
   console.log('[instagram-store] Token als fehlgeschlagen markiert — nächster Refresh wird erzwungen');
 }
 
 export async function ensureFreshToken(appId: string, appSecret: string, force = false): Promise<MetaTokens> {
-  const tokens = await loadTokensAsync() || loadTokens();
+  const tokens = await loadTokensAsync();
   if (!tokens) throw new Error('Instagram nicht autorisiert — Token fehlt.');
 
   const daysSinceRefresh = (Date.now() - (tokens.refreshed_at || 0)) / 86_400_000;
@@ -476,12 +447,7 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
     page_id: tokens.page_id,
   };
 
-  // Save to both DB and file
-  try {
-    await saveTokensToDb(refreshed);
-  } catch {
-    saveTokens(refreshed); // DB not ready yet? save file only
-  }
+  await saveTokensToDb(refreshed);
 
   // Update env file
   try {
@@ -496,7 +462,7 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
       console.log('[instagram-store] Token in ~/.config/openclaw/env aktualisiert');
     }
   } catch (envErr: any) {
-    console.warn(`[instagram-store] Env-Update fehlgeschlagen (Token nur in tokens.json): ${envErr.message}`);
+    console.warn(`[instagram-store] Env-Update fehlgeschlagen: ${envErr.message}`);
   }
 
   audit.log({ module: 'auth', action: 'auth.token_rotated', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString().slice(0, 10), forced: force } }).catch(() => {});
@@ -653,7 +619,8 @@ function rowToDraft(row: any): InstaDraft {
   };
 }
 
-export function createDraft(data: Partial<InstaDraft> & { caption: string }): InstaDraft {
+/** Insert a new draft into insta_drafts. */
+export async function createDraft(data: Partial<InstaDraft> & { caption: string }): Promise<InstaDraft> {
   const now = new Date().toISOString();
   const id = generateDraftId(data.caption);
   const status: DraftStatus = 'draft';
@@ -661,6 +628,13 @@ export function createDraft(data: Partial<InstaDraft> & { caption: string }): In
   const media_files = data.media_files || [];
 
   validateDraftFields({ status, media_type, media_files });
+
+  await dbQuery(
+    `INSERT INTO insta_drafts (id, status, caption, hashtags, media_type, media_files, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, status, data.caption, data.hashtags || [], media_type, JSON.stringify(media_files), now],
+  );
 
   const draft: InstaDraft = {
     id,
@@ -672,41 +646,14 @@ export function createDraft(data: Partial<InstaDraft> & { caption: string }): In
     media_type,
     media_files,
   };
-
-  // Always write to file synchronously (backward compat + sync callers)
-  ensureDir();
-  fs.writeFileSync(path.join(DRAFTS_DIR, `${id}.json`), JSON.stringify(draft, null, 2), 'utf-8');
-
-  // Async DB insert — fire and forget
-  dbQuery(
-    `INSERT INTO insta_drafts (id, status, caption, hashtags, media_type, media_files, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-     ON CONFLICT (id) DO NOTHING`,
-    [id, status, data.caption, data.hashtags || [], media_type, JSON.stringify(media_files), now],
-  ).catch(err => {
-    console.error(`[instagram-store] DB insert draft failed: ${err.message}`);
-  });
-
   return draft;
 }
 
-export function loadDraft(id: string): InstaDraft | null {
-  // Sync: try file first for backward compat during migration
-  const p = path.join(DRAFTS_DIR, `${id}.json`);
-  if (fs.existsSync(p)) {
-    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); }
-    catch { /* fall through to DB */ }
-  }
-  return null;
-}
-
-/** Async draft loader from DB. */
-export async function loadDraftAsync(id: string): Promise<InstaDraft | null> {
-  try {
-    const { rows } = await dbQuery('SELECT * FROM insta_drafts WHERE id = $1', [id]);
-    if (rows.length > 0) return rowToDraft(rows[0]);
-  } catch { /* DB not ready, fallback */ }
-  return loadDraft(id);
+/** Load a single draft from DB by id. */
+export async function loadDraft(id: string): Promise<InstaDraft | null> {
+  const { rows } = await dbQuery('SELECT * FROM insta_drafts WHERE id = $1', [id]);
+  if (rows.length === 0) return null;
+  return rowToDraft(rows[0]);
 }
 
 /**
@@ -725,23 +672,30 @@ export function validateDraftApproval(draft: InstaDraft): void {
  * Used by /instapost command and tested by approval-hard-rule test (spec §17.2).
  */
 export async function publish(draftId: string): Promise<InstaDraft> {
-  const draft = await loadDraftAsync(draftId) || loadDraft(draftId);
+  const draft = await loadDraft(draftId);
   if (!draft) throw new Error(`Draft "${draftId}" not found`);
   if (draft.status === 'published') throw new Error('already published');
   validateDraftApproval(draft);
   return draft;
 }
 
-export function saveDraft(d: InstaDraft): void {
+/** Update/upsert a draft in insta_drafts. */
+export async function saveDraft(d: InstaDraft): Promise<void> {
   d.updatedAt = new Date().toISOString();
-  // Async DB update
-  dbQuery(
-    `UPDATE insta_drafts SET
+
+  validateDraftFields({ status: d.status, media_type: d.media_type, media_files: d.media_files });
+
+  await dbQuery(
+    `INSERT INTO insta_drafts (id, status, caption, hashtags, media_type, media_files,
+      vision_analysis, source_session_id,
+      approved_at, approved_by, published_at, meta_post_id,
+      failed_at, failure_reason, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     ON CONFLICT (id) DO UPDATE SET
       status=$2, caption=$3, hashtags=$4, media_type=$5, media_files=$6,
       vision_analysis=$7, source_session_id=$8,
       approved_at=$9, approved_by=$10, published_at=$11, meta_post_id=$12,
-      failed_at=$13, failure_reason=$14, updated_at=$15
-     WHERE id=$1`,
+      failed_at=$13, failure_reason=$14`,
     [
       d.id, d.status, d.caption, d.hashtags, d.media_type || 'image',
       JSON.stringify(d.media_files || []),
@@ -750,53 +704,25 @@ export function saveDraft(d: InstaDraft): void {
       d.approved_at || null, d.approved_by || null,
       d.published_at || null, d.meta_post_id || d.instagram_post_id || null,
       d.failed_at || null, d.failure_reason || d.publish_error || null,
-      d.updatedAt,
+      d.createdAt || d.updatedAt, d.updatedAt,
     ],
-  ).catch(err => {
-    console.error(`[instagram-store] DB update draft failed: ${err.message}`);
-  });
-
-  // Also write to file for backward compat
-  ensureDir();
-  fs.writeFileSync(path.join(DRAFTS_DIR, `${d.id}.json`), JSON.stringify(d, null, 2), 'utf-8');
+  );
 }
 
-export function listDrafts(status?: InstaDraft['status'], limit = 20): InstaDraft[] {
-  // Sync: read from files (DB is async, this stays sync for backward compat)
-  ensureDir();
-  if (!fs.existsSync(DRAFTS_DIR)) return [];
-  const files = fs.readdirSync(DRAFTS_DIR).filter(f => f.endsWith('.json'));
-  const out: InstaDraft[] = [];
-  for (const f of files) {
-    try {
-      const d: InstaDraft = JSON.parse(fs.readFileSync(path.join(DRAFTS_DIR, f), 'utf-8'));
-      if (!d?.id || !d?.status) continue;
-      if (status && d.status !== status) continue;
-      out.push(d);
-    } catch { /* ignore broken draft file */ }
+/** List drafts from DB, optionally filtered by status. */
+export async function listDrafts(status?: InstaDraft['status'], limit = 20): Promise<InstaDraft[]> {
+  const params: unknown[] = [];
+  let sql = 'SELECT * FROM insta_drafts';
+  if (status) {
+    sql += ' WHERE status = $1';
+    params.push(status);
   }
-  out.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return out.slice(0, limit);
-}
-
-/** Async draft lister from DB. */
-export async function listDraftsAsync(status?: string, limit = 20): Promise<InstaDraft[]> {
-  try {
-    const params: unknown[] = [];
-    let sql = 'SELECT * FROM insta_drafts';
-    if (status) {
-      sql += ' WHERE status = $1';
-      params.push(status);
-    }
-    sql += ' ORDER BY created_at DESC';
-    if (limit > 0) {
-      sql += ` LIMIT ${limit}`;
-    }
-    const { rows } = await dbQuery(sql, params);
-    return rows.map(rowToDraft);
-  } catch {
-    return listDrafts(status as any, limit);
+  sql += ' ORDER BY created_at DESC';
+  if (limit > 0) {
+    sql += ` LIMIT ${limit}`;
   }
+  const { rows } = await dbQuery(sql, params);
+  return rows.map(rowToDraft);
 }
 
 // ── Content Calendar (FILE-BASED) ────────────────────────────────────────────
@@ -1004,37 +930,48 @@ const STYLE_PROFILE_FILE = path.join(INSTA_DIR, 'style-profile.json');
 
 const REQUIRED_PILLAR_IDS = ['culture', 'technology', 'style', 'health', 'freedom'] as const;
 
-export function loadStyleProfile(): StyleProfile {
-  // Always load from file — DB stores it as JSONB but file is source of truth for now
-  if (!fs.existsSync(STYLE_PROFILE_FILE)) {
-    throw new Error('Style-Profil nicht gefunden. Datei anlegen unter: artifacts/personal/instagram/style-profile.json');
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(STYLE_PROFILE_FILE, 'utf-8'));
+export async function loadStyleProfile(): Promise<StyleProfile> {
+  // Try DB first
+  const { rows } = await dbQuery<{ profile: unknown }>(
+    'SELECT profile FROM insta_style_profile WHERE active = true LIMIT 1',
+  );
+  if (rows.length > 0) {
+    const data = typeof rows[0].profile === 'string' ? JSON.parse(rows[0].profile) : rows[0].profile;
     const sv = data?.schema_version;
     if (sv !== 2) {
-      throw new Error(`Style-Profil v2 erwartet, gefunden v${sv ?? '1 (legacy)'}. Bitte Datei auf schema_version: 2 migrieren.`);
+      throw new Error(`Style-Profil v2 erwartet, gefunden v${sv ?? '1 (legacy)'}.`);
     }
     return data as StyleProfile;
-  } catch (e: any) {
-    if (e.message.includes('v2 erwartet') || e.message.includes('nicht gefunden')) throw e;
-    throw new Error(`Style-Profil laden fehlgeschlagen: ${e.message}`);
   }
+  // File fallback for initial migration (DB not yet populated)
+  if (!fs.existsSync(STYLE_PROFILE_FILE)) {
+    throw new Error('Style-Profil nicht gefunden — weder in DB noch als Datei.');
+  }
+  const data = JSON.parse(fs.readFileSync(STYLE_PROFILE_FILE, 'utf-8'));
+  const sv = data?.schema_version;
+  if (sv !== 2) {
+    throw new Error(`Style-Profil v2 erwartet, gefunden v${sv ?? '1 (legacy)'}.`);
+  }
+  return data as StyleProfile;
 }
 
-export function saveStyleProfile(profile: StyleProfile): void {
+export async function saveStyleProfile(profile: StyleProfile): Promise<void> {
+  profile.updated = new Date().toISOString();
+  // Upsert: deactivate old, insert new
+  const client = await getClient();
   try {
-    ensureDir();
-    profile.updated = new Date().toISOString();
-    fs.writeFileSync(STYLE_PROFILE_FILE, JSON.stringify(profile, null, 2), 'utf-8');
-    // Also update DB
-    dbQuery(
-      `UPDATE insta_style_profile SET profile = $1, updated_at = now() WHERE active = true`,
+    await client.query('BEGIN');
+    await client.query('UPDATE insta_style_profile SET active = false WHERE active = true');
+    await client.query(
+      'INSERT INTO insta_style_profile (profile, active, updated_at) VALUES ($1, true, now())',
       [JSON.stringify(profile)],
-    ).catch(() => {});
-  } catch (e: any) {
-    console.error('[instagram-store] Style-Profil speichern fehlgeschlagen:', e.message);
-    throw e;
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -1102,8 +1039,8 @@ export function validateStyleProfile(data: any): string | null {
   return null;
 }
 
-export function getStyleProfileSummary(): string {
-  const p = loadStyleProfile();
+export async function getStyleProfileSummary(): Promise<string> {
+  const p = await loadStyleProfile();
   const lines: string[] = [];
 
   lines.push(`Style-Profil: ${p.meta.name}`);
