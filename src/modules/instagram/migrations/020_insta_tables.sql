@@ -25,11 +25,8 @@ CREATE TABLE IF NOT EXISTS insta_drafts (
   failure_reason    TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT chk_approved_consistency CHECK (
-    (status = 'approved') = (approved_at IS NOT NULL AND approved_by IS NOT NULL)
-  ),
-  CONSTRAINT chk_published_consistency CHECK (
-    (status = 'published') = (published_at IS NOT NULL AND meta_post_id IS NOT NULL)
+  CONSTRAINT chk_published_has_post CHECK (
+    status <> 'published' OR (published_at IS NOT NULL AND meta_post_id IS NOT NULL)
   )
 );
 

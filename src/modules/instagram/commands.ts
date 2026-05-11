@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
 import {
-  loadTokens as loadInstaTokens, saveTokens as saveInstaTokens,
+  loadTokens as loadInstaTokens, saveTokensToDb as saveInstaTokensToDb,
   isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken,
   tokenDaysRemaining, tokenExpiringSoon, markTokenFailed as markInstaTokenFailed,
   fetchInsights, fetchMedia, loadInsightsCache, loadMediaCache,
@@ -16,8 +16,8 @@ import {
   loadCalendar, saveCalendar,
   loadStyleProfile, saveStyleProfile, validateStyleProfile, getStyleProfileSummary,
   publishSingleImage, publishCarousel, publishReel, checkPublishingLimit,
-} from '../../../instagram-store.js';
-import type { InstaDraft, ContentCalendarEntry, StyleProfile } from '../../../instagram-store.js';
+} from './store.js';
+import type { InstaDraft, ContentCalendarEntry, StyleProfile } from './store.js';
 import {
   saveSubmission, loadSubmission, analyzeImage, analyzeVideo,
   formatAnalysisSummary, getMediaDir, generateSubmissionId, generateDraftId,
@@ -59,13 +59,13 @@ export function initInstagramCommands(d: InstagramDeps): void {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────
 
-export function bootstrapInstagramToken(api: any): void {
+export async function bootstrapInstagramToken(api: any): Promise<void> {
   const { metaAppId, igBusinessId } = deps;
   if (process.env.INSTAGRAM_ACCESS_TOKEN) {
     try {
       const stored = loadInstaTokens();
       if (!stored) {
-        saveInstaTokens({
+        await saveInstaTokensToDb({
           access_token: process.env.INSTAGRAM_ACCESS_TOKEN,
           expires_at: Date.now() + 60 * 24 * 60 * 60 * 1000,
           refreshed_at: Date.now(),
@@ -620,7 +620,7 @@ export function registerInstagramCommands(api: any): void {
           const data: any = await res.json();
           const caption = data.content?.[0]?.text || entry.caption_idea;
 
-          const draft = createInstaDraft({
+          const draft = await createInstaDraft({
             caption,
             hashtags: entry.hashtags,
             scheduledFor: entry.date,
@@ -638,7 +638,7 @@ export function registerInstagramCommands(api: any): void {
           };
         } else {
           // Freitext-Draft
-          const draft = createInstaDraft({ caption: input });
+          const draft = await createInstaDraft({ caption: input });
           audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'freetext' } }).catch(() => {});
           return {
             text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
@@ -657,9 +657,9 @@ export function registerInstagramCommands(api: any): void {
     description: 'Instagram Drafts auflisten: /instadrafts',
     handler: async () => {
       try {
-        const drafts = listInstaDrafts();
+        const drafts = await listInstaDrafts();
         if (!drafts.length) return { text: '📝 Keine Instagram-Drafts vorhanden.' };
-        const icons: Record<string, string> = { entwurf: '📝', freigegeben: '✅', 'veröffentlicht': '📸' };
+        const icons: Record<string, string> = { draft: '📝', review: '🔍', approved: '✅', published: '📸', archived: '📦' };
         const lines = drafts.map(d => {
           const icon = icons[d.status] || '📝';
           const preview = d.caption.length > 50 ? d.caption.slice(0, 50) + '…' : d.caption;
@@ -684,7 +684,7 @@ export function registerInstagramCommands(api: any): void {
         const id = parts[0];
         if (!id) return { text: '❌ Nutzung: `/instaedit <id> [caption=...|status=...|hashtags=...]`' };
 
-        const draft = loadInstaDraft(id);
+        const draft = await loadInstaDraft(id);
         if (!draft) return { text: `❌ Draft "${id}" nicht gefunden.` };
 
         // Ohne weitere Parameter: Draft anzeigen
@@ -713,11 +713,11 @@ export function registerInstagramCommands(api: any): void {
               updates.push('Caption aktualisiert');
               break;
             case 'status':
-              if (val === 'entwurf' || val === 'freigegeben') {
-                draft.status = val;
+              if (val === 'draft' || val === 'review' || val === 'approved') {
+                draft.status = val as any;
                 updates.push(`Status → ${val}`);
               } else {
-                return { text: '❌ Status muss "entwurf" oder "freigegeben" sein.' };
+                return { text: '❌ Status muss "draft", "review" oder "approved" sein.' };
               }
               break;
             case 'hashtags':
@@ -728,7 +728,7 @@ export function registerInstagramCommands(api: any): void {
               return { text: `❌ Unbekannter Key "${key}". Erlaubt: caption, status, hashtags` };
           }
         }
-        saveInstaDraft(draft);
+        await saveInstaDraft(draft);
         audit.log({ module: 'instagram', action: 'instagram.draft_edited', entityType: 'draft', entityId: id, after: { updates } }).catch(() => {});
         return { text: `✅ Draft ${id} aktualisiert:\n${updates.join('\n')}` };
       } catch (e: any) {
@@ -844,12 +844,12 @@ export function registerInstagramCommands(api: any): void {
           draft = await publishDraftValidation(draftId);
         } catch (valErr: any) {
           if (valErr.message === 'approval required') {
-            const d = loadInstaDraft(draftId);
+            const d = await loadInstaDraft(draftId);
             audit.log({ module: 'instagram', action: 'instagram.post_failed', entityType: 'draft', entityId: draftId, after: { error: 'approval required', status: d?.status } }).catch(() => {});
-            return { text: `❌ Draft "${draftId}" hat Status "${d?.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+            return { text: `❌ Draft "${draftId}" hat Status "${d?.status}" — nur "approved" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=approved\`` };
           }
           if (valErr.message === 'already published') {
-            const d = loadInstaDraft(draftId);
+            const d = await loadInstaDraft(draftId);
             return { text: `ℹ️ Draft "${draftId}" wurde bereits veröffentlicht.\n📸 ${d?.instagram_url || '(kein Link)'}` };
           }
           return { text: `❌ ${valErr.message}` };
@@ -930,7 +930,7 @@ export function registerInstagramCommands(api: any): void {
             // Token expired (code 190) → refresh + retry once
             if (pubErr.message?.includes('"code":190') || pubErr.message?.includes('"code": 190')) {
               api.logger.warn('[executive-agent] /instapost: Token expired (code 190), refreshing...');
-              markInstaTokenFailed();
+              await markInstaTokenFailed();
               const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
               result = await doPublish(refreshed.access_token, refreshed.ig_business_id);
             } else {
@@ -939,13 +939,13 @@ export function registerInstagramCommands(api: any): void {
           }
 
           // Update draft
-          draft.status = 'veröffentlicht';
+          draft.status = 'published';
           draft.published_at = new Date().toISOString();
           draft.instagram_post_id = result.postId;
           draft.instagram_url = result.permalink;
           draft.publish_error = undefined;
-          saveInstaDraft(draft);
-          audit.log({ module: 'instagram', action: 'instagram.post_published', entityType: 'draft', entityId: draft.id, before: { status: 'freigegeben' }, after: { status: 'veröffentlicht', instagram_post_id: result.postId, format: mediaFiles.length > 1 ? 'carousel' : mediaFiles[0].type } }).catch(() => {});
+          await saveInstaDraft(draft);
+          audit.log({ module: 'instagram', action: 'instagram.post_published', entityType: 'draft', entityId: draft.id, before: { status: 'approved' }, after: { status: 'published', instagram_post_id: result.postId, format: mediaFiles.length > 1 ? 'carousel' : mediaFiles[0].type } }).catch(() => {});
 
           const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
           return {
@@ -963,10 +963,10 @@ export function registerInstagramCommands(api: any): void {
         const draftId = String(ctx.args || '').trim();
         if (draftId) {
           try {
-            const d = loadInstaDraft(draftId);
-            if (d && d.status !== 'veröffentlicht') {
+            const d = await loadInstaDraft(draftId);
+            if (d && d.status !== 'published') {
               d.publish_error = e.message;
-              saveInstaDraft(d);
+              await saveInstaDraft(d);
             }
           } catch { /* ignore */ }
           audit.log({ module: 'instagram', action: 'instagram.post_failed', entityType: 'draft', entityId: draftId, after: { error: String(e.message).slice(0, 200) } }).catch(() => {});
@@ -982,7 +982,7 @@ export function registerInstagramCommands(api: any): void {
     description: 'Veröffentlichte Instagram Posts auflisten: /instaposts',
     handler: async () => {
       try {
-        const drafts = listInstaDrafts('veröffentlicht', 50);
+        const drafts = await listInstaDrafts('published', 50);
         if (!drafts.length) return { text: '📸 Noch keine veröffentlichten Posts.' };
 
         const lines = drafts.map(d => {
@@ -1102,7 +1102,7 @@ export function registerInstagramCommands(api: any): void {
         audit.log({ module: 'instagram', action: 'instagram.draft_approved', entityType: 'submission', entityId: id, before: { status: 'generated' }, after: { status: 'approved', selected_variant: variantNr, variant_type: chosen.type } }).catch(() => {});
 
         // Create draft from chosen variant
-        const draft = createInstaDraft({
+        const draft = await createInstaDraft({
           caption: chosen.caption,
           hashtags: chosen.hashtags,
           notes: `Aus Submission ${id}, Variante ${variantNr} (${chosen.type})`,
@@ -1158,7 +1158,7 @@ export function registerInstagramCommands(api: any): void {
 
         // /instastyle reload — reload from disk + validate
         if (arg === 'reload') {
-          const profile = loadStyleProfile();
+          const profile = await loadStyleProfile();
           const error = validateStyleProfile(profile);
           if (error) {
             return { text: `Validierung fehlgeschlagen: ${error}` };
@@ -1169,7 +1169,7 @@ export function registerInstagramCommands(api: any): void {
         // /instastyle pillar <id>
         if (arg.startsWith('pillar ')) {
           const pillarId = arg.slice(7).trim();
-          const profile = loadStyleProfile();
+          const profile = await loadStyleProfile();
           const pillar = profile.pillars.find(p => p.id === pillarId);
           if (!pillar) {
             const ids = profile.pillars.map(p => p.id).join(', ');
@@ -1196,7 +1196,7 @@ export function registerInstagramCommands(api: any): void {
 
         // /instastyle dos
         if (arg === 'dos') {
-          const profile = loadStyleProfile();
+          const profile = await loadStyleProfile();
           const lines: string[] = [];
           lines.push(`Dos (${profile.dos.length})`);
           lines.push('');
@@ -1210,7 +1210,7 @@ export function registerInstagramCommands(api: any): void {
 
         // /instastyle donts
         if (arg === 'donts') {
-          const profile = loadStyleProfile();
+          const profile = await loadStyleProfile();
           const lines: string[] = [];
           lines.push(`Donts (${profile.donts.length})`);
           lines.push('');
@@ -1271,7 +1271,7 @@ export function registerInstagramCommands(api: any): void {
         }
 
         // /instastyle — overview
-        return { text: getStyleProfileSummary() };
+        return { text: await getStyleProfileSummary() };
       } catch (e: any) {
         return { text: `/instastyle Fehler: ${e.message}` };
       }
@@ -1572,7 +1572,7 @@ export function registerInstagramCommands(api: any): void {
       const fileList = mediaFiles.map(f => f.name).join(', ');
       const chosen = submission.variants?.[0];
       if (chosen) {
-        const draft = createInstaDraft({
+        const draft = await createInstaDraft({
           caption: chosen.caption,
           hashtags: chosen.hashtags,
           mediaPath: path.join(sessionDir(sessionId), 'original'),
@@ -2389,7 +2389,7 @@ export function registerInstagramCommands(api: any): void {
 
   async function generateProposals(sessionId: string, fileAnalyses: FileAnalysis[]): Promise<ContentProposal[]> {
     const apiKey = readAnthropicKey();
-    const styleContext = getStyleProfileSummary();
+    const styleContext = await getStyleProfileSummary();
     const topContext = await getTopPerformerContext();
 
     const fileDescriptions = fileAnalyses.map(fa => {
@@ -2635,7 +2635,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
 
         // Create draft from first variant
         const chosen = variants[0];
-        const draft = createInstaDraft({
+        const draft = await createInstaDraft({
           caption: chosen.caption,
           hashtags: chosen.hashtags,
           mediaPath: cutResult.output_path,
@@ -2681,7 +2681,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
         await saveSubmission(submission);
 
         const chosen = variants[0];
-        const draft = createInstaDraft({
+        const draft = await createInstaDraft({
           caption: chosen.caption,
           hashtags: chosen.hashtags,
           mediaPath: sourcePath,
@@ -2766,7 +2766,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
     adjustmentNote?: string,
   ): Promise<ContentProposal> {
     const apiKey = readAnthropicKey();
-    const styleContext = getStyleProfileSummary();
+    const styleContext = await getStyleProfileSummary();
     const topContext = await getTopPerformerContext();
 
     const fileDescriptions = fileAnalyses.map(fa => {
@@ -2973,7 +2973,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           await saveSubmission(submission);
 
           const chosen = variants[0];
-          const draft = createInstaDraft({
+          const draft = await createInstaDraft({
             caption: chosen.caption,
             hashtags: chosen.hashtags,
             mediaPath: cutResult.output_path,
@@ -3019,7 +3019,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           await saveSubmission(submission);
 
           const chosen = variants[0];
-          const draft = createInstaDraft({
+          const draft = await createInstaDraft({
             caption: chosen.caption,
             hashtags: chosen.hashtags,
             mediaPath: sourcePath,
@@ -3226,7 +3226,7 @@ export async function getInstagramBriefingLines(metaAppId: string, metaAppSecret
         } catch (e: any) {
           const errMsg = e?.message || String(e);
           if (errMsg.includes('Session has expired') || errMsg.includes('expired') || errMsg.includes('code":190') || errMsg.includes('code": 190')) {
-            markInstaTokenFailed();
+            await markInstaTokenFailed();
             try {
               const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
               const retryInsights = await fetchInsights(refreshed.access_token, refreshed.ig_business_id, true);
@@ -3244,7 +3244,7 @@ export async function getInstagramBriefingLines(metaAppId: string, metaAppSecret
       instaLines.push(`⚠️ Nicht verbunden — Token fehlt`);
     }
 
-    const openInstaDrafts = listInstaDrafts('entwurf');
+    const openInstaDrafts = await listInstaDrafts('draft');
     if (openInstaDrafts.length > 0) {
       instaLines.push(`- ${openInstaDrafts.length} Draft${openInstaDrafts.length > 1 ? 's' : ''} offen`);
     }
