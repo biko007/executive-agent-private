@@ -12,6 +12,7 @@ import {
   fetchInsights, fetchMedia, loadInsightsCache, loadMediaCache,
   saveDraft as saveInstaDraft, loadDraft as loadInstaDraft,
   listDrafts as listInstaDrafts, createDraft as createInstaDraft,
+  publish as publishDraftValidation,
   loadCalendar, saveCalendar,
   loadStyleProfile, saveStyleProfile, validateStyleProfile, getStyleProfileSummary,
   publishSingleImage, publishCarousel, publishReel, checkPublishingLimit,
@@ -837,14 +838,21 @@ export function registerInstagramCommands(api: any): void {
         const draftId = String(ctx.args || '').trim();
         if (!draftId) return { text: '❌ Nutzung: `/instapost <draft-id>`' };
 
-        const draft = loadInstaDraft(draftId);
-        if (!draft) return { text: `❌ Draft "${draftId}" nicht gefunden.` };
-
-        if (draft.status === 'veröffentlicht') {
-          return { text: `ℹ️ Draft "${draftId}" wurde bereits veröffentlicht.\n📸 ${draft.instagram_url || '(kein Link)'}` };
-        }
-        if (draft.status !== 'freigegeben') {
-          return { text: `❌ Draft "${draftId}" hat Status "${draft.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+        // Approval-Hard-Rule (spec §17.2): publish() validates approval, throws if missing
+        let draft;
+        try {
+          draft = await publishDraftValidation(draftId);
+        } catch (valErr: any) {
+          if (valErr.message === 'approval required') {
+            const d = loadInstaDraft(draftId);
+            audit.log({ module: 'instagram', action: 'instagram.post_failed', entityType: 'draft', entityId: draftId, after: { error: 'approval required', status: d?.status } }).catch(() => {});
+            return { text: `❌ Draft "${draftId}" hat Status "${d?.status}" — nur "freigegeben" kann veröffentlicht werden.\n\nStatus ändern: \`/instaedit ${draftId} status=freigegeben\`` };
+          }
+          if (valErr.message === 'already published') {
+            const d = loadInstaDraft(draftId);
+            return { text: `ℹ️ Draft "${draftId}" wurde bereits veröffentlicht.\n📸 ${d?.instagram_url || '(kein Link)'}` };
+          }
+          return { text: `❌ ${valErr.message}` };
         }
 
         // Token

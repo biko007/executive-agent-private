@@ -39,4 +39,6 @@ export {
   ensureFreshToken as ensureInstaToken,
   markTokenFailed as markInstaTokenFailed,
   fetchInsights,
+  // Approval-Hard-Rule (spec §17.2) — testable publish validation
+  createDraft, publish, validateDraftApproval,
 } from '../../../instagram-store.js';

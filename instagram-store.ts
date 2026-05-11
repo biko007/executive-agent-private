@@ -563,6 +563,29 @@ export function loadDraft(id: string): InstaDraft | null {
   catch { return null; }
 }
 
+/**
+ * Validate that a draft is approved for publishing.
+ * Throws 'approval required' if draft status is not 'freigegeben'.
+ * This is the Approval-Hard-Rule per spec §17.2.
+ */
+export function validateDraftApproval(draft: InstaDraft): void {
+  if (draft.status !== 'freigegeben') {
+    throw new Error('approval required');
+  }
+}
+
+/**
+ * Load a draft and validate approval. Throws on missing draft or missing approval.
+ * Used by /instapost command and tested by approval-hard-rule test (spec §17.2).
+ */
+export async function publish(draftId: string): Promise<InstaDraft> {
+  const draft = loadDraft(draftId);
+  if (!draft) throw new Error(`Draft "${draftId}" not found`);
+  if (draft.status === 'veröffentlicht') throw new Error('already published');
+  validateDraftApproval(draft);
+  return draft; // Approved — caller proceeds with Meta API
+}
+
 export function saveDraft(d: InstaDraft): void {
   ensureDir();
   d.updatedAt = new Date().toISOString();

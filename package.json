@@ -26,6 +26,7 @@
     "clean": "rm -rf dist",
     "check:node": "node --check dist/index.js",
     "dev:check": "bash ./dev-check.sh",
-    "lint": "eslint 'src/**/*.ts'"
+    "lint": "eslint 'src/**/*.ts'",
+    "test": "bun test"
   }
 }
