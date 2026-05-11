@@ -15,15 +15,10 @@ import {
   registerHealthCommands, initHealthCommands, syncWithingsForBriefing,
 } from "./src/modules/health/index.js";
 import type { HealthAlert } from "./src/modules/health/index.js";
-import { listSites, listDrives, searchDocuments, getRecentFiles, pollForChanges, fullSync, searchLocalIndex, getIndexAge } from "./sharepoint-store.js";
 import {
   getAllVehicles, checkDeadlines,
   registerFleetCommands, initFleetCommands,
 } from "./src/modules/fleet/index.js";
-import {
-  getLinksForEntity, addSharePointLink, addLocalLink, removeLink,
-  searchSharePointForLinking, formatLinksForTelegram,
-} from "./link-store.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import {
@@ -32,7 +27,10 @@ import {
   scanMailsForBookings, pendingBookings, pendingTripSelections,
 } from "./src/modules/mail/index.js";
 import type { UnifiedMsg, MailDraft } from "./src/modules/mail/index.js";
-import type { SpSearchResult } from "./link-store.js";
+import {
+  registerSharePointCommands, initSharePointCommands,
+  getLinksForEntity, formatLinksForTelegram,
+} from "./src/modules/sharepoint/index.js";
 import {
   registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken,
   // State exports for command-guard
@@ -719,6 +717,13 @@ export default function (api: any) {
   initHealthCommands({ sendTelegram });
   registerHealthCommands(api);
 
+  // ── SharePoint + Links → src/modules/sharepoint/commands.ts ──────────────
+  initSharePointCommands({
+    m365Enabled, tenantId, clientId, m365Secret, m365User,
+    sendTelegram, logger: api.logger,
+  });
+  registerSharePointCommands(api);
+
   // ── Instagram → src/modules/instagram/commands.ts ─────────────────────────
   const metaAppId        = process.env.META_APP_ID || '';
   const metaAppSecret    = process.env.META_APP_SECRET || '';
@@ -1032,149 +1037,6 @@ export default function (api: any) {
         }
         return { text: `❌ /briefing fehlgeschlagen: ${e.message}` };
       }
-    },
-  });
-
-  // ── SharePoint-Befehle ──────────────────────────────────────────────────────
-
-  api.registerCommand({
-    name: 'sharepoint',
-    acceptsArgs: true,
-    description: 'SharePoint: Ohne Arg → Sites auflisten. Mit Arg (siteId) → Drives auflisten.',
-    handler: async (ctx: any) => {
-      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
-        return { text: '❌ M365-Konfiguration fehlt (tenant/client/secret).' };
-      }
-      const arg = String(ctx.args || '').trim();
-      try {
-        if (!arg) {
-          const sites = await listSites(tenantId, clientId, m365Secret);
-          if (!sites.length) return { text: '📂 Keine SharePoint-Sites gefunden.' };
-          const lines = sites.map((s, i) => `${i + 1}. **${s.displayName}**\n   ID: \`${s.id}\`\n   ${s.webUrl}`);
-          return { text: `📂 **SharePoint-Sites** (${sites.length}):\n\n${lines.join('\n\n')}` };
-        } else {
-          const drives = await listDrives(tenantId, clientId, m365Secret, arg);
-          if (!drives.length) return { text: `📂 Keine Dokumentbibliotheken für Site gefunden.` };
-          const lines = drives.map((d, i) => `${i + 1}. **${d.name}** (${d.driveType})\n   ID: \`${d.id}\`\n   ${d.webUrl}`);
-          return { text: `📂 **Drives** (${drives.length}):\n\n${lines.join('\n\n')}` };
-        }
-      } catch (e: any) {
-        return { text: `❌ /sharepoint Fehler: ${e.message}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: 'spdocs',
-    acceptsArgs: true,
-    description: 'SharePoint-Suche im lokalen Index: /spdocs <suchbegriff>',
-    handler: async (ctx: any) => {
-      const query = String(ctx.args || '').trim();
-      if (!query) return { text: '❌ Verwendung: /spdocs <suchbegriff>' };
-
-      const hits = searchLocalIndex(query);
-      if (hits === null) {
-        const info = getIndexAge();
-        if (!info.exists) {
-          return { text: '📂 Kein SharePoint-Index vorhanden. Bitte zuerst /spsync ausführen.' };
-        }
-        return { text: '📂 Index ist leer. Bitte /spsync erneut ausführen.' };
-      }
-
-      if (!hits.length) return { text: `🔍 Keine Ergebnisse für „${query}" im lokalen Index.` };
-      const info = getIndexAge();
-      const syncInfo = info.syncedAt ? ` (Index: ${info.syncedAt.slice(0, 16).replace('T', ' ')}, ${info.fileCount} Dateien)` : '';
-      const lines = hits.slice(0, 10).map((h, i) => {
-        const size = h.size ? ` · ${(h.size / 1024).toFixed(0)} KB` : '';
-        const date = h.lastModifiedDateTime ? ` · ${h.lastModifiedDateTime.slice(0, 10)}` : '';
-        const snippet = h.summary ? `\n   ${h.summary}` : '';
-        return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
-      });
-      return { text: `🔍 **Ergebnisse für „${query}"** (${hits.length})${syncInfo}:\n\n${lines.join('\n\n')}` };
-    },
-  });
-
-  api.registerCommand({
-    name: 'sprecent',
-    description: 'Kürzlich geänderte SharePoint-Dateien (letzte 24h)',
-    handler: async () => {
-      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
-        return { text: '❌ M365-Konfiguration fehlt.' };
-      }
-      try {
-        const files = await getRecentFiles(tenantId, clientId, m365Secret);
-        if (!files.length) return { text: '📂 Keine Änderungen in den letzten 24 Stunden.' };
-        const top = files.slice(0, 15);
-        const lines = top.map((f, i) => {
-          const date = f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 16).replace('T', ' ') : '';
-          const size = f.size ? ` · ${(f.size / 1024).toFixed(0)} KB` : '';
-          return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.webUrl}`;
-        });
-        return { text: `📂 **Kürzlich geändert** (${files.length}, max 15):\n\n${lines.join('\n\n')}` };
-      } catch (e: any) {
-        return { text: `❌ /sprecent Fehler: ${e.message}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: 'spsync',
-    description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren',
-    handler: async () => {
-      if (!m365Enabled || !tenantId || !clientId || !m365Secret) {
-        return { text: '❌ M365-Konfiguration fehlt.' };
-      }
-      const s = loadSettings();
-      const chatId = s.telegramChatId;
-
-      const send = async (msg: string) => {
-        if (!chatId) {
-          api.logger.warn('[executive-agent] spsync: kein telegramChatId – Nachricht wird nicht gesendet');
-          return;
-        }
-        await sendTelegram(chatId, msg);
-      };
-
-      // fire-and-forget: sofort antworten, sync im Hintergrund
-      const syncUser = m365User || process.env.M365_USER || '';
-
-      (async () => {
-        const lastTotal = getIndexAge().fileCount || 10000;
-        const milestones = [25, 50, 75];
-        let nextMilestone = 0;
-        try {
-          const result = await fullSync(tenantId, clientId, m365Secret, (count) => {
-            if (nextMilestone < milestones.length) {
-              const pct = Math.round((count / lastTotal) * 100);
-              if (pct >= milestones[nextMilestone]) {
-                nextMilestone++;
-                send(`🔄 Sync läuft... ${pct}% (${count} Dateien)`).catch(() => {});
-              }
-            }
-          }, syncUser || undefined);
-
-          const durSec = (result.durationMs / 1000).toFixed(1);
-          let summary = `✅ SharePoint-Sync abgeschlossen\n\n`;
-          summary += `📂 ${result.totalFiles} Dateien · ${result.totalSites} Sites · ${result.totalDrives} Drives\n`;
-          summary += `⏱ ${durSec}s`;
-          if (result.skippedSites?.length) {
-            summary += `\n\n⚠️ ${result.skippedSites.length} Sites übersprungen: ${result.skippedSites.join(', ')} (Blacklist)`;
-          }
-          if (result.errors.length) {
-            summary += `\n\n⚠️ ${result.errors.length} Fehler:\n` + result.errors.slice(0, 5).map((e: string) => `• ${e}`).join('\n');
-          }
-          api.logger.info(`[executive-agent] spsync: ${result.totalFiles} files, ${result.totalSites} sites, ${result.totalDrives} drives, ${durSec}s`);
-          await send(summary);
-        } catch (e: any) {
-          const msg = e?.message || String(e);
-          api.logger.error(`[executive-agent] spsync error: ${msg}`);
-          await send(`❌ SharePoint-Sync fehlgeschlagen: ${msg}`);
-        }
-      })().catch(e => {
-        api.logger.error(`[executive-agent] spsync unhandled: ${e?.message || e}`);
-      });
-
-      return { text: '🔄 SharePoint-Vollsync gestartet. Fortschritt kommt via Telegram.' };
     },
   });
 
@@ -1537,203 +1399,6 @@ export default function (api: any) {
   // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
   // formatBookingMessage → src/modules/travel/enrichment.ts
 
-  // ── Dokumenten-Verknüpfung (Link-Store) ──────────────────────────────────
-
-  // Pending SP link selection state (per chat)
-  const pendingLinkSelections = new Map<string, {
-    entityType: string;
-    entityId: string;
-    results: SpSearchResult[];
-    label: string;
-    expiresAt: number;
-  }>();
-
-  api.registerCommand({
-    name: 'link',
-    acceptsArgs: true,
-    description: 'Verknüpfte Dokumente anzeigen: /link <entityType> <entityId>',
-    handler: async (ctx: any) => {
-      const parts = String(ctx.args || '').trim().split(/\s+/);
-      if (parts.length < 2) return { text: '❌ Verwendung: /link <entityType> <entityId>' };
-      const [entityType, entityId] = parts;
-      const links = getLinksForEntity(entityType, entityId);
-      if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit ${entityType} ${entityId}.` };
-      return { text: `📎 Verknüpfte Dokumente (${entityType} ${entityId}):\n\n${formatLinksForTelegram(links)}` };
-    },
-  });
-
-  api.registerCommand({
-    name: 'linkadd',
-    acceptsArgs: true,
-    description: 'Dokument verknüpfen: /linkadd <entityType> <entityId> sp <suchbegriff> | /linkadd <entityType> <entityId> local <label>',
-    handler: async (ctx: any) => {
-      const raw = String(ctx.args || '').trim();
-      const parts = raw.split(/\s+/);
-      if (parts.length < 4) return { text: '❌ Verwendung:\n/linkadd <entityType> <entityId> sp <suchbegriff>\n/linkadd <entityType> <entityId> local <label>' };
-
-      const [entityType, entityId, docType, ...rest] = parts;
-
-      if (docType === 'sp') {
-        const query = rest.join(' ');
-        if (!query) return { text: '❌ Suchbegriff fehlt.' };
-        const results = searchSharePointForLinking(query);
-        if (!results.length) return { text: `❌ Keine Treffer für "${query}" im SharePoint-Index.\nTipp: /spsync falls der Index veraltet ist.` };
-
-        const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
-        pendingLinkSelections.set(chatId, {
-          entityType,
-          entityId,
-          results,
-          label: query,
-          expiresAt: Date.now() + 5 * 60_000, // 5 min expiry
-        });
-
-        const lines = results.map((r, i) => `${i + 1}) ${r.name}\n   ${r.siteName} › ${r.path}`);
-        return { text: `📂 Gefunden (${results.length}):\n\n${lines.join('\n\n')}\n\nAntwort mit Nummer zum Verknüpfen:` };
-      }
-
-      if (docType === 'local') {
-        const label = rest.join(' ') || 'Dokument';
-        // The next file sent by user will be linked — for now create a placeholder
-        return { text: `📎 Sende jetzt die Datei. Label: "${label}"\n(Lokaler Upload wird beim nächsten Dateiempfang verknüpft)` };
-      }
-
-      return { text: '❌ Typ muss "sp" oder "local" sein.' };
-    },
-  });
-
-  api.registerCommand({
-    name: 'linkdel',
-    acceptsArgs: true,
-    description: 'Verknüpfung entfernen: /linkdel <linkId>',
-    handler: async (ctx: any) => {
-      const linkId = String(ctx.args || '').trim();
-      if (!linkId) return { text: '❌ Verwendung: /linkdel <linkId>' };
-      const removed = removeLink(linkId);
-      if (!removed) return { text: `❌ Verknüpfung "${linkId}" nicht gefunden.` };
-      return { text: `🗑 Verknüpfung ${linkId} entfernt.` };
-    },
-  });
-
-  // /fleetlink → registered by registerFleetCommands() above
-
-  // Shortcut: /triplink <id> = /link trip <id>
-  api.registerCommand({
-    name: 'triplink',
-    acceptsArgs: true,
-    description: 'Reise-Dokumente anzeigen: /triplink <id>',
-    handler: async (ctx: any) => {
-      const id = String(ctx.args || '').trim();
-      if (!id) return { text: '❌ Verwendung: /triplink <id>' };
-      const links = getLinksForEntity('trip', id);
-      if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit Reise ${id}.` };
-      return { text: `📎 Reise-Dokumente (${id}):\n\n${formatLinksForTelegram(links)}` };
-    },
-  });
-
-  // ── Browser Automation ──────────────────────────────────────────────────────
-
-  api.registerCommand({
-    name: 'browse',
-    acceptsArgs: true,
-    description: 'Webseite besuchen und zusammenfassen: /browse <url>',
-    handler: async (ctx: any) => {
-      const rawUrl = String(ctx.args || '').trim();
-      if (!rawUrl) return { text: '❌ Verwendung: /browse <url>' };
-      try {
-        const result = await openPage(rawUrl);
-        if (!result.content.trim()) {
-          return { text: `🌐 *${result.title}*\n${result.url}\n\nKein extrahierbarer Text gefunden.` };
-        }
-        const apiKey = readAnthropicKey();
-        if (apiKey) {
-          try {
-            const res = await fetchWithTimeout(
-              'https://api.anthropic.com/v1/messages',
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-api-key': apiKey,
-                  'anthropic-version': '2023-06-01',
-                },
-                body: JSON.stringify({
-                  model: 'claude-sonnet-4-20250514',
-                  max_tokens: 1024,
-                  messages: [{
-                    role: 'user',
-                    content: `Fasse den folgenden Webseiteninhalt zusammen. Kompakt auf Deutsch, maximal 500 Wörter, als Aufzählung wo sinnvoll.\n\nTitel: ${result.title}\nURL: ${result.url}\n\nInhalt:\n${result.content}`,
-                  }],
-                }),
-              },
-              60000,
-            );
-            if (res.ok) {
-              const data: any = await res.json();
-              const summary = data?.content?.[0]?.text || 'Keine Zusammenfassung erhalten.';
-              return { text: `🌐 *${result.title}*\n${result.url}\n\n${summary}` };
-            }
-          } catch (e: any) {
-            api.logger.error(`[executive-agent] /browse Claude summary failed: ${e.message}`);
-          }
-        }
-        // Fallback: raw text truncated
-        const truncated = result.content.length > 2000 ? result.content.slice(0, 2000) + '\n…(abgeschnitten)' : result.content;
-        return { text: `🌐 *${result.title}*\n${result.url}\n\n${truncated}` };
-      } catch (e: any) {
-        return { text: `❌ Fehler: ${e.message}` };
-      }
-    },
-  });
-
-  api.registerCommand({
-    name: 'screenshot',
-    acceptsArgs: true,
-    description: 'Screenshot einer Webseite: /screenshot <url>',
-    handler: async (ctx: any) => {
-      const rawUrl = String(ctx.args || '').trim();
-      if (!rawUrl) return { text: '❌ Verwendung: /screenshot <url>' };
-      try {
-        const filePath = await screenshot(rawUrl);
-        const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
-        if (chatId) {
-          await sendTelegramPhoto(chatId, filePath, `📸 ${rawUrl}`);
-          return { text: '' };
-        }
-        return { text: `📸 Screenshot gespeichert: ${filePath}` };
-      } catch (e: any) {
-        return { text: `❌ Fehler: ${e.message}` };
-      }
-    },
-  });
-
-  // Handle numeric replies for pending SP link selections
-  api.on('message_received', (event: any) => {
-    try {
-      const chatId = String(event?.metadata?.senderId || '');
-      if (!chatId) return;
-      const pending = pendingLinkSelections.get(chatId);
-      if (!pending || Date.now() > pending.expiresAt) {
-        if (pending) pendingLinkSelections.delete(chatId);
-        return;
-      }
-
-      const text = String(event?.content || '').trim();
-      const num = parseInt(text, 10);
-      if (isNaN(num) || num < 1 || num > pending.results.length) return;
-
-      const selected = pending.results[num - 1];
-      const link = addSharePointLink(pending.entityType, pending.entityId, selected, pending.label);
-      pendingLinkSelections.delete(chatId);
-
-      // Send confirmation via telegram
-      const s = loadSettings();
-      if (s.telegramChatId) {
-        sendTelegram(s.telegramChatId, `📎 ${selected.name} verknüpft mit ${pending.entityType} ${pending.entityId}\nLabel: ${link.label} | ID: ${link.id}`).catch(() => {});
-      }
-    } catch {}
-  });
-
   // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
 
   api.on('message_received', (event: any) => {
@@ -1980,28 +1645,6 @@ export default function (api: any) {
       }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Mail-Scanner Fehler: ${e.message}`);
-    }
-  }, 30 * 60_000);
-
-  // ── SharePoint-Polling (alle 30 Minuten) ────────────────────────────────────
-
-  setInterval(async () => {
-    try {
-      if (!m365Enabled || !tenantId || !clientId || !m365Secret) return;
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
-
-      const changes = await pollForChanges(tenantId, clientId, m365Secret);
-      if (!changes.length) return;
-
-      const lines = changes.slice(0, 10).map(c =>
-        `${c.changeType === 'created' ? '🆕' : '✏️'} ${c.fileName}\n   ${c.webUrl}`
-      );
-      const msg = `📂 **SharePoint-Änderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
-      await sendTelegram(s.telegramChatId, msg);
-      api.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} Änderungen gesendet`);
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] SharePoint-Poll Fehler: ${e.message}`);
     }
   }, 30 * 60_000);
 
