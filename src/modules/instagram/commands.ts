@@ -16,8 +16,8 @@ import {
   loadCalendar, saveCalendar,
   loadStyleProfile, saveStyleProfile, validateStyleProfile, getStyleProfileSummary,
   publishSingleImage, publishCarousel, publishReel, checkPublishingLimit,
-} from '../../../instagram-store.js';
-import type { InstaDraft, ContentCalendarEntry, StyleProfile } from '../../../instagram-store.js';
+} from './store.js';
+import type { InstaDraft, ContentCalendarEntry, StyleProfile } from './store.js';
 import {
   saveSubmission, loadSubmission, analyzeImage, analyzeVideo,
   formatAnalysisSummary, getMediaDir, generateSubmissionId, generateDraftId,

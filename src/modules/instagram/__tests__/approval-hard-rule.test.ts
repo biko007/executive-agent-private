@@ -20,7 +20,7 @@ const origHome = process.env.HOME;
 process.env.HOME = TEST_HOME;
 
 // Now import — paths will resolve to TEST_HOME
-const { createDraft, publish, saveDraft, validateDraftApproval } = await import('../../../../instagram-store.js');
+const { createDraft, publish, saveDraft, validateDraftApproval } = await import('../store.js');
 
 describe('Approval-Hard-Rule (Spec §17.2)', () => {
   afterAll(() => {

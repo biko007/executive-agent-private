@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { generateDraftId } from './instagram-content-engine.js';
-import * as audit from './src/shared/audit/index.js';
-import { query as dbQuery, getClient } from './src/shared/db/index.js';
+import { generateDraftId } from '../../../instagram-content-engine.js';
+import * as audit from '../../shared/audit/index.js';
+import { query as dbQuery, getClient } from '../../shared/db/index.js';
 
 // ── Zod-style validation (Spec §3.6) ───────────────────────────────────────
 

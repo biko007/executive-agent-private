@@ -14,7 +14,7 @@ const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'insta-db-test-'));
 const origHome = process.env.HOME;
 process.env.HOME = TEST_HOME;
 
-const { createDraft, saveDraft, loadDraft, listDrafts, validateDraftApproval } = await import('../../../../instagram-store.js');
+const { createDraft, saveDraft, loadDraft, listDrafts, validateDraftApproval } = await import('../store.js');
 
 describe('Instagram Store Roundtrip (Sprint 3 §6.1)', () => {
   afterAll(() => {
