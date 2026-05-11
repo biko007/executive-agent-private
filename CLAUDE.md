@@ -130,7 +130,12 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Keine laufenden Arbeiten.
+Sprint 2 Etappe a abgeschlossen (2026-05-11):
+- src/shared/ erstellt: utils, settings, m365, links
+- src/modules/travel/ und src/modules/pe/ Skeletons
+- ~600 Zeilen aus index.ts entfernt
+- K1 (system-health → instagram-store) via Dependency Injection gelöst
+- Smoke Test: 13/13 PASS
 
 ## Role
 
