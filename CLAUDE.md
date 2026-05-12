@@ -1,24 +1,29 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-11**
+**Stand: 2026-05-12**
 
-## Stand 2026-05-11
+## Stand 2026-05-12
 
-Sprint 1 + 2 vollständig abgeschlossen.
+Sprint 1 + 2 + 3 vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
   Health Monitor mit Telegram-Alerts, Sub-Commands, Smoke-Test, Deploy-Skript,
   Dashboard Status-Widget.
 - **Sprint 2 (Code-Refactor):** index.ts 9.357 → 2.165 Zeilen (-77%), 10 Module extrahiert,
-  19 audit.log() Calls in 4 Modulen, Approval-Hard-Rule im Code + CI-Test (11/11 grün).
+  19 audit.log() Calls in 4 Modulen, Approval-Hard-Rule im Code + CI-Test.
+- **Sprint 3 (Instagram Postgres):** Instagram-Modul auf Postgres migriert.
+  3 Tabellen (insta_drafts, insta_tokens, insta_style_profile). store.ts mit 10 pool.query,
+  0 File-IO für Drafts/Tokens. Token Guardian via n8n-Workflow (daily 08:00).
+  Status-Enum: englisch (draft/review/approved/published/archived).
+  16/16 Tests, 15/15 Smoke.
 
 ### Module (10)
 
 | Modul | Pfad | Commands | DI |
 |-------|------|----------|----|
 | executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
-| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice |
+| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
 | assets | src/modules/assets/ | 7 | self-contained |
 | health | src/modules/health/ | 12 | sendTelegram |
 | fleet | src/modules/fleet/ | 10 | Links |
@@ -46,13 +51,24 @@ EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
 
 Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
 
+### Token Guardian (Sprint 3)
+
+- n8n-Workflow `instagram-token-health-daily` (Cron daily 08:00 UTC)
+- Core-Endpoints: `GET /api/instagram/token-health`, `POST /api/instagram/token-refresh`
+- Auth: Bearer `CORE_SERVICE_TOKEN` (in `~/.config/openclaw/env`)
+- nginx-Routing: `/api/instagram/(token-health|token-refresh)` → Core (18789)
+
+### Instagram Status-Enum (Sprint 3)
+
+`draft` | `review` | `approved` | `published` | `archived`
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
 - ~~Helper-Endpoint POST /api/internal/notify~~ — erledigt 2026-05-11
 - ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
+- ~~Sprint 3 Instagram auf Postgres~~ — erledigt 2026-05-12
 - Optional: Meta-Token rotieren (User-Entscheidung)
-- Sprint 3 vorbereiten (Instagram-Modul auf Postgres)
 
 ### Lessons
 
@@ -115,7 +131,7 @@ health-store.ts     Gewicht, Schlaf, Trends, Alerts
 sharepoint-store.ts SP-Index, Suche, Sync
 link-store.ts       Entity-Dokument-Verknüpfungen
 withings-store.ts   Withings OAuth2 + API
-instagram-store.ts  Instagram Business API, Drafts, Content-Kalender
+src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
 ```
 
 ## Datenpfade
@@ -135,11 +151,10 @@ Mail-Parse:  artifacts/personal/mail-parsing/processed.json
 Links:       artifacts/personal/links/links.json
 SP-Index:    artifacts/personal/sharepoint/sharepoint-index.json
 Drafts:      artifacts/personal/mail-drafts/<id>.json
-Instagram:   artifacts/personal/instagram/tokens.json
-             artifacts/personal/instagram/insights-cache.json
-             artifacts/personal/instagram/media-cache.json
-             artifacts/personal/instagram/content-calendar.json
-Insta-Drafts:artifacts/personal/instagram/drafts/<id>.json
+Instagram:   Postgres insta_drafts, insta_tokens, insta_style_profile (Sprint 3)
+             artifacts/personal/instagram/insights-cache.json  (File)
+             artifacts/personal/instagram/media-cache.json     (File)
+             artifacts/personal/instagram/content-calendar.json (File)
 ```
 
 ## Netzwerk / nginx
@@ -148,9 +163,11 @@ Insta-Drafts:artifacts/personal/instagram/drafts/<id>.json
 Alle externen Endpoints laufen über nginx + Let's Encrypt SSL (app.bikobickel.de:443).
 Kein Service bindet extern — alles auf 127.0.0.1, nginx proxied:
 
-  /dashboard/*  → 127.0.0.1:18800  (Dashboard)
-  /location     → 127.0.0.1:18790  (Location-API, POST)
-  /withings/*   → 127.0.0.1:18789  (Withings Callback, via Legacy-Config)
+  /dashboard/*                          → 127.0.0.1:18800  (Dashboard)
+  /location                             → 127.0.0.1:18790  (Location-API, POST)
+  /withings/*                           → 127.0.0.1:18789  (Withings Callback, via Legacy-Config)
+  /api/instagram/token-health           → 127.0.0.1:18789  (Token Guardian, Sprint 3)
+  /api/instagram/token-refresh          → 127.0.0.1:18789  (Token Guardian, Sprint 3)
 
 nginx-Configs:  /etc/nginx/sites-available/app-bikobickel
                 /etc/nginx/sites-available/openclaw-withings (Legacy IP:8443)
@@ -175,13 +192,15 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 11 Tests über 2 Dateien
+npm test   # bun test — 16 Tests über 3 Dateien
 ```
 
 **Pflicht-Tests (Spec §17):**
 - `src/modules/instagram/__tests__/approval-hard-rule.test.ts` — Spec §17.2
   Prüft: Draft ohne Freigabe kann NICHT veröffentlicht werden.
-  NIEMALS löschen oder deaktivieren.
+  NIEMALS löschen oder deaktivieren. Nutzt echte Postgres-Test-DB.
+- `src/modules/instagram/__tests__/insta-store-db.test.ts` — Sprint 3 §6.1
+  Prüft: Roundtrip insert → load → update → filter gegen echte Postgres-DB.
 - `src/modules/executive/__tests__/health-monitor.test.ts`
   Prüft: Alert-Throttling für Service-Monitoring.
 
@@ -211,8 +230,8 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 vollständig abgeschlossen (2026-05-11). Details siehe "Stand" oben.
-Smoke Test: 13/13 PASS, npm test: 11/11 PASS.
+Sprint 1 + 2 + 3 vollständig abgeschlossen (2026-05-12). Details siehe "Stand" oben.
+Smoke Test: 15/15 PASS, npm test: 16/16 PASS.
 
 ## Role
 
