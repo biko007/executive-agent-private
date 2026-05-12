@@ -1,5 +1,6 @@
 /**
  * assets/commands — Telegram command handlers for the Assets (Immobilien) module.
+ * Sprint 5: All handlers async — store functions use DB pool.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -22,31 +23,31 @@ function maskAmount(val: number | undefined): string {
 
 // ── Command handlers ───────────────────────────────────────────────────────
 
-export function handleProperties(): { text: string } {
-  const props = listProperties();
+export async function handleProperties(): Promise<{ text: string }> {
+  const props = await listProperties();
   return { text: formatPropertyList(props) };
 }
 
-export function handleProperty(argsStr: string): { text: string } {
+export async function handleProperty(argsStr: string): Promise<{ text: string }> {
   const id = argsStr.trim();
   if (!id) return { text: '❌ Verwendung: /property <id>\nBeispiel: /property l19' };
-  const p = getProperty(id);
+  const p = await getProperty(id);
   if (!p) return { text: `❌ Gebäude "${id}" nicht gefunden.` };
   return { text: formatPropertyDetail(p) };
 }
 
-export function handlePropertyRent(argsStr: string): { text: string } {
+export async function handlePropertyRent(argsStr: string): Promise<{ text: string }> {
   const id = argsStr.trim();
   if (!id) return { text: '❌ Verwendung: /propertyrent <id>' };
-  const p = getProperty(id);
+  const p = await getProperty(id);
   if (!p) return { text: `❌ Gebäude "${id}" nicht gefunden.` };
   return { text: formatRentOverview(p) };
 }
 
-export function handleLease(argsStr: string): { text: string } {
+export async function handleLease(argsStr: string): Promise<{ text: string }> {
   const unitId = argsStr.trim();
   if (!unitId) return { text: '❌ Verwendung: /lease <unit-id>\nBeispiel: /lease l19-w1' };
-  const lease = getLeaseByUnit(unitId);
+  const lease = await getLeaseByUnit(unitId);
   if (!lease) return { text: `❌ Kein Mietvertrag für Einheit "${unitId}" gefunden.` };
   const lines = [
     `📄 Mietvertrag ${lease.id}`,
@@ -62,7 +63,7 @@ export function handleLease(argsStr: string): { text: string } {
   return { text: lines.join('\n') };
 }
 
-export function handleLeaseSet(argsStr: string): { text: string } {
+export async function handleLeaseSet(argsStr: string): Promise<{ text: string }> {
   const raw = argsStr.trim();
   const parts = raw.split(/\s+/);
   if (parts.length < 2) return { text: '❌ Verwendung: /leaseset <unit-id> mieter=Name miete=800 nk=200 kaution=2400 beginn=2025-01-01' };
@@ -75,15 +76,15 @@ export function handleLeaseSet(argsStr: string): { text: string } {
   }
 
   // Find property for this unit
-  const allProps = listProperties();
+  const allProps = await listProperties();
   const prop = allProps.find(p => p.units.some(u => u.id === unitId));
   if (!prop) return { text: `❌ Einheit "${unitId}" nicht gefunden.` };
 
-  const existing = getLeaseByUnit(unitId);
+  const existing = await getLeaseByUnit(unitId);
   const beforePayload = existing
     ? { tenant_hash: hashTenant(existing.tenant), unitId, rentNet: maskAmount(existing.rentNet), nk: maskAmount(existing.operatingCosts) }
     : null;
-  const lease = setLease(prop.id, unitId, {
+  const lease = await setLease(prop.id, unitId, {
     tenant: fields.mieter || existing?.tenant || '',
     startDate: fields.beginn || existing?.startDate || new Date().toISOString().slice(0, 10),
     endDate: fields.ende || existing?.endDate || null,
@@ -97,7 +98,7 @@ export function handleLeaseSet(argsStr: string): { text: string } {
   return { text: `✅ Mietvertrag ${lease.id} gespeichert.\nMieter: ${lease.tenant} | Miete: ${lease.rentNet} € | NK: ${lease.operatingCosts} €` };
 }
 
-export function handleCosts(argsStr: string): { text: string } {
+export async function handleCosts(argsStr: string): Promise<{ text: string }> {
   const raw = argsStr.trim();
   const parts = raw.split(/\s+/);
   if (parts.length < 3) return { text: '❌ Verwendung: /costs <property-id> <jahr> heizung=1200 wasser=800 ...\nKategorien: heizung, wasser, abwasser, muell, hausmeister, versicherung, grundsteuer, allgemeinstrom, aufzug' };
@@ -106,12 +107,12 @@ export function handleCosts(argsStr: string): { text: string } {
   const year = Number(parts[1]);
   if (!Number.isFinite(year)) return { text: '❌ Jahr muss eine Zahl sein.' };
 
-  const prop = getProperty(propertyId);
+  const prop = await getProperty(propertyId);
   if (!prop) return { text: `❌ Gebäude "${propertyId}" nicht gefunden.` };
 
   const validKeys = COST_CATEGORIES.map(c => c.key);
   const costs: Partial<Record<CostCategory, number>> = {};
-  const existing = getOperatingCosts(propertyId, year);
+  const existing = await getOperatingCosts(propertyId, year);
 
   // Start with existing costs
   if (existing) Object.assign(costs, existing.costs);
@@ -124,18 +125,14 @@ export function handleCosts(argsStr: string): { text: string } {
     costs[key] = Number(p.slice(eq + 1));
   }
 
-  // Use first distribution key as default
-  const dkId = existing?.distributionKeyId || prop.distributionKeys[0]?.id || '';
-  if (!dkId) return { text: '❌ Kein Verteilungsschlüssel definiert. Bitte zuerst im Dashboard anlegen.' };
-
-  const oc = setOperatingCosts(propertyId, year, costs, dkId);
+  const oc = await setOperatingCosts(propertyId, year, costs, '');
   const total = Object.values(oc.costs).reduce((s, v) => s + (v || 0), 0);
   const changedCategories = Object.keys(costs).filter(k => costs[k as CostCategory] != null);
   audit.log({ module: 'assets', action: 'assets.nk_created', entityType: 'operating_costs', entityId: `${propertyId}-${year}`, after: { propertyId, year, categories_count: changedCategories.length, total: maskAmount(total) } }).catch(() => {});
   return { text: `✅ Nebenkosten ${propertyId}/${year} gespeichert.\nGesamt: ${total.toLocaleString('de-DE')} €` };
 }
 
-export function handleNebenkostenabrechnung(argsStr: string): { text: string } {
+export async function handleNebenkostenabrechnung(argsStr: string): Promise<{ text: string }> {
   const raw = argsStr.trim();
   const parts = raw.split(/\s+/);
   if (parts.length < 2) return { text: '❌ Verwendung: /nebenkostenabrechnung <property-id> <jahr>' };
@@ -144,7 +141,7 @@ export function handleNebenkostenabrechnung(argsStr: string): { text: string } {
   const year = Number(parts[1]);
   if (!Number.isFinite(year)) return { text: '❌ Jahr muss eine Zahl sein.' };
 
-  const results = calculateNk(propertyId, year);
+  const results = await calculateNk(propertyId, year);
   if (!results.length) return { text: `❌ Keine abrechnungsrelevanten Einheiten für ${propertyId}/${year}.` };
   return { text: formatNkResult(propertyId, year, results) };
 }
@@ -152,14 +149,14 @@ export function handleNebenkostenabrechnung(argsStr: string): { text: string } {
 // ── Command registration ───────────────────────────────────────────────────
 
 export function registerAssetsCommands(api: any): void {
-  // Seed initial data on module load
-  try { seedInitialData(); } catch {}
+  // No-op — data comes from migration script
+  seedInitialData().catch(() => {});
 
   api.registerCommand({
     name: 'properties',
     description: 'Alle Gebäude Übersicht',
     handler: async () => {
-      try { return handleProperties(); }
+      try { return await handleProperties(); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -169,7 +166,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Gebäude-Details: /property <id>',
     handler: async (ctx: any) => {
-      try { return handleProperty(String(ctx.args || '')); }
+      try { return await handleProperty(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -179,7 +176,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Mieteinnahmen Übersicht: /propertyrent <id>',
     handler: async (ctx: any) => {
-      try { return handlePropertyRent(String(ctx.args || '')); }
+      try { return await handlePropertyRent(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -189,7 +186,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Mietvertrag anzeigen: /lease <unit-id>',
     handler: async (ctx: any) => {
-      try { return handleLease(String(ctx.args || '')); }
+      try { return await handleLease(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -199,7 +196,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Mietvertrag anlegen/updaten: /leaseset <unit-id> mieter=Name miete=800 nk=200 kaution=2400 beginn=2025-01-01',
     handler: async (ctx: any) => {
-      try { return handleLeaseSet(String(ctx.args || '')); }
+      try { return await handleLeaseSet(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -209,7 +206,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Nebenkosten eingeben: /costs <property-id> <jahr> heizung=1200 wasser=800 ...',
     handler: async (ctx: any) => {
-      try { return handleCosts(String(ctx.args || '')); }
+      try { return await handleCosts(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
@@ -219,7 +216,7 @@ export function registerAssetsCommands(api: any): void {
     acceptsArgs: true,
     description: 'Abrechnung berechnen: /nebenkostenabrechnung <property-id> <jahr>',
     handler: async (ctx: any) => {
-      try { return handleNebenkostenabrechnung(String(ctx.args || '')); }
+      try { return await handleNebenkostenabrechnung(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });
