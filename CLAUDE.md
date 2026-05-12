@@ -4,7 +4,7 @@
 
 ## Stand 2026-05-12
 
-Sprint 1 + 2 + 3 vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -16,7 +16,13 @@ Sprint 1 + 2 + 3 vollständig abgeschlossen.
   3 Tabellen (insta_drafts, insta_tokens, insta_style_profile). store.ts mit 10 pool.query,
   0 File-IO für Drafts/Tokens. Token Guardian via n8n-Workflow (daily 08:00).
   Status-Enum: englisch (draft/review/approved/published/archived).
-  16/16 Tests, 15/15 Smoke.
+- **Sprint 4 (Health Postgres):** Health-Modul auf Postgres migriert.
+  2 Tabellen (health_logs 407 Einträge, health_withings_tokens). store.ts mit 13 dbQuery,
+  withings.ts mit 7 dbQuery/getClient, 0 File-IO. pg_advisory_lock(42) für Sync-Schutz.
+  Withings-Sync via n8n-Workflow `health-withings-sync-daily` (Cron daily 07:00 UTC).
+  Core-Endpoints: POST /api/health/withings-sync, GET /api/health/sync-status.
+  Retry-on-401 mit Single-Refresh + Fatal-Error-Pfad (Telegram-Notify).
+  22/22 Tests, 15/15 Smoke.
 
 ### Module (10)
 
@@ -25,7 +31,7 @@ Sprint 1 + 2 + 3 vollständig abgeschlossen.
 | executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
 | instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
 | assets | src/modules/assets/ | 7 | self-contained |
-| health | src/modules/health/ | 12 | sendTelegram |
+| health | src/modules/health/ | 12 | sendTelegram, Postgres |
 | fleet | src/modules/fleet/ | 10 | Links |
 | travel | src/modules/travel/ | 8 | M365, Telegram, Links |
 | pe | src/modules/pe/ | 5 | self-contained |
@@ -62,13 +68,36 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 
 `draft` | `review` | `approved` | `published` | `archived`
 
+### Withings Sync (Sprint 4)
+
+- n8n-Workflow `health-withings-sync-daily` (Cron daily 07:00 UTC)
+- Core-Endpoints: `POST /api/health/withings-sync`, `GET /api/health/sync-status`
+- Auth: Bearer `CORE_SERVICE_TOKEN`
+- nginx-Routing: `/api/health/(withings-sync|sync-status)` → Core (18789)
+- Sync-Lock: `pg_advisory_lock(42)` / `pg_advisory_unlock(42)` — verhindert parallele Syncs
+- Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
+- Token-Rotation: Transaction (UPDATE active=false, INSERT new active=true)
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
 - ~~Helper-Endpoint POST /api/internal/notify~~ — erledigt 2026-05-11
 - ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
 - ~~Sprint 3 Instagram auf Postgres~~ — erledigt 2026-05-12
+- ~~Sprint 4 Health auf Postgres~~ — erledigt 2026-05-12
 - Optional: Meta-Token rotieren (User-Entscheidung)
+
+### Sprint-Roadmap
+
+| Sprint | Inhalt | Status |
+|--------|--------|--------|
+| 1 | Plattform-Hardening | abgeschlossen |
+| 2 | Code-Refactor | abgeschlossen |
+| 3 | Instagram Postgres | abgeschlossen |
+| 4 | Health Postgres | abgeschlossen |
+| 5 | Assets + Mieterdaten | offen |
+| 6 | Fleet auf Postgres | offen |
+| 7a | Banking-CSV | offen |
 
 ### Lessons
 
@@ -127,19 +156,18 @@ Daten:        ~/.openclaw/workspace/artifacts/personal/
 travel-store.ts     Trips + Segmente
 assets-store.ts     Immobilien, Units, Mietverträge, NK-Abrechnung
 fleet-store.ts      Fuhrpark, Service, TÜV, Versicherung
-health-store.ts     Gewicht, Schlaf, Trends, Alerts
 sharepoint-store.ts SP-Index, Suche, Sync
 link-store.ts       Entity-Dokument-Verknüpfungen
-withings-store.ts   Withings OAuth2 + API
 src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
+src/modules/health/store.ts     Gewicht, Schlaf, Trends, Alerts (Postgres-backed)
+src/modules/health/withings.ts  Withings OAuth2 + API, Tokens (Postgres-backed)
 ```
 
 ## Datenpfade
 
 ```
 Trips:       artifacts/personal/travel/<trip-id>.json
-Health:      artifacts/personal/health/health-log.jsonl
-Withings:    artifacts/personal/health/withings-tokens.json
+Health:      Postgres health_logs, health_withings_tokens (Sprint 4)
 Settings:    artifacts/personal/health/settings.json (inkl. Standort)
 Loc-History: artifacts/personal/location/history.jsonl
 Fleet:       artifacts/personal/fleet/vehicles.json
@@ -168,9 +196,10 @@ Kein Service bindet extern — alles auf 127.0.0.1, nginx proxied:
   /withings/*                           → 127.0.0.1:18789  (Withings Callback, via Legacy-Config)
   /api/instagram/token-health           → 127.0.0.1:18789  (Token Guardian, Sprint 3)
   /api/instagram/token-refresh          → 127.0.0.1:18789  (Token Guardian, Sprint 3)
+  /api/health/withings-sync             → 127.0.0.1:18789  (Withings Sync, Sprint 4)
+  /api/health/sync-status               → 127.0.0.1:18789  (Sync Status, Sprint 4)
 
-nginx-Configs:  /etc/nginx/sites-available/app-bikobickel
-                /etc/nginx/sites-available/openclaw-withings (Legacy IP:8443)
+nginx-Config:   /etc/nginx/sites-enabled/openclaw.conf (konsolidiert)
 Cert:           Let's Encrypt (auto-renew via certbot)
 Reload:         sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -192,7 +221,7 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 16 Tests über 3 Dateien
+npm test   # bun test — 22 Tests über 4 Dateien
 ```
 
 **Pflicht-Tests (Spec §17):**
@@ -201,6 +230,8 @@ npm test   # bun test — 16 Tests über 3 Dateien
   NIEMALS löschen oder deaktivieren. Nutzt echte Postgres-Test-DB.
 - `src/modules/instagram/__tests__/insta-store-db.test.ts` — Sprint 3 §6.1
   Prüft: Roundtrip insert → load → update → filter gegen echte Postgres-DB.
+- `src/modules/health/__tests__/health-store-db.test.ts` — Sprint 4 §5
+  Prüft: Health-Entry Roundtrip (weight, sleep, steps, heartrate, alerts) gegen echte Postgres-DB.
 - `src/modules/executive/__tests__/health-monitor.test.ts`
   Prüft: Alert-Throttling für Service-Monitoring.
 
@@ -230,8 +261,8 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 vollständig abgeschlossen (2026-05-12). Details siehe "Stand" oben.
-Smoke Test: 15/15 PASS, npm test: 16/16 PASS.
+Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen (2026-05-12). Details siehe "Stand" oben.
+Smoke Test: 15/15 PASS, npm test: 22/22 PASS.
 
 ## Role
 
