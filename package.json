@@ -28,6 +28,7 @@
     "dev:check": "bash ./dev-check.sh",
     "lint": "eslint 'src/**/*.ts'",
     "migrate:sprint3": "bun run scripts/migrate-sprint3-instagram.ts",
+    "migrate:sprint4": "bun run scripts/migrate-sprint4-health.ts",
     "test": "bun test"
   }
 }
