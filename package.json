@@ -29,6 +29,7 @@
     "lint": "eslint 'src/**/*.ts'",
     "migrate:sprint3": "bun run scripts/migrate-sprint3-instagram.ts",
     "migrate:sprint4": "bun run scripts/migrate-sprint4-health.ts",
+    "migrate:sprint5": "bun run scripts/migrate-sprint5-assets.ts",
     "test": "bun test"
   }
 }
