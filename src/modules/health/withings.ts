@@ -1,38 +1,15 @@
 /**
  * health/withings — Withings API integration (OAuth2, measures, sleep, activity).
+ *
+ * Sprint 4: Token management via Postgres (health_withings_tokens).
+ * Sync-Lock via pg_advisory_lock(42). Retry-on-401 with single refresh attempt.
  */
-import fs from 'fs';
-import path from 'path';
 import type {
   WithingsTokens, WithingsMeasure, WithingsSleep,
   WithingsActivity, WithingsWorkout,
 } from './types.js';
+import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
-
-// ── Paths ──────────────────────────────────────────────────────────────────
-
-const HEALTH_DIR = path.join(
-  process.env.HOME || '/root',
-  '.openclaw/workspace/artifacts/personal/health'
-);
-const TOKENS_FILE = path.join(HEALTH_DIR, 'withings-tokens.json');
-
-function ensureDir() { fs.mkdirSync(HEALTH_DIR, { recursive: true }); }
-
-// ── Token management ───────────────────────────────────────────────────────
-
-export function loadTokens(): WithingsTokens | null {
-  if (!fs.existsSync(TOKENS_FILE)) return null;
-  try { return JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf-8')); }
-  catch { return null; }
-}
-
-export function saveTokens(t: WithingsTokens): void {
-  ensureDir();
-  fs.writeFileSync(TOKENS_FILE, JSON.stringify(t, null, 2), 'utf-8');
-}
-
-export function isAuthorized(): boolean { return loadTokens() !== null; }
 
 // ── Internal: fetchWithTimeout ─────────────────────────────────────────────
 
@@ -76,6 +53,76 @@ async function postForm(url: string, params: Record<string, string>, token?: str
   return data.body;
 }
 
+// ── Token management (DB-backed) ────────────────────────────────────────────
+
+export async function loadTokens(): Promise<WithingsTokens | null> {
+  const { rows } = await dbQuery<{
+    access_token: string; refresh_token: string; expires_at: Date;
+    userid: string; last_sync: Date | null;
+  }>(
+    'SELECT access_token, refresh_token, expires_at, userid, last_sync FROM health_withings_tokens WHERE active = true LIMIT 1',
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return {
+    access_token: r.access_token,
+    refresh_token: r.refresh_token,
+    expires_at: r.expires_at.getTime(),
+    userid: r.userid,
+    last_sync: r.last_sync ? r.last_sync.getTime() : undefined,
+  };
+}
+
+export async function saveTokens(t: WithingsTokens): Promise<void> {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    // Deactivate all existing active tokens
+    await client.query('UPDATE health_withings_tokens SET active = false WHERE active = true');
+    // Insert new active token
+    await client.query(
+      `INSERT INTO health_withings_tokens (access_token, refresh_token, expires_at, userid, active, last_sync)
+       VALUES ($1, $2, $3, $4, true, $5)`,
+      [t.access_token, t.refresh_token, new Date(t.expires_at), t.userid, t.last_sync ? new Date(t.last_sync) : null],
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  // Audit without token values
+  audit.log({
+    module: 'health', action: 'health.token_rotated',
+    entityType: 'token', entityId: 'withings',
+    after: { userid: t.userid, expires_at: new Date(t.expires_at).toISOString() },
+  }).catch(() => {});
+}
+
+export async function isAuthorized(): Promise<boolean> {
+  const tokens = await loadTokens();
+  return tokens !== null;
+}
+
+/** Update last_sync and/or last_sync_error on the active token */
+async function updateSyncStatus(opts: { last_sync?: Date; last_sync_error?: string | null }): Promise<void> {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (opts.last_sync !== undefined) {
+    params.push(opts.last_sync);
+    sets.push(`last_sync = $${params.length}`);
+  }
+  if (opts.last_sync_error !== undefined) {
+    params.push(opts.last_sync_error);
+    sets.push(`last_sync_error = $${params.length}`);
+  }
+  if (sets.length === 0) return;
+  await dbQuery(`UPDATE health_withings_tokens SET ${sets.join(', ')} WHERE active = true`, params);
+}
+
+// ── OAuth exchange ─────────────────────────────────────────────────────────
+
 export async function exchangeCode(
   clientId: string, clientSecret: string,
   code: string, redirectUri: string
@@ -91,36 +138,162 @@ export async function exchangeCode(
     expires_at:    Date.now() + Number(b.expires_in) * 1000,
     userid:        String(b.userid),
   };
-  saveTokens(tokens);
+  await saveTokens(tokens);
   audit.log({ module: 'auth', action: 'auth.withings_reauthorized', entityType: 'token', entityId: 'withings', after: { userid: tokens.userid } }).catch(() => {});
   return tokens;
 }
 
-export async function ensureFreshToken(clientId: string, clientSecret: string): Promise<WithingsTokens> {
-  const tokens = loadTokens();
-  if (!tokens) throw new Error('Withings nicht autorisiert — bitte /withingsauth ausführen.');
+// ── Token refresh (internal) ───────────────────────────────────────────────
 
-  if (tokens.expires_at - Date.now() > 5 * 60 * 1000) return tokens;
-
+async function refreshToken(clientId: string, clientSecret: string, current: WithingsTokens): Promise<WithingsTokens> {
   const b = await postForm(TOKEN_URL, {
     action: 'requesttoken', grant_type: 'refresh_token',
     client_id: clientId, client_secret: clientSecret,
-    refresh_token: tokens.refresh_token,
+    refresh_token: current.refresh_token,
   });
   const refreshed: WithingsTokens = {
     access_token:  b.access_token,
     refresh_token: b.refresh_token,
     expires_at:    Date.now() + Number(b.expires_in) * 1000,
     userid:        String(b.userid),
-    last_sync:     tokens.last_sync,
+    last_sync:     current.last_sync,
   };
-  saveTokens(refreshed);
+  await saveTokens(refreshed);
   return refreshed;
+}
+
+// ── Ensure fresh token (with retry-on-401) ─────────────────────────────────
+
+export async function ensureFreshToken(clientId: string, clientSecret: string): Promise<WithingsTokens> {
+  const tokens = await loadTokens();
+  if (!tokens) throw new Error('Withings nicht autorisiert — bitte /withingsauth ausführen.');
+
+  // Pre-emptive refresh if expiring within 10 minutes
+  if (tokens.expires_at - Date.now() <= 10 * 60 * 1000) {
+    return refreshToken(clientId, clientSecret, tokens);
+  }
+
+  return tokens;
+}
+
+// ── Sync-Lock for withings sync (Spec §4) ───────────────────────────────────
+
+export interface WithingsSyncResult {
+  synced_count: number;
+  new_count: number;
+  last_sync: string | null;
+  status: 'ok' | 'error';
+  error?: string;
+}
+
+/**
+ * Execute a Withings sync with advisory lock and retry-on-401.
+ * This is the core sync function called by the POST /api/health/withings-sync endpoint.
+ */
+export async function executeWithingsSync(
+  clientId: string,
+  clientSecret: string,
+  syncFn: (token: string, sinceMs: number) => Promise<{ total: number; newCount: number }>,
+  sendTelegram?: (chatId: string, text: string) => Promise<any>,
+  telegramChatId?: string,
+): Promise<WithingsSyncResult> {
+  // Step 1: Acquire advisory lock
+  await dbQuery('SELECT pg_advisory_lock(42)');
+
+  try {
+    // Step 2: Load active token
+    let tokens = await loadTokens();
+    if (!tokens) throw new Error('No active Withings token');
+
+    // Step 3: Pre-emptive refresh if expiring within 10 minutes
+    if (tokens.expires_at - Date.now() <= 10 * 60 * 1000) {
+      tokens = await refreshToken(clientId, clientSecret, tokens);
+    }
+
+    const sinceMs = tokens.last_sync
+      ? tokens.last_sync - 24 * 60 * 60 * 1000  // 1 day overlap
+      : Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+    let result: { total: number; newCount: number };
+    try {
+      // Step 4: Execute sync
+      result = await syncFn(tokens.access_token, sinceMs);
+    } catch (err: any) {
+      // Step 5: If 401, single refresh attempt + retry
+      if (err?.message?.includes('401') || err?.message?.includes('error 401')) {
+        try {
+          tokens = await refreshToken(clientId, clientSecret, tokens);
+          result = await syncFn(tokens.access_token, sinceMs);
+        } catch (refreshErr: any) {
+          // Step 7: Refresh failed — fatal error
+          await updateSyncStatus({ last_sync_error: refreshErr.message });
+          audit.log({
+            module: 'health', action: 'health.withings_sync_failed',
+            entityType: 'sync', after: { reason: refreshErr.message },
+          }).catch(() => {});
+          // Telegram notify
+          if (sendTelegram && telegramChatId) {
+            sendTelegram(telegramChatId, '⚠️ Withings Auth verloren. /withingsauth aufrufen.').catch(() => {});
+          }
+          throw new Error(`Withings sync failed (refresh failed): ${refreshErr.message}`);
+        }
+      } else {
+        await updateSyncStatus({ last_sync_error: err.message });
+        throw err;
+      }
+    }
+
+    // Step 6: Success — update last_sync
+    await updateSyncStatus({ last_sync: new Date(), last_sync_error: null });
+
+    return {
+      synced_count: result.total,
+      new_count: result.newCount,
+      last_sync: new Date().toISOString(),
+      status: 'ok',
+    };
+  } finally {
+    // Step 8: Release lock
+    await dbQuery('SELECT pg_advisory_unlock(42)').catch(() => {});
+  }
+}
+
+// ── Sync status (for debug endpoint) ────────────────────────────────────────
+
+export interface WithingsSyncStatus {
+  last_sync: string | null;
+  last_sync_error: string | null;
+  days_since_sync: number | null;
+  status: 'ok' | 'stale' | 'error' | 'no_token';
+}
+
+export async function getSyncStatus(): Promise<WithingsSyncStatus> {
+  const { rows } = await dbQuery<{
+    last_sync: Date | null; last_sync_error: string | null;
+  }>(
+    'SELECT last_sync, last_sync_error FROM health_withings_tokens WHERE active = true LIMIT 1',
+  );
+
+  if (!rows.length) {
+    return { last_sync: null, last_sync_error: null, days_since_sync: null, status: 'no_token' };
+  }
+
+  const r = rows[0];
+  const daysSince = r.last_sync ? (Date.now() - r.last_sync.getTime()) / 86_400_000 : null;
+  let status: 'ok' | 'stale' | 'error' = 'ok';
+  if (r.last_sync_error) status = 'error';
+  else if (daysSince != null && daysSince > 2) status = 'stale';
+
+  return {
+    last_sync: r.last_sync?.toISOString() || null,
+    last_sync_error: r.last_sync_error,
+    days_since_sync: daysSince != null ? +daysSince.toFixed(1) : null,
+    status,
+  };
 }
 
 // ── Measures (weight, body fat, HR) ────────────────────────────────────────
 
-// meastype bitmask: 1=weight, 5=fat_free_mass, 6=fat_ratio, 8=fat_mass, 11=heart_pulse
 const MEASTYPES = '1,5,6,8,11';
 
 export async function fetchMeasures(token: string, sinceMs: number): Promise<WithingsMeasure[]> {
@@ -129,7 +302,6 @@ export async function fetchMeasures(token: string, sinceMs: number): Promise<Wit
     category: '1', lastupdate: String(Math.floor(sinceMs / 1000)),
   }, token);
 
-  // Group by date (grp.date) → one measure object per measurement session
   const byDate = new Map<number, WithingsMeasure>();
   for (const grp of b?.measuregrps || []) {
     const date = grp.date * 1000;
@@ -230,7 +402,6 @@ export async function fetchActivity(token: string, sinceMs: number): Promise<Wit
 
 // ── Workouts ───────────────────────────────────────────────────────────────
 
-// Withings activity type IDs → label
 const WORKOUT_TYPES: Record<number, string> = {
   1: 'Laufen', 2: 'Radfahren', 3: 'Schwimmen', 4: 'Wandern',
   11: 'Tennis', 22: 'Fußball', 32: 'Klettern', 35: 'Krafttraining',

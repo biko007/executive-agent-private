@@ -11,7 +11,8 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE IF NOT EXISTS health_logs (
   id              SERIAL PRIMARY KEY,
   type            TEXT NOT NULL CHECK (type IN (
-                    'weight','sleep','heartrate','steps','body_fat','activity'
+                    'weight','sleep','heartrate','steps','body_fat','activity',
+                    'symptom','log'
                   )),
   value_numeric   NUMERIC,
   unit            TEXT,

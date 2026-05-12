@@ -1,132 +1,266 @@
 /**
- * health/store — Data access layer for health entries (JSONL append-only log).
+ * health/store — Data access layer for health entries (Postgres-backed).
+ *
+ * Sprint 4: Migrated from JSONL append-only log to openclaw_core.health_logs.
  */
-import fs from 'fs';
-import path from 'path';
+import { query as dbQuery } from '../../shared/db/index.js';
 import type {
   HealthEntryType, HealthEntry, HealthSummary,
   WeightTrend, SleepTrend, TrendDirection, HealthAlert,
 } from './types.js';
 
-// ── Storage ────────────────────────────────────────────────────────────────
+// ── Valid types (must match CHECK constraint in V021) ────────────────────────
 
-const HEALTH_DIR = path.join(
-  process.env.HOME || '/root',
-  '.openclaw/workspace/artifacts/personal/health'
-);
-const LOG_FILE = path.join(HEALTH_DIR, 'health-log.jsonl');
+const VALID_TYPES = new Set<string>([
+  'weight', 'sleep', 'heartrate', 'steps', 'body_fat', 'activity', 'symptom', 'log',
+]);
 
-function ensureDir(): void {
-  fs.mkdirSync(HEALTH_DIR, { recursive: true });
+// ── Entry → DB row mapping ──────────────────────────────────────────────────
+
+function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: string, withings_id: string | null) {
+  let value_numeric: number | null = null;
+  let unit: string | null = null;
+  const metadata: Record<string, unknown> = {};
+
+  switch (entry.type) {
+    case 'weight':
+      value_numeric = entry.value ?? null;
+      unit = entry.unit || 'kg';
+      break;
+    case 'body_fat':
+      value_numeric = entry.value ?? null;
+      unit = entry.unit || '%';
+      break;
+    case 'sleep':
+      value_numeric = entry.value ?? null;
+      unit = entry.unit || 'h';
+      if (entry.deep_sleep_h != null) metadata.deep_sleep_h = entry.deep_sleep_h;
+      if (entry.rem_sleep_h != null) metadata.rem_sleep_h = entry.rem_sleep_h;
+      if (entry.light_sleep_h != null) metadata.light_sleep_h = entry.light_sleep_h;
+      if (entry.quality != null) metadata.quality = entry.quality;
+      break;
+    case 'heartrate':
+      value_numeric = entry.hr_avg ?? null;
+      unit = 'bpm';
+      if (entry.hr_min != null) metadata.hr_min = entry.hr_min;
+      if (entry.hr_max != null) metadata.hr_max = entry.hr_max;
+      break;
+    case 'steps':
+      value_numeric = entry.steps ?? null;
+      unit = 'steps';
+      if (entry.distance_m != null) metadata.distance_m = entry.distance_m;
+      if (entry.calories != null) metadata.calories = entry.calories;
+      break;
+    case 'activity':
+      value_numeric = entry.duration_min ?? null;
+      unit = 'min';
+      if (entry.activity_type != null) metadata.activity_type = entry.activity_type;
+      if (entry.steps != null) metadata.steps = entry.steps;
+      if (entry.distance_m != null) metadata.distance_m = entry.distance_m;
+      if (entry.calories != null) metadata.calories = entry.calories;
+      break;
+    case 'symptom':
+    case 'log':
+      if (entry.text) metadata.text = entry.text;
+      break;
+  }
+
+  return {
+    type: entry.type,
+    value_numeric,
+    unit,
+    source: entry.source || 'manual',
+    metadata: JSON.stringify(metadata),
+    recorded_at,
+    withings_id,
+  };
 }
 
-// ── Dedup check ────────────────────────────────────────────────────────────
+// ── DB row → HealthEntry mapping ─────────────────────────────────────────────
+
+function rowToEntry(row: any): HealthEntry {
+  const m = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+  const entry: HealthEntry = {
+    id: row.withings_id || String(row.id),
+    type: row.type,
+    timestamp: row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at),
+    source: row.source,
+  };
+
+  switch (row.type) {
+    case 'weight':
+      entry.value = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      entry.unit = row.unit;
+      break;
+    case 'body_fat':
+      entry.value = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      entry.unit = row.unit;
+      break;
+    case 'sleep':
+      entry.value = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      entry.unit = row.unit;
+      if (m.deep_sleep_h != null) entry.deep_sleep_h = m.deep_sleep_h;
+      if (m.rem_sleep_h != null) entry.rem_sleep_h = m.rem_sleep_h;
+      if (m.light_sleep_h != null) entry.light_sleep_h = m.light_sleep_h;
+      if (m.quality != null) entry.quality = m.quality;
+      break;
+    case 'heartrate':
+      entry.hr_avg = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      if (m.hr_min != null) entry.hr_min = m.hr_min;
+      if (m.hr_max != null) entry.hr_max = m.hr_max;
+      break;
+    case 'steps':
+      entry.steps = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      if (m.distance_m != null) entry.distance_m = m.distance_m;
+      if (m.calories != null) entry.calories = m.calories;
+      break;
+    case 'activity':
+      entry.duration_min = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      if (m.activity_type != null) entry.activity_type = m.activity_type;
+      if (m.steps != null) entry.steps = m.steps;
+      if (m.distance_m != null) entry.distance_m = m.distance_m;
+      if (m.calories != null) entry.calories = m.calories;
+      break;
+    case 'symptom':
+    case 'log':
+      if (m.text) entry.text = m.text;
+      break;
+  }
+
+  return entry;
+}
+
+// ── Validation ──────────────────────────────────────────────────────────────
+
+function validateEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): void {
+  if (!entry.type || !VALID_TYPES.has(entry.type)) {
+    throw new Error(`Invalid type "${entry.type}". Must be one of: ${Array.from(VALID_TYPES).join(', ')}`);
+  }
+}
+
+// ── Dedup check ─────────────────────────────────────────────────────────────
 
 /** Returns true if an entry with the same type and date already exists */
-export function hasEntryForDate(type: HealthEntryType, dateStr: string): boolean {
-  const all = readEntries();
-  return all.some(e => e.type === type && e.timestamp.slice(0, 10) === dateStr);
+export async function hasEntryForDate(type: HealthEntryType, dateStr: string): Promise<boolean> {
+  const { rows } = await dbQuery<{ found: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM health_logs WHERE type = $1 AND recorded_at::date = $2::date
+     ) AS found`,
+    [type, dateStr],
+  );
+  return rows[0]?.found === true;
 }
 
 /**
  * Upsert: if an entry for this type+date exists with a lower value, replace it.
  * Returns 'inserted' | 'updated' | 'skipped'.
  */
-export function upsertEntryForDate(
+export async function upsertEntryForDate(
   dateStr: string,
   ts: Date,
   entry: Omit<HealthEntry, 'id' | 'timestamp'>
-): 'inserted' | 'updated' | 'skipped' {
-  ensureDir();
-  if (!fs.existsSync(LOG_FILE)) {
-    appendEntryWithTimestamp(ts, entry);
+): Promise<'inserted' | 'updated' | 'skipped'> {
+  validateEntry(entry);
+  const row = entryToRow(entry, ts.toISOString(), `${ts.getTime()}-${Math.random().toString(36).slice(2, 6)}`);
+
+  // Check for existing entry on this date
+  const existing = await dbQuery<{ id: number; value_numeric: string | null }>(
+    `SELECT id, value_numeric FROM health_logs
+     WHERE type = $1 AND recorded_at::date = $2::date AND source = $3
+     ORDER BY value_numeric DESC NULLS LAST LIMIT 1`,
+    [entry.type, dateStr, row.source],
+  );
+
+  if (existing.rows.length === 0) {
+    await dbQuery(
+      `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+    );
     return 'inserted';
   }
-  const lines = fs.readFileSync(LOG_FILE, 'utf-8').split('\n').filter(Boolean);
-  let foundIdx = -1;
-  let foundEntry: HealthEntry | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    try {
-      const e = JSON.parse(lines[i]) as HealthEntry;
-      if (e.type === entry.type && e.timestamp.slice(0, 10) === dateStr) {
-        foundIdx = i;
-        foundEntry = e;
-      }
-    } catch { /* skip */ }
-  }
-  if (foundIdx === -1) {
-    appendEntryWithTimestamp(ts, entry);
-    return 'inserted';
-  }
-  // Only update if new value is higher (e.g. final sleep > intermediate)
-  if (Number(entry.value || 0) <= Number(foundEntry!.value || 0)) {
+
+  const oldValue = existing.rows[0].value_numeric != null ? Number(existing.rows[0].value_numeric) : 0;
+  const newValue = row.value_numeric != null ? Number(row.value_numeric) : 0;
+
+  if (newValue <= oldValue) {
     return 'skipped';
   }
-  // Replace the line in-place
-  const updated: HealthEntry = {
-    ...foundEntry!,
-    ...entry,
-    id: foundEntry!.id,
-    timestamp: foundEntry!.timestamp,
-  };
-  lines[foundIdx] = JSON.stringify(updated);
-  fs.writeFileSync(LOG_FILE, lines.join('\n') + '\n', 'utf-8');
+
+  // Update the existing row with higher value
+  await dbQuery(
+    `UPDATE health_logs SET value_numeric = $1, unit = $2, metadata = $3, withings_id = $4
+     WHERE id = $5`,
+    [row.value_numeric, row.unit, row.metadata, row.withings_id, existing.rows[0].id],
+  );
   return 'updated';
 }
 
-// ── Append-only write ──────────────────────────────────────────────────────
+// ── Append-only write ───────────────────────────────────────────────────────
 
-export function appendEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): HealthEntry {
-  ensureDir();
-  const e: HealthEntry = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  fs.appendFileSync(LOG_FILE, JSON.stringify(e) + '\n', 'utf-8');
-  return e;
+export async function appendEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): Promise<HealthEntry> {
+  validateEntry(entry);
+  const now = new Date();
+  const withings_id = `${now.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
+  const row = entryToRow(entry, now.toISOString(), withings_id);
+
+  await dbQuery(
+    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (source, type, withings_id) WHERE withings_id IS NOT NULL DO NOTHING`,
+    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+  );
+
+  return { id: withings_id, timestamp: now.toISOString(), ...entry };
 }
 
-export function appendEntryWithTimestamp(
+export async function appendEntryWithTimestamp(
   ts: Date,
   entry: Omit<HealthEntry, 'id' | 'timestamp'>
-): HealthEntry {
-  ensureDir();
-  const e: HealthEntry = {
-    id: `${ts.getTime()}-${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: ts.toISOString(),
-    ...entry,
-  };
-  fs.appendFileSync(LOG_FILE, JSON.stringify(e) + '\n', 'utf-8');
-  return e;
+): Promise<HealthEntry> {
+  validateEntry(entry);
+  const withings_id = `${ts.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
+  const row = entryToRow(entry, ts.toISOString(), withings_id);
+
+  await dbQuery(
+    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (source, type, withings_id) WHERE withings_id IS NOT NULL DO NOTHING`,
+    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+  );
+
+  return { id: withings_id, timestamp: ts.toISOString(), ...entry };
 }
 
-// ── Read ───────────────────────────────────────────────────────────────────
+// ── Read ────────────────────────────────────────────────────────────────────
 
-export function readEntries(since?: Date, until?: Date): HealthEntry[] {
-  ensureDir();
-  if (!fs.existsSync(LOG_FILE)) return [];
+export async function readEntries(since?: Date, until?: Date): Promise<HealthEntry[]> {
+  let sql = 'SELECT * FROM health_logs WHERE 1=1';
+  const params: unknown[] = [];
 
-  const lines = fs.readFileSync(LOG_FILE, 'utf-8').split('\n').filter(Boolean);
-  const out: HealthEntry[] = [];
-  for (const line of lines) {
-    try {
-      const e = JSON.parse(line) as HealthEntry;
-      const ts = new Date(e.timestamp);
-      if (since && ts < since) continue;
-      if (until && ts > until) continue;
-      out.push(e);
-    } catch { /* corrupt line → skip */ }
+  if (since) {
+    params.push(since.toISOString());
+    sql += ` AND recorded_at >= $${params.length}`;
   }
-  return out;
+  if (until) {
+    params.push(until.toISOString());
+    sql += ` AND recorded_at <= $${params.length}`;
+  }
+  sql += ' ORDER BY recorded_at ASC';
+
+  const { rows } = await dbQuery(sql, params);
+  return rows.map(rowToEntry);
 }
 
-export function lastEntry(type: HealthEntryType): HealthEntry | null {
-  const all = readEntries().filter(e => e.type === type);
-  return all.length ? all[all.length - 1] : null;
+export async function lastEntry(type: HealthEntryType): Promise<HealthEntry | null> {
+  const { rows } = await dbQuery(
+    'SELECT * FROM health_logs WHERE type = $1 ORDER BY recorded_at DESC LIMIT 1',
+    [type],
+  );
+  return rows.length ? rowToEntry(rows[0]) : null;
 }
 
-// ── Summary ────────────────────────────────────────────────────────────────
+// ── Summary ─────────────────────────────────────────────────────────────────
 
 export function summarize(entries: HealthEntry[]): HealthSummary {
   const weights: number[]      = [];
@@ -247,18 +381,23 @@ export function formatSummary(s: HealthSummary, label: string): string {
   return lines.join('\n');
 }
 
-// ── Trend Analysis ─────────────────────────────────────────────────────────
+// ── Trend Analysis ──────────────────────────────────────────────────────────
 
 function numAvg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
 
-export function getWeightTrend(days: 7 | 30 | 90): WeightTrend | null {
-  const since = new Date(Date.now() - days * 86_400_000);
-  const entries = readEntries(since).filter(e => e.type === 'weight' && e.value != null);
-  if (!entries.length) return null;
+export async function getWeightTrend(days: 7 | 30 | 90): Promise<WeightTrend | null> {
+  const { rows } = await dbQuery<{ value_numeric: string }>(
+    `SELECT value_numeric FROM health_logs
+     WHERE type = 'weight' AND value_numeric IS NOT NULL
+       AND recorded_at > now() - $1::interval
+     ORDER BY recorded_at ASC`,
+    [`${days} days`],
+  );
+  if (!rows.length) return null;
 
-  const values = entries.map(e => e.value!);
+  const values = rows.map(r => Number(r.value_numeric));
   const current = values[values.length - 1];
   const first = values[0];
   const change = +(current - first).toFixed(2);
@@ -275,18 +414,25 @@ export function getWeightTrend(days: 7 | 30 | 90): WeightTrend | null {
   };
 }
 
-export function getSleepTrend(days: 7 | 30 | 90): SleepTrend | null {
-  const since = new Date(Date.now() - days * 86_400_000);
-  const entries = readEntries(since).filter(e => e.type === 'sleep' && e.value != null);
-  if (!entries.length) return null;
+export async function getSleepTrend(days: 7 | 30 | 90): Promise<SleepTrend | null> {
+  const { rows } = await dbQuery<{ recorded_at: Date; value_numeric: string; metadata: any }>(
+    `SELECT recorded_at, value_numeric, metadata FROM health_logs
+     WHERE type = 'sleep' AND value_numeric IS NOT NULL
+       AND recorded_at > now() - $1::interval
+     ORDER BY recorded_at ASC`,
+    [`${days} days`],
+  );
+  if (!rows.length) return null;
 
-  // Aggregate sessions per night (sum durations, collect qualities)
+  // Aggregate sessions per night
   const byNight = new Map<string, { total: number; qualities: number[] }>();
-  for (const e of entries) {
-    const day = e.timestamp.slice(0, 10);
+  for (const r of rows) {
+    const day = r.recorded_at.toISOString().slice(0, 10);
+    const val = Number(r.value_numeric);
+    const m = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
     const prev = byNight.get(day) || { total: 0, qualities: [] };
-    prev.total += e.value!;
-    if (e.quality != null && e.quality > 0) prev.qualities.push(e.quality);
+    prev.total += val;
+    if (m.quality != null && m.quality > 0) prev.qualities.push(m.quality);
     byNight.set(day, prev);
   }
 
@@ -302,18 +448,20 @@ export function getSleepTrend(days: 7 | 30 | 90): SleepTrend | null {
   };
 }
 
-export function checkHealthAlerts(): HealthAlert[] {
+export async function checkHealthAlerts(): Promise<HealthAlert[]> {
   const alerts: HealthAlert[] = [];
-  const now = Date.now();
 
   // Sleep < 6h on 3+ of last 7 nights → warning
-  const sevenDaysAgo = new Date(now - 7 * 86_400_000);
-  const recentSleep = readEntries(sevenDaysAgo).filter(e => e.type === 'sleep' && e.value != null);
-  // Aggregate sessions per night (sum durations)
+  const { rows: sleepRows } = await dbQuery<{ recorded_at: Date; value_numeric: string }>(
+    `SELECT recorded_at, value_numeric FROM health_logs
+     WHERE type = 'sleep' AND value_numeric IS NOT NULL
+       AND recorded_at > now() - interval '7 days'
+     ORDER BY recorded_at ASC`,
+  );
   const sleepByDay = new Map<string, number>();
-  for (const s of recentSleep) {
-    const day = s.timestamp.slice(0, 10);
-    sleepByDay.set(day, (sleepByDay.get(day) ?? 0) + (s.value ?? 0));
+  for (const r of sleepRows) {
+    const day = r.recorded_at.toISOString().slice(0, 10);
+    sleepByDay.set(day, (sleepByDay.get(day) ?? 0) + Number(r.value_numeric));
   }
   const shortNights = Array.from(sleepByDay.values()).filter(h => h < 6).length;
   if (shortNights >= 3) {
@@ -327,16 +475,19 @@ export function checkHealthAlerts(): HealthAlert[] {
   }
 
   // Weight change > 2kg in 7 days → warning
-  const wt = getWeightTrend(7);
+  const wt = await getWeightTrend(7);
   if (wt && Math.abs(wt.change) > 2) {
     const dir = wt.change > 0 ? '+' : '';
     alerts.push({ type: 'weight_change', severity: 'warning', message: `Gewichtsveränderung ${dir}${wt.change} kg in 7 Tagen` });
   }
 
   // No Withings data for 3+ days → info
-  const threeDaysAgo = new Date(now - 3 * 86_400_000);
-  const recentWithings = readEntries(threeDaysAgo).filter(e => e.source === 'withings');
-  if (!recentWithings.length) {
+  const { rows: recentRows } = await dbQuery<{ found: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM health_logs WHERE source = 'withings' AND recorded_at > now() - interval '3 days'
+     ) AS found`,
+  );
+  if (!recentRows[0]?.found) {
     alerts.push({ type: 'no_withings_data', severity: 'info', message: 'Keine Withings-Daten seit 3+ Tagen' });
   }
 

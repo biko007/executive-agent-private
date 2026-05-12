@@ -1,5 +1,7 @@
 /**
  * health/commands — Telegram command handlers for the Health + Withings module.
+ *
+ * Sprint 4: All store/withings calls are now async (DB-backed).
  */
 import http from 'node:http';
 import {
@@ -9,9 +11,11 @@ import {
   hasEntryForDate, upsertEntryForDate, appendEntryWithTimestamp,
 } from './store.js';
 import {
-  buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized,
+  buildAuthUrl, exchangeCode, ensureFreshToken, saveTokens, isAuthorized, loadTokens,
   fetchMeasures, fetchSleep, fetchActivity, fetchWorkouts,
+  executeWithingsSync, getSyncStatus,
 } from './withings.js';
+import type { WithingsSyncResult, WithingsSyncStatus } from './withings.js';
 import {
   loadSettings, saveSettings,
 } from '../../shared/settings/index.js';
@@ -42,7 +46,7 @@ let withingsCallbackServer: http.Server | null = null;
 // ── Briefing pre-sync (exported for briefing use) ──────────────────────────
 
 export async function syncWithingsForBriefing(): Promise<void> {
-  if (!withingsClientId || !withingsClientSecret || !isAuthorized()) return;
+  if (!withingsClientId || !withingsClientSecret || !(await isAuthorized())) return;
   try {
     const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
     const sinceMs = Date.now() - 36 * 60 * 60 * 1000; // last 36h to catch morning updates
@@ -50,33 +54,121 @@ export async function syncWithingsForBriefing(): Promise<void> {
     const measures = await fetchMeasures(tokens.access_token, sinceMs).catch(() => [] as any[]);
     for (const m of measures) {
       const dateStr = m.date.toISOString().slice(0, 10);
-      if (m.weight_kg != null && !hasEntryForDate('weight', dateStr))
-        appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-      if (m.fat_ratio_pct != null && !hasEntryForDate('body_fat', dateStr))
-        appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
-      if (m.hr_bpm != null && !hasEntryForDate('heartrate', dateStr))
-        appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+      if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr)))
+        await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+      if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr)))
+        await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+      if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr)))
+        await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
     }
 
     const sleeps = await fetchSleep(tokens.access_token, sinceMs).catch(() => [] as any[]);
     for (const s of sleeps) {
       const ts = new Date(`${s.date}T03:00:00.000Z`);
-      upsertEntryForDate(s.date, ts, {
+      await upsertEntryForDate(s.date, ts, {
         type: 'sleep', value: s.total_h, unit: 'h',
         deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
         quality: s.score, source: 'withings',
       });
     }
 
-    saveTokens({ ...tokens, last_sync: Date.now() });
+    await saveTokens({ ...tokens, last_sync: Date.now() });
   } catch (e: any) {
     // Logged by caller if needed — don't crash briefing
   }
 }
 
+// ── Withings sync for n8n endpoint ─────────────────────────────────────────
+
+export async function triggerWithingsSync(): Promise<WithingsSyncResult> {
+  if (!withingsClientId || !withingsClientSecret) {
+    throw new Error('WITHINGS_CLIENT_ID or WITHINGS_CLIENT_SECRET not set');
+  }
+
+  const settings = loadSettings();
+  const chatId = settings.telegramChatId;
+
+  return executeWithingsSync(
+    withingsClientId,
+    withingsClientSecret,
+    async (token, sinceMs) => {
+      let total = 0;
+      let newCount = 0;
+
+      // Measures
+      const measures = await fetchMeasures(token, sinceMs).catch(() => []);
+      for (const m of measures) {
+        total++;
+        const dateStr = m.date.toISOString().slice(0, 10);
+        if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr))) {
+          await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+          newCount++;
+        }
+        if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
+          await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+        }
+        if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
+          await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+        }
+      }
+
+      // Sleep
+      const sleeps = await fetchSleep(token, sinceMs).catch(() => []);
+      for (const s of sleeps) {
+        total++;
+        const ts = new Date(`${s.date}T03:00:00.000Z`);
+        const result = await upsertEntryForDate(s.date, ts, {
+          type: 'sleep', value: s.total_h, unit: 'h',
+          deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
+          quality: s.score, source: 'withings',
+        });
+        if (result === 'inserted') newCount++;
+      }
+
+      // Activity
+      const activities = await fetchActivity(token, sinceMs).catch(() => []);
+      for (const a of activities) {
+        total++;
+        const ts = new Date(`${a.date}T12:00:00.000Z`);
+        if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
+          await appendEntryWithTimestamp(ts, {
+            type: 'steps', steps: a.steps, distance_m: a.distance_m,
+            calories: a.calories, source: 'withings',
+          });
+          newCount++;
+        }
+        if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
+          await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+        }
+      }
+
+      // Workouts
+      const workouts = await fetchWorkouts(token, sinceMs).catch(() => []);
+      for (const w of workouts) {
+        total++;
+        if (await hasEntryForDate('activity', w.date)) continue;
+        const ts = new Date(`${w.date}T12:00:00.000Z`);
+        await appendEntryWithTimestamp(ts, {
+          type: 'activity', activity_type: w.activity_type,
+          duration_min: w.duration_min, steps: w.steps,
+          distance_m: w.distance_m, calories: w.calories,
+          hr_avg: w.hr_avg, source: 'withings',
+        });
+        newCount++;
+      }
+
+      return { total, newCount };
+    },
+    _deps?.sendTelegram,
+    chatId,
+  );
+}
+
+export { getSyncStatus };
+
 // ── Weekly Health Report ───────────────────────────────────────────────────
 
-function generateWeeklyHealthReport(): string {
+async function generateWeeklyHealthReport(): Promise<string> {
   const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
   const kwDate = new Date(inBerlin);
   kwDate.setDate(kwDate.getDate() + 3 - ((kwDate.getDay() + 6) % 7));
@@ -86,8 +178,8 @@ function generateWeeklyHealthReport(): string {
   const parts: string[] = [`📊 Wöchentlicher Health-Report (KW ${kw})\n`];
 
   // Weight
-  const wt7 = getWeightTrend(7);
-  const wt30 = getWeightTrend(30);
+  const wt7 = await getWeightTrend(7);
+  const wt30 = await getWeightTrend(30);
   parts.push('⚖️ Gewicht:');
   if (wt7) {
     const weekStart = wt7.current - wt7.change;
@@ -105,7 +197,7 @@ function generateWeeklyHealthReport(): string {
   parts.push('');
 
   // Sleep
-  const st7 = getSleepTrend(7);
+  const st7 = await getSleepTrend(7);
   parts.push('😴 Schlaf:');
   if (st7) {
     parts.push(`   Durchschnitt: ${st7.avgDuration}h  |  Min: ${st7.minDuration}h  |  Max: ${st7.maxDuration}h`);
@@ -117,7 +209,7 @@ function generateWeeklyHealthReport(): string {
   parts.push('');
 
   // Alerts
-  const alerts = checkHealthAlerts();
+  const alerts = await checkHealthAlerts();
   if (alerts.length) {
     const alertIcons: Record<string, string> = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
     parts.push('🚨 Alerts:');
@@ -138,19 +230,18 @@ export function registerHealthCommands(api: any): void {
     name: 'weight',
     acceptsArgs: true,
     description: 'Letztes Gewicht anzeigen oder manuell loggen: /weight [kg]',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const raw = String(ctx.args || '').trim();
 
       if (!raw) {
-        const entries = readEntries().filter((e: any) => e.type === 'weight');
-        if (!entries.length) return { text: '⚖️ Noch kein Gewicht gespeichert.\nManuell: /weight 78.5\nOder: /healthsync' };
-        const last = entries[entries.length - 1];
-        return { text: `⚖️ Letztes Gewicht: ${last.value?.toFixed(1)} kg\n🕐 ${last.timestamp.slice(0, 16).replace('T', ' ')}` };
+        const le = await lastEntry('weight');
+        if (!le) return { text: '⚖️ Noch kein Gewicht gespeichert.\nManuell: /weight 78.5\nOder: /healthsync' };
+        return { text: `⚖️ Letztes Gewicht: ${le.value?.toFixed(1)} kg\n🕐 ${le.timestamp.slice(0, 16).replace('T', ' ')}` };
       }
 
       const kg = parseFloat(raw.replace(',', '.'));
       if (isNaN(kg) || kg < 20 || kg > 300) return { text: '❌ Verwendung: /weight 78.5' };
-      const e = appendEntry({ type: 'weight', value: kg, unit: 'kg' });
+      const e = await appendEntry({ type: 'weight', value: kg, unit: 'kg' });
       audit.log({ module: 'health', action: 'health.weight_logged', entityType: 'health_entry', entityId: e.id, after: { type: 'weight', source: 'manual' } }).catch(() => {});
       return { text: `⚖️ Gewicht gespeichert: ${kg.toFixed(1)} kg\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
@@ -161,7 +252,7 @@ export function registerHealthCommands(api: any): void {
     name: 'sleep',
     acceptsArgs: true,
     description: 'Schlaf loggen: /sleep <stunden> [qualität 1-5]',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const parts = String(ctx.args || '').trim().split(/\s+/);
       const hours = parseFloat(parts[0]?.replace(',', '.') || '');
       if (isNaN(hours) || hours < 0 || hours > 24) {
@@ -171,7 +262,7 @@ export function registerHealthCommands(api: any): void {
       if (quality !== undefined && (isNaN(quality) || quality < 1 || quality > 5)) {
         return { text: '❌ Qualität muss zwischen 1 und 5 liegen.' };
       }
-      const e = appendEntry({ type: 'sleep', value: hours, unit: 'h', quality });
+      const e = await appendEntry({ type: 'sleep', value: hours, unit: 'h', quality });
       audit.log({ module: 'health', action: 'health.sleep_logged', entityType: 'health_entry', entityId: e.id, after: { type: 'sleep', source: 'manual' } }).catch(() => {});
       const qStr = quality !== undefined ? `  |  Qualität: ${quality}/5` : '';
       return { text: `😴 Schlaf gespeichert: ${hours.toFixed(1)} h${qStr}\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
@@ -183,10 +274,10 @@ export function registerHealthCommands(api: any): void {
     name: 'symptom',
     acceptsArgs: true,
     description: 'Symptom loggen: /symptom <text>',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const text = String(ctx.args || '').trim();
       if (!text) return { text: '❌ Verwendung: /symptom Kopfschmerzen seit heute Mittag' };
-      const e = appendEntry({ type: 'symptom', text });
+      const e = await appendEntry({ type: 'symptom', text });
       audit.log({ module: 'health', action: 'health.symptom_added', entityType: 'health_entry', entityId: e.id, after: { type: 'symptom', source: 'manual' } }).catch(() => {});
       return { text: `🤒 Symptom gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
@@ -197,10 +288,10 @@ export function registerHealthCommands(api: any): void {
     name: 'healthlog',
     acceptsArgs: true,
     description: 'Freitext-Gesundheitseintrag: /healthlog <text>',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const text = String(ctx.args || '').trim();
       if (!text) return { text: '❌ Verwendung: /healthlog Heute Sport gemacht, fühle mich gut.' };
-      const e = appendEntry({ type: 'log', text });
+      const e = await appendEntry({ type: 'log', text });
       audit.log({ module: 'health', action: 'health.log_added', entityType: 'health_entry', entityId: e.id, after: { type: 'log', source: 'manual' } }).catch(() => {});
       return { text: `📝 Health-Log gespeichert:\n„${text}"\n🕐 ${e.timestamp.slice(0, 16).replace('T', ' ')}` };
     },
@@ -210,9 +301,9 @@ export function registerHealthCommands(api: any): void {
   api.registerCommand({
     name: 'healthweek',
     description: 'Health-Zusammenfassung letzte 7 Tage',
-    handler: () => {
+    handler: async () => {
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const entries = readEntries(since);
+      const entries = await readEntries(since);
       if (!entries.length) return { text: '📭 Keine Health-Einträge in den letzten 7 Tagen.' };
       return { text: formatSummary(summarize(entries), 'Woche') };
     },
@@ -222,9 +313,9 @@ export function registerHealthCommands(api: any): void {
   api.registerCommand({
     name: 'healthmonth',
     description: 'Health-Zusammenfassung letzter Monat (30 Tage)',
-    handler: () => {
+    handler: async () => {
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      const entries = readEntries(since);
+      const entries = await readEntries(since);
       if (!entries.length) return { text: '📭 Keine Health-Einträge in den letzten 30 Tagen.' };
       return { text: formatSummary(summarize(entries), 'Monat') };
     },
@@ -235,13 +326,13 @@ export function registerHealthCommands(api: any): void {
     name: 'healthtrend',
     acceptsArgs: true,
     description: 'Gewichts- und Schlaftrend: /healthtrend [7|30|90]  (Default: 30)',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const raw = String(ctx.args || '').trim();
       const days = ([7, 30, 90] as const).includes(Number(raw) as any) ? (Number(raw) as 7 | 30 | 90) : 30;
 
       const parts: string[] = [`📊 Health-Trend (${days} Tage)\n`];
 
-      const wt = getWeightTrend(days);
+      const wt = await getWeightTrend(days);
       if (wt) {
         const arrow = wt.direction === 'up' ? '📈' : wt.direction === 'down' ? '📉' : '➡️';
         const sign = wt.change > 0 ? '+' : '';
@@ -255,7 +346,7 @@ export function registerHealthCommands(api: any): void {
 
       parts.push('');
 
-      const st = getSleepTrend(days);
+      const st = await getSleepTrend(days);
       if (st) {
         parts.push('😴 Schlaf:');
         parts.push(`   Ø ${st.avgDuration} h  |  Min: ${st.minDuration} h  |  Max: ${st.maxDuration} h`);
@@ -273,8 +364,8 @@ export function registerHealthCommands(api: any): void {
   api.registerCommand({
     name: 'healthalerts',
     description: 'Aktive Health-Alerts anzeigen',
-    handler: () => {
-      const alerts = checkHealthAlerts();
+    handler: async () => {
+      const alerts = await checkHealthAlerts();
       if (!alerts.length) return { text: '✅ Keine aktiven Health-Alerts.' };
 
       const icons: Record<string, string> = { critical: '🔴', warning: '⚠️', info: 'ℹ️' };
@@ -287,7 +378,7 @@ export function registerHealthCommands(api: any): void {
   api.registerCommand({
     name: 'withingsauth',
     description: 'Withings OAuth2 starten (temporärer Callback-Server): /withingsauth',
-    handler: () => {
+    handler: async () => {
       if (!withingsClientId || !withingsClientSecret) {
         return { text: '❌ WITHINGS_CLIENT_ID / WITHINGS_CLIENT_SECRET nicht gesetzt.' };
       }
@@ -360,7 +451,7 @@ export function registerHealthCommands(api: any): void {
       }, 60_000);
       server.on('close', () => clearTimeout(timer));
 
-      const already = isAuthorized() ? ' (bereits verbunden — neu autorisieren)' : '';
+      const already = (await isAuthorized()) ? ' (bereits verbunden — neu autorisieren)' : '';
       return {
         text:
           `🔐 Withings OAuth2${already}\n\n` +
@@ -436,15 +527,15 @@ export function registerHealthCommands(api: any): void {
           let mNew = 0;
           for (const m of measures) {
             const dateStr = m.date.toISOString().slice(0, 10);
-            if (m.weight_kg != null && !hasEntryForDate('weight', dateStr)) {
-              appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
+            if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr))) {
+              await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
               mNew++;
             }
-            if (m.fat_ratio_pct != null && !hasEntryForDate('body_fat', dateStr)) {
-              appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
+            if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
+              await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
             }
-            if (m.hr_bpm != null && !hasEntryForDate('heartrate', dateStr)) {
-              appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+            if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
+              await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
             }
           }
           parts.push(`⚖️ Messungen: ${measures.length} (${mNew} neu)`);
@@ -457,7 +548,7 @@ export function registerHealthCommands(api: any): void {
           let sleepNew = 0, sleepUpdated = 0;
           for (const s of sleeps) {
             const ts = new Date(`${s.date}T03:00:00.000Z`);
-            const result = upsertEntryForDate(s.date, ts, {
+            const result = await upsertEntryForDate(s.date, ts, {
               type: 'sleep', value: s.total_h, unit: 'h',
               deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
               quality: s.score, source: 'withings',
@@ -478,15 +569,15 @@ export function registerHealthCommands(api: any): void {
           let actNew = 0;
           for (const a of activities) {
             const ts = new Date(`${a.date}T12:00:00.000Z`);
-            if (a.steps > 0 && !hasEntryForDate('steps', a.date)) {
-              appendEntryWithTimestamp(ts, {
+            if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
+              await appendEntryWithTimestamp(ts, {
                 type: 'steps', steps: a.steps, distance_m: a.distance_m,
                 calories: a.calories, source: 'withings',
               });
               actNew++;
             }
-            if (a.hr_avg && !hasEntryForDate('heartrate', a.date)) {
-              appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+            if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
+              await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
             }
           }
           const totalSteps = activities.reduce((s, a) => s + a.steps, 0);
@@ -499,9 +590,9 @@ export function registerHealthCommands(api: any): void {
           const workouts = await fetchWorkouts(tokens.access_token, sinceMs);
           let wNew = 0;
           for (const w of workouts) {
-            if (hasEntryForDate('activity', w.date)) continue;
+            if (await hasEntryForDate('activity', w.date)) continue;
             const ts = new Date(`${w.date}T12:00:00.000Z`);
-            appendEntryWithTimestamp(ts, {
+            await appendEntryWithTimestamp(ts, {
               type: 'activity', activity_type: w.activity_type,
               duration_min: w.duration_min, steps: w.steps,
               distance_m: w.distance_m, calories: w.calories,
@@ -514,7 +605,7 @@ export function registerHealthCommands(api: any): void {
         } catch (e: any) { parts.push(`🏃 Workouts: ❌ ${e.message}`); }
 
         // Update last_sync
-        saveTokens({ ...tokens, last_sync: Date.now() });
+        await saveTokens({ ...tokens, last_sync: Date.now() });
 
         parts.push(`\n✅ ${totalNew} Einträge importiert.`);
         return { text: parts.join('\n') };
@@ -559,7 +650,7 @@ export function registerHealthCommands(api: any): void {
       const reportDay = s.healthReportDay ?? 1; // Default: Montag
 
       if (inBerlin.getDay() === reportDay && nowHHMM === s.briefingTime && lastWeeklyReportDate !== today) {
-        const text = generateWeeklyHealthReport();
+        const text = await generateWeeklyHealthReport();
         await _deps.sendTelegram(s.telegramChatId, text);
         lastWeeklyReportDate = today;
         api.logger.info(`[executive-agent] Wöchentlicher Health-Report gesendet (${today})`);

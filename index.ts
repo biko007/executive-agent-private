@@ -13,6 +13,8 @@ import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import {
   readEntries, lastEntry, getWeightTrend, checkHealthAlerts,
   registerHealthCommands, initHealthCommands, syncWithingsForBriefing,
+  triggerWithingsSync, getSyncStatus,
+  loadTokens as loadWithingsTokens,
 } from "./src/modules/health/index.js";
 import type { HealthAlert } from "./src/modules/health/index.js";
 import {
@@ -920,8 +922,8 @@ export default function (api: any) {
     // ── HEALTH ──
     {
       const healthLines: string[] = [];
-      const wt7 = getWeightTrend(7);
-      const lastWeight = lastEntry('weight');
+      const wt7 = await getWeightTrend(7);
+      const lastWeight = await lastEntry('weight');
 
       if (lastWeight && wt7) {
         const arrow = wt7.direction === 'up' ? '↗' : wt7.direction === 'down' ? '↘' : '→';
@@ -932,7 +934,8 @@ export default function (api: any) {
       }
 
       // Last night sleep (dedup by day, pick longest)
-      const sleepEntries = readEntries().filter(e => e.type === 'sleep');
+      const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const sleepEntries = (await readEntries(since7d)).filter(e => e.type === 'sleep');
       const sleepByDay = new Map<string, any>();
       for (const s of sleepEntries) {
         const day = new Intl.DateTimeFormat('en-CA', {
@@ -970,7 +973,7 @@ export default function (api: any) {
       }
 
       // Alerts
-      const alerts = checkHealthAlerts();
+      const alerts = await checkHealthAlerts();
       const activeAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'warning');
       if (activeAlerts.length > 0) {
         const alertIcons: Record<string, string> = { critical: '🔴', warning: '⚠️' };
@@ -1838,8 +1841,8 @@ export default function (api: any) {
           if (it.expires_at) tokens.push({ name: 'Meta', days_remaining: Math.floor((it.expires_at - Date.now()) / 86_400_000) });
         } catch {}
         try {
-          const wt = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'health/withings-tokens.json'), 'utf-8'));
-          if (wt.expires_at) tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
+          const wt = await loadWithingsTokens();
+          if (wt?.expires_at) tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
         } catch {}
 
         // 3. Workflows pending
@@ -1945,6 +1948,58 @@ export default function (api: any) {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    },
+  });
+
+  // ── Health: Withings Sync (Sprint 4 §4) ──────────────────────────────────────
+  api.registerHttpRoute({
+    path: '/api/health/withings-sync',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+        return;
+      }
+      const auth = req.headers?.authorization || '';
+      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+        return;
+      }
+      try {
+        const result = await triggerWithingsSync();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (err: any) {
+        api.logger.error(`[health] withings-sync failed: ${err.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/api/health/sync-status',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+        return;
+      }
+      const auth = req.headers?.authorization || '';
+      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+        return;
+      }
+      try {
+        const status = await getSyncStatus();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
       }
     },
   });

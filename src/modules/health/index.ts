@@ -12,7 +12,7 @@ export type {
   WithingsActivity, WithingsWorkout,
 } from './types.js';
 
-// Store (data access — health entries)
+// Store (data access — health entries, all async/DB-backed)
 export {
   hasEntryForDate, upsertEntryForDate,
   appendEntry, appendEntryWithTimestamp,
@@ -22,13 +22,18 @@ export {
   checkHealthAlerts,
 } from './store.js';
 
-// Withings (OAuth + API)
+// Withings (OAuth + API, DB-backed tokens)
 export {
   loadTokens, saveTokens, isAuthorized,
   buildAuthUrl, exchangeCode, ensureFreshToken,
   fetchMeasures, fetchSleep, fetchActivity, fetchWorkouts,
+  executeWithingsSync, getSyncStatus as getWithingsSyncStatus,
 } from './withings.js';
+export type { WithingsSyncResult, WithingsSyncStatus } from './withings.js';
 
 // Commands (Telegram registration)
-export { registerHealthCommands, initHealthCommands, syncWithingsForBriefing } from './commands.js';
+export {
+  registerHealthCommands, initHealthCommands, syncWithingsForBriefing,
+  triggerWithingsSync, getSyncStatus,
+} from './commands.js';
 export type { HealthDeps } from './commands.js';
