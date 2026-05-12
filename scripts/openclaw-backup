@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# openclaw-backup — Borg backup to Hetzner Storage Box
+# Usage: openclaw-backup daily|weekly|monthly
+#
+# daily:   pg_dump + artifacts (no media)
+# weekly:  pg_dump + artifacts (with media)
+# monthly: pg_dump + artifacts (with media) + nginx config + env structure
+#
+# Retention: daily=7, weekly=4, monthly=12
+set -euo pipefail
+
+TIER="${1:-}"
+if [[ ! "$TIER" =~ ^(daily|weekly|monthly)$ ]]; then
+  echo "Usage: $0 daily|weekly|monthly" >&2
+  exit 1
+fi
+
+# ── Config ──────────────────────────────────────────────────────────────────
+ENV_FILE="$HOME/.config/openclaw/env"
+set -a; source "$ENV_FILE"; set +a
+
+BORG_REPO="ssh://u591557@u591557.your-storagebox.de:23/./openclaw/$TIER"
+export BORG_PASSPHRASE
+export BORG_RSH
+
+ARTIFACTS_DIR="$HOME/.openclaw/workspace/artifacts/personal"
+TMPDIR_BACKUP=$(mktemp -d /tmp/openclaw-backup.XXXXXX)
+ARCHIVE_NAME="${TIER}-$(date +%Y-%m-%d_%H%M%S)"
+
+# Telegram notification
+BOT_TOKEN="8550841623:AAEtoW41on9Qi_XBnSKqKaMTC_Uk0MxCmFY"
+CHAT_ID="133260792"
+notify() {
+  local msg="$1"
+  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -d chat_id="$CHAT_ID" \
+    -d parse_mode=Markdown \
+    -d text="$msg" > /dev/null 2>&1 || true
+}
+
+cleanup() {
+  rm -rf "$TMPDIR_BACKUP"
+}
+trap cleanup EXIT
+
+echo "[$TIER] Starting backup at $(date -Iseconds)"
+
+# ── 1. PostgreSQL dump ──────────────────────────────────────────────────────
+PG_DUMP_FILE="$TMPDIR_BACKUP/openclaw_core.pgdump"
+echo "[$TIER] Dumping openclaw_core..."
+PGPASSWORD=$(echo "$POSTGRES_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+PGHOST=$(echo "$POSTGRES_URL" | sed -n 's|.*@\([^:]*\):.*|\1|p')
+PGPORT=$(echo "$POSTGRES_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
+PGDB=$(echo "$POSTGRES_URL" | sed -n 's|.*/\(.*\)$|\1|p')
+export PGPASSWORD
+pg_dump --host="$PGHOST" --port="$PGPORT" --username=openclaw \
+  --format=custom --compress=6 "$PGDB" > "$PG_DUMP_FILE"
+PG_SIZE=$(du -sh "$PG_DUMP_FILE" | cut -f1)
+echo "[$TIER] PostgreSQL dump: $PG_SIZE"
+
+# ── 2. SQLite trading.db (if exists) ────────────────────────────────────────
+TRADING_DB="$ARTIFACTS_DIR/trading/trading.db"
+TRADING_BACKUP=""
+if [[ -f "$TRADING_DB" ]]; then
+  TRADING_BACKUP="$TMPDIR_BACKUP/trading.db"
+  echo "[$TIER] Backing up trading.db..."
+  sqlite3 "$TRADING_DB" ".backup '$TRADING_BACKUP'"
+fi
+
+# ── 3. Build borg create arguments ──────────────────────────────────────────
+BORG_ARGS=("$BORG_REPO::$ARCHIVE_NAME")
+
+# Always include: pg dump
+BORG_ARGS+=("$PG_DUMP_FILE")
+
+# Include SQLite backup if it exists
+if [[ -n "$TRADING_BACKUP" ]]; then
+  BORG_ARGS+=("$TRADING_BACKUP")
+fi
+
+# Artifacts — build exclude patterns
+EXCLUDE_ARGS=()
+if [[ "$TIER" == "daily" ]]; then
+  # Daily: exclude media/images directories
+  EXCLUDE_ARGS+=(--exclude "*/images/*")
+  EXCLUDE_ARGS+=(--exclude "*/media/*")
+  EXCLUDE_ARGS+=(--exclude "*/raw-media/*")
+  EXCLUDE_ARGS+=(--exclude "*/submissions/*/media/*")
+fi
+
+# Always include artifacts
+BORG_ARGS+=("$ARTIFACTS_DIR")
+
+# Monthly: also include nginx config and env variable names
+if [[ "$TIER" == "monthly" ]]; then
+  if [[ -f /etc/nginx/sites-available/app-bikobickel ]]; then
+    BORG_ARGS+=("/etc/nginx/sites-available/app-bikobickel")
+  fi
+  if [[ -f /etc/nginx/sites-available/openclaw-withings ]]; then
+    BORG_ARGS+=("/etc/nginx/sites-available/openclaw-withings")
+  fi
+  # Env structure (variable names only, NO values!)
+  ENV_NAMES_FILE="$TMPDIR_BACKUP/env-variable-names.txt"
+  grep -oP '^[A-Z_]+=?' "$ENV_FILE" | sed 's/=$//' > "$ENV_NAMES_FILE"
+  BORG_ARGS+=("$ENV_NAMES_FILE")
+fi
+
+# ── 4. Run borg create ──────────────────────────────────────────────────────
+echo "[$TIER] Creating borg archive: $ARCHIVE_NAME"
+borg create \
+  --stats --compression zstd,3 \
+  "${EXCLUDE_ARGS[@]}" \
+  "${BORG_ARGS[@]}" 2>&1
+
+# ── 5. Prune old archives ──────────────────────────────────────────────────
+echo "[$TIER] Pruning old archives..."
+case "$TIER" in
+  daily)   borg prune --keep-daily=7  --stats "$BORG_REPO" 2>&1 ;;
+  weekly)  borg prune --keep-weekly=4 --stats "$BORG_REPO" 2>&1 ;;
+  monthly) borg prune --keep-monthly=12 --stats "$BORG_REPO" 2>&1 ;;
+esac
+
+# ── 6. Compact (free space on remote) ──────────────────────────────────────
+echo "[$TIER] Compacting repository..."
+borg compact "$BORG_REPO" 2>&1
+
+# ── 7. Report ───────────────────────────────────────────────────────────────
+ARCHIVE_INFO=$(borg info "$BORG_REPO::$ARCHIVE_NAME" 2>&1 | grep -E "This archive:|Compressed size|Deduplicated size|Number of files" | head -4)
+REPO_INFO=$(borg info "$BORG_REPO" 2>&1 | grep -E "All archives:|Unique chunks" | head -3)
+
+echo ""
+echo "=== Backup Complete ==="
+echo "$ARCHIVE_INFO"
+echo "---"
+echo "$REPO_INFO"
+
+# Telegram notification
+SIZE_LINE=$(echo "$ARCHIVE_INFO" | grep "Compressed size" || echo "unknown size")
+FILES_LINE=$(echo "$ARCHIVE_INFO" | grep "Number of files" || echo "unknown files")
+notify "$(cat <<MSG
+*Backup $TIER* erfolgreich
+Archive: \`$ARCHIVE_NAME\`
+$SIZE_LINE
+$FILES_LINE
+PG dump: $PG_SIZE
+MSG
+)"
+
+echo "[$TIER] Done at $(date -Iseconds)"

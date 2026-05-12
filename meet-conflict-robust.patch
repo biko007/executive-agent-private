@@ -1,0 +1,29 @@
+diff --git a/index.ts b/index.ts.work
+index 813f82c..4cec964 100644
+--- a/index.ts
++++ b/index.ts.work
+@@ -855,8 +855,22 @@ return { text: out.join("\n").trim() };
+     const startIso = se.start.toISOString();
+     const endIso = se.end.toISOString();
+ 
+-    // Conflict check
+-    const conflicts = await listConflicts(startIso, endIso);
++    // Conflict check (robust): scan wider window and compute overlaps locally
++    const scanStartIso = new Date(se.start.getTime() - 12 * 60 * 60 * 1000).toISOString();
++    const scanEndIso = new Date(se.end.getTime() + 12 * 60 * 60 * 1000).toISOString();
++
++    const candidates = await listConflicts(scanStartIso, scanEndIso);
++
++    const startMs = se.start.getTime();
++    const endMs = se.end.getTime();
++
++    // overlap if: eventStart < end && eventEnd > start
++    const conflicts = candidates.filter((ev: any) => {
++      const s = new Date(ev?.start?.dateTime).getTime();
++      const e = new Date(ev?.end?.dateTime).getTime();
++      if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
++      return s < endMs && e > startMs;
++    });
+ 
+     if (conflicts.length && !force) {
+       const tz = "Europe/Berlin";
