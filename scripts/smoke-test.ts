@@ -385,6 +385,109 @@ function checkPostgresAppUser() {
   }
 }
 
+// ── 9. V023 SCHEMA + ASSETS API ─────────────────────────────────────────────
+
+async function checkV023Schema() {
+  try {
+    const output = execSync(
+      `sudo docker exec n8n-docker-postgres-1 psql -U openclaw -d openclaw_core -c "SELECT version FROM schema_version WHERE module = 'assets' ORDER BY applied_at DESC LIMIT 1;" -t`,
+      { timeout: 10_000, stdio: 'pipe' },
+    ).toString().trim();
+    const version = parseInt(output, 10);
+    if (version >= 23) {
+      pass('V023 Schema', `version ${version}`);
+    } else {
+      fail('V023 Schema', `version ${version} — erwartet >= 23`);
+    }
+  } catch (e: any) {
+    fail('V023 Schema', `Check fehlgeschlagen: ${(e.stderr?.toString() || e.message).slice(0, 200)}`);
+  }
+}
+
+function checkBtreeGist() {
+  try {
+    const output = execSync(
+      `sudo docker exec n8n-docker-postgres-1 psql -U openclaw -d openclaw_core -c "SELECT extname FROM pg_extension WHERE extname = 'btree_gist';" -t`,
+      { timeout: 10_000, stdio: 'pipe' },
+    ).toString().trim();
+    if (output.includes('btree_gist')) {
+      pass('btree_gist', 'Extension aktiv');
+    } else {
+      fail('btree_gist', 'Extension nicht gefunden');
+    }
+  } catch (e: any) {
+    fail('btree_gist', `Check fehlgeschlagen: ${(e.stderr?.toString() || e.message).slice(0, 200)}`);
+  }
+}
+
+async function checkAssetsApi() {
+  const token = readEnvVar('CORE_SERVICE_TOKEN');
+  if (!token) { fail('Assets API', 'CORE_SERVICE_TOKEN nicht gesetzt'); return; }
+
+  // Properties list
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/assets/properties', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any[];
+      pass('Assets API (properties)', `${data.length} properties`);
+    } else {
+      fail('Assets API (properties)', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('Assets API (properties)', e.message);
+  }
+
+  // Cost categories
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/assets/cost-categories', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any[];
+      pass('Assets API (cost-categories)', `${data.length} categories`);
+    } else {
+      fail('Assets API (cost-categories)', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('Assets API (cost-categories)', e.message);
+  }
+
+  // NK Readiness (for first property)
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/assets/properties/l19/nk-readiness?year=2025', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      pass('Assets API (nk-readiness)', `ready=${data.ready}, blockers=${data.blocking_count}, warnings=${data.warning_count}`);
+    } else {
+      fail('Assets API (nk-readiness)', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('Assets API (nk-readiness)', e.message);
+  }
+
+  // Audit log
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/assets/audit-log?limit=1', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      pass('Assets API (audit-log)', 'erreichbar');
+    } else {
+      fail('Assets API (audit-log)', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('Assets API (audit-log)', e.message);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -423,6 +526,11 @@ async function main() {
   // 8. Postgres Privilege Isolation
   checkPostgresIsolation();
   checkPostgresAppUser();
+
+  // 9. V023 Schema + Assets API (Sprint 5.5a-1)
+  await checkV023Schema();
+  checkBtreeGist();
+  await checkAssetsApi();
 
   // ── Report ──────────────────────────────────────────────────────────────
 

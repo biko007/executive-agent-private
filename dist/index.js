@@ -3,6 +3,7 @@ import { execSync } from "node:child_process";
 import SunCalc from "suncalc";
 import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
+import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
 import { getAllVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, } from "./src/modules/fleet/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
@@ -1992,6 +1993,12 @@ export default function (api) {
         },
     });
     api.logger.info('[executive-agent] HTTP routes registered on gateway port 18789 (/health, /ready, /version, /location)');
+    // ── Assets HTTP API (Sprint 5.5a-1) ──────────────────────────────────────
+    registerAssetsHttpRoutes(api);
+    // ── Startup Canary ───────────────────────────────────────────────────────
+    if (!coreServiceToken) {
+        api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');
+    }
     // ── Public Location HTTP Endpoint (POST /location, 0.0.0.0:18790) ────────
     const publicLocationPort = 18790;
     const publicLocationServer = http.createServer(async (req, res) => {

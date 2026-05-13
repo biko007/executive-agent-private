@@ -22,7 +22,7 @@ import { query } from '../db/index.js';
  */
 export async function get<T = unknown>(key: string): Promise<T | null> {
   const { rows } = await query<{ result_jsonb: T }>(
-    'SELECT result_jsonb FROM idempotency_keys WHERE key = $1',
+    'SELECT result_jsonb FROM workflow_idempotency_keys WHERE key = $1',
     [key],
   );
   return rows.length > 0 ? rows[0].result_jsonb : null;
@@ -38,7 +38,7 @@ export async function set(
   workflowId?: number,
 ): Promise<void> {
   await query(
-    `INSERT INTO idempotency_keys (key, workflow_id, result_jsonb)
+    `INSERT INTO workflow_idempotency_keys (key, workflow_id, result_jsonb)
      VALUES ($1, $2, $3)
      ON CONFLICT (key) DO NOTHING`,
     [key, workflowId ?? null, JSON.stringify(result)],
