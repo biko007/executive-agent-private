@@ -12,6 +12,11 @@ import { createApprovalPreview, validateApprovalToken } from '../../middleware/a
 import { requiresApproval as checkRequiresApproval } from '../../middleware/approval-registry.js';
 import { checkIdempotency, completeIdempotency, failIdempotency } from '../../middleware/idempotency.js';
 import { nkPreCheck } from '../nk/precheck.js';
+import {
+  handleNkPreview, handleNkFinalize, handleNkStatementRead, handleNkStatementPdf,
+  handleNkRerender, handleNkServe, handleNkRunList, handleNkRunDetail,
+} from '../nk/routes.js';
+import { handleObligationsAlert } from '../nk/alerts.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -599,6 +604,65 @@ export function registerAssetsHttpRoutes(api: any) {
             }
           } catch (e: any) { err(res, 500, e.message); }
         });
+        return true;
+      }
+
+      // ── NK Statements ──────────────────────────────────────────────
+      if (resource === 'nk-statements') {
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            if (!segments[1]) {
+              // POST /api/assets/nk-statements/preview or /finalize
+              err(res, 404, 'Missing sub-route: use /preview or /finalize');
+              return;
+            }
+            if (segments[1] === 'preview') {
+              await handleNkPreview(req, res, actor, requestId);
+              return;
+            }
+            if (segments[1] === 'finalize') {
+              await handleNkFinalize(req, res, actor, requestId, sessionId);
+              return;
+            }
+            // /api/assets/nk-statements/:id[/pdf|/rerender|/serve]
+            const statementId = segments[1];
+            const sub = segments[2];
+            if (sub === 'pdf') { await handleNkStatementPdf(req, res, statementId); return; }
+            if (sub === 'rerender') { await handleNkRerender(req, res, statementId, actor); return; }
+            if (sub === 'serve') { await handleNkServe(req, res, statementId, actor, sessionId); return; }
+            if (!sub) { await handleNkStatementRead(req, res, statementId); return; }
+            err(res, 404, `Unknown nk-statements sub-route: ${sub}`);
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
+      // ── NK Statement Runs ─────────────────────────────────────────────
+      if (resource === 'nk-statement-runs') {
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            const runId = segments[1];
+            if (!runId) {
+              const { query } = parseUrl(req.url || '');
+              await handleNkRunList(req, res, query);
+            } else {
+              await handleNkRunDetail(req, res, runId);
+            }
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
+      // ── NK Trigger (n8n cron → localhost-only) ─────────────────────
+      if (resource === 'nk-trigger') {
+        if (segments[1] === 'obligations-alert' && req.method === 'POST') {
+          try {
+            const result = await handleObligationsAlert();
+            json(res, 200, { ok: true, ...result });
+          } catch (e: any) { err(res, 500, e.message); }
+          return true;
+        }
+        err(res, 404, 'Unknown nk-trigger sub-route');
         return true;
       }
 

@@ -11,6 +11,8 @@ import {
 import type { CostCategory } from './types.js';
 import { COST_CATEGORIES } from './types.js';
 import * as audit from '../../shared/audit/index.js';
+import { computeNk } from '../nk/engine.js';
+import { query as dbQuery } from '../../shared/db/index.js';
 
 /** Hash a tenant name for audit payload — never log Klarnamen (§14.2). */
 function hashTenant(name: string): string {
@@ -135,8 +137,105 @@ export async function handleCosts(argsStr: string): Promise<{ text: string }> {
 export async function handleNebenkostenabrechnung(argsStr: string): Promise<{ text: string }> {
   const raw = argsStr.trim();
   const parts = raw.split(/\s+/);
-  if (parts.length < 2) return { text: '❌ Verwendung: /nebenkostenabrechnung <property-id> <jahr>' };
+  if (parts.length < 2) {
+    return { text: '❌ Verwendung:\n/nebenkostenabrechnung preview <code> <jahr>\n/nebenkostenabrechnung status <code> <jahr>\n/nebenkostenabrechnung <property-id> <jahr>' };
+  }
 
+  const subCommand = parts[0].toLowerCase();
+
+  // ── preview sub-command ─────────────────────────────────────────────
+  if (subCommand === 'preview' && parts.length >= 3) {
+    const code = parts[1].toUpperCase();
+    const year = Number(parts[2]);
+    if (!Number.isFinite(year)) return { text: '❌ Jahr muss eine Zahl sein.' };
+
+    // Resolve property code
+    const { rows: propRows } = await dbQuery(
+      'SELECT id FROM properties WHERE code = $1 AND active = true', [code],
+    );
+    if (propRows.length === 0) return { text: `❌ Objekt "${code}" nicht gefunden.` };
+
+    try {
+      const output = await computeNk(propRows[0].id, year, false);
+      const lines = [`📊 NK-Preview ${code} ${year}`, ''];
+
+      for (const stmt of output.statements) {
+        if (stmt.is_owner_block) {
+          lines.push(`🏠 Eigentümer-Block: ${fmtEur(stmt.costs_total)}`);
+        } else {
+          const names = stmt.tenant_recipients?.map(r =>
+            r.company_name || `${r.first_name || ''} ${r.last_name}`.trim()
+          ).join(', ') || `Lease #${stmt.lease_id}`;
+          lines.push(`👤 ${names}`);
+          lines.push(`   Kosten: ${fmtEur(stmt.costs_total)} | VZ: ${fmtEur(stmt.advance_total)} | Saldo: ${fmtEur(stmt.balance)}`);
+        }
+      }
+
+      if (output.warnings.length > 0) {
+        lines.push('', `⚠️ ${output.warnings.length} Hinweis${output.warnings.length > 1 ? 'e' : ''}:`);
+        for (const w of output.warnings.slice(0, 5)) {
+          lines.push(`  • [${w.severity}] ${w.message}`);
+        }
+        if (output.warnings.length > 5) lines.push(`  ... und ${output.warnings.length - 5} weitere`);
+      }
+
+      return { text: lines.join('\n') };
+    } catch (e: any) {
+      if (e.code === 'NK_BLOCKED') {
+        const blockerList = (e.blockers || []).map((b: any) => `• ${b.message}`).join('\n');
+        return { text: `🚫 NK-Berechnung blockiert:\n${blockerList}` };
+      }
+      throw e;
+    }
+  }
+
+  // ── status sub-command ──────────────────────────────────────────────
+  if (subCommand === 'status' && parts.length >= 3) {
+    const code = parts[1].toUpperCase();
+    const year = Number(parts[2]);
+    if (!Number.isFinite(year)) return { text: '❌ Jahr muss eine Zahl sein.' };
+
+    const { rows: propRows } = await dbQuery(
+      'SELECT id FROM properties WHERE code = $1 AND active = true', [code],
+    );
+    if (propRows.length === 0) return { text: `❌ Objekt "${code}" nicht gefunden.` };
+
+    const { rows: runs } = await dbQuery(
+      `SELECT r.*, COUNT(s.id) AS stmt_count,
+              COUNT(s.id) FILTER (WHERE s.pdf_render_status = 'ready') AS pdf_ready,
+              COUNT(s.id) FILTER (WHERE s.served_at IS NOT NULL) AS served_count
+       FROM nk_statement_runs r
+       LEFT JOIN nk_statements s ON s.run_id = r.id
+       WHERE r.property_id = $1 AND r.period_year = $2
+       GROUP BY r.id ORDER BY r.version DESC LIMIT 3`,
+      [propRows[0].id, year],
+    );
+
+    if (runs.length === 0) return { text: `📋 Keine NK-Runs für ${code} ${year} vorhanden.` };
+
+    // Check obligation deadline
+    const { rows: oblRows } = await dbQuery(
+      `SELECT service_deadline_at FROM nk_period_obligations WHERE property_id = $1 AND year = $2 LIMIT 1`,
+      [propRows[0].id, year],
+    );
+
+    const lines = [`📋 NK-Status ${code} ${year}`, ''];
+    for (const run of runs) {
+      const superseded = run.superseded_at ? ' (ersetzt)' : '';
+      lines.push(`Run v${run.version} — ${run.status}${superseded}`);
+      lines.push(`  PDFs: ${run.pdf_ready}/${run.stmt_count} fertig | Zugestellt: ${run.served_count}/${run.stmt_count}`);
+    }
+
+    if (oblRows.length > 0 && oblRows[0].service_deadline_at) {
+      const deadline = new Date(oblRows[0].service_deadline_at);
+      const daysLeft = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+      lines.push('', `📅 §556-Frist: ${oblRows[0].service_deadline_at} (${daysLeft > 0 ? `noch ${daysLeft} Tage` : 'ABGELAUFEN'})`);
+    }
+
+    return { text: lines.join('\n') };
+  }
+
+  // ── Legacy behavior (old file-based calculation) ────────────────────
   const propertyId = parts[0];
   const year = Number(parts[1]);
   if (!Number.isFinite(year)) return { text: '❌ Jahr muss eine Zahl sein.' };
@@ -144,6 +243,10 @@ export async function handleNebenkostenabrechnung(argsStr: string): Promise<{ te
   const results = await calculateNk(propertyId, year);
   if (!results.length) return { text: `❌ Keine abrechnungsrelevanten Einheiten für ${propertyId}/${year}.` };
   return { text: formatNkResult(propertyId, year, results) };
+}
+
+function fmtEur(value: number): string {
+  return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 }
 
 // ── Command registration ───────────────────────────────────────────────────
@@ -214,7 +317,7 @@ export function registerAssetsCommands(api: any): void {
   api.registerCommand({
     name: 'nebenkostenabrechnung',
     acceptsArgs: true,
-    description: 'Abrechnung berechnen: /nebenkostenabrechnung <property-id> <jahr>',
+    description: 'NK-Abrechnung: /nebenkostenabrechnung preview|status <code> <jahr>',
     handler: async (ctx: any) => {
       try { return await handleNebenkostenabrechnung(String(ctx.args || '')); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }

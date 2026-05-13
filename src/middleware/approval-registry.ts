@@ -77,6 +77,11 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Approval Preview
   'approval-preview.create': { endpointKey: 'approval-preview.create', method: 'POST', pathPattern: '/api/assets/approval-preview', requiresApproval: false, idempotency: false, description: 'Create approval preview token' },
+
+  // NK Statements
+  'nk-statements.finalize': { endpointKey: 'nk-statements.finalize', method: 'POST', pathPattern: '/api/assets/nk-statements/finalize', requiresApproval: true, idempotency: true, description: 'Finalize NK statement run' },
+  'nk-statements.serve': { endpointKey: 'nk-statements.serve', method: 'POST', pathPattern: '/api/assets/nk-statements/:id/serve', requiresApproval: true, idempotency: false, description: 'Serve NK statement to tenant' },
+  'nk-statements.rerender': { endpointKey: 'nk-statements.rerender', method: 'POST', pathPattern: '/api/assets/nk-statements/:id/rerender', requiresApproval: false, idempotency: false, description: 'Re-render NK statement PDF' },
 };
 
 /**
