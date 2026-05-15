@@ -99,6 +99,16 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Fleet — Approval preview
   'fleet-approval-preview.create': { endpointKey: 'fleet-approval-preview.create', method: 'POST', pathPattern: '/api/fleet/approval-preview', requiresApproval: false, idempotency: false, description: 'Create fleet approval preview' },
+
+  // Banking — Connect
+  'banking-connect.initiate': { endpointKey: 'banking-connect.initiate', method: 'POST', pathPattern: '/api/banking/connect', requiresApproval: true, idempotency: false, description: 'Initiate banking connection' },
+
+  // Banking — Account operations
+  'banking-accounts.archive': { endpointKey: 'banking-accounts.archive', method: 'POST', pathPattern: '/api/banking/accounts/:id/archive', requiresApproval: true, idempotency: false, description: 'Archive banking account' },
+  'banking-accounts.delete': { endpointKey: 'banking-accounts.delete', method: 'DELETE', pathPattern: '/api/banking/accounts/:id', requiresApproval: true, idempotency: false, description: 'Delete banking account' },
+
+  // Banking — Approval preview
+  'banking-approval-preview.create': { endpointKey: 'banking-approval-preview.create', method: 'POST', pathPattern: '/api/banking/approval-preview', requiresApproval: false, idempotency: false, description: 'Create banking approval preview' },
 };
 
 /**

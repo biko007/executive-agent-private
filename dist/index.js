@@ -6,6 +6,7 @@ import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
 import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
+import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, } from "./src/modules/mail/index.js";
@@ -946,6 +947,14 @@ export default function (api) {
     // ── Fuhrpark-Befehle → src/modules/fleet/commands.ts ──────────────────────
     initFleetCommands({ getLinksForEntity, formatLinksForTelegram });
     registerFleetCommands(api);
+    // ── Banking → src/modules/banking/commands.ts ──────────────────────────
+    const bankingTelegramChatId = () => loadSettings().telegramChatId;
+    initBankingCommands({ sendTelegram, telegramChatId: bankingTelegramChatId });
+    registerBankingCommands(api);
+    initTanBridge({ sendTelegram, telegramChatId: bankingTelegramChatId });
+    initSyncEngine({ sendTelegram, telegramChatId: bankingTelegramChatId });
+    // Banking: expire stale TAN challenges every 60s
+    setInterval(() => { cleanupExpiredChallenges().catch(() => { }); }, 60_000);
     // ── Private Equity → src/modules/pe/commands.ts ──────────────────────────
     registerPECommands(api);
     // ── Trading ─────────────────────────────────────────────────────────────────
@@ -1999,6 +2008,8 @@ export default function (api) {
     registerAssetsHttpRoutes(api);
     // ── Fleet HTTP API (Sprint 6c) ──────────────────────────────────────────
     registerFleetHttpRoutes(api);
+    // ── Banking HTTP API (Sprint 7b) ──────────────────────────────────────────
+    registerBankingHttpRoutes(api);
     // ── Startup Canary ───────────────────────────────────────────────────────
     if (!coreServiceToken) {
         api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');

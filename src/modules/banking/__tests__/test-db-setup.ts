@@ -1,0 +1,106 @@
+/**
+ * Test DB Setup Helper — creates a fresh Postgres test database with banking tables (V027).
+ *
+ * Usage:
+ *   const { cleanup } = await setupTestDb();
+ *   // ... run tests ...
+ *   await cleanup();
+ *
+ * Requires POSTGRES_URL in env (or reads from ~/.config/openclaw/env).
+ */
+import pg from 'pg';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+/** Load POSTGRES_URL from ~/.config/openclaw/env if not in environment. */
+function ensurePostgresUrl(): string {
+  if (process.env.POSTGRES_URL) return process.env.POSTGRES_URL;
+
+  const envFile = join(homedir(), '.config', 'openclaw', 'env');
+  if (!existsSync(envFile)) {
+    throw new Error('POSTGRES_URL not set and ~/.config/openclaw/env not found');
+  }
+  const content = readFileSync(envFile, 'utf-8');
+  const match = content.match(/^POSTGRES_URL=(.+)$/m);
+  if (!match) {
+    throw new Error('POSTGRES_URL not found in ~/.config/openclaw/env');
+  }
+  process.env.POSTGRES_URL = match[1];
+  return match[1];
+}
+
+export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () => Promise<void> }> {
+  const prodUrl = ensurePostgresUrl();
+  const testDbName = `openclaw_test_banking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const testUrl = prodUrl.replace(/\/[^/?]+(\?|$)/, `/${testDbName}$1`);
+
+  // 1. Create test database via admin connection
+  const adminPool = new pg.Pool({ connectionString: prodUrl });
+  await adminPool.query(`CREATE DATABASE "${testDbName}"`);
+
+  // 2. Apply migrations to test database
+  const testPool = new pg.Pool({ connectionString: testUrl });
+
+  // schema_version table (normally created by runMigrations)
+  await testPool.query(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      module TEXT NOT NULL, version INTEGER NOT NULL,
+      applied_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (module, version)
+    )
+  `);
+
+  // audit_log table (needed by audit.log calls)
+  await testPool.query(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id BIGSERIAL PRIMARY KEY,
+      ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+      actor TEXT,
+      module TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT,
+      entity_id TEXT,
+      before_jsonb JSONB,
+      after_jsonb JSONB,
+      source TEXT,
+      correlation_id TEXT,
+      request_id TEXT
+    )
+  `);
+
+  // Apply V027 banking tables migration
+  const migrationPath = join(import.meta.dir, '../migrations/V027__banking_tables.sql');
+  const migrationSql = readFileSync(migrationPath, 'utf-8');
+  await testPool.query(migrationSql);
+
+  // Apply V028 pending challenge columns
+  const v028Path = join(import.meta.dir, '../migrations/V028__banking_pending_challenge.sql');
+  const v028Sql = readFileSync(v028Path, 'utf-8');
+  await testPool.query(v028Sql);
+
+  // Apply V029 sync reminders table
+  const v029Path = join(import.meta.dir, '../migrations/V029__banking_sync_reminders.sql');
+  const v029Sql = readFileSync(v029Path, 'utf-8');
+  await testPool.query(v029Sql);
+
+  await testPool.end();
+
+  // 3. Point POSTGRES_URL to test database
+  process.env.POSTGRES_URL = testUrl;
+
+  return {
+    testDbName,
+    cleanup: async () => {
+      // Close shared pool used by modules
+      try {
+        const db = await import('../../../shared/db/index.js');
+        await db.closePool();
+      } catch { /* pool may not have been initialized */ }
+      // Drop test database
+      await adminPool.query(`DROP DATABASE IF EXISTS "${testDbName}"`);
+      await adminPool.end();
+      // Restore original URL
+      process.env.POSTGRES_URL = prodUrl;
+    },
+  };
+}

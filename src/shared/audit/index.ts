@@ -63,10 +63,27 @@ const SAFE_FIELDS = new Set([
   'inspection_date', 'result', 'next_due_date',
   'doc_type', 'title', 'url',
   'created_by', 'updated_by',
+  // Banking (Sprint 7b)
+  'institution_id', 'account_id', 'account_type', 'display_name', 'owner_name',
+  'current_balance', 'last_sync_at', 'booking_date', 'value_date',
+  'counterparty_name', 'reference', 'transaction_code', 'bank_transaction_id',
+  'raw_payload', 'imported_at', 'blz', 'bic', 'fints_url',
+  'key_version', 'tan_medium_name', 'product_id', 'session_format',
+  'fints_lib_version', 'session_expires_at', 'last_success_at',
 ]);
 
 /** Fields where only the last 4 characters are shown, rest masked as ***. */
-const TAIL_MASK_FIELDS = new Set(['vin', 'policy_number']);
+const TAIL_MASK_FIELDS = new Set([
+  'vin', 'policy_number',
+  // Banking (Sprint 7b)
+  'iban', 'account_number', 'counterparty_iban',
+]);
+
+/** Fields stripped entirely from audit payloads (encrypted data — never logged, not even masked). */
+const STRIP_FIELDS = new Set([
+  // Banking (Sprint 7b) — encrypted at-rest, must not appear in audit
+  'user_id_encrypted', 'pin_encrypted', 'session_state_encrypted',
+]);
 
 /** Patterns that indicate a sensitive value regardless of field name. */
 const SENSITIVE_PATTERNS = [
@@ -88,7 +105,9 @@ function isSensitiveValue(val: unknown): boolean {
 export function maskSensitiveFields(obj: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(obj)) {
-    if (val == null) {
+    if (STRIP_FIELDS.has(key)) {
+      continue; // encrypted fields — never logged
+    } else if (val == null) {
       result[key] = val;
     } else if (TAIL_MASK_FIELDS.has(key) && typeof val === 'string') {
       result[key] = val.length > 4 ? '***' + val.slice(-4) : '***';
