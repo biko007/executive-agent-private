@@ -53,6 +53,17 @@ export interface TaxRecord {
   notes?: string;
 }
 
+export interface TireSet {
+  id?: number;
+  tireType?: string;
+  brand?: string;
+  model?: string;
+  treadDepthMm?: number;
+  installedAt?: string;
+  removedAt?: string;
+  notes?: string;
+}
+
 export interface Vehicle {
   id: string;
   vehicleCode: string;
@@ -80,6 +91,7 @@ export interface Vehicle {
   tuevRecords: TuevRecord[];
   taxRecords: TaxRecord[];
   documents: VehicleDocument[];
+  tireSets: TireSet[];
   createdAt: string;
   updatedAt: string;
 }
@@ -190,6 +202,22 @@ export interface FleetDocumentRow {
   doc_type: string;
   title: string | null;
   url: string;
+  notes: string | null;
+  created_at: Date;
+  updated_at: Date;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface TireSetRow {
+  id: number;
+  vehicle_id: number;
+  tire_type: string | null;
+  brand: string | null;
+  model: string | null;
+  tread_depth_mm: string | null;
+  installed_at: Date | null;
+  removed_at: Date | null;
   notes: string | null;
   created_at: Date;
   updated_at: Date;

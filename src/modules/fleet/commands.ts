@@ -282,6 +282,37 @@ export async function handleVersicherungOverview(): Promise<{ text: string }> {
   return { text: lines.join('\n') };
 }
 
+// ── Reifen Overview ─────────────────────────────────────────────────────────
+
+export async function handleReifenOverview(): Promise<{ text: string }> {
+  const vehicles = await listVehicles();
+  if (!vehicles.length) return { text: '🛞 Keine Fahrzeuge im Fuhrpark.' };
+
+  const typeLabel: Record<string, string> = {
+    summer: 'Sommer',
+    winter: 'Winter',
+    all_season: 'Ganzjahr',
+    spike: 'Spike',
+  };
+
+  const lines: string[] = ['🛞 Reifen-Übersicht:\n'];
+
+  for (const v of vehicles) {
+    const activeSets = (v.tireSets || []).filter(t => !t.removedAt);
+    if (activeSets.length > 0) {
+      const t = activeSets[0]; // most recent active set
+      const typeName = t.tireType ? (typeLabel[t.tireType] || t.tireType) : '?';
+      const brandModel = [t.brand, t.model].filter(Boolean).join(' ') || '–';
+      const depth = t.treadDepthMm != null ? `${t.treadDepthMm}mm` : '–';
+      lines.push(`🚗 ${v.vehicleCode} | ${typeName} ${brandModel} | ${depth}`);
+    } else {
+      lines.push(`🚗 ${v.vehicleCode} | (kein Eintrag)`);
+    }
+  }
+
+  return { text: lines.join('\n') };
+}
+
 // ── Command registration ───────────────────────────────────────────────────
 
 export function registerFleetCommands(api: any): void {
@@ -400,6 +431,15 @@ export function registerFleetCommands(api: any): void {
     description: 'Versicherungs-Übersicht aller Fahrzeuge',
     handler: async () => {
       try { return await handleVersicherungOverview(); }
+      catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
+    },
+  });
+
+  api.registerCommand({
+    name: 'reifen',
+    description: 'Reifen-Übersicht aller Fahrzeuge',
+    handler: async () => {
+      try { return await handleReifenOverview(); }
       catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }
     },
   });

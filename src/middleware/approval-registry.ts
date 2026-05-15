@@ -95,6 +95,7 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
   'fleet-tax-records.delete': { endpointKey: 'fleet-tax-records.delete', method: 'DELETE', pathPattern: '/api/fleet/tax-records/:id', requiresApproval: true, idempotency: false, description: 'Delete tax record' },
   'fleet-tuev-records.delete': { endpointKey: 'fleet-tuev-records.delete', method: 'DELETE', pathPattern: '/api/fleet/tuev-records/:id', requiresApproval: true, idempotency: false, description: 'Delete TÜV record' },
   'fleet-documents.delete': { endpointKey: 'fleet-documents.delete', method: 'DELETE', pathPattern: '/api/fleet/documents/:id', requiresApproval: true, idempotency: false, description: 'Delete fleet document' },
+  'fleet-tire-sets.delete': { endpointKey: 'fleet-tire-sets.delete', method: 'DELETE', pathPattern: '/api/fleet/tire-sets/:id', requiresApproval: true, idempotency: false, description: 'Delete tire set' },
 
   // Fleet — Approval preview
   'fleet-approval-preview.create': { endpointKey: 'fleet-approval-preview.create', method: 'POST', pathPattern: '/api/fleet/approval-preview', requiresApproval: false, idempotency: false, description: 'Create fleet approval preview' },

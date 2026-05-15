@@ -19,6 +19,7 @@ import {
   addTaxRecord, updateTaxRecord, deleteTaxRecord,
   addTuevRecord, updateTuevRecord, deleteTuevRecord,
   addDocument, deleteDocument,
+  addTireSet, updateTireSet, deleteTireSet, listTireSets,
 } from './store.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -211,6 +212,22 @@ export function registerFleetHttpRoutes(api: any) {
               return;
             }
 
+            // POST /vehicles/:code/tire-sets
+            if (sub === 'tire-sets' && req.method === 'POST') {
+              const body = await parseJsonBody(req);
+              const result = await addTireSet(vehicleCode, body, actor);
+              json(res, 201, result);
+              return;
+            }
+
+            // GET /vehicles/:code/tire-sets
+            if (sub === 'tire-sets' && req.method === 'GET') {
+              const status = url.searchParams.get('status') as 'active' | undefined;
+              const result = await listTireSets(vehicleCode, status ? { status } : undefined);
+              json(res, 200, result);
+              return;
+            }
+
             // Direct vehicle operations (no sub-route)
             if (!sub) {
               if (req.method === 'GET') {
@@ -342,6 +359,29 @@ export function registerFleetHttpRoutes(api: any) {
             if (req.method === 'DELETE') {
               if (!(await checkApproval(req, res, 'fleet-documents.delete', sessionId, actor, 'DELETE', {}))) return;
               await deleteDocument(parseInt(recordId, 10), actor);
+              json(res, 200, { ok: true });
+            } else {
+              err(res, 405, 'Method not allowed');
+            }
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
+      // ── Tire Sets (top-level by ID) ─────────────────────────────────
+      if (resource === 'tire-sets') {
+        const recordId = segments[1];
+        if (!recordId) { err(res, 400, 'Missing record ID'); return true; }
+
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            if (req.method === 'PATCH') {
+              const body = await parseJsonBody(req);
+              await updateTireSet(parseInt(recordId, 10), body, actor);
+              json(res, 200, { ok: true, id: parseInt(recordId, 10) });
+            } else if (req.method === 'DELETE') {
+              if (!(await checkApproval(req, res, 'fleet-tire-sets.delete', sessionId, actor, 'DELETE', {}))) return;
+              await deleteTireSet(parseInt(recordId, 10), actor);
               json(res, 200, { ok: true });
             } else {
               err(res, 405, 'Method not allowed');

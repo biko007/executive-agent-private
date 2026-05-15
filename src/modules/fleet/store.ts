@@ -6,9 +6,9 @@ import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import type {
   Vehicle, VehicleType, ServiceEntry, VehicleDocument, Insurance,
-  TuevRecord, TaxRecord, DeadlineWarning,
+  TuevRecord, TaxRecord, TireSet, DeadlineWarning,
   VehicleRow, ServiceRecordRow, InsurancePolicyRow, TuevRecordRow,
-  TaxRecordRow, FleetDocumentRow,
+  TaxRecordRow, FleetDocumentRow, TireSetRow,
 } from './types.js';
 
 // ── Internal helpers ────────────────────────────────────────────────────────
@@ -71,6 +71,12 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
     [vehicleDbId],
   );
 
+  // Tire sets
+  const { rows: tireRows } = await dbQuery<TireSetRow>(
+    'SELECT * FROM vehicle_tire_sets WHERE vehicle_id = $1 ORDER BY installed_at DESC NULLS LAST',
+    [vehicleDbId],
+  );
+
   const serviceLog: ServiceEntry[] = serviceRows.map(s => ({
     date: dateStr(s.service_date) || '',
     type: s.service_type,
@@ -121,6 +127,17 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
     createdAt: ts(d.created_at),
   }));
 
+  const tireSets: TireSet[] = tireRows.map(t => ({
+    id: t.id,
+    tireType: t.tire_type ?? undefined,
+    brand: t.brand ?? undefined,
+    model: t.model ?? undefined,
+    treadDepthMm: t.tread_depth_mm ? parseFloat(t.tread_depth_mm) : undefined,
+    installedAt: dateStr(t.installed_at),
+    removedAt: dateStr(t.removed_at),
+    notes: t.notes ?? undefined,
+  }));
+
   // Determine tuevDate from latest tuev record or source_payload fallback
   let tuevDate: string | undefined;
   if (tuevRows.length > 0 && tuevRows[0].next_due_date) {
@@ -164,6 +181,7 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
     tuevRecords,
     taxRecords,
     documents,
+    tireSets,
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
@@ -734,6 +752,115 @@ export async function deleteDocument(recordId: number, actor?: string): Promise<
     entityType: 'fleet_document', entityId: String(recordId),
     before: before[0] as unknown as Record<string, unknown>,
   });
+}
+
+// ── Tire Sets CRUD ─────────────────────────────────────────────────────────
+
+export async function addTireSet(
+  code: string,
+  input: {
+    tire_type?: string; brand?: string; model?: string;
+    tread_depth_mm?: number; installed_at?: string; removed_at?: string;
+    notes?: string;
+  },
+  actor?: string,
+): Promise<Vehicle> {
+  const vehicleId = await resolveVehicleCodeToId(code);
+
+  const { rows } = await dbQuery<TireSetRow>(
+    `INSERT INTO vehicle_tire_sets
+       (vehicle_id, tire_type, brand, model, tread_depth_mm, installed_at, removed_at, notes, created_by, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) RETURNING *`,
+    [
+      vehicleId, input.tire_type || null, input.brand || null,
+      input.model || null, input.tread_depth_mm ?? null,
+      input.installed_at || null, input.removed_at || null,
+      input.notes || null, actor || 'system',
+    ],
+  );
+
+  await audit.log({
+    module: 'fleet', action: 'tire_set.create',
+    entityType: 'tire_set', entityId: code,
+    after: rows[0] as unknown as Record<string, unknown>,
+  });
+
+  return (await getVehicleByCode(code))!;
+}
+
+export async function updateTireSet(
+  recordId: number,
+  patch: Record<string, unknown>,
+  actor?: string,
+): Promise<{ id: number }> {
+  const { rows: before } = await dbQuery<TireSetRow>(
+    'SELECT * FROM vehicle_tire_sets WHERE id = $1', [recordId],
+  );
+  if (before.length === 0) throw new Error(`Reifensatz nicht gefunden: ${recordId}`);
+
+  const FIELDS = ['tire_type', 'brand', 'model', 'tread_depth_mm', 'installed_at', 'removed_at', 'notes'];
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  let pi = 1;
+
+  for (const f of FIELDS) {
+    if (patch[f] !== undefined) { sets.push(`${f} = $${pi++}`); params.push(patch[f]); }
+  }
+  if (actor) { sets.push(`updated_by = $${pi++}`); params.push(actor); }
+  if (sets.length === 0) return { id: recordId };
+
+  params.push(recordId);
+  const { rows: after } = await dbQuery<TireSetRow>(
+    `UPDATE vehicle_tire_sets SET ${sets.join(', ')} WHERE id = $${pi} RETURNING *`,
+    params,
+  );
+
+  await audit.log({
+    module: 'fleet', action: 'tire_set.update',
+    entityType: 'tire_set', entityId: String(recordId),
+    before: before[0] as unknown as Record<string, unknown>,
+    after: after[0] as unknown as Record<string, unknown>,
+  });
+
+  return { id: recordId };
+}
+
+export async function deleteTireSet(recordId: number, actor?: string): Promise<void> {
+  const { rows: before } = await dbQuery<TireSetRow>(
+    'SELECT * FROM vehicle_tire_sets WHERE id = $1', [recordId],
+  );
+  if (before.length === 0) throw new Error(`Reifensatz nicht gefunden: ${recordId}`);
+
+  await dbQuery('DELETE FROM vehicle_tire_sets WHERE id = $1', [recordId]);
+
+  await audit.log({
+    module: 'fleet', action: 'tire_set.delete',
+    entityType: 'tire_set', entityId: String(recordId),
+    before: before[0] as unknown as Record<string, unknown>,
+  });
+}
+
+export async function listTireSets(
+  code: string,
+  opts?: { status?: 'active' },
+): Promise<TireSet[]> {
+  const vehicleId = await resolveVehicleCodeToId(code);
+  let sql = 'SELECT * FROM vehicle_tire_sets WHERE vehicle_id = $1';
+  if (opts?.status === 'active') {
+    sql += ' AND removed_at IS NULL';
+  }
+  sql += ' ORDER BY installed_at DESC NULLS LAST';
+  const { rows } = await dbQuery<TireSetRow>(sql, [vehicleId]);
+  return rows.map(t => ({
+    id: t.id,
+    tireType: t.tire_type ?? undefined,
+    brand: t.brand ?? undefined,
+    model: t.model ?? undefined,
+    treadDepthMm: t.tread_depth_mm ? parseFloat(t.tread_depth_mm) : undefined,
+    installedAt: dateStr(t.installed_at),
+    removedAt: dateStr(t.removed_at),
+    notes: t.notes ?? undefined,
+  }));
 }
 
 // ── Deadline check ──────────────────────────────────────────────────────────
