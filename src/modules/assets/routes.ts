@@ -279,15 +279,22 @@ export function registerAssetsHttpRoutes(api: any) {
             try {
               const { query } = parseUrl(req.url || '');
               if (req.method === 'GET') {
-                let sql = `SELECT l.*, u.code AS unit_code, p.code AS property_code
-                           FROM leases l JOIN units u ON l.unit_id = u.id JOIN properties p ON u.property_id = p.id`;
+                let sql = `SELECT l.*, u.code AS unit_code, p.code AS property_code,
+                                  COALESCE(p.name, p.code) AS property_name,
+                                  p.code || '/' || u.code AS unit_label,
+                                  STRING_AGG(DISTINCT COALESCE(t.first_name || ' ' || t.last_name, t.company_name, t.last_name), ', ') AS tenant_names
+                           FROM leases l
+                           JOIN units u ON l.unit_id = u.id
+                           JOIN properties p ON u.property_id = p.id
+                           LEFT JOIN lease_tenants lt ON lt.lease_id = l.id
+                           LEFT JOIN tenants t ON t.id = lt.tenant_id`;
                 const params: unknown[] = [];
                 const conditions: string[] = [];
                 if (query.property_code) { conditions.push(`p.code = $${params.length + 1}`); params.push(query.property_code); }
                 if (query.unit_code) { conditions.push(`u.code = $${params.length + 1}`); params.push(query.unit_code); }
                 if (query.status) { conditions.push(`l.status = $${params.length + 1}`); params.push(query.status); }
                 if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
-                sql += ' ORDER BY l.start_date DESC';
+                sql += ` GROUP BY l.id, u.code, p.code, p.name ORDER BY l.start_date DESC`;
                 const { rows } = await dbQuery(sql, params);
                 json(res, 200, rows.map(mapLeaseRow));
               } else if (req.method === 'POST') {
@@ -1225,6 +1232,9 @@ function mapLeaseRow(row: any) {
     unit_id: row.unit_id,
     unit_code: row.unit_code || null,
     property_code: row.property_code || null,
+    property_name: row.property_name || row.property_code || null,
+    unit_label: row.unit_label || null,
+    tenant_names: row.tenant_names || null,
     lease_type: row.lease_type,
     status: row.status,
     start_date: dateStr(row.start_date),
