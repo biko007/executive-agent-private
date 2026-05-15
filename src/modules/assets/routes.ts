@@ -105,10 +105,15 @@ export function registerAssetsHttpRoutes(api: any) {
           await withContext({ requestId, actor, source: 'dashboard' }, async () => {
             try {
               const { rows } = await dbQuery(
-                `SELECT id, code, name, street, postal_code, city, property_type, owner,
-                        ownership_start, ownership_end, billing_period_start_month,
-                        heating_type, co2_cost_relevant, active, created_at, updated_at
-                 FROM properties WHERE active = true ORDER BY code`
+                `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
+                        p.ownership_start, p.ownership_end, p.billing_period_start_month,
+                        p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
+                        COUNT(u.id)::int AS unit_count
+                 FROM properties p
+                 LEFT JOIN units u ON u.property_id = p.id AND u.active = true
+                 WHERE p.active = true
+                 GROUP BY p.id
+                 ORDER BY p.code`
               );
               json(res, 200, rows.map(mapPropertyRow));
             } catch (e: any) { err(res, 500, e.message); }
@@ -1189,6 +1194,7 @@ function mapPropertyRow(row: any) {
     active: row.active,
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),
+    unit_count: row.unit_count ?? 0,
   };
 }
 
