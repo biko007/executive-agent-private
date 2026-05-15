@@ -82,6 +82,22 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
   'nk-statements.finalize': { endpointKey: 'nk-statements.finalize', method: 'POST', pathPattern: '/api/assets/nk-statements/finalize', requiresApproval: true, idempotency: true, description: 'Finalize NK statement run' },
   'nk-statements.serve': { endpointKey: 'nk-statements.serve', method: 'POST', pathPattern: '/api/assets/nk-statements/:id/serve', requiresApproval: true, idempotency: false, description: 'Serve NK statement to tenant' },
   'nk-statements.rerender': { endpointKey: 'nk-statements.rerender', method: 'POST', pathPattern: '/api/assets/nk-statements/:id/rerender', requiresApproval: false, idempotency: false, description: 'Re-render NK statement PDF' },
+
+  // Fleet — Vehicles
+  'fleet-vehicles.create': { endpointKey: 'fleet-vehicles.create', method: 'POST', pathPattern: '/api/fleet/vehicles', requiresApproval: true, idempotency: true, description: 'Create vehicle' },
+  'fleet-vehicles.update-identity': { endpointKey: 'fleet-vehicles.update-identity', method: 'PATCH', pathPattern: '/api/fleet/vehicles/:code', requiresApproval: true, idempotency: false, description: 'Update vehicle identity fields' },
+  'fleet-vehicles.archive': { endpointKey: 'fleet-vehicles.archive', method: 'POST', pathPattern: '/api/fleet/vehicles/:code/archive', requiresApproval: true, idempotency: false, description: 'Archive vehicle' },
+  'fleet-vehicles.unarchive': { endpointKey: 'fleet-vehicles.unarchive', method: 'POST', pathPattern: '/api/fleet/vehicles/:code/unarchive', requiresApproval: true, idempotency: false, description: 'Unarchive vehicle' },
+
+  // Fleet — Sub-entity deletes
+  'fleet-service-records.delete': { endpointKey: 'fleet-service-records.delete', method: 'DELETE', pathPattern: '/api/fleet/service-records/:id', requiresApproval: true, idempotency: false, description: 'Delete service record' },
+  'fleet-insurance-policies.delete': { endpointKey: 'fleet-insurance-policies.delete', method: 'DELETE', pathPattern: '/api/fleet/insurance-policies/:id', requiresApproval: true, idempotency: false, description: 'Delete insurance policy' },
+  'fleet-tax-records.delete': { endpointKey: 'fleet-tax-records.delete', method: 'DELETE', pathPattern: '/api/fleet/tax-records/:id', requiresApproval: true, idempotency: false, description: 'Delete tax record' },
+  'fleet-tuev-records.delete': { endpointKey: 'fleet-tuev-records.delete', method: 'DELETE', pathPattern: '/api/fleet/tuev-records/:id', requiresApproval: true, idempotency: false, description: 'Delete TÜV record' },
+  'fleet-documents.delete': { endpointKey: 'fleet-documents.delete', method: 'DELETE', pathPattern: '/api/fleet/documents/:id', requiresApproval: true, idempotency: false, description: 'Delete fleet document' },
+
+  // Fleet — Approval preview
+  'fleet-approval-preview.create': { endpointKey: 'fleet-approval-preview.create', method: 'POST', pathPattern: '/api/fleet/approval-preview', requiresApproval: false, idempotency: false, description: 'Create fleet approval preview' },
 };
 
 /**

@@ -53,7 +53,20 @@ const SAFE_FIELDS = new Set([
   'co2_emissions_kg', 'co2_cost_total', 'hot_water_via_heating',
   'heating_system', 'energy_source', 'fuel_type',
   'calibration_valid_until', 'installation_date',
+  // Fleet (Sprint 6c)
+  'vehicle_id', 'vehicle_code', 'display_name', 'license_plate', 'make', 'model',
+  'first_registration', 'holder', 'current_mileage_km',
+  'archived_at', 'archived_reason', 'source_payload',
+  'service_date', 'service_type', 'workshop', 'cost', 'document_url',
+  'company', 'coverage_type', 'annual_premium',
+  'tax_year', 'paid_at',
+  'inspection_date', 'result', 'next_due_date',
+  'doc_type', 'title', 'url',
+  'created_by', 'updated_by',
 ]);
+
+/** Fields where only the last 4 characters are shown, rest masked as ***. */
+const TAIL_MASK_FIELDS = new Set(['vin', 'policy_number']);
 
 /** Patterns that indicate a sensitive value regardless of field name. */
 const SENSITIVE_PATTERNS = [
@@ -77,6 +90,8 @@ export function maskSensitiveFields(obj: Record<string, unknown>): Record<string
   for (const [key, val] of Object.entries(obj)) {
     if (val == null) {
       result[key] = val;
+    } else if (TAIL_MASK_FIELDS.has(key) && typeof val === 'string') {
+      result[key] = val.length > 4 ? '***' + val.slice(-4) : '***';
     } else if (typeof val === 'object' && !Array.isArray(val)) {
       result[key] = maskSensitiveFields(val as Record<string, unknown>);
     } else if (SAFE_FIELDS.has(key)) {

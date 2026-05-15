@@ -5,7 +5,7 @@ import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, for
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
-import { getAllVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, } from "./src/modules/fleet/index.js";
+import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, } from "./src/modules/mail/index.js";
@@ -303,6 +303,7 @@ export default function (api) {
         'sharepoint', 'spdocs', 'sprecent', 'spsync',
         'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
         'fleetinsurance', 'fleetlink', 'fleetservice', 'fleetshow', 'fleettuev',
+        'tuev', 'versicherung',
         'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
         'pe', 'peedit', 'penew', 'peshow', 'pevalue',
         'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
@@ -888,7 +889,8 @@ export default function (api) {
         }
         // ── FUHRPARK — FRISTEN (nur wenn innerhalb 60 Tage) ──
         try {
-            const deadlines = checkDeadlines().filter((w) => w.severity === 'overdue' || w.daysLeft <= 60);
+            const allDeadlines = await checkDeadlines();
+            const deadlines = allDeadlines.filter((w) => w.severity === 'overdue' || w.daysLeft <= 60);
             if (deadlines.length > 0) {
                 parts.push('');
                 parts.push(SEP);
@@ -906,7 +908,7 @@ export default function (api) {
                     }
                 }
                 // Add "Alle anderen: kein Handlungsbedarf" if there are vehicles without deadlines
-                const allVehicles = getAllVehicles();
+                const allVehicles = await listVehicles();
                 const vehiclesWithDeadlines = new Set(deadlines.map((d) => d.vehicleName));
                 if (allVehicles.length > deadlines.length) {
                     parts.push('- Alle anderen: kein Handlungsbedarf');
@@ -1995,6 +1997,8 @@ export default function (api) {
     api.logger.info('[executive-agent] HTTP routes registered on gateway port 18789 (/health, /ready, /version, /location)');
     // ── Assets HTTP API (Sprint 5.5a-1) ──────────────────────────────────────
     registerAssetsHttpRoutes(api);
+    // ── Fleet HTTP API (Sprint 6c) ──────────────────────────────────────────
+    registerFleetHttpRoutes(api);
     // ── Startup Canary ───────────────────────────────────────────────────────
     if (!coreServiceToken) {
         api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');

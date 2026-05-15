@@ -10,7 +10,8 @@
     "nodemailer": "^8.0.1",
     "pg": "^8.20.0",
     "playwright": "^1.59.1",
-    "suncalc": "^1.9.0"
+    "suncalc": "^1.9.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
@@ -31,6 +32,7 @@
     "migrate:sprint3": "bun run scripts/migrate-sprint3-instagram.ts",
     "migrate:sprint4": "bun run scripts/migrate-sprint4-health.ts",
     "migrate:sprint5": "bun run scripts/migrate-sprint5-assets.ts",
+    "migrate:sprint6": "bun run src/modules/fleet/migrate-v025.ts",
     "test": "bun test"
   }
 }

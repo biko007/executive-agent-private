@@ -14,5 +14,5 @@
     "sourceMap": false
   },
   "include": ["index.ts", "sharepoint-store.ts", "fleet-store.ts", "assets-store.ts", "instagram-store.ts", "browser-agent.ts", "instagram-content-engine.ts", "system-health.ts", "src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "**/__tests__"]
+  "exclude": ["dist", "node_modules", "**/__tests__", "**/migrate-*.ts", "**/rollback-*.ts"]
 }

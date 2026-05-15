@@ -19,8 +19,9 @@ import {
 } from "./src/modules/health/index.js";
 import type { HealthAlert } from "./src/modules/health/index.js";
 import {
-  getAllVehicles, checkDeadlines,
+  listVehicles, checkDeadlines,
   registerFleetCommands, initFleetCommands,
+  registerFleetHttpRoutes,
 } from "./src/modules/fleet/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
@@ -368,6 +369,7 @@ export default function (api: any) {
     'sharepoint', 'spdocs', 'sprecent', 'spsync',
     'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
     'fleetinsurance', 'fleetlink', 'fleetservice', 'fleetshow', 'fleettuev',
+    'tuev', 'versicherung',
     'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
     'pe', 'peedit', 'penew', 'peshow', 'pevalue',
     'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
@@ -992,7 +994,8 @@ export default function (api: any) {
 
     // ── FUHRPARK — FRISTEN (nur wenn innerhalb 60 Tage) ──
     try {
-      const deadlines = checkDeadlines().filter((w: any) => w.severity === 'overdue' || w.daysLeft <= 60);
+      const allDeadlines = await checkDeadlines();
+      const deadlines = allDeadlines.filter((w: any) => w.severity === 'overdue' || w.daysLeft <= 60);
       if (deadlines.length > 0) {
         parts.push('');
         parts.push(SEP);
@@ -1009,7 +1012,7 @@ export default function (api: any) {
           }
         }
         // Add "Alle anderen: kein Handlungsbedarf" if there are vehicles without deadlines
-        const allVehicles = getAllVehicles();
+        const allVehicles = await listVehicles();
         const vehiclesWithDeadlines = new Set(deadlines.map((d: any) => d.vehicleName));
         if (allVehicles.length > deadlines.length) {
           parts.push('- Alle anderen: kein Handlungsbedarf');
@@ -2190,6 +2193,9 @@ export default function (api: any) {
 
   // ── Assets HTTP API (Sprint 5.5a-1) ──────────────────────────────────────
   registerAssetsHttpRoutes(api);
+
+  // ── Fleet HTTP API (Sprint 6c) ──────────────────────────────────────────
+  registerFleetHttpRoutes(api);
 
   // ── Startup Canary ───────────────────────────────────────────────────────
   if (!coreServiceToken) {

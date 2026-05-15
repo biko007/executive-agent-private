@@ -1,10 +1,10 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-12**
+**Stand: 2026-05-13**
 
-## Stand 2026-05-12
+## Stand 2026-05-13
 
-Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -22,15 +22,28 @@ Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen.
   Withings-Sync via n8n-Workflow `health-withings-sync-daily` (Cron daily 07:00 UTC).
   Core-Endpoints: POST /api/health/withings-sync, GET /api/health/sync-status.
   Retry-on-401 mit Single-Refresh + Fatal-Error-Pfad (Telegram-Notify).
-  22/22 Tests, 15/15 Smoke.
+- **Sprint 5.5a (Asset CRUD + NK PreCheck):** Assets-Modul auf Postgres migriert (V022+V023).
+  Properties, Units, Leases, Tenants, Allocation Rules, Cost Categories, Expense Bookings,
+  Meters, Readings, Unit Residents, Lease Charges, Heating Config, NK Period Obligations.
+  CRUD-Endpoints mit Approval-Workflow, Idempotency, Audit-Log.
+  nkPreCheck() mit 11 Blocker-Checks. Dashboard ENDPOINT_MAP für Assets.
+- **Sprint 5.5b (NK-Engine + PDF):** Volle Nebenkostenabrechnung (13 Etappes a-m).
+  NK-Engine: computeNk() mit Personentage, Vorauszahlung, Pro-Rata, HeizKV §7/§8/§9.
+  V024 Schema: nk_statement_runs, nk_statements, nk_statement_items, nk_alert_log + Lock-Trigger.
+  Endpoints: Preview, Finalize (Approval+Idempotency), Read, PDF, Re-Render, Serve, Run-List/Detail.
+  PDF-Worker: Standalone Playwright Chromium Service, Handlebars-Template, atomisches Schreiben.
+  §556-Cron: Fristüberwachung mit Telegram-Alerts (30d/14d/7d/1d/expired).
+  Telegram: /nebenkostenabrechnung preview|status.
+  54 Tests über 6 Dateien, 21/21 Smoke.
 
-### Module (10)
+### Module (11)
 
 | Modul | Pfad | Commands | DI |
 |-------|------|----------|----|
 | executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
 | instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
-| assets | src/modules/assets/ | 7 | self-contained |
+| assets | src/modules/assets/ | 7 | Postgres, NK-Engine |
+| nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
 | health | src/modules/health/ | 12 | sendTelegram, Postgres |
 | fleet | src/modules/fleet/ | 10 | Links |
 | travel | src/modules/travel/ | 8 | M365, Telegram, Links |
@@ -38,8 +51,6 @@ Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen.
 | mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
 | calendar | src/modules/calendar/ | 4 | M365 |
 | sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram |
-
-(Spec V3 §3 listete nur 5 — wird in Batch 3 ergänzt.)
 
 ### Daten-Hygiene
 
@@ -85,7 +96,12 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
 - ~~Sprint 3 Instagram auf Postgres~~ — erledigt 2026-05-12
 - ~~Sprint 4 Health auf Postgres~~ — erledigt 2026-05-12
+- ~~Sprint 5.5a Asset CRUD + NK PreCheck~~ — erledigt 2026-05-12
+- ~~Sprint 5.5b NK-Engine + PDF V1.3~~ — erledigt 2026-05-13
+- Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
+- n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
 - Optional: Meta-Token rotieren (User-Entscheidung)
+- Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
 
 ### Sprint-Roadmap
 
@@ -95,7 +111,8 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 | 2 | Code-Refactor | abgeschlossen |
 | 3 | Instagram Postgres | abgeschlossen |
 | 4 | Health Postgres | abgeschlossen |
-| 5 | Assets + Mieterdaten | offen |
+| 5.5a | Asset CRUD + NK PreCheck | abgeschlossen |
+| 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 
@@ -161,6 +178,14 @@ link-store.ts       Entity-Dokument-Verknüpfungen
 src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
 src/modules/health/store.ts     Gewicht, Schlaf, Trends, Alerts (Postgres-backed)
 src/modules/health/withings.ts  Withings OAuth2 + API, Tokens (Postgres-backed)
+src/modules/nk/engine.ts       NK-Berechnung: computeNk(), Personentage, Pro-Rata, HeizKV (Postgres-backed)
+src/modules/nk/heating.ts      HeizKV §7/§8/§9, Method A/B, Verbrauchsberechnung
+src/modules/nk/snapshot.ts     Snapshot Build + Read/Write (gzip, SHA-256)
+src/modules/nk/routes.ts       NK HTTP-Endpoints (Preview, Finalize, Serve, Re-Render)
+src/modules/nk/pdf-template.ts Handlebars HTML-Template für NK-Abrechnungen
+src/modules/nk/alerts.ts       §556-Fristüberwachung + Telegram-Alerts
+src/modules/nk/precheck.ts     nkPreCheck() — 11 Blocker-Checks vor Berechnung
+src/pdf-worker.ts              Standalone PDF-Worker (Playwright Chromium)
 ```
 
 ## Datenpfade
@@ -183,6 +208,8 @@ Instagram:   Postgres insta_drafts, insta_tokens, insta_style_profile (Sprint 3)
              artifacts/personal/instagram/insights-cache.json  (File)
              artifacts/personal/instagram/media-cache.json     (File)
              artifacts/personal/instagram/content-calendar.json (File)
+NK-Snapshots: artifacts/personal/nk-snapshots/<run_id>.json.gz (Sprint 5.5b)
+NK-PDFs:      artifacts/personal/nk-statements/<PROP_CODE>/<YEAR>/run-<RUN_ID>/<lease-ID|owner>.pdf
 ```
 
 ## Netzwerk / nginx
@@ -209,7 +236,9 @@ Reload:         sudo nginx -t && sudo systemctl reload nginx
 ```bash
 npm run build
 systemctl --user restart openclaw-gateway.service
+systemctl --user restart openclaw-pdf-worker.service
 systemctl --user status openclaw-gateway.service --no-pager
+systemctl --user status openclaw-pdf-worker.service --no-pager
 journalctl --user -u openclaw-gateway.service -n 20 --no-pager
 bun run scripts/smoke-test.ts
 ```
@@ -221,8 +250,12 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 22 Tests über 4 Dateien
+npm test   # bun test — 54 Tests über 6 Dateien
 ```
+
+**Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
+`POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 54 Tests
+sind grün wenn sie einzeln/sequenziell laufen.
 
 **Pflicht-Tests (Spec §17):**
 - `src/modules/instagram/__tests__/approval-hard-rule.test.ts` — Spec §17.2
@@ -234,6 +267,10 @@ npm test   # bun test — 22 Tests über 4 Dateien
   Prüft: Health-Entry Roundtrip (weight, sleep, steps, heartrate, alerts) gegen echte Postgres-DB.
 - `src/modules/executive/__tests__/health-monitor.test.ts`
   Prüft: Alert-Throttling für Service-Monitoring.
+- `src/modules/nk/__tests__/engine.test.ts` — Sprint 5.5b §11
+  Prüft: 6 Goldfile-Szenarien, 11 Blocker-Tests, Personentage, Vorauszahlung.
+- `src/modules/nk/__tests__/e2e-lifecycle.test.ts` — Sprint 5.5b §11
+  Prüft: Preview → Finalize → Snapshot → Re-Render → Serve → Lock → Version-Cascade.
 
 **Vor jedem Merge: `npm test` MUSS grün sein.**
 
@@ -261,8 +298,9 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 + 4 vollständig abgeschlossen (2026-05-12). Details siehe "Stand" oben.
-Smoke Test: 15/15 PASS, npm test: 22/22 PASS.
+Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b vollständig abgeschlossen (2026-05-13). Details siehe "Stand" oben.
+Smoke Test: 21/21 PASS, Tests: 54/54 PASS (einzeln).
+Nächste Schritte: Etappe n (Real-Test L19 2024) wenn Datenpflege abgeschlossen.
 
 ## Role
 
@@ -282,7 +320,7 @@ engineering best practices.
 
 - VPS: Hetzner Helsinki, Ubuntu 24.04, User: biko
 - Services: openclaw-gateway (18789), openclaw-dashboard (18800),
-  openclaw-trading (18793), ibgateway (7497), xvfb (:1)
+  openclaw-pdf-worker, openclaw-trading (18793), ibgateway (7497), xvfb (:1)
 - Reverse Proxy: nginx → app.bikobickel.de
 - Runtime: Node.js/TypeScript, Bun
 - Secrets: ~/.config/openclaw/env
