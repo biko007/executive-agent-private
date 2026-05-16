@@ -7,6 +7,8 @@ import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
 import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
+import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
+import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, } from "./src/modules/mail/index.js";
@@ -2192,6 +2194,10 @@ export default function (api) {
     registerFleetHttpRoutes(api);
     // ── Banking HTTP API (Sprint 7b) ──────────────────────────────────────────
     registerBankingHttpRoutes(api);
+    // ── Links HTTP API (Sprint 9) ──────────────────────────────────────────
+    registerLinksHttpRoutes(api);
+    // ── SharePoint HTTP API (Sprint 10) ──────────────────────────────────────
+    registerSharePointHttpRoutes(api);
     // ── Startup Canary ───────────────────────────────────────────────────────
     if (!coreServiceToken) {
         api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');
@@ -2325,6 +2331,16 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[links] Migration failed: ${e.message}`);
+        }
+        // ── SharePoint Migrations (Sprint 10) ─────────────────────────────────
+        try {
+            const spMigrationsDir = path.join(__dirname, 'src/modules/sharepoint/migrations');
+            const spApplied = await runMigrations(spMigrationsDir, 'sharepoint');
+            if (spApplied > 0)
+                api.logger.info(`[sharepoint] Applied ${spApplied} migration(s)`);
+        }
+        catch (e) {
+            api.logger.error(`[sharepoint] Migration failed: ${e.message}`);
         }
         // ── Health Monitor ────────────────────────────────────────────────────
         try {
