@@ -28,6 +28,7 @@ import {
   initBankingCommands, registerBankingCommands,
   initTanBridge, initSyncEngine, cleanupExpiredChallenges,
 } from "./src/modules/banking/index.js";
+import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import {
@@ -2381,6 +2382,9 @@ export default function (api: any) {
 
   // ── Banking HTTP API (Sprint 7b) ──────────────────────────────────────────
   registerBankingHttpRoutes(api);
+
+  // ── Links HTTP API (Sprint 9) ──────────────────────────────────────────
+  registerLinksHttpRoutes(api);
 
   // ── Startup Canary ───────────────────────────────────────────────────────
   if (!coreServiceToken) {
