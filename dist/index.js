@@ -27,6 +27,7 @@ import { initSystemHealth, runStartupChecks, formatHealthReport, checkAndRefresh
 import { HealthMonitor } from "./src/modules/executive/index.js";
 import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
+import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, } from "./src/shared/utils/index.js";
 import { loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION, } from "./src/shared/settings/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
@@ -657,13 +658,8 @@ export default function (api) {
     registerInstagramCommands(api);
     // ── Briefing ───────────────────────────────────────────────────────────────
     // syncWithingsForBriefing → src/modules/health/commands.ts (imported)
-    function getBestEffortLocationForBriefing(now) {
-        const s = loadSettings();
-        const loc = s.location;
-        // Wenn kein Handy-Standort vorhanden: auf gespeicherten/default Standort fallen
-        if (!loc || loc.lat == null || loc.lon == null) {
-            return { loc: getLocationSettings(), isStale: true };
-        }
+    async function getBestEffortLocationForBriefing(now) {
+        const loc = await getLocationSettings();
         // Standort-Frische prüfen, aber NICHT abbrechen
         const updatedAtMs = loc.updatedAt ? Date.parse(loc.updatedAt) : NaN;
         if (!Number.isFinite(updatedAtMs)) {
@@ -681,7 +677,7 @@ export default function (api) {
         const fmtDateFull = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
         const parts = [];
         // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
-        const locInfo = getBestEffortLocationForBriefing(now);
+        const locInfo = await getBestEffortLocationForBriefing(now);
         const loc = locInfo.loc;
         const locAgeMs = loc.updatedAt ? now.getTime() - Date.parse(loc.updatedAt) : Infinity;
         const locLabel = !Number.isFinite(locAgeMs)
@@ -1337,26 +1333,10 @@ export default function (api) {
             const lon = Number(coordMatch[2]);
             if (!Number.isFinite(lat) || !Number.isFinite(lon))
                 return;
-            // Reverse-geocoding via Nominatim
-            let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-            try {
-                const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
-                if (geoRes.ok) {
-                    const geo = await geoRes.json();
-                    label = geo?.address?.city
-                        || geo?.address?.town
-                        || geo?.address?.village
-                        || geo?.address?.municipality
-                        || geo?.display_name?.split(',')[0]
-                        || label;
-                }
-            }
-            catch { /* geocoding optional, keep coordinate label */ }
-            const s = loadSettings();
-            s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-            saveSettings(s);
+            const label = await resolveLocationLabel(lat, lon);
+            await insertLocationEvent({ lat, lon, label, source: 'telegram' });
             api.logger.info(`[executive-agent] Standort gespeichert: ${label} (${lat}, ${lon})`);
-            const chatId = s.telegramChatId;
+            const chatId = loadSettings().telegramChatId;
             if (chatId) {
                 sendTelegram(chatId, `📍 Standort gespeichert: ${label}`).catch(() => { });
             }
@@ -2119,6 +2099,27 @@ export default function (api) {
             }
         },
     });
+    // ── Location: shared Nominatim reverse-geocoding helper ────────────────
+    async function resolveLocationLabel(lat, lon, cityHint) {
+        const rawCity = cityHint != null ? String(cityHint).trim() : '';
+        if (rawCity && !/^\d+(\.\d+)?$/.test(rawCity))
+            return rawCity;
+        let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        try {
+            const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
+            if (geoRes.ok) {
+                const geo = await geoRes.json();
+                label = geo?.address?.city
+                    || geo?.address?.town
+                    || geo?.address?.village
+                    || geo?.address?.municipality
+                    || geo?.display_name?.split(',')[0]
+                    || label;
+            }
+        }
+        catch { /* geocoding optional, keep coordinate label */ }
+        return label;
+    }
     api.registerHttpRoute({
         path: '/location',
         handler: async (req, res) => {
@@ -2176,32 +2177,9 @@ export default function (api) {
                 res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
                 return;
             }
-            // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-            const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-            let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-            if (!label) {
-                label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-                try {
-                    const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
-                    if (geoRes.ok) {
-                        const geo = await geoRes.json();
-                        label = geo?.address?.city
-                            || geo?.address?.town
-                            || geo?.address?.village
-                            || geo?.address?.municipality
-                            || geo?.display_name?.split(',')[0]
-                            || label;
-                    }
-                }
-                catch { /* geocoding optional, keep coordinate label */ }
-            }
-            const s = loadSettings();
-            s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-            saveSettings(s);
-            const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-            if (!fs.existsSync(locHistoryDir))
-                fs.mkdirSync(locHistoryDir, { recursive: true });
-            fs.appendFileSync(path.join(locHistoryDir, 'history.jsonl'), JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n', 'utf-8');
+            const label = await resolveLocationLabel(lat, lon, parsed.city);
+            const altitude = parsed.altitude != null ? parseFloat(String(parsed.altitude)) : null;
+            await insertLocationEvent({ lat, lon, label, altitude: Number.isFinite(altitude) ? altitude : null });
             api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true, label }));
@@ -2275,32 +2253,9 @@ export default function (api) {
             res.end(JSON.stringify({ ok: false, error: 'lat/lon required' }));
             return;
         }
-        // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-        const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-        let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-        if (!label) {
-            label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-            try {
-                const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`, { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } }, 10000);
-                if (geoRes.ok) {
-                    const geo = await geoRes.json();
-                    label = geo?.address?.city
-                        || geo?.address?.town
-                        || geo?.address?.village
-                        || geo?.address?.municipality
-                        || geo?.display_name?.split(',')[0]
-                        || label;
-                }
-            }
-            catch { /* geocoding optional, keep coordinate label */ }
-        }
-        const s = loadSettings();
-        s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-        saveSettings(s);
-        const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-        if (!fs.existsSync(locHistoryDir))
-            fs.mkdirSync(locHistoryDir, { recursive: true });
-        fs.appendFileSync(path.join(locHistoryDir, 'history.jsonl'), JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n', 'utf-8');
+        const label = await resolveLocationLabel(lat, lon, parsed.city);
+        const altitude = parsed.altitude != null ? parseFloat(String(parsed.altitude)) : null;
+        await insertLocationEvent({ lat, lon, label, altitude: Number.isFinite(altitude) ? altitude : null });
         api.logger.info(`[executive-agent] Public Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, label }));
@@ -2351,7 +2306,7 @@ export default function (api) {
         catch (e) {
             api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
         }
-        // ── Location Migrations (Sprint 8) ────────────────────────────────────
+        // ── Location Migrations (Sprint 8) ─────���──────���───────────────────────
         try {
             const locationMigrationsDir = path.join(__dirname, 'src/modules/location/migrations');
             const locationApplied = await runMigrations(locationMigrationsDir, 'location');
@@ -2360,6 +2315,16 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[location] Migration failed: ${e.message}`);
+        }
+        // ── Links Migrations (Sprint 9) ──────────────────────────────────────
+        try {
+            const linksMigrationsDir = path.join(__dirname, 'src/modules/links/migrations');
+            const linksApplied = await runMigrations(linksMigrationsDir, 'links');
+            if (linksApplied > 0)
+                api.logger.info(`[links] Applied ${linksApplied} migration(s)`);
+        }
+        catch (e) {
+            api.logger.error(`[links] Migration failed: ${e.message}`);
         }
         // ── Health Monitor ────────────────────────────────────────────────────
         try {

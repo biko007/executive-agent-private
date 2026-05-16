@@ -34,6 +34,7 @@
     "migrate:sprint5": "bun run scripts/migrate-sprint5-assets.ts",
     "migrate:sprint6": "bun run src/modules/fleet/migrate-v025.ts",
     "migrate:sprint8": "bun run scripts/migrate-sprint8-location.ts",
+    "migrate:sprint9": "bun run scripts/migrate-sprint9-links.ts",
     "test": "bun test"
   }
 }

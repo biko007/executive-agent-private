@@ -2511,13 +2511,22 @@ export default function (api: any) {
       api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
     }
 
-    // ── Location Migrations (Sprint 8) ────────────────────────────────────
+    // ── Location Migrations (Sprint 8) ─────���──────���───────────────────────
     try {
       const locationMigrationsDir = path.join(__dirname, 'src/modules/location/migrations');
       const locationApplied = await runMigrations(locationMigrationsDir, 'location');
       if (locationApplied > 0) api.logger.info(`[location] Applied ${locationApplied} migration(s)`);
     } catch (e: any) {
       api.logger.error(`[location] Migration failed: ${e.message}`);
+    }
+
+    // ── Links Migrations (Sprint 9) ──────────────────────────────────────
+    try {
+      const linksMigrationsDir = path.join(__dirname, 'src/modules/links/migrations');
+      const linksApplied = await runMigrations(linksMigrationsDir, 'links');
+      if (linksApplied > 0) api.logger.info(`[links] Applied ${linksApplied} migration(s)`);
+    } catch (e: any) {
+      api.logger.error(`[links] Migration failed: ${e.message}`);
     }
 
     // ── Health Monitor ────────────────────────────────────────────────────
