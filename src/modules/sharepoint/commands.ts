@@ -1,17 +1,22 @@
 /**
  * sharepoint/commands — Telegram command handlers for SharePoint + Links module.
  * Commands: /sharepoint, /spdocs, /sprecent, /spsync, /link, /linkadd, /linkdel, /triplink
- * Background: SP polling (30 min), link selection handler
+ *
+ * Sprint 10: DB-backed search (queries.ts), DB-backed sync (store.ts).
+ * Polling removed (Q2 decision).
  */
 import {
   listSites, listDrives, getRecentFiles,
-  fullSync, searchLocalIndex, getIndexAge, pollForChanges,
-} from '../../../sharepoint-store.js';
+  searchLocalIndex, getIndexAge,
+} from './store.js';
+import { fullSync } from './store.js';
+import { searchFiles, listSitesFromDb, listDrivesFromDb } from './queries.js';
 import {
   getLinksForEntity, addSharePointLink, removeLink,
-  searchSharePointForLinking, formatLinksForTelegram,
-} from '../../../link-store.js';
-import type { SpSearchResult } from '../../../link-store.js';
+  formatLinksForTelegram,
+} from '../../shared/links/index.js';
+import { searchSharePointForLinking } from '../../shared/links/index.js';
+import type { SpSearchResult } from '../../shared/links/index.js';
 import { loadSettings } from '../../shared/settings/index.js';
 
 // ── Dependency Injection ───────────────────────────────────────────────────
@@ -51,26 +56,23 @@ const pendingLinkSelections = new Map<string, {
 // ── Command Registration ──────────────────────────────────────────────────
 
 export function registerSharePointCommands(api: any): void {
-  // /sharepoint — list sites or drives
+  // /sharepoint — list sites or drives (from DB)
   api.registerCommand({
     name: 'sharepoint',
     acceptsArgs: true,
     description: 'SharePoint: Ohne Arg \u2192 Sites auflisten. Mit Arg (siteId) \u2192 Drives auflisten.',
     handler: async (ctx: any) => {
-      if (!deps.m365Enabled || !deps.tenantId || !deps.clientId || !deps.m365Secret) {
-        return { text: '\u274c M365-Konfiguration fehlt (tenant/client/secret).' };
-      }
       const arg = String(ctx.args || '').trim();
       try {
         if (!arg) {
-          const sites = await listSites(deps.tenantId, deps.clientId, deps.m365Secret);
-          if (!sites.length) return { text: '\ud83d\udcc2 Keine SharePoint-Sites gefunden.' };
-          const lines = sites.map((s: any, i: number) => `${i + 1}. **${s.displayName}**\n   ID: \`${s.id}\`\n   ${s.webUrl}`);
+          const sites = await listSitesFromDb();
+          if (!sites.length) return { text: '\ud83d\udcc2 Keine SharePoint-Sites im Index.' };
+          const lines = sites.map((s, i: number) => `${i + 1}. **${s.site_name}** (${s.file_count} Dateien)\n   ID: \`${s.site_id}\``);
           return { text: `\ud83d\udcc2 **SharePoint-Sites** (${sites.length}):\n\n${lines.join('\n\n')}` };
         } else {
-          const drives = await listDrives(deps.tenantId, deps.clientId, deps.m365Secret, arg);
-          if (!drives.length) return { text: `\ud83d\udcc2 Keine Dokumentbibliotheken f\u00fcr Site gefunden.` };
-          const lines = drives.map((d: any, i: number) => `${i + 1}. **${d.name}** (${d.driveType})\n   ID: \`${d.id}\`\n   ${d.webUrl}`);
+          const drives = await listDrivesFromDb(arg);
+          if (!drives.length) return { text: `\ud83d\udcc2 Keine Drives f\u00fcr diese Site im Index.` };
+          const lines = drives.map((d, i: number) => `${i + 1}. **${d.drive_name}** (${d.file_count} Dateien)\n   ID: \`${d.drive_id}\``);
           return { text: `\ud83d\udcc2 **Drives** (${drives.length}):\n\n${lines.join('\n\n')}` };
         }
       } catch (e: any) {
@@ -79,65 +81,55 @@ export function registerSharePointCommands(api: any): void {
     },
   });
 
-  // /spdocs — search local SP index
+  // /spdocs — search files in DB (pg_trgm)
   api.registerCommand({
     name: 'spdocs',
     acceptsArgs: true,
-    description: 'SharePoint-Suche im lokalen Index: /spdocs <suchbegriff>',
+    description: 'SharePoint-Suche im DB-Index: /spdocs <suchbegriff>',
     handler: async (ctx: any) => {
-      const query = String(ctx.args || '').trim();
-      if (!query) return { text: '\u274c Verwendung: /spdocs <suchbegriff>' };
+      const q = String(ctx.args || '').trim();
+      if (!q) return { text: '\u274c Verwendung: /spdocs <suchbegriff>' };
 
-      const hits = searchLocalIndex(query);
-      if (hits === null) {
-        const info = getIndexAge();
-        if (!info.exists) {
-          return { text: '\ud83d\udcc2 Kein SharePoint-Index vorhanden. Bitte zuerst /spsync ausf\u00fchren.' };
-        }
-        return { text: '\ud83d\udcc2 Index ist leer. Bitte /spsync erneut ausf\u00fchren.' };
+      try {
+        const hits = await searchFiles(q, 10);
+        if (!hits.length) return { text: `\ud83d\udd0d Keine Ergebnisse f\u00fcr \u201e${q}\u201c.` };
+        const lines = hits.map((h, i: number) => {
+          const size = h.size ? ` \u00b7 ${(h.size / 1024).toFixed(0)} KB` : '';
+          const date = h.last_modified_at ? ` \u00b7 ${h.last_modified_at.slice(0, 10)}` : '';
+          return `${i + 1}. **${h.name}**${size}${date}\n   ${h.site_name} \u203a ${h.path}\n   ${h.web_url}`;
+        });
+        return { text: `\ud83d\udd0d **Ergebnisse f\u00fcr \u201e${q}\u201c** (${hits.length}):\n\n${lines.join('\n\n')}` };
+      } catch (e: any) {
+        return { text: `\u274c /spdocs Fehler: ${e.message}` };
       }
-
-      if (!hits.length) return { text: `\ud83d\udd0d Keine Ergebnisse f\u00fcr \u201e${query}\u201c im lokalen Index.` };
-      const info = getIndexAge();
-      const syncInfo = info.syncedAt ? ` (Index: ${info.syncedAt.slice(0, 16).replace('T', ' ')}, ${info.fileCount} Dateien)` : '';
-      const lines = hits.slice(0, 10).map((h: any, i: number) => {
-        const size = h.size ? ` \u00b7 ${(h.size / 1024).toFixed(0)} KB` : '';
-        const date = h.lastModifiedDateTime ? ` \u00b7 ${h.lastModifiedDateTime.slice(0, 10)}` : '';
-        const snippet = h.summary ? `\n   ${h.summary}` : '';
-        return `${i + 1}. **${h.name}**${size}${date}\n   ${h.webUrl}${snippet}`;
-      });
-      return { text: `\ud83d\udd0d **Ergebnisse f\u00fcr \u201e${query}\u201c** (${hits.length})${syncInfo}:\n\n${lines.join('\n\n')}` };
     },
   });
 
-  // /sprecent — recent SP files
+  // /sprecent — recent SP files from DB
   api.registerCommand({
     name: 'sprecent',
-    description: 'K\u00fcrzlich ge\u00e4nderte SharePoint-Dateien (letzte 24h)',
+    description: 'K\u00fcrzlich ge\u00e4nderte SharePoint-Dateien (aus DB-Index)',
     handler: async () => {
-      if (!deps.m365Enabled || !deps.tenantId || !deps.clientId || !deps.m365Secret) {
-        return { text: '\u274c M365-Konfiguration fehlt.' };
-      }
       try {
-        const files = await getRecentFiles(deps.tenantId, deps.clientId, deps.m365Secret);
-        if (!files.length) return { text: '\ud83d\udcc2 Keine \u00c4nderungen in den letzten 24 Stunden.' };
-        const top = files.slice(0, 15);
-        const lines = top.map((f: any, i: number) => {
-          const date = f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 16).replace('T', ' ') : '';
+        const { listFilesFromDb } = await import('./queries.js');
+        const files = await listFilesFromDb({ orderBy: 'last_modified_at', limit: 15 });
+        if (!files.length) return { text: '\ud83d\udcc2 Keine Dateien im Index.' };
+        const lines = files.map((f, i: number) => {
+          const date = f.last_modified_at ? f.last_modified_at.slice(0, 16).replace('T', ' ') : '';
           const size = f.size ? ` \u00b7 ${(f.size / 1024).toFixed(0)} KB` : '';
-          return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.webUrl}`;
+          return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.web_url}`;
         });
-        return { text: `\ud83d\udcc2 **K\u00fcrzlich ge\u00e4ndert** (${files.length}, max 15):\n\n${lines.join('\n\n')}` };
+        return { text: `\ud83d\udcc2 **K\u00fcrzlich ge\u00e4ndert** (max 15):\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `\u274c /sprecent Fehler: ${e.message}` };
       }
     },
   });
 
-  // /spsync — full SP sync
+  // /spsync — full SP sync (now writes to DB)
   api.registerCommand({
     name: 'spsync',
-    description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren',
+    description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren (JSON + DB)',
     handler: async () => {
       if (!deps.m365Enabled || !deps.tenantId || !deps.clientId || !deps.m365Secret) {
         return { text: '\u274c M365-Konfiguration fehlt.' };
@@ -156,22 +148,15 @@ export function registerSharePointCommands(api: any): void {
       const syncUser = deps.m365User || process.env.M365_USER || '';
 
       (async () => {
-        const lastTotal = getIndexAge().fileCount || 10000;
-        const milestones = [25, 50, 75];
-        let nextMilestone = 0;
         try {
-          const result = await fullSync(deps.tenantId, deps.clientId, deps.m365Secret, (count: number) => {
-            if (nextMilestone < milestones.length) {
-              const pct = Math.round((count / lastTotal) * 100);
-              if (pct >= milestones[nextMilestone]) {
-                nextMilestone++;
-                send(`\ud83d\udd04 Sync l\u00e4uft... ${pct}% (${count} Dateien)`).catch(() => {});
-              }
+          const result = await fullSync(deps.tenantId, deps.clientId, deps.m365Secret, (count: number, label?: string) => {
+            if (count % 2000 === 0) {
+              send(`\ud83d\udd04 Sync l\u00e4uft... ${count} Dateien ${label ? `(${label})` : ''}`).catch(() => {});
             }
           }, syncUser || undefined);
 
           const durSec = (result.durationMs / 1000).toFixed(1);
-          let summary = `\u2705 SharePoint-Sync abgeschlossen\n\n`;
+          let summary = `\u2705 SharePoint-Sync abgeschlossen (DB + JSON)\n\n`;
           summary += `\ud83d\udcc2 ${result.totalFiles} Dateien \u00b7 ${result.totalSites} Sites \u00b7 ${result.totalDrives} Drives\n`;
           summary += `\u23f1 ${durSec}s`;
           if (result.skippedSites?.length) {
@@ -191,7 +176,7 @@ export function registerSharePointCommands(api: any): void {
         deps.logger.error(`[executive-agent] spsync unhandled: ${e?.message || e}`);
       });
 
-      return { text: '\ud83d\udd04 SharePoint-Vollsync gestartet. Fortschritt kommt via Telegram.' };
+      return { text: '\ud83d\udd04 SharePoint-Vollsync gestartet (JSON + DB). Fortschritt kommt via Telegram.' };
     },
   });
 
@@ -223,17 +208,17 @@ export function registerSharePointCommands(api: any): void {
       const [entityType, entityId, docType, ...rest] = parts;
 
       if (docType === 'sp') {
-        const query = rest.join(' ');
-        if (!query) return { text: '\u274c Suchbegriff fehlt.' };
-        const results = searchSharePointForLinking(query);
-        if (!results.length) return { text: `\u274c Keine Treffer f\u00fcr "${query}" im SharePoint-Index.\nTipp: /spsync falls der Index veraltet ist.` };
+        const q = rest.join(' ');
+        if (!q) return { text: '\u274c Suchbegriff fehlt.' };
+        const results = searchSharePointForLinking(q);
+        if (!results.length) return { text: `\u274c Keine Treffer f\u00fcr "${q}" im SharePoint-Index.\nTipp: /spsync falls der Index veraltet ist.` };
 
         const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');
         pendingLinkSelections.set(chatId, {
           entityType,
           entityId,
           results,
-          label: query,
+          label: q,
           expiresAt: Date.now() + 5 * 60_000,
         });
 
@@ -305,24 +290,5 @@ export function registerSharePointCommands(api: any): void {
     } catch {}
   });
 
-  // ── SharePoint Polling (every 30 min) ──────────────────────────────────
-  setInterval(async () => {
-    try {
-      if (!deps.m365Enabled || !deps.tenantId || !deps.clientId || !deps.m365Secret) return;
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
-
-      const changes = await pollForChanges(deps.tenantId, deps.clientId, deps.m365Secret);
-      if (!changes.length) return;
-
-      const lines = changes.slice(0, 10).map((c: any) =>
-        `${c.changeType === 'created' ? '\ud83c\udd95' : '\u270f\ufe0f'} ${c.fileName}\n   ${c.webUrl}`
-      );
-      const msg = `\ud83d\udcc2 **SharePoint-\u00c4nderungen** (${changes.length}):\n\n${lines.join('\n\n')}`;
-      await deps.sendTelegram(s.telegramChatId, msg);
-      deps.logger.info(`[executive-agent] SharePoint-Poll: ${changes.length} \u00c4nderungen gesendet`);
-    } catch (e: any) {
-      deps.logger.error(`[executive-agent] SharePoint-Poll Fehler: ${e.message}`);
-    }
-  }, 30 * 60_000);
+  // Polling removed (Sprint 10, Q2 decision)
 }

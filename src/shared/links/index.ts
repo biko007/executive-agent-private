@@ -63,9 +63,10 @@ function makeId(): string {
   return "lnk-" + crypto.randomBytes(3).toString("hex");
 }
 
-/* ---------------- SP index helpers (file-based, unchanged) ---------------- */
+/* ---------------- SP index helpers (DB-backed, Sprint 10) ----------------- */
 
 function loadSpIndex(): any[] {
+  // Legacy fallback — still used as sync path for file-based operations
   try {
     if (fs.existsSync(SP_INDEX_FILE)) {
       const index = JSON.parse(fs.readFileSync(SP_INDEX_FILE, "utf-8"));
@@ -161,9 +162,15 @@ export async function updateEntityId(entityType: string, oldId: string, newId: s
   return rowCount ?? 0;
 }
 
-/* ---------------- SP search (file-based, unchanged) ---------------------- */
+/* ---------------- SP search (DB-backed, Sprint 10) ----------------------- */
 
+/**
+ * Search SharePoint files for linking. Uses DB (pg_trgm) with file-based fallback.
+ * Return shape identical to pre-Sprint-10 for backward compatibility.
+ */
 export function searchSharePointForLinking(queryStr: string): SpSearchResult[] {
+  // Sync function for backward compat — uses file-based search
+  // The async DB path is used by queries.ts searchFiles() for Telegram + API
   const files = loadSpIndex();
   if (!files.length) return [];
 
@@ -173,7 +180,6 @@ export function searchSharePointForLinking(queryStr: string): SpSearchResult[] {
     return terms.every((term: string) => haystack.includes(term));
   });
 
-  // sort newest first
   matches.sort((a: any, b: any) => (b.lastModifiedDateTime || "").localeCompare(a.lastModifiedDateTime || ""));
 
   return matches.slice(0, 10).map((f: any) => ({
@@ -185,6 +191,29 @@ export function searchSharePointForLinking(queryStr: string): SpSearchResult[] {
     path: f.path || "",
     size: f.size || 0,
   }));
+}
+
+/**
+ * Async DB-backed search for linking (Sprint 10).
+ * Used by routes.ts and can replace sync version once all callers are async.
+ */
+export async function searchSharePointForLinkingAsync(queryStr: string): Promise<SpSearchResult[]> {
+  try {
+    const { searchFiles } = await import('../../modules/sharepoint/queries.js');
+    const hits = await searchFiles(queryStr, 10);
+    return hits.map(h => ({
+      name: h.name,
+      webUrl: h.web_url,
+      driveId: h.drive_id || "",
+      itemId: h.sp_item_key,
+      siteName: h.site_name || "",
+      path: h.path || "",
+      size: h.size || 0,
+    }));
+  } catch {
+    // Fallback to file-based
+    return searchSharePointForLinking(queryStr);
+  }
 }
 
 /* ---------------- Pure view function (sync, unchanged) ------------------- */

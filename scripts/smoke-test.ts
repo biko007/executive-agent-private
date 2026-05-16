@@ -516,6 +516,59 @@ async function checkAssetsApi() {
   }
 }
 
+// ── 10. SHAREPOINT POSTGRES (Sprint 10) ──────────────────────────────────────
+
+async function checkSharePointDb() {
+  try {
+    const pool = getPool();
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*)::int AS cnt FROM sharepoint_files WHERE missing_since IS NULL'
+    );
+    const count = countRows[0]?.cnt || 0;
+    if (count >= 11000) {
+      pass('SP Files (DB)', `${count} aktive Dateien`);
+    } else {
+      fail('SP Files (DB)', `Nur ${count} aktive Dateien (erwartet >= 11000)`);
+    }
+
+    // Check sync_runs has success entry
+    const { rows: runRows } = await pool.query(
+      `SELECT id, total_files, finished_at FROM sharepoint_sync_runs
+       WHERE status = 'success' ORDER BY finished_at DESC LIMIT 1`
+    );
+    if (runRows.length > 0) {
+      pass('SP Sync Run', `#${runRows[0].id}, ${runRows[0].total_files} Dateien, ${runRows[0].finished_at}`);
+    } else {
+      fail('SP Sync Run', 'Kein erfolgreicher Sync-Run gefunden');
+    }
+  } catch (e: any) {
+    fail('SP Files (DB)', `DB-Fehler: ${e.message}`);
+  }
+}
+
+async function checkSharePointSearch() {
+  const token = readEnvVar('CORE_SERVICE_TOKEN');
+  if (!token) { fail('SP Search API', 'CORE_SERVICE_TOKEN nicht gesetzt'); return; }
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/sharepoint/search?q=pdf', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any[];
+      if (Array.isArray(data) && data.length > 0) {
+        pass('SP Search API', `${data.length} Treffer für "pdf"`);
+      } else {
+        fail('SP Search API', 'Keine Treffer für "pdf"');
+      }
+    } else {
+      fail('SP Search API', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('SP Search API', e.message);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -559,6 +612,10 @@ async function main() {
   await checkV023Schema();
   checkBtreeGist();
   await checkAssetsApi();
+
+  // 10. SharePoint Postgres (Sprint 10)
+  await checkSharePointDb();
+  await checkSharePointSearch();
 
   // ── Report ──────────────────────────────────────────────────────────────
 

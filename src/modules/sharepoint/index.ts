@@ -14,3 +14,9 @@ export {
   addSharePointLink, removeLink,
   searchLocalIndex, getIndexAge,
 } from './commands.js';
+
+// Sprint 10: DB-backed store + queries
+export { fullSync, upsertFile, upsertSingleFileAfterUpload, markMissingSince } from './store.js';
+export { searchFiles, listSitesFromDb, listDrivesFromDb, listFilesFromDb, getFileByKey, countActiveFiles } from './queries.js';
+export { buildSpItemKey } from './key.js';
+export { registerSharePointHttpRoutes } from './routes.js';

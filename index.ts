@@ -29,6 +29,7 @@ import {
   initTanBridge, initSyncEngine, cleanupExpiredChallenges,
 } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
+import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
 import {
@@ -2386,6 +2387,9 @@ export default function (api: any) {
   // ── Links HTTP API (Sprint 9) ──────────────────────────────────────────
   registerLinksHttpRoutes(api);
 
+  // ── SharePoint HTTP API (Sprint 10) ──────────────────────────────────────
+  registerSharePointHttpRoutes(api);
+
   // ── Startup Canary ───────────────────────────────────────────────────────
   if (!coreServiceToken) {
     api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');
@@ -2531,6 +2535,15 @@ export default function (api: any) {
       if (linksApplied > 0) api.logger.info(`[links] Applied ${linksApplied} migration(s)`);
     } catch (e: any) {
       api.logger.error(`[links] Migration failed: ${e.message}`);
+    }
+
+    // ── SharePoint Migrations (Sprint 10) ─────────────────────────────────
+    try {
+      const spMigrationsDir = path.join(__dirname, 'src/modules/sharepoint/migrations');
+      const spApplied = await runMigrations(spMigrationsDir, 'sharepoint');
+      if (spApplied > 0) api.logger.info(`[sharepoint] Applied ${spApplied} migration(s)`);
+    } catch (e: any) {
+      api.logger.error(`[sharepoint] Migration failed: ${e.message}`);
     }
 
     // ── Health Monitor ────────────────────────────────────────────────────
