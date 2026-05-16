@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import pg from 'pg';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,15 @@ function readEnvVar(key: string): string {
     }
   } catch {}
   return '';
+}
+
+let _pool: pg.Pool | null = null;
+function getPool(): pg.Pool {
+  if (!_pool) {
+    const connStr = readEnvVar('POSTGRES_URL');
+    _pool = new pg.Pool({ connectionString: connStr });
+  }
+  return _pool;
 }
 
 function loadTelegramBotToken(): string {
@@ -140,7 +150,14 @@ async function refreshToken(tokens: MetaTokens): Promise<MetaTokens | null> {
       expires_at: Date.now() + (data.expires_in ? data.expires_in * 1000 : 60 * 24 * 60 * 60 * 1000),
       refreshed_at: Date.now(),
     };
-    fs.writeFileSync(path.join(INSTA_DIR, 'tokens.json'), JSON.stringify(refreshed, null, 2));
+    // Persist refreshed token to DB (rotate: deactivate old, insert new)
+    const pool = getPool();
+    await pool.query(`UPDATE insta_tokens SET active = false WHERE active = true`);
+    await pool.query(
+      `INSERT INTO insta_tokens (access_token, expires_at, active)
+       VALUES ($1, to_timestamp($2::bigint / 1000.0), true)`,
+      [refreshed.access_token, refreshed.expires_at]
+    );
     return refreshed;
   } catch {
     return null;
@@ -148,12 +165,23 @@ async function refreshToken(tokens: MetaTokens): Promise<MetaTokens | null> {
 }
 
 async function checkInstagramToken() {
-  const tokensFile = path.join(INSTA_DIR, 'tokens.json');
   let tokens: MetaTokens;
   try {
-    tokens = JSON.parse(fs.readFileSync(tokensFile, 'utf-8'));
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `SELECT access_token, extract(epoch from expires_at)::bigint * 1000 as expires_at
+       FROM insta_tokens WHERE active = true LIMIT 1`
+    );
+    if (!rows.length) { fail('Instagram Token', 'Kein aktiver Token in DB'); return; }
+    tokens = {
+      access_token: rows[0].access_token,
+      expires_at: Number(rows[0].expires_at),
+      refreshed_at: 0,
+      ig_business_id: readEnvVar('INSTAGRAM_BUSINESS_ID'),
+      page_id: readEnvVar('META_PAGE_ID'),
+    };
   } catch (e: any) {
-    fail('Instagram Token', `tokens.json nicht lesbar: ${e.message}`);
+    fail('Instagram Token', `DB-Fehler: ${e.message}`);
     return;
   }
 
@@ -554,6 +582,7 @@ async function main() {
     console.log('\n[smoke] Telegram-Report gesendet');
   }
 
+  if (_pool) await _pool.end();
   process.exit(allPass ? 0 : 1);
 }
 

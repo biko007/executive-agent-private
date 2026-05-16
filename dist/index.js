@@ -1682,11 +1682,12 @@ export default function (api) {
                     services.push({ name: 'IB Gateway', status: ibOk ? 'up' : 'down', uptime_seconds: 0 });
                 // 2. Token expiry
                 const tokens = [];
-                const artifactsBase = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal');
                 try {
-                    const it = JSON.parse(fs.readFileSync(path.join(artifactsBase, 'instagram/tokens.json'), 'utf-8'));
-                    if (it.expires_at)
-                        tokens.push({ name: 'Meta', days_remaining: Math.floor((it.expires_at - Date.now()) / 86_400_000) });
+                    const { rows: itRows } = await dbQuery(`SELECT expires_at FROM insta_tokens WHERE active = true LIMIT 1`);
+                    if (itRows.length && itRows[0].expires_at) {
+                        const expiresAt = new Date(itRows[0].expires_at).getTime();
+                        tokens.push({ name: 'Meta', days_remaining: Math.floor((expiresAt - Date.now()) / 86_400_000) });
+                    }
                 }
                 catch { }
                 try {

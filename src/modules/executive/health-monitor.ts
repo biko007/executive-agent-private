@@ -7,8 +7,6 @@
  * Token checks: daily at 08:00 Europe/Berlin
  */
 import { query } from '../../shared/db/index.js';
-import fs from 'fs';
-import path from 'path';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -157,16 +155,14 @@ function formatDowntime(ms: number): string {
 
 async function getTokenExpirations(): Promise<TokenInfo[]> {
   const results: TokenInfo[] = [];
-  const artifactsBase = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal');
 
-  // Instagram (Meta) token — still file-based
+  // Instagram (Meta) token — Postgres-backed (Sprint 5.7a)
   try {
-    const instaPath = path.join(artifactsBase, 'instagram/tokens.json');
-    if (fs.existsSync(instaPath)) {
-      const data = JSON.parse(fs.readFileSync(instaPath, 'utf-8'));
-      if (data.expires_at) {
-        results.push({ name: 'Meta (Instagram)', expiresAt: data.expires_at });
-      }
+    const { rows } = await query<{ expires_at: Date }>(
+      `SELECT expires_at FROM insta_tokens WHERE active = true LIMIT 1`
+    );
+    if (rows.length && rows[0].expires_at) {
+      results.push({ name: 'Meta (Instagram)', expiresAt: new Date(rows[0].expires_at).getTime() });
     }
   } catch { /* ignore */ }
 
