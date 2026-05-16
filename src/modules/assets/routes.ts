@@ -100,22 +100,40 @@ export function registerAssetsHttpRoutes(api: any) {
       if (resource === 'properties') {
         const propertyId = segments[1];
         if (!propertyId) {
-          // List all properties
-          if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return true; }
+          // List / Create properties
+          if (req.method !== 'GET' && req.method !== 'POST') { err(res, 405, 'Method not allowed'); return true; }
           await withContext({ requestId, actor, source: 'dashboard' }, async () => {
             try {
-              const { rows } = await dbQuery(
-                `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
-                        p.ownership_start, p.ownership_end, p.billing_period_start_month,
-                        p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
-                        COUNT(u.id)::int AS unit_count
-                 FROM properties p
-                 LEFT JOIN units u ON u.property_id = p.id AND u.active = true
-                 WHERE p.active = true
-                 GROUP BY p.id
-                 ORDER BY p.code`
-              );
-              json(res, 200, rows.map(mapPropertyRow));
+              if (req.method === 'GET') {
+                const { rows } = await dbQuery(
+                  `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
+                          p.ownership_start, p.ownership_end, p.billing_period_start_month,
+                          p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
+                          COUNT(u.id)::int AS unit_count
+                   FROM properties p
+                   LEFT JOIN units u ON u.property_id = p.id AND u.active = true
+                   WHERE p.active = true
+                   GROUP BY p.id
+                   ORDER BY p.code`
+                );
+                json(res, 200, rows.map(mapPropertyRow));
+              } else {
+                const body = await parseJsonBody(req);
+                if (!body.code || !body.street || !body.postal_code || !body.city) {
+                  err(res, 400, 'code, street, postal_code, city required'); return;
+                }
+                const { rows } = await dbQuery(
+                  `INSERT INTO properties (code, name, street, postal_code, city, property_type, owner,
+                     ownership_start, billing_period_start_month, heating_type, co2_cost_relevant)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+                  [body.code, body.name || body.code.toUpperCase(), body.street, body.postal_code, body.city,
+                   body.property_type || 'residential', body.owner || 'personal',
+                   body.ownership_start || null, body.billing_period_start_month || 1,
+                   body.heating_type || null, body.co2_cost_relevant || false]
+                );
+                await audit.log({ module: 'assets', action: 'property.create', entityType: 'property', entityId: rows[0].code, after: rows[0] });
+                json(res, 201, mapPropertyRow(rows[0]));
+              }
             } catch (e: any) { err(res, 500, e.message); }
           });
           return true;
