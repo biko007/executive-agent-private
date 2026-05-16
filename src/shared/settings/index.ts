@@ -43,12 +43,15 @@ export function saveSettings(s: Settings): void {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), 'utf-8');
 }
 
-export function getLocationSettings(): LocationSetting {
+/**
+ * Get latest location from Postgres, with fallback to DEFAULT_LOCATION.
+ * Async since Sprint 8 (was sync before).
+ */
+export async function getLocationSettings(): Promise<LocationSetting> {
   try {
-    const s = loadSettings();
-    if (s.location && s.location.lat != null && s.location.lon != null) {
-      return s.location;
-    }
+    const { getLatestLocation } = await import('../../modules/location/store.js');
+    const latest = await getLatestLocation();
+    if (latest) return latest;
   } catch {}
   return DEFAULT_LOCATION;
 }

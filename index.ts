@@ -758,14 +758,8 @@ export default function (api: any) {
   // ── Briefing ───────────────────────────────────────────────────────────────
   // syncWithingsForBriefing → src/modules/health/commands.ts (imported)
 
-  function getBestEffortLocationForBriefing(now: Date): { loc: LocationSetting; isStale: boolean } {
-    const s = loadSettings();
-    const loc = s.location;
-
-    // Wenn kein Handy-Standort vorhanden: auf gespeicherten/default Standort fallen
-    if (!loc || loc.lat == null || loc.lon == null) {
-      return { loc: getLocationSettings(), isStale: true };
-    }
+  async function getBestEffortLocationForBriefing(now: Date): Promise<{ loc: LocationSetting; isStale: boolean }> {
+    const loc = await getLocationSettings();
 
     // Standort-Frische prüfen, aber NICHT abbrechen
     const updatedAtMs = loc.updatedAt ? Date.parse(loc.updatedAt) : NaN;
@@ -787,7 +781,7 @@ export default function (api: any) {
     const parts: string[] = [];
 
     // ── Header: Datum + Uhrzeit + Standort + Astronomie (immer) ──
-    const locInfo = getBestEffortLocationForBriefing(now);
+    const locInfo = await getBestEffortLocationForBriefing(now);
     const loc = locInfo.loc;
     const locAgeMs = loc.updatedAt ? now.getTime() - Date.parse(loc.updatedAt) : Infinity;
     const locLabel = !Number.isFinite(locAgeMs)
