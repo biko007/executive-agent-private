@@ -70,6 +70,7 @@ import type { HealthReport, Escalation } from "./system-health.js";
 import { HealthMonitor } from "./src/modules/executive/index.js";
 import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
+import { insertLocationEvent } from "./src/modules/location/store.js";
 import {
   nowIso, makeId, sleep, fetchWithTimeout, parseRetryAfterMs,
   berlinDate, readAnthropicKey, readOpenAIKey,
@@ -1464,31 +1465,11 @@ export default function (api: any) {
       const lon = Number(coordMatch[2]);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-      // Reverse-geocoding via Nominatim
-      let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-      try {
-        const geoRes = await fetchWithTimeout(
-          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
-          { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
-          10000,
-        );
-        if (geoRes.ok) {
-          const geo: any = await geoRes.json();
-          label = geo?.address?.city
-            || geo?.address?.town
-            || geo?.address?.village
-            || geo?.address?.municipality
-            || geo?.display_name?.split(',')[0]
-            || label;
-        }
-      } catch { /* geocoding optional, keep coordinate label */ }
-
-      const s = loadSettings();
-      s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-      saveSettings(s);
+      const label = await resolveLocationLabel(lat, lon);
+      await insertLocationEvent({ lat, lon, label, source: 'telegram' });
       api.logger.info(`[executive-agent] Standort gespeichert: ${label} (${lat}, ${lon})`);
 
-      const chatId = s.telegramChatId;
+      const chatId = loadSettings().telegramChatId;
       if (chatId) {
         sendTelegram(chatId, `📍 Standort gespeichert: ${label}`).catch(() => {});
       }
@@ -2300,6 +2281,30 @@ export default function (api: any) {
     },
   });
 
+  // ── Location: shared Nominatim reverse-geocoding helper ────────────────
+  async function resolveLocationLabel(lat: number, lon: number, cityHint?: string): Promise<string> {
+    const rawCity = cityHint != null ? String(cityHint).trim() : '';
+    if (rawCity && !/^\d+(\.\d+)?$/.test(rawCity)) return rawCity;
+    let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    try {
+      const geoRes = await fetchWithTimeout(
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
+        { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
+        10000,
+      );
+      if (geoRes.ok) {
+        const geo: any = await geoRes.json();
+        label = geo?.address?.city
+          || geo?.address?.town
+          || geo?.address?.village
+          || geo?.address?.municipality
+          || geo?.display_name?.split(',')[0]
+          || label;
+      }
+    } catch { /* geocoding optional, keep coordinate label */ }
+    return label;
+  }
+
   api.registerHttpRoute({
     path: '/location',
     handler: async (req: any, res: any) => {
@@ -2361,40 +2366,9 @@ export default function (api: any) {
         return;
       }
 
-      // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-      const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-      let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-      if (!label) {
-        label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-        try {
-          const geoRes = await fetchWithTimeout(
-            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
-            { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
-            10000,
-          );
-          if (geoRes.ok) {
-            const geo: any = await geoRes.json();
-            label = geo?.address?.city
-              || geo?.address?.town
-              || geo?.address?.village
-              || geo?.address?.municipality
-              || geo?.display_name?.split(',')[0]
-              || label;
-          }
-        } catch { /* geocoding optional, keep coordinate label */ }
-      }
-
-      const s = loadSettings();
-      s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-      saveSettings(s);
-
-      const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-      if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
-      fs.appendFileSync(
-        path.join(locHistoryDir, 'history.jsonl'),
-        JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
-        'utf-8',
-      );
+      const label = await resolveLocationLabel(lat, lon, parsed.city);
+      const altitude = parsed.altitude != null ? parseFloat(String(parsed.altitude)) : null;
+      await insertLocationEvent({ lat, lon, label, altitude: Number.isFinite(altitude) ? altitude : null });
 
       api.logger.info(`[executive-agent] Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
 
@@ -2481,40 +2455,9 @@ export default function (api: any) {
       return;
     }
 
-    // Label: prefer city from request body, fallback to Nominatim reverse-geocoding
-    const rawCity = parsed.city != null ? String(parsed.city).trim() : '';
-    let label = rawCity && !/^\d+(\.\d+)?$/.test(rawCity) ? rawCity : '';
-    if (!label) {
-      label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-      try {
-        const geoRes = await fetchWithTimeout(
-          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=de`,
-          { method: 'GET', headers: { 'User-Agent': 'openclaw-executive-agent/1.0' } },
-          10000,
-        );
-        if (geoRes.ok) {
-          const geo: any = await geoRes.json();
-          label = geo?.address?.city
-            || geo?.address?.town
-            || geo?.address?.village
-            || geo?.address?.municipality
-            || geo?.display_name?.split(',')[0]
-            || label;
-        }
-      } catch { /* geocoding optional, keep coordinate label */ }
-    }
-
-    const s = loadSettings();
-    s.location = { lat, lon, label, updatedAt: new Date().toISOString() };
-    saveSettings(s);
-
-    const locHistoryDir = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal/location');
-    if (!fs.existsSync(locHistoryDir)) fs.mkdirSync(locHistoryDir, { recursive: true });
-    fs.appendFileSync(
-      path.join(locHistoryDir, 'history.jsonl'),
-      JSON.stringify({ lat, lon, label, altitude: parsed.altitude ?? null, timestamp: new Date().toISOString() }) + '\n',
-      'utf-8',
-    );
+    const label = await resolveLocationLabel(lat, lon, parsed.city);
+    const altitude = parsed.altitude != null ? parseFloat(String(parsed.altitude)) : null;
+    await insertLocationEvent({ lat, lon, label, altitude: Number.isFinite(altitude) ? altitude : null });
 
     api.logger.info(`[executive-agent] Public Location-API: Standort gespeichert: ${label} (${lat}, ${lon})`);
 
