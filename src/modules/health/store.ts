@@ -6,7 +6,7 @@
 import { query as dbQuery } from '../../shared/db/index.js';
 import type {
   HealthEntryType, HealthEntry, HealthSummary,
-  WeightTrend, SleepTrend, TrendDirection, HealthAlert,
+  WeightTrend, SleepTrend, HeartrateTrend, TrendDirection, HealthAlert,
 } from './types.js';
 
 // ── Valid types (must match CHECK constraint in V021) ────────────────────────
@@ -445,6 +445,32 @@ export async function getSleepTrend(days: 7 | 30 | 90): Promise<SleepTrend | nul
     maxDuration: +Math.max(...durations).toFixed(1),
     avgQuality: qualities.length ? +numAvg(qualities).toFixed(0) : 0,
     dataPoints: durations.length,
+  };
+}
+
+export async function getHeartrateTrend(days: 7 | 30 | 90): Promise<HeartrateTrend | null> {
+  const { rows } = await dbQuery<{ value_numeric: string; metadata: any }>(
+    `SELECT value_numeric, metadata FROM health_logs
+     WHERE type = 'heartrate' AND value_numeric IS NOT NULL
+       AND recorded_at > now() - $1::interval
+     ORDER BY recorded_at ASC`,
+    [`${days} days`],
+  );
+  if (!rows.length) return null;
+
+  // Use hr_min as resting HR when plausible (40-100 bpm), otherwise hr_avg
+  const restingValues = rows.map(r => {
+    const m = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
+    const hrMin = m.hr_min;
+    const hrAvg = Number(r.value_numeric);
+    return (hrMin != null && hrMin >= 40 && hrMin <= 100) ? hrMin : hrAvg;
+  });
+
+  const current = restingValues[restingValues.length - 1];
+  return {
+    current,
+    avg: +numAvg(restingValues).toFixed(0),
+    dataPoints: restingValues.length,
   };
 }
 

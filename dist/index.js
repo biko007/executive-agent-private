@@ -4,7 +4,7 @@ import SunCalc from "suncalc";
 import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
-import { readEntries, lastEntry, getWeightTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
+import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
 import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
@@ -1842,6 +1842,209 @@ export default function (api) {
                 const status = await getSyncStatus();
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(status));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    // ── Health Dashboard Endpoints (Postgres-backed, used by Dashboard proxy) ──
+    api.registerHttpRoute({
+        path: '/api/health/entries',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const url = new URL(req.url, 'http://localhost');
+                const days = Math.min(Math.max(1, Number(url.searchParams.get('days')) || 30), 365);
+                const since = new Date(Date.now() - days * 86_400_000);
+                let entries = await readEntries(since);
+                // Aggregate sleep sessions per night
+                const sleepByNight = new Map();
+                const nonSleep = [];
+                for (const e of entries) {
+                    if (e.type === 'sleep' && e.value != null) {
+                        const day = e.timestamp.slice(0, 10);
+                        const prev = sleepByNight.get(day);
+                        if (prev) {
+                            prev.value = (prev.value || 0) + (e.value || 0);
+                            prev.deep_sleep_h = (prev.deep_sleep_h || 0) + (e.deep_sleep_h || 0);
+                            prev.rem_sleep_h = (prev.rem_sleep_h || 0) + (e.rem_sleep_h || 0);
+                            prev.light_sleep_h = (prev.light_sleep_h || 0) + (e.light_sleep_h || 0);
+                            if (e.quality && e.quality > (prev.quality || 0))
+                                prev.quality = e.quality;
+                        }
+                        else {
+                            sleepByNight.set(day, { ...e });
+                        }
+                    }
+                    else {
+                        nonSleep.push(e);
+                    }
+                }
+                let normalized = [...nonSleep, ...sleepByNight.values()];
+                // Normalize entries for dashboard display
+                normalized = normalized.map((e) => {
+                    if (e.type === 'steps') {
+                        e.value = e.steps ?? 0;
+                        e.unit = 'Schritte';
+                    }
+                    if (e.type === 'heartrate') {
+                        e.value = e.hr_avg ?? 0;
+                        e.unit = 'bpm';
+                    }
+                    if (e.type === 'activity') {
+                        const parts = [];
+                        if (e.duration_min)
+                            parts.push(`${e.duration_min} min`);
+                        if (e.steps)
+                            parts.push(`${e.steps} Schritte`);
+                        if (e.distance_m)
+                            parts.push(`${(e.distance_m / 1000).toFixed(1)} km`);
+                        if (e.calories)
+                            parts.push(`${e.calories} kcal`);
+                        e.value = parts.join(', ') || null;
+                        e.unit = '';
+                        e.text = e.activity_type || '';
+                    }
+                    if (e.type === 'sleep') {
+                        e.value = Math.round((e.value || 0) * 10) / 10;
+                    }
+                    return e;
+                }).filter((e) => {
+                    if (e.type !== 'activity')
+                        return true;
+                    return e.steps || e.distance_m || e.calories || e.hr_avg;
+                }).sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(normalized));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    api.registerHttpRoute({
+        path: '/api/health/trends',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const url = new URL(req.url, 'http://localhost');
+                const daysRaw = Math.min(Math.max(1, Number(url.searchParams.get('days')) || 30), 365);
+                // Snap to valid trend period
+                const days = daysRaw <= 7 ? 7 : daysRaw <= 30 ? 30 : 90;
+                const [weight, sleep, heartrate] = await Promise.all([
+                    getWeightTrend(days),
+                    getSleepTrend(days),
+                    getHeartrateTrend(days),
+                ]);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ weight, sleep, heartrate }));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    api.registerHttpRoute({
+        path: '/api/health/alerts',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const alerts = await checkHealthAlerts();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(alerts));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
+    api.registerHttpRoute({
+        path: '/api/health/chart-data',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const url = new URL(req.url, 'http://localhost');
+                const type = url.searchParams.get('type') || 'weight';
+                const days = Math.min(Math.max(1, Number(url.searchParams.get('days')) || 90), 365);
+                const since = new Date(Date.now() - days * 86_400_000);
+                const entries = await readEntries(since);
+                if (type === 'weight') {
+                    const data = entries
+                        .filter(e => e.type === 'weight' && e.value != null)
+                        .map(e => ({ date: e.timestamp.slice(0, 10), value: e.value }))
+                        .sort((a, b) => a.date.localeCompare(b.date));
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(data));
+                }
+                else if (type === 'sleep') {
+                    const byDay = new Map();
+                    for (const e of entries.filter(e => e.type === 'sleep' && e.value != null)) {
+                        const day = e.timestamp.slice(0, 10);
+                        const prev = byDay.get(day);
+                        if (prev) {
+                            prev.duration += e.value;
+                            if (e.quality != null && e.quality > (prev.quality || 0))
+                                prev.quality = e.quality;
+                        }
+                        else {
+                            byDay.set(day, { date: day, duration: e.value, quality: e.quality ?? null });
+                        }
+                    }
+                    for (const v of byDay.values())
+                        v.duration = Math.round(v.duration * 10) / 10;
+                    const data = Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(data));
+                }
+                else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'type must be weight or sleep' }));
+                }
             }
             catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });

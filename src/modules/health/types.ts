@@ -82,6 +82,12 @@ export interface SleepTrend {
   dataPoints: number;
 }
 
+export interface HeartrateTrend {
+  current: number;
+  avg: number;
+  dataPoints: number;
+}
+
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
 export interface HealthAlert {

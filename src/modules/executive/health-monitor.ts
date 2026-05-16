@@ -155,11 +155,11 @@ function formatDowntime(ms: number): string {
 
 // ── Token Expiry Check ─────────────────────────────────────────────────────
 
-function readTokenFiles(): TokenInfo[] {
+async function getTokenExpirations(): Promise<TokenInfo[]> {
   const results: TokenInfo[] = [];
   const artifactsBase = path.join(process.env.HOME || '/root', '.openclaw/workspace/artifacts/personal');
 
-  // Instagram (Meta) token
+  // Instagram (Meta) token — still file-based
   try {
     const instaPath = path.join(artifactsBase, 'instagram/tokens.json');
     if (fs.existsSync(instaPath)) {
@@ -170,14 +170,13 @@ function readTokenFiles(): TokenInfo[] {
     }
   } catch { /* ignore */ }
 
-  // Withings token
+  // Withings token — Postgres-backed (Sprint 4)
   try {
-    const withingsPath = path.join(artifactsBase, 'health/withings-tokens.json');
-    if (fs.existsSync(withingsPath)) {
-      const data = JSON.parse(fs.readFileSync(withingsPath, 'utf-8'));
-      if (data.expires_at) {
-        results.push({ name: 'Withings', expiresAt: data.expires_at });
-      }
+    const { rows } = await query<{ expires_at: Date }>(
+      `SELECT expires_at FROM health_withings_tokens WHERE active = true LIMIT 1`
+    );
+    if (rows.length && rows[0].expires_at) {
+      results.push({ name: 'Withings', expiresAt: new Date(rows[0].expires_at).getTime() });
     }
   } catch { /* ignore */ }
 
@@ -323,7 +322,7 @@ export class HealthMonitor {
     const chatId = this.getChatId();
     if (!chatId) return;
 
-    const tokens = readTokenFiles();
+    const tokens = await getTokenExpirations();
     const now = Date.now();
 
     for (const token of tokens) {

@@ -6,7 +6,7 @@
 // Types
 export type {
   HealthEntryType, HealthEntry, HealthSummary,
-  TrendDirection, WeightTrend, SleepTrend,
+  TrendDirection, WeightTrend, SleepTrend, HeartrateTrend,
   AlertSeverity, HealthAlert,
   WithingsTokens, WithingsMeasure, WithingsSleep,
   WithingsActivity, WithingsWorkout,
@@ -18,7 +18,7 @@ export {
   appendEntry, appendEntryWithTimestamp,
   readEntries, lastEntry,
   summarize, formatSummary,
-  getWeightTrend, getSleepTrend,
+  getWeightTrend, getSleepTrend, getHeartrateTrend,
   checkHealthAlerts,
 } from './store.js';
 
