@@ -2574,6 +2574,15 @@ export default function (api: any) {
       api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
     }
 
+    // ── Location Migrations (Sprint 8) ────────────────────────────────────
+    try {
+      const locationMigrationsDir = path.join(__dirname, 'src/modules/location/migrations');
+      const locationApplied = await runMigrations(locationMigrationsDir, 'location');
+      if (locationApplied > 0) api.logger.info(`[location] Applied ${locationApplied} migration(s)`);
+    } catch (e: any) {
+      api.logger.error(`[location] Migration failed: ${e.message}`);
+    }
+
     // ── Health Monitor ────────────────────────────────────────────────────
     try {
       const migrationsDir = path.join(__dirname, 'src/modules/executive/migrations');
