@@ -1,10 +1,10 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-13**
+**Stand: 2026-05-16**
 
-## Stand 2026-05-13
+## Stand 2026-05-16
 
-Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -35,6 +35,14 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) vollständig abgeschlossen.
   §556-Cron: Fristüberwachung mit Telegram-Alerts (30d/14d/7d/1d/expired).
   Telegram: /nebenkostenabrechnung preview|status.
   54 Tests über 6 Dateien, 21/21 Smoke.
+- **Sprint 10 (SharePoint Postgres):** SharePoint-Index (12.088 Dateien, 10 Sites) von JSON auf
+  Postgres migriert. V034 Schema: `sharepoint_files` mit `pg_trgm` GIN-Index (`search_haystack`),
+  Soft-Delete via `missing_since`, `sharepoint_sync_runs` Audit-Tabelle.
+  Advisory-Lock(44) für Sync-Schutz. Canonical Key: `${siteId}::${driveId}::${path}`.
+  One-Shot Import (12.088 in 1.0s). Golden Test: 41/41 entity_links resolven.
+  Neue Module: store.ts (fullSync, UPSERT), queries.ts (searchFiles mit pg_trgm),
+  routes.ts (HTTP API für Dashboard-Proxy). Polling entfernt (Q2).
+  Dashboard SP-Routes auf proxyToCore umgestellt. 24/24 Smoke.
 
 ### Module (11)
 
@@ -50,7 +58,7 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) vollständig abgeschlossen.
 | pe | src/modules/pe/ | 5 | self-contained |
 | mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
 | calendar | src/modules/calendar/ | 4 | M365 |
-| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram |
+| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
 
 ### Daten-Hygiene
 
@@ -89,6 +97,22 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
 - Token-Rotation: Transaction (UPDATE active=false, INSERT new active=true)
 
+### SharePoint Sync (Sprint 10)
+
+- DB-Tabellen: `sharepoint_files` (12.088 Einträge), `sharepoint_sync_runs`
+- Sync-Lock: `pg_advisory_lock(44)` / `pg_advisory_unlock(44)` — session-level, `finally`-Block
+- Canonical Key: `sp_item_key = ${siteId}::${driveId}::${path}` (identisch mit `entity_links.sp_item_id`)
+- Soft-Delete: `missing_since` Timestamp (nie hard-DELETE)
+- Suche: `search_haystack` generated column + GIN trgm Index (ILIKE per Term, AND-Verknüpfung)
+- Core-Endpoints (Bearer `CORE_SERVICE_TOKEN`):
+  - `GET /api/sharepoint/sites` — Sites mit File-Count
+  - `GET /api/sharepoint/drives/:siteId` — Drives für Site
+  - `GET /api/sharepoint/files/:siteId/:driveId` — Files mit Pagination
+  - `GET /api/sharepoint/search?q=` — pg_trgm Suche
+  - `POST /api/sharepoint/upsert-uploaded` — Einzel-File nach Upload
+- Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
+- Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
@@ -98,6 +122,7 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - ~~Sprint 4 Health auf Postgres~~ — erledigt 2026-05-12
 - ~~Sprint 5.5a Asset CRUD + NK PreCheck~~ — erledigt 2026-05-12
 - ~~Sprint 5.5b NK-Engine + PDF V1.3~~ — erledigt 2026-05-13
+- ~~Sprint 10 SharePoint Postgres~~ — erledigt 2026-05-16
 - Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
 - n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
 - Optional: Meta-Token rotieren (User-Entscheidung)
@@ -113,6 +138,7 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 | 4 | Health Postgres | abgeschlossen |
 | 5.5a | Asset CRUD + NK PreCheck | abgeschlossen |
 | 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
+| 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 
@@ -173,7 +199,11 @@ Daten:        ~/.openclaw/workspace/artifacts/personal/
 travel-store.ts     Trips + Segmente
 assets-store.ts     Immobilien, Units, Mietverträge, NK-Abrechnung
 fleet-store.ts      Fuhrpark, Service, TÜV, Versicherung
-sharepoint-store.ts SP-Index, Suche, Sync
+sharepoint-store.ts SP Graph-API Helpers (listSites, listDrives, crawlFolder)
+src/modules/sharepoint/store.ts    SP fullSync, UPSERT, markMissingSince (Postgres-backed, Sprint 10)
+src/modules/sharepoint/queries.ts  SP searchFiles (pg_trgm), listSites/Drives/Files (Postgres-backed)
+src/modules/sharepoint/routes.ts   SP HTTP-API für Dashboard-Proxy (Sprint 10)
+src/modules/sharepoint/key.ts      buildSpItemKey() — canonical key builder
 link-store.ts       Entity-Dokument-Verknüpfungen
 src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
 src/modules/health/store.ts     Gewicht, Schlaf, Trends, Alerts (Postgres-backed)
@@ -202,7 +232,7 @@ Assets:      artifacts/personal/assets/properties.json
 Bilder:      artifacts/personal/images/<entityType>-<entityId>.jpg
 Mail-Parse:  artifacts/personal/mail-parsing/processed.json
 Links:       artifacts/personal/links/links.json
-SP-Index:    artifacts/personal/sharepoint/sharepoint-index.json
+SP-Index:    Postgres sharepoint_files (Sprint 10), Legacy: artifacts/personal/sharepoint/sharepoint-index.json
 Drafts:      artifacts/personal/mail-drafts/<id>.json
 Instagram:   Postgres insta_drafts, insta_tokens, insta_style_profile (Sprint 3)
              artifacts/personal/instagram/insights-cache.json  (File)
@@ -250,7 +280,7 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 54 Tests über 6 Dateien
+npm test   # bun test — 54+ Tests über 6+ Dateien
 ```
 
 **Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
@@ -298,8 +328,8 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b vollständig abgeschlossen (2026-05-13). Details siehe "Stand" oben.
-Smoke Test: 21/21 PASS, Tests: 54/54 PASS (einzeln).
+Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 vollständig abgeschlossen (2026-05-16). Details siehe "Stand" oben.
+Smoke Test: 24/24 PASS, Tests: 54/54 PASS (einzeln).
 Nächste Schritte: Etappe n (Real-Test L19 2024) wenn Datenpflege abgeschlossen.
 
 ## Role
