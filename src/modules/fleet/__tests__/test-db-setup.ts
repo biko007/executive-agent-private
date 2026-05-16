@@ -74,6 +74,11 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
   const migrationSql = readFileSync(migrationPath, 'utf-8');
   await testPool.query(migrationSql);
 
+  // Apply V026 tire sets table
+  const v026Path = join(import.meta.dir, '../migrations/V026__fleet_tire_sets.sql');
+  const v026Sql = readFileSync(v026Path, 'utf-8');
+  await testPool.query(v026Sql);
+
   await testPool.end();
 
   // 3. Point POSTGRES_URL to test database
