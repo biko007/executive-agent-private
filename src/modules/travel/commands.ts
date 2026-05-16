@@ -19,7 +19,7 @@ export interface TravelDeps {
   answerCallbackQuery: (callbackQueryId: string, text?: string) => Promise<void>;
   graphPost: (tenantId: string, clientId: string, secret: string, url: string, body: any) => Promise<any>;
   graphDelete: (tenantId: string, clientId: string, secret: string, url: string) => Promise<void>;
-  getLinksForEntity: (entityType: string, entityId: string) => any[];
+  getLinksForEntity: (entityType: string, entityId: string) => Promise<any[]>;
   formatLinksForTelegram: (links: any[]) => string;
   m365Enabled: boolean;
   tenantId: string;
@@ -343,7 +343,7 @@ export function registerTravelCommands(api: any): void {
         ? trip.segments.map((s: any) => `  • [${s.type}] ${s.title} — ${s.datetime_local}${s.confirmation ? " ✔ " + s.confirmation : ""}`).join("\n")
         : "  (noch keine Segmente)";
       let text = `✈️ *${trip.name}*\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 ${trip.climate} | 🎯 ${trip.activities.join(", ")}\n\n📋 Segmente:\n${segs}`;
-      const links = deps.getLinksForEntity("trip", id);
+      const links = await deps.getLinksForEntity("trip", id);
       if (links.length) {
         text += `\n\n📎 Verknüpfte Dokumente:\n${deps.formatLinksForTelegram(links)}`;
       }

@@ -12,7 +12,7 @@ import type { VehicleType } from './types.js';
 // ── Dependencies injected from index.ts ────────────────────────────────────
 
 export interface FleetDeps {
-  getLinksForEntity: (entityType: string, entityId: string) => any[];
+  getLinksForEntity: (entityType: string, entityId: string) => Promise<any[]>;
   formatLinksForTelegram: (links: any[]) => string;
 }
 
@@ -82,7 +82,7 @@ export async function handleFleetShow(argsStr: string): Promise<{ text: string }
   if (!v) return { text: `❌ Fahrzeug nicht gefunden: ${code}` };
   let text = formatVehicleDetail(v);
   if (_deps) {
-    const links = _deps.getLinksForEntity('fleet', code);
+    const links = await _deps.getLinksForEntity('fleet', code);
     if (links.length) {
       text += `\n\n📎 Verknüpfte Dokumente:\n${_deps.formatLinksForTelegram(links)}`;
     }
@@ -223,7 +223,7 @@ export async function handleFleetLink(argsStr: string): Promise<{ text: string }
   const code = argsStr.trim();
   if (!code) return { text: '❌ Verwendung: /fleetlink <id>' };
   if (!_deps) return { text: '❌ Link-System nicht initialisiert.' };
-  const links = _deps.getLinksForEntity('fleet', code);
+  const links = await _deps.getLinksForEntity('fleet', code);
   if (!links.length) return { text: `📎 Keine Dokumente verknüpft mit Fahrzeug ${code}.` };
   return { text: `📎 Fahrzeug-Dokumente (${code}):\n\n${_deps.formatLinksForTelegram(links)}` };
 }

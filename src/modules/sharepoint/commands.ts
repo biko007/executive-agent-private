@@ -204,7 +204,7 @@ export function registerSharePointCommands(api: any): void {
       const parts = String(ctx.args || '').trim().split(/\s+/);
       if (parts.length < 2) return { text: '\u274c Verwendung: /link <entityType> <entityId>' };
       const [entityType, entityId] = parts;
-      const links = getLinksForEntity(entityType, entityId);
+      const links = await getLinksForEntity(entityType, entityId);
       if (!links.length) return { text: `\ud83d\udcce Keine Dokumente verkn\u00fcpft mit ${entityType} ${entityId}.` };
       return { text: `\ud83d\udcce Verkn\u00fcpfte Dokumente (${entityType} ${entityId}):\n\n${formatLinksForTelegram(links)}` };
     },
@@ -258,7 +258,7 @@ export function registerSharePointCommands(api: any): void {
     handler: async (ctx: any) => {
       const linkId = String(ctx.args || '').trim();
       if (!linkId) return { text: '\u274c Verwendung: /linkdel <linkId>' };
-      const removed = removeLink(linkId);
+      const removed = await removeLink(linkId);
       if (!removed) return { text: `\u274c Verkn\u00fcpfung "${linkId}" nicht gefunden.` };
       return { text: `\ud83d\uddd1 Verkn\u00fcpfung ${linkId} entfernt.` };
     },
@@ -272,7 +272,7 @@ export function registerSharePointCommands(api: any): void {
     handler: async (ctx: any) => {
       const id = String(ctx.args || '').trim();
       if (!id) return { text: '\u274c Verwendung: /triplink <id>' };
-      const links = getLinksForEntity('trip', id);
+      const links = await getLinksForEntity('trip', id);
       if (!links.length) return { text: `\ud83d\udcce Keine Dokumente verkn\u00fcpft mit Reise ${id}.` };
       return { text: `\ud83d\udcce Reise-Dokumente (${id}):\n\n${formatLinksForTelegram(links)}` };
     },
@@ -294,13 +294,14 @@ export function registerSharePointCommands(api: any): void {
       if (isNaN(num) || num < 1 || num > pending.results.length) return;
 
       const selected = pending.results[num - 1];
-      const link = addSharePointLink(pending.entityType, pending.entityId, selected, pending.label);
       pendingLinkSelections.delete(chatId);
 
-      const s = loadSettings();
-      if (s.telegramChatId) {
-        deps.sendTelegram(s.telegramChatId, `\ud83d\udcce ${selected.name} verkn\u00fcpft mit ${pending.entityType} ${pending.entityId}\nLabel: ${link.label} | ID: ${link.id}`).catch(() => {});
-      }
+      addSharePointLink(pending.entityType, pending.entityId, selected, pending.label).then((link) => {
+        const s = loadSettings();
+        if (s.telegramChatId) {
+          deps.sendTelegram(s.telegramChatId, `\ud83d\udcce ${selected.name} verkn\u00fcpft mit ${pending.entityType} ${pending.entityId}\nLabel: ${link.label} | ID: ${link.id}`).catch(() => {});
+        }
+      }).catch(() => {});
     } catch {}
   });
 

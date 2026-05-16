@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { query } from "../db/index.js";
+import * as audit from "../audit/index.js";
 
 /* ════════════════════════════════════════════════════════════════════════════
-   Link Store — universale Dokumenten-Verknüpfung (entkoppelt von Modulen)
+   Link Store — universale Dokumenten-Verknüpfung (Postgres-backed, Sprint 9)
    ════════════════════════════════════════════════════════════════════════════ */
 
 const HOME = process.env.HOME || "/root";
-const LINKS_DIR = path.join(HOME, ".openclaw/workspace/artifacts/personal/links");
-const LINKS_FILE = path.join(LINKS_DIR, "links.json");
 const SP_INDEX_FILE = path.join(HOME, ".openclaw/workspace/artifacts/personal/sharepoint/sharepoint-index.json");
 
 /* ---------------- Types ---------------- */
@@ -38,27 +38,32 @@ export interface SpSearchResult {
   size: number;
 }
 
-/* ---------------- Persistence helpers ---------------- */
+/* ---------------- Row → DocumentLink mapper ---------------- */
 
-function loadLinks(): DocumentLink[] {
-  try {
-    if (fs.existsSync(LINKS_FILE)) {
-      return JSON.parse(fs.readFileSync(LINKS_FILE, "utf-8"));
-    }
-  } catch {}
-  return [];
+function rowToLink(row: any): DocumentLink {
+  return {
+    id: row.link_code,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    docType: row.doc_type,
+    label: row.label,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    ...(row.sp_item_id ? { spItemId: row.sp_item_id } : {}),
+    ...(row.sp_drive_id ? { spDriveId: row.sp_drive_id } : {}),
+    ...(row.sp_name ? { spName: row.sp_name } : {}),
+    ...(row.sp_web_url ? { spWebUrl: row.sp_web_url } : {}),
+    ...(row.local_path ? { localPath: row.local_path } : {}),
+    ...(row.local_name ? { localName: row.local_name } : {}),
+  };
 }
 
-function saveLinks(links: DocumentLink[]): void {
-  fs.mkdirSync(LINKS_DIR, { recursive: true });
-  fs.writeFileSync(LINKS_FILE, JSON.stringify(links, null, 2), "utf-8");
-}
+/* ---------------- Helpers ---------------- */
 
 function makeId(): string {
   return "lnk-" + crypto.randomBytes(3).toString("hex");
 }
 
-/* ---------------- SP index helpers ---------------- */
+/* ---------------- SP index helpers (file-based, unchanged) ---------------- */
 
 function loadSpIndex(): any[] {
   try {
@@ -70,81 +75,99 @@ function loadSpIndex(): any[] {
   return [];
 }
 
-/* ---------------- Exported functions ---------------- */
+/* ---------------- Exported functions (async, Postgres-backed) ------------- */
 
-export function getLinksForEntity(entityType: string, entityId: string): DocumentLink[] {
-  const links = loadLinks();
-  return links.filter((l) => l.entityType === entityType && l.entityId === entityId);
+export async function getLinksForEntity(entityType: string, entityId: string): Promise<DocumentLink[]> {
+  const { rows } = await query(
+    `SELECT * FROM entity_links WHERE entity_type = $1 AND entity_id = $2 ORDER BY created_at DESC`,
+    [entityType, entityId],
+  );
+  return rows.map(rowToLink);
 }
 
-export function getAllLinks(): DocumentLink[] {
-  return loadLinks();
+export async function getAllLinks(): Promise<DocumentLink[]> {
+  const { rows } = await query(`SELECT * FROM entity_links ORDER BY created_at DESC`);
+  return rows.map(rowToLink);
 }
 
-export function addSharePointLink(
+export async function addSharePointLink(
   entityType: string,
   entityId: string,
   spMatch: SpSearchResult,
   label: string,
-): DocumentLink {
-  const links = loadLinks();
-  const link: DocumentLink = {
-    id: makeId(),
-    entityType,
-    entityId,
-    docType: "sharepoint",
-    spItemId: spMatch.itemId,
-    spDriveId: spMatch.driveId,
-    spName: spMatch.name,
-    spWebUrl: spMatch.webUrl,
-    label,
-    createdAt: new Date().toISOString(),
-  };
-  links.push(link);
-  saveLinks(links);
+): Promise<DocumentLink> {
+  const linkCode = makeId();
+  const { rows } = await query(
+    `INSERT INTO entity_links (link_code, entity_type, entity_id, doc_type, label,
+       sp_item_id, sp_drive_id, sp_name, sp_web_url, created_at, updated_at)
+     VALUES ($1, $2, $3, 'sharepoint', $4, $5, $6, $7, $8, NOW(), NOW())
+     RETURNING *`,
+    [linkCode, entityType, entityId, label, spMatch.itemId, spMatch.driveId, spMatch.name, spMatch.webUrl],
+  );
+  const link = rowToLink(rows[0]);
+  await audit.log({ module: 'links', action: 'add', entityType: 'entity_link', entityId: linkCode, after: rows[0] });
   return link;
 }
 
-export function addLocalLink(
+export async function addLocalLink(
   entityType: string,
   entityId: string,
   localPath: string,
   label: string,
-): DocumentLink {
-  const links = loadLinks();
-  const link: DocumentLink = {
-    id: makeId(),
-    entityType,
-    entityId,
-    docType: "local",
-    localPath,
-    localName: path.basename(localPath),
-    label,
-    createdAt: new Date().toISOString(),
-  };
-  links.push(link);
-  saveLinks(links);
+): Promise<DocumentLink> {
+  const linkCode = makeId();
+  const localName = path.basename(localPath);
+  const { rows } = await query(
+    `INSERT INTO entity_links (link_code, entity_type, entity_id, doc_type, label,
+       local_path, local_name, created_at, updated_at)
+     VALUES ($1, $2, $3, 'local', $4, $5, $6, NOW(), NOW())
+     RETURNING *`,
+    [linkCode, entityType, entityId, label, localPath, localName],
+  );
+  const link = rowToLink(rows[0]);
+  await audit.log({ module: 'links', action: 'add', entityType: 'entity_link', entityId: linkCode, after: rows[0] });
   return link;
 }
 
-export function removeLink(linkId: string): boolean {
-  const links = loadLinks();
-  const idx = links.findIndex((l) => l.id === linkId);
-  if (idx === -1) return false;
-  links.splice(idx, 1);
-  saveLinks(links);
+export async function removeLink(linkId: string): Promise<boolean> {
+  const { rows: before } = await query(`SELECT * FROM entity_links WHERE link_code = $1`, [linkId]);
+  if (!before.length) return false;
+  await query(`DELETE FROM entity_links WHERE link_code = $1`, [linkId]);
+  await audit.log({ module: 'links', action: 'remove', entityType: 'entity_link', entityId: linkId, before: before[0] });
   return true;
 }
 
-export function getLinkById(linkId: string): DocumentLink | undefined {
-  return loadLinks().find((l) => l.id === linkId);
+export async function getLinkById(linkId: string): Promise<DocumentLink | undefined> {
+  const { rows } = await query(`SELECT * FROM entity_links WHERE link_code = $1`, [linkId]);
+  return rows.length ? rowToLink(rows[0]) : undefined;
 }
 
-export function searchSharePointForLinking(query: string): SpSearchResult[] {
+export async function updateEntityId(entityType: string, oldId: string, newId: string): Promise<number> {
+  const { rows: before } = await query(
+    `SELECT * FROM entity_links WHERE entity_type = $1 AND entity_id = $2`,
+    [entityType, oldId],
+  );
+  if (!before.length) return 0;
+  const { rowCount } = await query(
+    `UPDATE entity_links SET entity_id = $1, updated_at = NOW() WHERE entity_type = $2 AND entity_id = $3`,
+    [newId, entityType, oldId],
+  );
+  await audit.log({
+    module: 'links', action: 'update', entityType: 'entity_link',
+    entityId: `${entityType}/${oldId}→${newId}`,
+    before: { entity_type: entityType, old_entity_id: oldId, count: before.length },
+    after: { entity_type: entityType, new_entity_id: newId, count: rowCount },
+  });
+  return rowCount ?? 0;
+}
+
+/* ---------------- SP search (file-based, unchanged) ---------------------- */
+
+export function searchSharePointForLinking(queryStr: string): SpSearchResult[] {
   const files = loadSpIndex();
   if (!files.length) return [];
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryStr.toLowerCase().split(/\s+/).filter(Boolean);
   const matches = files.filter((f: any) => {
     const haystack = `${f.name} ${f.path} ${f.siteName} ${f.driveName}`.toLowerCase();
     return terms.every((term: string) => haystack.includes(term));
@@ -164,18 +187,7 @@ export function searchSharePointForLinking(query: string): SpSearchResult[] {
   }));
 }
 
-export function updateEntityId(entityType: string, oldId: string, newId: string): number {
-  const links = loadLinks();
-  let count = 0;
-  for (const link of links) {
-    if (link.entityType === entityType && link.entityId === oldId) {
-      link.entityId = newId;
-      count++;
-    }
-  }
-  if (count > 0) saveLinks(links);
-  return count;
-}
+/* ---------------- Pure view function (sync, unchanged) ------------------- */
 
 export function formatLinksForTelegram(links: DocumentLink[]): string {
   if (!links.length) return "Keine verknüpften Dokumente.";
