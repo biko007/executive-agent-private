@@ -210,7 +210,12 @@ export function registerAssetsHttpRoutes(api: any) {
           await withContext({ requestId, actor, source: 'dashboard' }, async () => {
             try {
               if (req.method === 'GET') {
-                const { rows } = await dbQuery('SELECT * FROM tenants WHERE active = true ORDER BY last_name, company_name');
+                const { rows } = await dbQuery(
+                  `SELECT t.*,
+                     (SELECT COUNT(*)::int FROM lease_tenants lt JOIN leases l ON l.id = lt.lease_id
+                      WHERE lt.tenant_id = t.id AND l.status = 'active') AS active_lease_count
+                   FROM tenants t WHERE t.active = true ORDER BY t.last_name, t.company_name`
+                );
                 json(res, 200, rows.map(mapTenantRow));
               } else if (req.method === 'POST') {
                 const body = await parseJsonBody(req);
@@ -1206,6 +1211,9 @@ function mapPropertyRow(row: any) {
 }
 
 function mapTenantRow(row: any) {
+  const firstName = (row.first_name || '').trim();
+  const lastName = (row.last_name || '').trim();
+  const name = firstName && lastName ? `${firstName} ${lastName}` : firstName || lastName || row.company_name || '';
   return {
     id: row.id,
     tenant_code: row.tenant_code,
@@ -1219,7 +1227,15 @@ function mapTenantRow(row: any) {
     street: row.street,
     postal_code: row.postal_code,
     city: row.city,
+    iban: row.iban || null,
     active: row.active,
+    active_lease_count: row.active_lease_count ?? 0,
+    // Display aliases for frontend
+    name,
+    company: row.company_name || null,
+    address_street: row.street || null,
+    address_postal_code: row.postal_code || null,
+    address_city: row.city || null,
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),
   };
