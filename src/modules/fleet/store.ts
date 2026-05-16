@@ -191,10 +191,9 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
 
 export async function listVehicles(opts?: { status?: string }): Promise<Vehicle[]> {
   const status = opts?.status || 'active';
-  const { rows } = await dbQuery<VehicleRow>(
-    'SELECT * FROM vehicles WHERE status = $1 ORDER BY vehicle_code',
-    [status],
-  );
+  const { rows } = status === 'all'
+    ? await dbQuery<VehicleRow>('SELECT * FROM vehicles ORDER BY vehicle_code')
+    : await dbQuery<VehicleRow>('SELECT * FROM vehicles WHERE status = $1 ORDER BY vehicle_code', [status]);
   return Promise.all(rows.map(assembleVehicle));
 }
 
