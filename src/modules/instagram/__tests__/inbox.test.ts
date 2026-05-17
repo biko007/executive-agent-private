@@ -93,9 +93,22 @@ afterAll(async () => {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildFormData(files: Array<{ name: string; buffer: Buffer; type: string }>): { body: Buffer; boundary: string } {
+function buildFormDataWithFields(
+  files: Array<{ name: string; buffer: Buffer; type: string }>,
+  fields?: Record<string, string>,
+): { body: Buffer; boundary: string } {
   const boundary = `----BusBoyBoundary${Date.now()}`;
   const parts: Buffer[] = [];
+
+  if (fields) {
+    for (const [k, v] of Object.entries(fields)) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="${k}"\r\n\r\n` +
+        `${v}\r\n`,
+      ));
+    }
+  }
 
   for (const file of files) {
     parts.push(Buffer.from(
@@ -109,6 +122,10 @@ function buildFormData(files: Array<{ name: string; buffer: Buffer; type: string
 
   parts.push(Buffer.from(`--${boundary}--\r\n`));
   return { body: Buffer.concat(parts), boundary };
+}
+
+function buildFormData(files: Array<{ name: string; buffer: Buffer; type: string }>): { body: Buffer; boundary: string } {
+  return buildFormDataWithFields(files);
 }
 
 async function postInbox(opts: {
@@ -278,5 +295,36 @@ describe('Inbox endpoint (E2b)', () => {
     expect(result.files[0].status).toBe('duplicate');
     expect(result.files[0].edit_id).toBe(firstEditId);
     expect(result.files[0].sha256).toBeTruthy();
+  });
+
+  test('7. source=dashboard writes dashboard to DB', async () => {
+    const jpegBuf = makeMinimalJpeg(300);
+    const { body, boundary } = buildFormDataWithFields(
+      [{ name: 'dash-test.jpg', buffer: jpegBuf, type: 'image/jpeg' }],
+      { source: 'dashboard' },
+    );
+
+    const response = await fetch(`${serverUrl}/api/instagram/inbox`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TEST_TOKEN}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+    const result = await response.json() as any;
+
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].status).toBe('uploaded');
+    const editId = result.files[0].edit_id;
+
+    // Verify DB row has source = 'dashboard'
+    const db = await import('../../../shared/db/index.js');
+    const { rows } = await db.query(
+      'SELECT source FROM insta_media_edits WHERE id = $1',
+      [editId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe('dashboard');
   });
 });

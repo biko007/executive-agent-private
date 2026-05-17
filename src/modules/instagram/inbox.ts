@@ -17,6 +17,7 @@ import { validateInboxAuth } from './inbox-auth.js';
 import {
   sanitizeSessionId, buildMediaName, nextMediaIndex,
   recordMediaUpload, computeFileSha256,
+  type UploadSource,
 } from './session-helper.js';
 import { loadRawSession, saveRawSession, createRawSession, generateRawSessionId, sessionDir } from './commands.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
@@ -114,6 +115,7 @@ async function processMultipart(
   let resolvedSessionId: string | null = null;
   let formSessionId: string | undefined;
   let formContext: string | undefined;
+  let formSource: string | undefined;
 
   const fileResults: FileResult[] = [];
   let fileCount = 0;
@@ -136,6 +138,7 @@ async function processMultipart(
     bb.on('field', (name: string, val: string) => {
       if (name === 'session_id') formSessionId = val;
       if (name === 'context') formContext = val;
+      if (name === 'source') formSource = val;
     });
 
     // ── File handler ──────────────────────────────────────────────────────
@@ -222,11 +225,15 @@ async function processMultipart(
           if (!fs.existsSync(tmpPath)) return;
 
           try {
+            const effectiveSource: UploadSource =
+              (formSource && ['telegram', 'ios_shortcut', 'dashboard'].includes(formSource))
+                ? formSource as UploadSource : 'ios_shortcut';
             await processUploadedFile({
               tmpPath,
               originalName,
               mimeInfo,
               requestId,
+              source: effectiveSource,
               getSessionId: async () => {
                 if (!resolvedSessionId) {
                   resolvedSessionId = await resolveSession(formSessionId, formContext);
@@ -320,6 +327,7 @@ async function processUploadedFile(params: {
   originalName: string;
   mimeInfo: { ext: string; type: 'image' | 'video'; maxBytes: number };
   requestId: string;
+  source: UploadSource;
   getSessionId: () => Promise<string>;
   fileResults: FileResult[];
 }): Promise<void> {
@@ -389,7 +397,7 @@ async function processUploadedFile(params: {
     mediaIndex,
     sourcePath: relativePath,
     sha256,
-    source: 'ios_shortcut',
+    source: params.source,
   });
 
   // 11. Update session.json
@@ -414,7 +422,7 @@ async function processUploadedFile(params: {
       session_id: sessionId,
       media_index: mediaIndex,
       sha256,
-      source: 'ios_shortcut',
+      source: params.source,
       media_name: mediaName,
       file_size: fileSize,
     },
