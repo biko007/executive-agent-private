@@ -83,8 +83,12 @@ export interface Vehicle {
   notes?: string;
   sourcePayload?: Record<string, unknown>;
   tuevDate?: string;
+  fuelType?: string;
   purchasePrice?: number;
   vehicleTax?: number;
+  tuevNextDueDate?: string;
+  currentYearTaxAmount?: number;
+  activeInsurancePremium?: number;
   insurance?: Insurance;
   insurancePolicies: Insurance[];
   serviceLog: ServiceEntry[];
@@ -126,6 +130,7 @@ export interface VehicleRow {
   archived_reason: string | null;
   notes: string | null;
   source_payload: Record<string, unknown> | null;
+  fuel_type: string | null;
   created_at: Date;
   updated_at: Date;
   created_by: string | null;

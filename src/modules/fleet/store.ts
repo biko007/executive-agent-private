@@ -4,6 +4,8 @@
  */
 import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
+import { maskSensitiveFields } from '../../shared/audit/index.js';
+import { getRequestId, getCorrelationId, getActor, getSource } from '../../shared/correlation/index.js';
 import type {
   Vehicle, VehicleType, ServiceEntry, VehicleDocument, Insurance,
   TuevRecord, TaxRecord, TireSet, DeadlineWarning,
@@ -154,6 +156,19 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
     year = Number(row.source_payload.model_year);
   }
 
+  // Aggregations from sub-records
+  const tuevNextDueDate = tuevRows.length > 0 && tuevRows[0].next_due_date
+    ? dateStr(tuevRows[0].next_due_date)
+    : undefined;
+
+  const currentYearTaxAmount = (() => {
+    const yr = new Date().getFullYear();
+    const match = taxRows.find(t => t.tax_year === yr);
+    return match ? parseFloat(match.amount) : undefined;
+  })();
+
+  const activeInsurancePremium = activeInsurance?.annualCost;
+
   return {
     id: row.vehicle_code,
     vehicleCode: row.vehicle_code,
@@ -172,9 +187,13 @@ async function assembleVehicle(row: VehicleRow): Promise<Vehicle> {
     archivedReason: row.archived_reason ?? undefined,
     notes: row.notes ?? undefined,
     sourcePayload: row.source_payload ?? undefined,
+    fuelType: row.fuel_type ?? undefined,
     tuevDate,
     purchasePrice: row.source_payload?.purchase_price as number | undefined,
     vehicleTax: row.source_payload?.vehicle_tax as number | undefined,
+    tuevNextDueDate,
+    currentYearTaxAmount,
+    activeInsurancePremium,
     insurance: activeInsurance,
     insurancePolicies,
     serviceLog,
@@ -270,6 +289,7 @@ export async function updateVehicle(
     current_mileage_km: 'current_mileage_km',
     notes: 'notes',
     source_payload: 'source_payload',
+    fuel_type: 'fuel_type',
   };
 
   const sets: string[] = [];
@@ -294,20 +314,41 @@ export async function updateVehicle(
   // If vehicle_code is being changed, we need the new code
   const newCode = (patch.vehicle_code as string) || code;
 
-  params.push(before[0].id);
-  const { rows: after } = await dbQuery<VehicleRow>(
-    `UPDATE vehicles SET ${sets.join(', ')} WHERE id = $${pi} RETURNING *`,
-    params,
-  );
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
 
-  await audit.log({
-    module: 'fleet', action: 'vehicle.update',
-    entityType: 'vehicle', entityId: code,
-    before: before[0] as unknown as Record<string, unknown>,
-    after: after[0] as unknown as Record<string, unknown>,
-  });
+    params.push(before[0].id);
+    const { rows: after } = await client.query<VehicleRow>(
+      `UPDATE vehicles SET ${sets.join(', ')} WHERE id = $${pi} RETURNING *`,
+      params,
+    );
 
-  return assembleVehicle(after[0]);
+    // Audit log INSIDE transaction (Hard Rule)
+    const maskedBefore = maskSensitiveFields(before[0] as unknown as Record<string, unknown>);
+    const maskedAfter = maskSensitiveFields(after[0] as unknown as Record<string, unknown>);
+    const requestId = getRequestId();
+    const correlationId = getCorrelationId();
+    const auditActor = actor ?? getActor();
+    const source = getSource();
+
+    await client.query(
+      `INSERT INTO audit_log (actor, module, action, entity_type, entity_id,
+        before_jsonb, after_jsonb, source, correlation_id, request_id)
+       VALUES ($1, 'fleet', 'vehicle.update', 'vehicle', $2, $3, $4, $5, $6, $7)`,
+      [auditActor, code, JSON.stringify(maskedBefore), JSON.stringify(maskedAfter),
+       source, correlationId, requestId],
+    );
+
+    await client.query('COMMIT');
+
+    return assembleVehicle(after[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function archiveVehicle(code: string, reason?: string, actor?: string): Promise<Vehicle | null> {
