@@ -113,6 +113,16 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
 - Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
 
+### Settings (Sprint 11)
+
+- DB-Tabelle: `system_settings` (key TEXT PK, value JSONB)
+- `loadSettings()` liest sync aus In-Memory-Cache (populiert beim Boot)
+- `setSetting(key, value)` schreibt atomar in DB (UPSERT + audit_log in einer Transaktion)
+- Cache-Refresh: Hintergrund-Intervall alle 60s
+- WARNUNG: Cache ist prozesslokal (Single-Process). Bei mehreren Instanzen Cache-Drift moeglich.
+- Key-Convention: snake_case im DB (`briefing_time`), camelCase im TS-Interface (`briefingTime`)
+- `sp_default_site_id` als Seed fuer Etappe 4 (Dashboard Site-Resolution)
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
@@ -139,6 +149,7 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 | 5.5a | Asset CRUD + NK PreCheck | abgeschlossen |
 | 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
 | 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
+| 11.3 | Settings nach Postgres (system_settings, V035) | abgeschlossen |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 

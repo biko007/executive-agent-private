@@ -569,6 +569,27 @@ async function checkSharePointSearch() {
   }
 }
 
+// ── 11. SYSTEM SETTINGS (Sprint 11) ──────────────────────────────────────────
+
+async function checkSystemSettings() {
+  try {
+    const pool = getPool();
+    const { rows: settingsRows } = await pool.query(
+      'SELECT key FROM system_settings ORDER BY key'
+    );
+    const settingsKeys = settingsRows.map((r: any) => r.key);
+    const required = ['briefing_time', 'telegram_chat_id', 'sp_default_site_id'];
+    const missing = required.filter(k => !settingsKeys.includes(k));
+    if (missing.length === 0) {
+      pass('System Settings (DB)', `${settingsRows.length} keys`);
+    } else {
+      fail('System Settings (DB)', `Fehlende: ${missing.join(', ')}`);
+    }
+  } catch (e: any) {
+    fail('System Settings (DB)', `DB-Fehler: ${e.message}`);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -616,6 +637,9 @@ async function main() {
   // 10. SharePoint Postgres (Sprint 10)
   await checkSharePointDb();
   await checkSharePointSearch();
+
+  // 11. System Settings (Sprint 11)
+  await checkSystemSettings();
 
   // ── Report ──────────────────────────────────────────────────────────────
 

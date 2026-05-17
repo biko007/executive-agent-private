@@ -79,6 +79,7 @@ import {
 } from "./src/shared/utils/index.js";
 import {
   loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION,
+  setSetting, refreshSettingsCache, startSettingsCacheRefresh,
 } from "./src/shared/settings/index.js";
 import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
 import {
@@ -1396,15 +1397,14 @@ export default function (api: any) {
     name: 'briefingtime',
     acceptsArgs: true,
     description: 'Briefing-Uhrzeit setzen: /briefingtime HH:MM  (Europe/Berlin, Standard: 07:00)',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const raw = String(ctx.args || '').trim();
       if (!/^\d{1,2}:\d{2}$/.test(raw)) return { text: '❌ Verwendung: /briefingtime 07:30' };
       const [h, m] = raw.split(':').map(Number);
       if (h < 0 || h > 23 || m < 0 || m > 59) return { text: '❌ Ungültige Uhrzeit.' };
       const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      await setSetting('briefing_time', time);
       const s = loadSettings();
-      s.briefingTime = time;
-      saveSettings(s);
       return {
         text:
           `⏰ Tägliches Briefing auf ${time} Uhr (Europe/Berlin) gesetzt.\n` +
@@ -1432,8 +1432,7 @@ export default function (api: any) {
       if (!id) return;
       const s = loadSettings();
       if (s.telegramChatId !== id) {
-        s.telegramChatId = id;
-        saveSettings(s);
+        setSetting('telegram_chat_id', id).catch(() => {});
         api.logger.info(`[executive-agent] telegramChatId gespeichert: ${id}`);
       }
     } catch {}
@@ -2517,6 +2516,18 @@ export default function (api: any) {
       }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
+    }
+
+    // ── Settings Migration + Cache Init (Sprint 11) ─────────────────────────
+    try {
+      const settingsMigrationsDir = path.join(__dirname, 'src/shared/settings/migrations');
+      const settingsApplied = await runMigrations(settingsMigrationsDir, 'settings');
+      if (settingsApplied > 0) api.logger.info(`[settings] Applied ${settingsApplied} migration(s)`);
+      await refreshSettingsCache();
+      startSettingsCacheRefresh();
+      api.logger.info('[settings] DB cache initialized');
+    } catch (e: any) {
+      api.logger.error(`[settings] Init failed: ${e.message} — file fallback`);
     }
 
     // ── Location Migrations (Sprint 8) ─────���──────���───────────────────────

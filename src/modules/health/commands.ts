@@ -17,7 +17,7 @@ import {
 } from './withings.js';
 import type { WithingsSyncResult, WithingsSyncStatus } from './withings.js';
 import {
-  loadSettings, saveSettings,
+  loadSettings, saveSettings, setSetting,
 } from '../../shared/settings/index.js';
 import { berlinDate } from '../../shared/utils/index.js';
 import * as audit from '../../shared/audit/index.js';
@@ -620,15 +620,13 @@ export function registerHealthCommands(api: any): void {
     name: 'healthreportday',
     acceptsArgs: true,
     description: 'Wochentag für Health-Report: /healthreportday <Mo|Di|Mi|Do|Fr|Sa|So>',
-    handler: (ctx: any) => {
+    handler: async (ctx: any) => {
       const raw = String(ctx.args || '').trim().toLowerCase();
       const dayMap: Record<string, number> = { so: 0, mo: 1, di: 2, mi: 3, do: 4, fr: 5, sa: 6 };
       const dayNum = dayMap[raw];
       if (dayNum === undefined) return { text: '❌ Verwendung: /healthreportday Mo  (Mo|Di|Mi|Do|Fr|Sa|So)' };
       const dayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
-      const s = loadSettings();
-      s.healthReportDay = dayNum;
-      saveSettings(s);
+      await setSetting('health_report_day', dayNum);
       return { text: `📊 Wöchentlicher Health-Report auf ${dayNames[dayNum]} gesetzt.` };
     },
   });

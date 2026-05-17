@@ -31,7 +31,7 @@ import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, } from "./src/shared/utils/index.js";
-import { loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION, } from "./src/shared/settings/index.js";
+import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, } from "./src/shared/settings/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import path from "node:path";
 import http from "node:http";
@@ -1276,7 +1276,7 @@ export default function (api) {
         name: 'briefingtime',
         acceptsArgs: true,
         description: 'Briefing-Uhrzeit setzen: /briefingtime HH:MM  (Europe/Berlin, Standard: 07:00)',
-        handler: (ctx) => {
+        handler: async (ctx) => {
             const raw = String(ctx.args || '').trim();
             if (!/^\d{1,2}:\d{2}$/.test(raw))
                 return { text: '❌ Verwendung: /briefingtime 07:30' };
@@ -1284,9 +1284,8 @@ export default function (api) {
             if (h < 0 || h > 23 || m < 0 || m > 59)
                 return { text: '❌ Ungültige Uhrzeit.' };
             const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            await setSetting('briefing_time', time);
             const s = loadSettings();
-            s.briefingTime = time;
-            saveSettings(s);
             return {
                 text: `⏰ Tägliches Briefing auf ${time} Uhr (Europe/Berlin) gesetzt.\n` +
                     `Chat-ID: ${s.telegramChatId || '(noch nicht erfasst — sende irgendeine Nachricht)'}`,
@@ -1307,8 +1306,7 @@ export default function (api) {
                 return;
             const s = loadSettings();
             if (s.telegramChatId !== id) {
-                s.telegramChatId = id;
-                saveSettings(s);
+                setSetting('telegram_chat_id', id).catch(() => { });
                 api.logger.info(`[executive-agent] telegramChatId gespeichert: ${id}`);
             }
         }
@@ -2311,6 +2309,19 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
+        }
+        // ── Settings Migration + Cache Init (Sprint 11) ─────────────────────────
+        try {
+            const settingsMigrationsDir = path.join(__dirname, 'src/shared/settings/migrations');
+            const settingsApplied = await runMigrations(settingsMigrationsDir, 'settings');
+            if (settingsApplied > 0)
+                api.logger.info(`[settings] Applied ${settingsApplied} migration(s)`);
+            await refreshSettingsCache();
+            startSettingsCacheRefresh();
+            api.logger.info('[settings] DB cache initialized');
+        }
+        catch (e) {
+            api.logger.error(`[settings] Init failed: ${e.message} — file fallback`);
         }
         // ── Location Migrations (Sprint 8) ─────���──────���───────────────────────
         try {
