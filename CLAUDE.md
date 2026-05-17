@@ -124,6 +124,49 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - Key-Convention: snake_case im DB (`briefing_time`), camelCase im TS-Interface (`briefingTime`)
 - `sp_default_site_id` als Seed fuer Etappe 4 (Dashboard Site-Resolution)
 
+### Schema-Migration-Konvention (Sprint 11.5)
+
+**Dual Pattern:**
+
+1. **V-Prefix (`Vxxx__name.sql`):** One-Shot-Migrationen mit Daten-Import via `migrate-sprintX` / `migrate-vXXX`-Skripte.
+   Manuell ausgeführt (`bun run scripts/migrate-*.ts --apply`). Enthalten DDL + DML (Tabellen + Daten).
+   Schema-Version wird vom Skript oder nachtraeglich in `schema_version` eingetragen.
+
+2. **0xx-Prefix (`0xx_name.sql`):** Boot-Time-DDL-only via `runMigrations()` in `src/shared/db/index.ts`.
+   Idempotent (`IF NOT EXISTS`), automatisch bei jedem Gateway-Start. Nur DDL, keine Daten.
+
+**Migrate-Skripte (One-Shot, manuell):**
+
+| Skript | Modul | Versions |
+|--------|-------|----------|
+| `scripts/migrate-sprint3-instagram.ts` | instagram | V020 |
+| `scripts/migrate-sprint4-health.ts` | health | V021 |
+| `scripts/migrate-sprint5-assets.ts` | assets | V022, V023, V024 |
+| `src/modules/fleet/migrate-v025.ts` | fleet | V025 |
+| `src/modules/banking/migrate-v027.ts` | banking | V027, V028, V029 |
+| `src/modules/assets/migrate-v030.ts` | assets | V030 |
+| `src/modules/assets/migrate-v031.ts` | assets | V031 |
+| `scripts/migrate-sprint8-location.ts` | location | V032 |
+| `scripts/migrate-sprint9-links.ts` | links | V033 |
+
+**Boot-Time-Migrationen (automatisch via `runMigrations()`):**
+
+| Aufruf in index.ts | Modul | Versions |
+|---------------------|-------|----------|
+| `src/shared/migrations` | shared | 001 |
+| `src/shared/settings/migrations` | settings | 035 |
+| `src/modules/executive/migrations` | executive | 001 |
+| `src/modules/location/migrations` | location | 032 |
+| `src/modules/links/migrations` | links | 033 |
+| `src/modules/sharepoint/migrations` | sharepoint | 034 |
+
+**DR-Pfad:** `pg_dump --format=custom` als Wahrheits-Quelle, unabhaengig vom Migration-Runner.
+Borg-Backup sichert den Dump taeglich.
+
+**Drift-Detector:** `npm run verify-schema` (`scripts/verify-schema-versions.ts`).
+Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit 1 = drift.
+**Sprint-Cut-Checkliste:** Drift-Detector mit Exit 0 ist Pflicht vor jedem Commit/Release.
+
 ### Offene TODOs
 
 - ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
