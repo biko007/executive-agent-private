@@ -11,6 +11,7 @@ import {
 } from './queries.js';
 import { query } from '../../shared/db/index.js';
 import { upsertSingleFileAfterUpload } from './store.js';
+import * as audit from '../../shared/audit/index.js';
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -207,6 +208,157 @@ export function registerSharePointHttpRoutes(api: any) {
             path: body.path,
           });
           json(res, 200, { ok: true });
+          return;
+        }
+
+        // POST /api/sharepoint/cleanup-missing (Sprint 11.6)
+        if (segments[0] === 'cleanup-missing' && segments.length === 1 && req.method === 'POST') {
+          const dryRun = url.searchParams.get('dry_run') !== 'false'; // default true
+
+          // 2x-Sync-Schutz: verify ≥2 successful sync runs after oldest candidate's missing_since
+          const { rows: oldestRows } = await query(
+            `SELECT MIN(missing_since) AS oldest
+             FROM sharepoint_files
+             WHERE missing_since IS NOT NULL
+               AND missing_since < NOW() - INTERVAL '30 days'`
+          );
+          const oldestMissing = oldestRows[0]?.oldest;
+
+          if (oldestMissing) {
+            const { rows: syncRows } = await query(
+              `SELECT COUNT(*)::int AS cnt
+               FROM sharepoint_sync_runs
+               WHERE started_at > $1
+                 AND status = 'success'`,
+              [oldestMissing]
+            );
+            if ((syncRows[0]?.cnt ?? 0) < 2) {
+              // Not enough syncs — skip with warning
+              const warnMsg = `⚠️ SP cleanup-missing SKIPPED: only ${syncRows[0]?.cnt ?? 0} successful syncs after oldest candidate (${oldestMissing}). Need ≥2.`;
+              try {
+                await fetch('http://127.0.0.1:18789/api/internal/notify', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ message: warnMsg, severity: 'warn' }),
+                });
+              } catch { /* notify best-effort */ }
+              await audit.log({
+                actor: 'system', module: 'sharepoint', action: 'cleanup_missing_skipped',
+                entityType: 'sharepoint_files', source: 'maintenance',
+                after: { reason: '2x_sync_guard', syncs_after_oldest: syncRows[0]?.cnt ?? 0 },
+              });
+              json(res, 200, { skipped: true, reason: '2x_sync_guard', syncs_after_oldest: syncRows[0]?.cnt ?? 0 });
+              return;
+            }
+          }
+
+          // Candidate query (shared by dry/live)
+          const candidateSql = `
+            SELECT sp_item_key, name, path, site_name, last_modified_at, missing_since
+            FROM sharepoint_files
+            WHERE missing_since IS NOT NULL
+              AND missing_since < NOW() - INTERVAL '30 days'
+              AND NOT EXISTS (
+                SELECT 1 FROM entity_links
+                WHERE doc_type LIKE 'sharepoint%'
+                  AND sp_item_id = sharepoint_files.sp_item_key
+              )
+            ORDER BY missing_since ASC
+            LIMIT 50
+          `;
+          const { rows: candidates } = await query(candidateSql);
+
+          // Stats: total eligible count (no LIMIT)
+          const { rows: totalRows } = await query(`
+            SELECT COUNT(*)::int AS cnt
+            FROM sharepoint_files
+            WHERE missing_since IS NOT NULL
+              AND missing_since < NOW() - INTERVAL '30 days'
+              AND NOT EXISTS (
+                SELECT 1 FROM entity_links
+                WHERE doc_type LIKE 'sharepoint%'
+                  AND sp_item_id = sharepoint_files.sp_item_key
+              )
+          `);
+          const totalCount = totalRows[0]?.cnt ?? 0;
+
+          // Stats: excluded by entity_links
+          const { rows: excludedRows } = await query(`
+            SELECT COUNT(*)::int AS cnt
+            FROM sharepoint_files
+            WHERE missing_since IS NOT NULL
+              AND missing_since < NOW() - INTERVAL '30 days'
+              AND EXISTS (
+                SELECT 1 FROM entity_links
+                WHERE doc_type LIKE 'sharepoint%'
+                  AND sp_item_id = sharepoint_files.sp_item_key
+              )
+          `);
+          const excludedByLinks = excludedRows[0]?.cnt ?? 0;
+
+          const oldestCandidate = candidates.length > 0 ? candidates[0].missing_since : null;
+          const newestCandidate = candidates.length > 0 ? candidates[candidates.length - 1].missing_since : null;
+
+          if (dryRun) {
+            await audit.log({
+              actor: 'system', module: 'sharepoint', action: 'cleanup_missing_dry_run',
+              entityType: 'sharepoint_files', source: 'maintenance',
+              after: { total_count: totalCount, excluded_by_links: excludedByLinks, batch_size: candidates.length },
+            });
+            json(res, 200, {
+              dry_run: true,
+              candidates,
+              total_count: totalCount,
+              excluded_by_links: excludedByLinks,
+              oldest_missing: oldestCandidate,
+              newest_missing: newestCandidate,
+            });
+            return;
+          }
+
+          // Live: DELETE with subquery (Postgres has no DELETE ... LIMIT)
+          const { rows: deleted } = await query(`
+            DELETE FROM sharepoint_files
+            WHERE sp_item_key IN (
+              SELECT sp_item_key FROM sharepoint_files
+              WHERE missing_since IS NOT NULL
+                AND missing_since < NOW() - INTERVAL '30 days'
+                AND NOT EXISTS (
+                  SELECT 1 FROM entity_links
+                  WHERE doc_type LIKE 'sharepoint%'
+                    AND sp_item_id = sharepoint_files.sp_item_key
+                )
+              ORDER BY missing_since ASC
+              LIMIT 50
+            )
+            RETURNING sp_item_key, name, path, site_name, last_modified_at
+          `);
+
+          await audit.log({
+            actor: 'system', module: 'sharepoint', action: 'cleanup_missing_deleted',
+            entityType: 'sharepoint_files', source: 'maintenance',
+            after: { deleted_count: deleted.length, total_eligible: totalCount, excluded_by_links: excludedByLinks, items: deleted },
+          });
+
+          // Telegram notify
+          const notifyMsg = `🗑️ SP cleanup-missing: ${deleted.length} files hard-deleted (${totalCount} eligible, ${excludedByLinks} excluded by links)`;
+          try {
+            await fetch('http://127.0.0.1:18789/api/internal/notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: notifyMsg, severity: 'info' }),
+            });
+          } catch { /* notify best-effort */ }
+
+          json(res, 200, {
+            dry_run: false,
+            deleted,
+            deleted_count: deleted.length,
+            total_count: totalCount,
+            excluded_by_links: excludedByLinks,
+            oldest_missing: oldestCandidate,
+            newest_missing: newestCandidate,
+          });
           return;
         }
 

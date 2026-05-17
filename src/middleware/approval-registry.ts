@@ -109,6 +109,9 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Banking — Approval preview
   'banking-approval-preview.create': { endpointKey: 'banking-approval-preview.create', method: 'POST', pathPattern: '/api/banking/approval-preview', requiresApproval: false, idempotency: false, description: 'Create banking approval preview' },
+
+  // SharePoint — Cleanup (Sprint 11.6)
+  'sharepoint.cleanup-missing': { endpointKey: 'sharepoint.cleanup-missing', method: 'POST', pathPattern: '/api/sharepoint/cleanup-missing', requiresApproval: false, idempotency: false, description: 'Hard-delete SharePoint files missing >30 days (no linked entities)' },
 };
 
 /**
