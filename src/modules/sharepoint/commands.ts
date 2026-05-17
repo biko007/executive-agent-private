@@ -7,7 +7,6 @@
  */
 import {
   listSites, listDrives, getRecentFiles,
-  searchLocalIndex, getIndexAge,
 } from './store.js';
 import { fullSync } from './store.js';
 import { searchFiles, listSitesFromDb, listDrivesFromDb } from './queries.js';
@@ -41,7 +40,6 @@ export function initSharePointCommands(d: SharePointDeps): void {
 
 export { getLinksForEntity, formatLinksForTelegram, searchSharePointForLinking };
 export { addSharePointLink, removeLink };
-export { searchLocalIndex, getIndexAge };
 
 // ── State ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +127,7 @@ export function registerSharePointCommands(api: any): void {
   // /spsync — full SP sync (now writes to DB)
   api.registerCommand({
     name: 'spsync',
-    description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren (JSON + DB)',
+    description: 'SharePoint-Vollsync: alle Sites/Drives/Dateien rekursiv indexieren (DB)',
     handler: async () => {
       if (!deps.m365Enabled || !deps.tenantId || !deps.clientId || !deps.m365Secret) {
         return { text: '\u274c M365-Konfiguration fehlt.' };
@@ -156,7 +154,7 @@ export function registerSharePointCommands(api: any): void {
           }, syncUser || undefined);
 
           const durSec = (result.durationMs / 1000).toFixed(1);
-          let summary = `\u2705 SharePoint-Sync abgeschlossen (DB + JSON)\n\n`;
+          let summary = `\u2705 SharePoint-Sync abgeschlossen (DB)\n\n`;
           summary += `\ud83d\udcc2 ${result.totalFiles} Dateien \u00b7 ${result.totalSites} Sites \u00b7 ${result.totalDrives} Drives\n`;
           summary += `\u23f1 ${durSec}s`;
           if (result.skippedSites?.length) {
@@ -176,7 +174,7 @@ export function registerSharePointCommands(api: any): void {
         deps.logger.error(`[executive-agent] spsync unhandled: ${e?.message || e}`);
       });
 
-      return { text: '\ud83d\udd04 SharePoint-Vollsync gestartet (JSON + DB). Fortschritt kommt via Telegram.' };
+      return { text: '\ud83d\udd04 SharePoint-Vollsync gestartet (DB). Fortschritt kommt via Telegram.' };
     },
   });
 
@@ -210,7 +208,7 @@ export function registerSharePointCommands(api: any): void {
       if (docType === 'sp') {
         const q = rest.join(' ');
         if (!q) return { text: '\u274c Suchbegriff fehlt.' };
-        const results = searchSharePointForLinking(q);
+        const results = await searchSharePointForLinking(q);
         if (!results.length) return { text: `\u274c Keine Treffer f\u00fcr "${q}" im SharePoint-Index.\nTipp: /spsync falls der Index veraltet ist.` };
 
         const chatId = String(ctx.chatId || ctx.threadId || ctx.conversationId || ctx.senderId || '');

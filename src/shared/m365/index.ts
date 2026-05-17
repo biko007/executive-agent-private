@@ -60,6 +60,10 @@ export async function graphToken(
   return accessToken;
 }
 
+export function clearGraphTokenCache(tenantId: string, clientId: string): void {
+  graphTokenCache.delete(cacheKey(tenantId, clientId));
+}
+
 export async function graphRequest(
   tenantId: string,
   clientId: string,

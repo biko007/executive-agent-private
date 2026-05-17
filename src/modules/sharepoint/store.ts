@@ -4,14 +4,10 @@
  * Replaces sharepoint-store.ts fullSync() + polling with Postgres UPSERT + soft-delete.
  * Graph API helpers (listSites, listDrives, crawlFolder) remain in sharepoint-store.ts.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { getClient, query } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import { buildSpItemKey } from './key.js';
 import type { SPSyncResult, SPIndexEntry } from '../../../sharepoint-store.js';
-
-const HOME = process.env.HOME || '/home/biko';
 
 // Re-export types
 export type { SPSyncResult, SPIndexEntry };
@@ -20,7 +16,7 @@ export { buildSpItemKey } from './key.js';
 // Re-export Graph functions that commands.ts and other modules need
 export {
   listSites, listDrives, getRecentFiles, searchDocuments,
-  downloadFile, uploadFile, searchLocalIndex, getIndexAge, listFiles,
+  downloadFile, uploadFile, listFiles,
 } from '../../../sharepoint-store.js';
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
@@ -193,16 +189,12 @@ export async function fullSync(
     runId = runRes.rows[0].id;
 
     // Delegate to existing Graph crawl (sharepoint-store.ts fullSync)
-    // This makes HTTP calls only (no DB), writes to JSON file, returns result
+    // skipJsonWrite=true: no JSON file written, files returned in result
     const { fullSync: legacyFullSync } = await import('../../../sharepoint-store.js');
     const result: SPSyncResult = await legacyFullSync(
-      tenantId, clientId, clientSecret, onProgress, m365User,
+      tenantId, clientId, clientSecret, onProgress, m365User, true,
     );
-
-    // Read the fresh JSON index just written by legacy fullSync
-    const indexPath = path.join(HOME, '.openclaw/workspace/artifacts/personal/sharepoint/sharepoint-index.json');
-    const indexJson = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-    const files: SPIndexEntry[] = indexJson.files || [];
+    const files: SPIndexEntry[] = result.files || [];
 
     // UPSERT all files using a separate client (lockClient stays for lock)
     const seenKeys = new Set<string>();

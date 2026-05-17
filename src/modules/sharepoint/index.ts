@@ -12,7 +12,6 @@ export {
   getLinksForEntity, formatLinksForTelegram,
   searchSharePointForLinking,
   addSharePointLink, removeLink,
-  searchLocalIndex, getIndexAge,
 } from './commands.js';
 
 // Sprint 10: DB-backed store + queries

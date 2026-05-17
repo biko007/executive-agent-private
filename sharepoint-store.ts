@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { sleep, fetchWithTimeout, parseRetryAfterMs } from './src/shared/utils/index.js';
+import { graphToken, clearGraphTokenCache } from './src/shared/m365/index.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    SharePoint Store — Graph API helpers for SharePoint document management
@@ -49,81 +51,7 @@ export type SPChangeEntry = {
   changeType: "created" | "modified";
 };
 
-/* ---------------- Graph helpers (own copy, matching index.ts pattern) ---- */
-
-type GraphTokenCacheEntry = {
-  accessToken: string;
-  expiresAtMs: number;
-};
-
-const graphTokenCache = new Map<string, GraphTokenCacheEntry>();
-
-function cacheKey(tenantId: string, clientId: string) {
-  return `sp::${tenantId}::${clientId}`;
-}
-
-function nowMs() { return Date.now(); }
-function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
-
-function parseRetryAfterMs(res: Response): number | null {
-  const ra = res.headers.get("retry-after");
-  if (!ra) return null;
-  const secs = Number(ra);
-  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, 30_000);
-  return null;
-}
-
-async function fetchWithTimeout(url: string, init: any, timeoutMs: number) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...(init || {}), signal: controller.signal });
-  } catch (e: any) {
-    if (e?.name === "AbortError") throw new Error(`fetch_timeout_after_${timeoutMs}ms`);
-    throw e;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function graphToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
-  const key = cacheKey(tenantId, clientId);
-  const cached = graphTokenCache.get(key);
-  if (cached && cached.expiresAtMs > nowMs()) return cached.accessToken;
-
-  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const form = new URLSearchParams();
-  form.set("client_id", clientId);
-  form.set("scope", "https://graph.microsoft.com/.default");
-  form.set("client_secret", clientSecret);
-  form.set("grant_type", "client_credentials");
-
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form,
-  }, 20000);
-
-  const text = await res.text().catch(() => "");
-  let parsed: any = null;
-  try { parsed = text ? JSON.parse(text) : null; } catch {}
-
-  if (!res.ok) {
-    throw new Error(`sp_token_error: status=${res.status} body=${parsed ? JSON.stringify(parsed) : text || "(empty)"}`);
-  }
-
-  const json: any = parsed ?? {};
-  const accessToken: string = json.access_token;
-  const expiresInSec: number | undefined = json.expires_in;
-  const safetyMs = 60_000;
-  const ttlMs =
-    typeof expiresInSec === "number" && Number.isFinite(expiresInSec) && expiresInSec > 0
-      ? Math.max(expiresInSec * 1000 - safetyMs, 5_000)
-      : 45 * 60_000;
-
-  graphTokenCache.set(key, { accessToken, expiresAtMs: nowMs() + ttlMs });
-  return accessToken;
-}
+/* ---------------- Graph helpers (using shared m365 token cache) ----------- */
 
 async function graphRequest(
   tenantId: string, clientId: string, clientSecret: string,
@@ -136,7 +64,7 @@ async function graphRequest(
   const maxRetries = 3;
 
   const getToken = async (forceRefresh: boolean) => {
-    if (forceRefresh) graphTokenCache.delete(cacheKey(tenantId, clientId));
+    if (forceRefresh) clearGraphTokenCache(tenantId, clientId);
     return graphToken(tenantId, clientId, clientSecret);
   };
 
@@ -495,6 +423,7 @@ export type SPSyncResult = {
   errors: string[];
   skippedSites: string[];
   durationMs: number;
+  files?: SPIndexEntry[];
 };
 
 /* Configurable site blacklist — sites whose displayName matches are skipped during sync */
@@ -559,6 +488,7 @@ export async function fullSync(
   t: string, c: string, s: string,
   onProgress?: ProgressFn,
   m365User?: string,
+  skipJsonWrite?: boolean,
 ): Promise<SPSyncResult> {
   const start = Date.now();
   const allFiles: SPIndexEntry[] = [];
@@ -575,7 +505,7 @@ export async function fullSync(
     }
     return true;
   });
-  siteCount = allSites.length;
+  siteCount = sites.length;
 
   for (const site of sites) {
     let drives: SPDrive[];
@@ -635,16 +565,18 @@ export async function fullSync(
     }
   }
 
-  // persist index
-  fs.mkdirSync(POLL_STATE_DIR, { recursive: true });
-  const index = {
-    syncedAt: new Date().toISOString(),
-    totalFiles: allFiles.length,
-    totalSites: siteCount,
-    totalDrives: driveCount,
-    files: allFiles,
-  };
-  fs.writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8");
+  // persist index (skipped when called from DB-backed fullSync)
+  if (!skipJsonWrite) {
+    fs.mkdirSync(POLL_STATE_DIR, { recursive: true });
+    const index = {
+      syncedAt: new Date().toISOString(),
+      totalFiles: allFiles.length,
+      totalSites: siteCount,
+      totalDrives: driveCount,
+      files: allFiles,
+    };
+    fs.writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8");
+  }
 
   return {
     totalFiles: allFiles.length,
@@ -653,5 +585,6 @@ export async function fullSync(
     errors,
     skippedSites,
     durationMs: Date.now() - start,
+    files: skipJsonWrite ? allFiles : undefined,
   };
 }

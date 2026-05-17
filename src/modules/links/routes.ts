@@ -65,7 +65,7 @@ export function registerLinksHttpRoutes(api: any) {
         if (segments[0] === 'search' && segments[1] === 'sp' && req.method === 'GET') {
           const q = url.searchParams.get('q') || '';
           if (!q.trim()) { json(res, 200, []); return; }
-          const results = searchSharePointForLinking(q);
+          const results = await searchSharePointForLinking(q);
           json(res, 200, results);
           return;
         }

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { query } from "../db/index.js";
@@ -7,9 +6,6 @@ import * as audit from "../audit/index.js";
 /* ════════════════════════════════════════════════════════════════════════════
    Link Store — universale Dokumenten-Verknüpfung (Postgres-backed, Sprint 9)
    ════════════════════════════════════════════════════════════════════════════ */
-
-const HOME = process.env.HOME || "/root";
-const SP_INDEX_FILE = path.join(HOME, ".openclaw/workspace/artifacts/personal/sharepoint/sharepoint-index.json");
 
 /* ---------------- Types ---------------- */
 
@@ -61,19 +57,6 @@ function rowToLink(row: any): DocumentLink {
 
 function makeId(): string {
   return "lnk-" + crypto.randomBytes(3).toString("hex");
-}
-
-/* ---------------- SP index helpers (DB-backed, Sprint 10) ----------------- */
-
-function loadSpIndex(): any[] {
-  // Legacy fallback — still used as sync path for file-based operations
-  try {
-    if (fs.existsSync(SP_INDEX_FILE)) {
-      const index = JSON.parse(fs.readFileSync(SP_INDEX_FILE, "utf-8"));
-      return index?.files || [];
-    }
-  } catch {}
-  return [];
 }
 
 /* ---------------- Exported functions (async, Postgres-backed) ------------- */
@@ -162,58 +145,30 @@ export async function updateEntityId(entityType: string, oldId: string, newId: s
   return rowCount ?? 0;
 }
 
-/* ---------------- SP search (DB-backed, Sprint 10) ----------------------- */
+/* ---------------- SP search (DB-backed, Sprint 11.2) --------------------- */
 
 /**
- * Search SharePoint files for linking. Uses DB (pg_trgm) with file-based fallback.
- * Return shape identical to pre-Sprint-10 for backward compatibility.
+ * Search SharePoint files for linking. Async, DB-backed (pg_trgm).
  */
-export function searchSharePointForLinking(queryStr: string): SpSearchResult[] {
-  // Sync function for backward compat — uses file-based search
-  // The async DB path is used by queries.ts searchFiles() for Telegram + API
-  const files = loadSpIndex();
-  if (!files.length) return [];
-
-  const terms = queryStr.toLowerCase().split(/\s+/).filter(Boolean);
-  const matches = files.filter((f: any) => {
-    const haystack = `${f.name} ${f.path} ${f.siteName} ${f.driveName}`.toLowerCase();
-    return terms.every((term: string) => haystack.includes(term));
-  });
-
-  matches.sort((a: any, b: any) => (b.lastModifiedDateTime || "").localeCompare(a.lastModifiedDateTime || ""));
-
-  return matches.slice(0, 10).map((f: any) => ({
-    name: f.name,
-    webUrl: f.webUrl,
-    driveId: f.driveId || "",
-    itemId: f.siteId + "::" + f.driveId + "::" + f.path,
-    siteName: f.siteName || "",
-    path: f.path || "",
-    size: f.size || 0,
+export async function searchSharePointForLinking(queryStr: string): Promise<SpSearchResult[]> {
+  const { searchFiles } = await import('../../modules/sharepoint/queries.js');
+  const hits = await searchFiles(queryStr, 10);
+  return hits.map(h => ({
+    name: h.name,
+    webUrl: h.web_url,
+    driveId: h.drive_id || "",
+    itemId: h.sp_item_key,
+    siteName: h.site_name || "",
+    path: h.path || "",
+    size: h.size || 0,
   }));
 }
 
 /**
- * Async DB-backed search for linking (Sprint 10).
- * Used by routes.ts and can replace sync version once all callers are async.
+ * Alias kept for backward compat — delegates to searchSharePointForLinking.
  */
 export async function searchSharePointForLinkingAsync(queryStr: string): Promise<SpSearchResult[]> {
-  try {
-    const { searchFiles } = await import('../../modules/sharepoint/queries.js');
-    const hits = await searchFiles(queryStr, 10);
-    return hits.map(h => ({
-      name: h.name,
-      webUrl: h.web_url,
-      driveId: h.drive_id || "",
-      itemId: h.sp_item_key,
-      siteName: h.site_name || "",
-      path: h.path || "",
-      size: h.size || 0,
-    }));
-  } catch {
-    // Fallback to file-based
-    return searchSharePointForLinking(queryStr);
-  }
+  return searchSharePointForLinking(queryStr);
 }
 
 /* ---------------- Pure view function (sync, unchanged) ------------------- */
