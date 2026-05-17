@@ -52,6 +52,10 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
   const migrationPath = join(import.meta.dir, '../migrations/020_insta_tables.sql');
   const migrationSql = readFileSync(migrationPath, 'utf-8');
   await testPool.query(migrationSql);
+  // V037: insta_media_edits (E2a session-helper)
+  const v037Path = join(import.meta.dir, '../migrations/V037_insta_media_edits.sql');
+  const v037Sql = readFileSync(v037Path, 'utf-8');
+  await testPool.query(v037Sql);
   await testPool.end();
 
   // 3. Point POSTGRES_URL to test database

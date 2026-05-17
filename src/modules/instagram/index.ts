@@ -27,6 +27,13 @@ export {
 
 export type { InstagramDeps } from './commands.js';
 
+// Session + naming helpers (E2a)
+export {
+  getOrCreateActiveSession, nextMediaIndex, buildMediaName,
+  sanitizeSessionId, recordMediaUpload, computeFileSha256,
+} from './session-helper.js';
+export type { UploadSource } from './session-helper.js';
+
 // Re-export store functions needed by other modules (Dashboard API, system-health)
 export {
   isAuthorized as instaAuthorized,

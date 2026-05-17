@@ -15,9 +15,11 @@ import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDr
 import { registerSharePointCommands, initSharePointCommands, getLinksForEntity, formatLinksForTelegram, } from "./src/modules/sharepoint/index.js";
 import { registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken, 
 // State exports for command-guard
-instaSubmitActive, instaSubmitLastActivatedAt, pendingInstaSubmits, activeRawSessions, 
+instaSubmitActive, instaSubmitLastActivatedAt, pendingInstaSubmits, 
 // Helpers for command-guard
-detectMediaType, formatFileSize, loadRawSession, saveRawSession, createRawSession, generateRawSessionId, sessionDir, findRecentAudioFile, transcribeVoice, 
+detectMediaType, formatFileSize, saveRawSession, sessionDir, findRecentAudioFile, transcribeVoice, 
+// Session + naming helpers (E2a)
+getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, computeFileSha256, 
 // Briefing
 getInstagramBriefingLines, 
 // Store re-exports for system-health DI
@@ -403,34 +405,23 @@ export default function (api) {
                 const chatIdMatch = prompt.match(/id:(\d{5,})/);
                 const chatId = chatIdMatch?.[1] || '';
                 try {
-                    // Find or create active raw session for this sender
+                    // Find or create active raw session for this sender (E2a helpers)
                     const senderId = chatId;
-                    let sessionId = senderId ? activeRawSessions.get(senderId) : undefined;
-                    let session = sessionId ? loadRawSession(sessionId) : null;
-                    if (!session || session.status !== 'active') {
-                        sessionId = generateRawSessionId();
-                        session = createRawSession(sessionId);
-                        if (senderId)
-                            activeRawSessions.set(senderId, sessionId);
-                        api.logger.info(`[executive-agent] command-guard: Neue Raw-Session erstellt: ${sessionId}`);
+                    const { session, isNew } = getOrCreateActiveSession(senderId, 'telegram');
+                    if (isNew) {
+                        api.logger.info(`[executive-agent] command-guard: Neue Raw-Session erstellt: ${session.id}`);
                     }
                     // Copy each media file to session/original/ with speaking names
                     const saved = [];
                     const origDir = path.join(sessionDir(session.id), 'original');
-                    const existingCount = fs.existsSync(origDir)
-                        ? fs.readdirSync(origDir).filter(f => !f.startsWith('.')).length
-                        : 0;
-                    let fileNum = existingCount;
                     for (const filePath of mediaFiles) {
                         if (!fs.existsSync(filePath)) {
                             api.logger.warn(`[executive-agent] command-guard: Media-Datei nicht gefunden: ${filePath}`);
                             continue;
                         }
-                        fileNum++;
+                        const mediaIndex = await nextMediaIndex(session.id);
                         const ext = path.extname(filePath).toLowerCase() || '.bin';
-                        const now = new Date();
-                        const yymmdd = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-                        const newName = `${yymmdd}-jb-${String(fileNum).padStart(2, '0')}${ext}`;
+                        const newName = buildMediaName(session.id, mediaIndex, ext);
                         const destPath = path.join(origDir, newName);
                         fs.copyFileSync(filePath, destPath);
                         const fileSize = fs.statSync(destPath).size;
@@ -442,6 +433,17 @@ export default function (api) {
                             addedAt: new Date().toISOString(),
                         });
                         saved.push(`${newName} (${formatFileSize(fileSize)})`);
+                        // Record in insta_media_edits (fire-and-forget)
+                        const sha256 = computeFileSha256(destPath);
+                        recordMediaUpload({
+                            sessionId: session.id,
+                            mediaIndex,
+                            sourcePath: destPath,
+                            sha256,
+                            source: 'telegram',
+                        }).catch(err => {
+                            api.logger.error(`[executive-agent] command-guard: recordMediaUpload fehlgeschlagen: ${err?.message}`);
+                        });
                     }
                     if (saved.length > 0) {
                         saveRawSession(session);
