@@ -63,7 +63,7 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Meter Readings
   'meter-readings.create': { endpointKey: 'meter-readings.create', method: 'POST', pathPattern: '/api/assets/meters/:id/readings', requiresApproval: false, idempotency: false, description: 'Create meter reading' },
-  'meter-readings.bulk': { endpointKey: 'meter-readings.bulk', method: 'POST', pathPattern: '/api/assets/meters/:id/readings/bulk', requiresApproval: false, idempotency: false, description: 'Bulk create meter readings' },
+  'meter-readings.bulk': { endpointKey: 'meter-readings.bulk', method: 'POST', pathPattern: '/api/assets/meters/:id/readings/bulk', requiresApproval: false, idempotency: true, description: 'Bulk create meter readings' },
   'meter-readings.update': { endpointKey: 'meter-readings.update', method: 'PATCH', pathPattern: '/api/assets/meters/:id/readings', requiresApproval: false, idempotency: false, description: 'Update meter reading' },
 
   // Heating Config

@@ -451,7 +451,7 @@ export function registerAssetsHttpRoutes(api: any) {
 
         await withContext({ requestId, actor, source: 'dashboard' }, async () => {
           try {
-            if (segments[2] === 'readings') { await handleMeterReadings(req, res, meterId); return; }
+            if (segments[2] === 'readings') { await handleMeterReadings(req, res, meterId, actor, requestId); return; }
             if (segments[2] === 'archive' && req.method === 'POST') {
               const { rows: before } = await dbQuery('SELECT * FROM meters WHERE id = $1 AND active = true', [meterId]);
               if (before.length === 0) { err(res, 404, 'Meter not found'); return; }
@@ -1103,7 +1103,7 @@ async function handlePropertyMeters(req: IncomingMessage, res: ServerResponse, p
   }
 }
 
-async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, meterId: string) {
+async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, meterId: string, actor: string, requestId: string) {
   if (req.method === 'GET') {
     const { rows } = await dbQuery(
       'SELECT * FROM meter_readings WHERE meter_id = $1 ORDER BY read_at DESC', [meterId]
@@ -1117,13 +1117,46 @@ async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, me
       const body = await parseJsonBody(req);
       if (!Array.isArray(body.readings)) { err(res, 400, 'readings array required'); return; }
 
-      const results: any[] = [];
-      const errors: any[] = [];
+      // Idempotency-Key guard — required for bulk
+      const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+      if (!idempotencyKey) {
+        err(res, 400, 'Idempotency-Key header required for bulk operations', 'IDEMPOTENCY_KEY_MISSING');
+        return;
+      }
 
-      for (let i = 0; i < body.readings.length; i++) {
-        const r = body.readings[i];
-        try {
-          const { rows } = await dbQuery(
+      // Check idempotency (replay detection + body-hash conflict)
+      let idempotencyCtx: Awaited<ReturnType<typeof checkIdempotency>>;
+      try {
+        idempotencyCtx = await checkIdempotency(req, actor, 'meter-readings.bulk', body);
+      } catch (e: any) {
+        if (e.code === 'IDEMPOTENCY_BODY_MISMATCH') {
+          err(res, 409, e.message, 'IDEMPOTENCY_BODY_MISMATCH');
+          return;
+        }
+        if (e.status) { err(res, e.status, e.message, e.code); return; }
+        throw e;
+      }
+
+      // Replay cached response
+      if (idempotencyCtx?.isReplay && idempotencyCtx.replayResponse) {
+        json(res, idempotencyCtx.replayResponse.status, idempotencyCtx.replayResponse.body);
+        return;
+      }
+
+      // Sort readings by read_at ASC (copy to avoid mutating input; prevents deadlocks)
+      const sortedReadings = [...body.readings].sort((a: any, b: any) => {
+        const ta = new Date(a.read_at || 0).getTime();
+        const tb = new Date(b.read_at || 0).getTime();
+        return ta - tb;
+      });
+
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+
+        const results: any[] = [];
+        for (const r of sortedReadings) {
+          const { rows } = await client.query(
             `INSERT INTO meter_readings (meter_id, value, unit, reading_type, period_start, period_end,
                read_at, source, reader_name, is_estimated, estimate_method, estimate_reason, notes)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
@@ -1134,15 +1167,34 @@ async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, me
              r.estimate_method || null, r.estimate_reason || null, r.notes || null]
           );
           results.push(rows[0]);
-        } catch (e: any) {
-          errors.push({ index: i, error: e.message });
         }
-      }
 
-      if (errors.length > 0) {
-        json(res, 207, { ok: false, created: results.length, errors });
-      } else {
-        json(res, 201, { ok: true, created: results.length, readings: results });
+        // Audit log INSIDE transaction (before COMMIT)
+        const readingIds = results.map((r: any) => r.id);
+        await client.query(
+          `INSERT INTO audit_log (actor, module, action, entity_type, entity_id, after_jsonb, source, request_id)
+           VALUES ($1, 'assets', 'meter_reading.bulk_create', 'meter', $2, $3, 'dashboard', $4)`,
+          [actor, meterId, JSON.stringify({ count: results.length, reading_ids: readingIds }), requestId]
+        );
+
+        await client.query('COMMIT');
+
+        const responseBody = { ok: true, created: results.length, readings: results };
+
+        // Persist response in idempotency_keys
+        if (idempotencyCtx) {
+          await completeIdempotency(actor, 'meter-readings.bulk', idempotencyCtx.key, 201, responseBody);
+        }
+
+        json(res, 201, responseBody);
+      } catch (e: any) {
+        await client.query('ROLLBACK');
+        if (idempotencyCtx) {
+          await failIdempotency(actor, 'meter-readings.bulk', idempotencyCtx.key).catch(() => {});
+        }
+        throw e;
+      } finally {
+        client.release();
       }
     } else {
       const body = await parseJsonBody(req);
