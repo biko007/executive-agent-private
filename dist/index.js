@@ -20,6 +20,8 @@ instaSubmitActive, instaSubmitLastActivatedAt, pendingInstaSubmits,
 detectMediaType, formatFileSize, saveRawSession, sessionDir, findRecentAudioFile, transcribeVoice, 
 // Session + naming helpers (E2a)
 getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, computeFileSha256, 
+// Inbox HTTP endpoint (E2b)
+registerInboxHttpRoute, 
 // Briefing
 getInstagramBriefingLines, 
 // Store re-exports for system-health DI
@@ -2198,6 +2200,8 @@ export default function (api) {
     registerLinksHttpRoutes(api);
     // ── SharePoint HTTP API (Sprint 10) ──────────────────────────────────────
     registerSharePointHttpRoutes(api);
+    // ── Instagram Inbox HTTP API (E2b) ──────────────────────────────────────
+    registerInboxHttpRoute(api);
     // ── Startup Canary ───────────────────────────────────────────────────────
     if (!coreServiceToken) {
         api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');

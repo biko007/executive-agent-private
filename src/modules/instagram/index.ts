@@ -34,6 +34,9 @@ export {
 } from './session-helper.js';
 export type { UploadSource } from './session-helper.js';
 
+// Inbox HTTP endpoint (E2b)
+export { registerInboxHttpRoute } from './inbox.js';
+
 // Re-export store functions needed by other modules (Dashboard API, system-health)
 export {
   isAuthorized as instaAuthorized,

@@ -53,6 +53,8 @@ import {
   findRecentAudioFile, transcribeVoice,
   // Session + naming helpers (E2a)
   getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, computeFileSha256,
+  // Inbox HTTP endpoint (E2b)
+  registerInboxHttpRoute,
   // Briefing
   getInstagramBriefingLines,
   // Store re-exports for system-health DI
@@ -2392,6 +2394,9 @@ export default function (api: any) {
 
   // ── SharePoint HTTP API (Sprint 10) ──────────────────────────────────────
   registerSharePointHttpRoutes(api);
+
+  // ── Instagram Inbox HTTP API (E2b) ──────────────────────────────────────
+  registerInboxHttpRoute(api);
 
   // ── Startup Canary ───────────────────────────────────────────────────────
   if (!coreServiceToken) {

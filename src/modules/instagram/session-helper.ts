@@ -99,16 +99,18 @@ export async function recordMediaUpload(params: {
   sourcePath: string;
   sha256: string;
   source: UploadSource;
-}): Promise<void> {
+}): Promise<number> {
   const client = await getClient();
   try {
-    await client.query(
+    const { rows } = await client.query<{ id: number }>(
       `INSERT INTO insta_media_edits
          (session_id, media_index, variant, source_path, sha256_original, status, source)
        VALUES ($1, $2, 'original', $3, $4, 'uploaded', $5)
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
       [params.sessionId, params.mediaIndex, params.sourcePath, params.sha256, params.source],
     );
+    return rows[0]?.id ? Number(rows[0].id) : 0;
   } finally {
     client.release();
   }
