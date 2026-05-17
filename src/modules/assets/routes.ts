@@ -109,7 +109,11 @@ export function registerAssetsHttpRoutes(api: any) {
                   `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
                           p.ownership_start, p.ownership_end, p.billing_period_start_month,
                           p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
-                          COUNT(u.id)::int AS unit_count
+                          p.construction_year, p.primary_energy_kwh_m2, p.current_market_value,
+                          p.monthly_rent_override, p.purchase_price_total,
+                          COUNT(u.id)::int AS unit_count,
+                          COALESCE((SELECT SUM(l.kaltmiete) FROM leases l JOIN units u2 ON u2.id = l.unit_id
+                                    WHERE u2.property_id = p.id AND l.status = 'active'), 0) AS monthly_rent_calculated
                    FROM properties p
                    LEFT JOIN units u ON u.property_id = p.id AND u.active = true
                    WHERE p.active = true
@@ -168,10 +172,14 @@ export function registerAssetsHttpRoutes(api: any) {
             if (!sub) {
               if (req.method === 'GET') {
                 const { rows } = await dbQuery(
-                  `SELECT id, code, name, street, postal_code, city, property_type, owner,
-                          ownership_start, ownership_end, billing_period_start_month,
-                          heating_type, co2_cost_relevant, active, created_at, updated_at
-                   FROM properties WHERE code = $1 AND active = true`, [propertyId]
+                  `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
+                          p.ownership_start, p.ownership_end, p.billing_period_start_month,
+                          p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
+                          p.construction_year, p.primary_energy_kwh_m2, p.current_market_value,
+                          p.monthly_rent_override, p.purchase_price_total,
+                          COALESCE((SELECT SUM(l.kaltmiete) FROM leases l JOIN units u2 ON u2.id = l.unit_id
+                                    WHERE u2.property_id = p.id AND l.status = 'active'), 0) AS monthly_rent_calculated
+                   FROM properties p WHERE p.code = $1 AND p.active = true`, [propertyId]
                 );
                 if (rows.length === 0) { err(res, 404, 'Property not found'); return; }
                 json(res, 200, mapPropertyRow(rows[0]));
@@ -194,6 +202,10 @@ export function registerAssetsHttpRoutes(api: any) {
                 if (body.heating_type !== undefined) { sets.push(`heating_type = $${pi++}`); params.push(body.heating_type); }
                 if (body.co2_cost_relevant !== undefined) { sets.push(`co2_cost_relevant = $${pi++}`); params.push(body.co2_cost_relevant); }
                 if (body.notes !== undefined) { sets.push(`notes = $${pi++}`); params.push(body.notes); }
+                if (body.construction_year !== undefined) { sets.push(`construction_year = $${pi++}`); params.push(body.construction_year); }
+                if (body.primary_energy_kwh_m2 !== undefined) { sets.push(`primary_energy_kwh_m2 = $${pi++}`); params.push(body.primary_energy_kwh_m2); }
+                if (body.current_market_value !== undefined) { sets.push(`current_market_value = $${pi++}`); params.push(body.current_market_value); }
+                if (body.monthly_rent_override !== undefined) { sets.push(`monthly_rent_override = $${pi++}`); params.push(body.monthly_rent_override); }
                 if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }
 
                 params.push(before[0].id);
@@ -1277,6 +1289,12 @@ function mapPropertyRow(row: any) {
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),
     unit_count: row.unit_count ?? 0,
+    construction_year: row.construction_year ?? null,
+    primary_energy_kwh_m2: row.primary_energy_kwh_m2 ? Number(row.primary_energy_kwh_m2) : null,
+    current_market_value: row.current_market_value ? Number(row.current_market_value) : null,
+    monthly_rent_override: row.monthly_rent_override ? Number(row.monthly_rent_override) : null,
+    monthly_rent_calculated: row.monthly_rent_calculated ? Number(row.monthly_rent_calculated) : 0,
+    purchase_price_total: row.purchase_price_total ? Number(row.purchase_price_total) : null,
   };
 }
 
