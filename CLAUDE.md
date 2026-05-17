@@ -1,10 +1,10 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-16**
+**Stand: 2026-05-17**
 
-## Stand 2026-05-16
+## Stand 2026-05-17
 
-Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -43,6 +43,23 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 vollständig abgeschlossen.
   Neue Module: store.ts (fullSync, UPSERT), queries.ts (searchFiles mit pg_trgm),
   routes.ts (HTTP API für Dashboard-Proxy). Polling entfernt (Q2).
   Dashboard SP-Routes auf proxyToCore umgestellt. 24/24 Smoke.
+- **Sprint 11 (Closure + Housekeeping, 7 Etappen):**
+  - **11.1:** Bulk-Readings atomar (BEGIN/COMMIT), idempotent (idempotency_keys), audit-pflicht
+    (audit_log INSERT innerhalb Transaction). Pool-Release via `finally`.
+  - **11.2:** SharePoint-Modul Hybrid aufgelöst — kein JSON mehr. Alle Reads aus Postgres.
+    `sharepoint-index.json` + 2 Snapshots archiviert nach `archive/`.
+  - **11.3:** Settings nach Postgres (V035). `system_settings` Tabelle (key TEXT PK, value JSONB).
+    In-Memory-Cache (Single-Process, 60s Refresh). Caveat: Cache-Drift bei Multi-Instance.
+  - **11.4:** Dashboard SP-Default-Site backend-resolved via `system_settings.sp_default_site_id`.
+    Fallback: erster Site aus `sharepoint_files`. nextTick-Wraps für Vue-Reaktivität.
+  - **11.5:** Migrations-Konvention dokumentiert (Dual-Pattern: V-Prefix One-Shot + 0xx Boot-Time).
+    Drift-Detector (`npm run verify-schema`) als Sprint-Cut-Checkliste.
+  - **11.6:** Housekeeping: 4 Legacy-JSON-Archive (instagram-drafts, location-history, links,
+    sharepoint-index). Neuer Endpoint `POST /api/sharepoint/cleanup-missing` mit 2x-Sync-Schutz,
+    Dry-Run-Default, LIMIT-50-Cap, entity_links-Ausschluss, Telegram-Notify.
+    Hard-Delete Phase 1 (Dry-Run only). Phase 2 BEDINGT an 3 synthetische Tests.
+  - **11.7:** Closure-Docs. Smoke 28/28. Drift-Detector clean. CLAUDE.md finalisiert.
+  Archive-Status: `history.jsonl`, `links.json`, 3× `sharepoint-index*.json`, 6× Instagram-Drafts.
 
 ### Module (11)
 
@@ -102,8 +119,9 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 - DB-Tabellen: `sharepoint_files` (12.088 Einträge), `sharepoint_sync_runs`
 - Sync-Lock: `pg_advisory_lock(44)` / `pg_advisory_unlock(44)` — session-level, `finally`-Block
 - Canonical Key: `sp_item_key = ${siteId}::${driveId}::${path}` (identisch mit `entity_links.sp_item_id`)
-- Soft-Delete: `missing_since` Timestamp (nie hard-DELETE)
+- Soft-Delete: `missing_since` Timestamp; Hard-Delete via `cleanup-missing` (Sprint 11.6)
 - Suche: `search_haystack` generated column + GIN trgm Index (ILIKE per Term, AND-Verknüpfung)
+- Kein JSON mehr: Legacy `sharepoint-index.json` + 2 Snapshots archiviert (Sprint 11.2/11.6)
 - Core-Endpoints (Bearer `CORE_SERVICE_TOKEN`):
   - `GET /api/sharepoint/sites` — Sites mit File-Count
   - `GET /api/sharepoint/drives/:siteId` — Drives für Site
@@ -111,6 +129,9 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
   - `GET /api/sharepoint/search?q=` — pg_trgm Suche
   - `POST /api/sharepoint/upsert-uploaded` — Einzel-File nach Upload
   - `GET /api/sharepoint/default-site` — resolves default site+drive from `system_settings.sp_default_site_id`, validates against `sharepoint_files`, fallback to first site (Sprint 11.4)
+  - `POST /api/sharepoint/cleanup-missing?dry_run=true|false` — Hard-Delete missing >30d (Sprint 11.6)
+    Safety: 2x-Sync-Schutz, NOT EXISTS entity_links, LIMIT 50, Telegram-Notify.
+    Phase 1: Dry-Run only. Phase 2 bedingt an 3 synthetische Tests (siehe Runbook).
 - Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
 - Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
 
@@ -177,7 +198,9 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - ~~Sprint 5.5a Asset CRUD + NK PreCheck~~ — erledigt 2026-05-12
 - ~~Sprint 5.5b NK-Engine + PDF V1.3~~ — erledigt 2026-05-13
 - ~~Sprint 10 SharePoint Postgres~~ — erledigt 2026-05-16
+- ~~Sprint 11 Closure + Housekeeping~~ — erledigt 2026-05-17 (7 Etappen, 28/28 Smoke)
 - Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
+- SP Hard-Delete Phase 2: 3 synthetische Tests Pflicht VOR n8n-Workflow auf `dry_run=false` (siehe Runbook)
 - n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
@@ -193,7 +216,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 | 5.5a | Asset CRUD + NK PreCheck | abgeschlossen |
 | 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
 | 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
-| 11.3 | Settings nach Postgres (system_settings, V035) | abgeschlossen |
+| 11 | Closure + Housekeeping (7 Etappen, V035) | abgeschlossen |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 
@@ -279,15 +302,15 @@ src/pdf-worker.ts              Standalone PDF-Worker (Playwright Chromium)
 Trips:       artifacts/personal/travel/<trip-id>.json
 Health:      Postgres health_logs, health_withings_tokens (Sprint 4)
 Settings:    artifacts/personal/health/settings.json (inkl. Standort)
-Loc-History: artifacts/personal/location/history.jsonl
+Loc-History: Postgres location_entries (Sprint 8), Legacy: archived (Sprint 11.6)
 Fleet:       artifacts/personal/fleet/vehicles.json
 Assets:      artifacts/personal/assets/properties.json
              artifacts/personal/assets/leases.json
              artifacts/personal/assets/operating-costs/<id>-<year>.json
 Bilder:      artifacts/personal/images/<entityType>-<entityId>.jpg
 Mail-Parse:  artifacts/personal/mail-parsing/processed.json
-Links:       artifacts/personal/links/links.json
-SP-Index:    Postgres sharepoint_files (Sprint 10), Legacy: artifacts/personal/sharepoint/sharepoint-index.json
+Links:       Postgres entity_links (Sprint 9), Legacy: archived (Sprint 11.6)
+SP-Index:    Postgres sharepoint_files (Sprint 10), Legacy: archived (Sprint 11.6)
 Drafts:      artifacts/personal/mail-drafts/<id>.json
 Instagram:   Postgres insta_drafts, insta_tokens, insta_style_profile (Sprint 3)
              artifacts/personal/instagram/insights-cache.json  (File)
@@ -356,6 +379,8 @@ sind grün wenn sie einzeln/sequenziell laufen.
   Prüft: 6 Goldfile-Szenarien, 11 Blocker-Tests, Personentage, Vorauszahlung.
 - `src/modules/nk/__tests__/e2e-lifecycle.test.ts` — Sprint 5.5b §11
   Prüft: Preview → Finalize → Snapshot → Re-Render → Serve → Lock → Version-Cascade.
+- `src/modules/assets/__tests__/bulk-readings.test.ts` — Sprint 11.1
+  Prüft: Atomicity (BEGIN/COMMIT), Idempotency-Replay, Audit innerhalb TX, Pool-Release.
 
 **Vor jedem Merge: `npm test` MUSS grün sein.**
 
@@ -383,9 +408,11 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 vollständig abgeschlossen (2026-05-16). Details siehe "Stand" oben.
-Smoke Test: 24/24 PASS, Tests: 54/54 PASS (einzeln).
+Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 vollständig abgeschlossen (2026-05-17). Details siehe "Stand" oben.
+Smoke Test: 28/28 PASS, Tests: 54/54 PASS (einzeln). Drift-Detector: clean.
+Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index in `archive/`.
 Nächste Schritte: Etappe n (Real-Test L19 2024) wenn Datenpflege abgeschlossen.
+SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 
 ## Role
 

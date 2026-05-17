@@ -617,6 +617,58 @@ async function checkDefaultSite() {
   }
 }
 
+// ── 13. SP CLEANUP DRY-RUN (Sprint 11.6) ────────────────────────────────────
+
+async function checkSpCleanupDryRun() {
+  const token = readEnvVar('CORE_SERVICE_TOKEN');
+  if (!token) { fail('SP Cleanup Dry-Run', 'CORE_SERVICE_TOKEN nicht gesetzt'); return; }
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/sharepoint/cleanup-missing?dry_run=true', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (data.dry_run === true && typeof data.total_count === 'number') {
+        pass('SP Cleanup Dry-Run', `${data.total_count} candidates, ${data.excluded_by_links} excluded`);
+      } else if (data.skipped) {
+        pass('SP Cleanup Dry-Run', `skipped (${data.reason})`);
+      } else {
+        fail('SP Cleanup Dry-Run', `Unerwartete Response: ${JSON.stringify(data).slice(0, 100)}`);
+      }
+    } else {
+      fail('SP Cleanup Dry-Run', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('SP Cleanup Dry-Run', e.message);
+  }
+}
+
+// ── 14. BULK-READINGS IDEMPOTENCY INFRA (Sprint 11.1) ──────────────────────
+
+async function checkBulkReadingsIdempotency() {
+  try {
+    const pool = getPool();
+    // Verify idempotency_keys table has expected columns
+    const { rows } = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'idempotency_keys'
+       ORDER BY ordinal_position`
+    );
+    const cols = rows.map((r: any) => r.column_name);
+    const required = ['key', 'endpoint_key', 'status'];
+    const missing = required.filter(c => !cols.includes(c));
+    if (missing.length === 0) {
+      pass('Bulk-Readings Idempotency', `Tabelle ok (${cols.length} Spalten)`);
+    } else {
+      fail('Bulk-Readings Idempotency', `Fehlende Spalten: ${missing.join(', ')}`);
+    }
+  } catch (e: any) {
+    fail('Bulk-Readings Idempotency', `DB-Fehler: ${e.message}`);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -670,6 +722,12 @@ async function main() {
 
   // 12. SP Default-Site (Sprint 11.4)
   await checkDefaultSite();
+
+  // 13. SP Cleanup Dry-Run (Sprint 11.6)
+  await checkSpCleanupDryRun();
+
+  // 14. Bulk-Readings Idempotency Infra (Sprint 11.1)
+  await checkBulkReadingsIdempotency();
 
   // ── Report ──────────────────────────────────────────────────────────────
 
