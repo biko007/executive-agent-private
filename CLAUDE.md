@@ -110,6 +110,7 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
   - `GET /api/sharepoint/files/:siteId/:driveId` — Files mit Pagination
   - `GET /api/sharepoint/search?q=` — pg_trgm Suche
   - `POST /api/sharepoint/upsert-uploaded` — Einzel-File nach Upload
+  - `GET /api/sharepoint/default-site` — resolves default site+drive from `system_settings.sp_default_site_id`, validates against `sharepoint_files`, fallback to first site (Sprint 11.4)
 - Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
 - Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
 

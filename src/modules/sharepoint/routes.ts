@@ -9,6 +9,7 @@ import { withContext, generateId } from '../../shared/correlation/index.js';
 import {
   searchFiles, listSitesFromDb, listDrivesFromDb, listFilesFromDb,
 } from './queries.js';
+import { query } from '../../shared/db/index.js';
 import { upsertSingleFileAfterUpload } from './store.js';
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
@@ -20,6 +21,84 @@ function json(res: ServerResponse, status: number, body: unknown) {
 
 function err(res: ServerResponse, status: number, message: string) {
   json(res, status, { ok: false, error: message });
+}
+
+/* ── Default-site resolution (Sprint 11.4) ────────────────────────────────── */
+
+async function getDefaultSite(): Promise<{
+  site_id: string; site_name: string;
+  drive_id: string; drive_name: string;
+  source: 'settings' | 'first-site';
+} | null> {
+  // 1. Read sp_default_site_id from system_settings
+  const { rows: settingsRows } = await query(
+    'SELECT value FROM system_settings WHERE key = $1',
+    ['sp_default_site_id']
+  );
+  const settingSiteId = settingsRows.length > 0
+    ? (typeof settingsRows[0].value === 'string' ? settingsRows[0].value : null)
+    : null;
+
+  // 2. If setting exists, validate against sharepoint_files
+  if (settingSiteId) {
+    const { rows: validRows } = await query(
+      `SELECT site_id, site_name, drive_id, drive_name
+       FROM sharepoint_files
+       WHERE site_id = $1 AND missing_since IS NULL
+       LIMIT 1`,
+      [settingSiteId]
+    );
+    if (validRows.length > 0) {
+      const { rows: driveRows } = await query(
+        `SELECT drive_id, drive_name, COUNT(*)::int AS file_count
+         FROM sharepoint_files
+         WHERE site_id = $1 AND missing_since IS NULL
+         GROUP BY drive_id, drive_name
+         ORDER BY drive_name
+         LIMIT 1`,
+        [settingSiteId]
+      );
+      if (driveRows.length > 0) {
+        return {
+          site_id: settingSiteId,
+          site_name: validRows[0].site_name,
+          drive_id: driveRows[0].drive_id,
+          drive_name: driveRows[0].drive_name,
+          source: 'settings',
+        };
+      }
+    }
+  }
+
+  // 3. Fallback: first site from sharepoint_files
+  const { rows: fallbackRows } = await query(
+    `SELECT DISTINCT site_id, site_name
+     FROM sharepoint_files
+     WHERE missing_since IS NULL
+     ORDER BY site_name
+     LIMIT 1`
+  );
+  if (fallbackRows.length === 0) return null;
+
+  const fallbackSiteId = fallbackRows[0].site_id;
+  const { rows: fallbackDrives } = await query(
+    `SELECT drive_id, drive_name
+     FROM sharepoint_files
+     WHERE site_id = $1 AND missing_since IS NULL
+     GROUP BY drive_id, drive_name
+     ORDER BY drive_name
+     LIMIT 1`,
+    [fallbackSiteId]
+  );
+  if (fallbackDrives.length === 0) return null;
+
+  return {
+    site_id: fallbackSiteId,
+    site_name: fallbackRows[0].site_name,
+    drive_id: fallbackDrives[0].drive_id,
+    drive_name: fallbackDrives[0].drive_name,
+    source: 'first-site',
+  };
 }
 
 /* ── Route registration ───────────────────────────────────────────────────── */
@@ -92,6 +171,17 @@ export function registerSharePointHttpRoutes(api: any) {
           const limit = parseInt(url.searchParams.get('limit') || '25', 10);
           const results = await searchFiles(q, Math.min(limit, 100));
           json(res, 200, results);
+          return;
+        }
+
+        // GET /api/sharepoint/default-site (Sprint 11.4)
+        if (segments[0] === 'default-site' && segments.length === 1 && req.method === 'GET') {
+          const result = await getDefaultSite();
+          if (!result) {
+            err(res, 503, 'no sharepoint sites available');
+            return;
+          }
+          json(res, 200, result);
           return;
         }
 

@@ -590,6 +590,33 @@ async function checkSystemSettings() {
   }
 }
 
+// ── 12. SP DEFAULT-SITE (Sprint 11.4) ─────────────────────────────────────────
+
+async function checkDefaultSite() {
+  const token = readEnvVar('CORE_SERVICE_TOKEN');
+  if (!token) { fail('SP Default-Site', 'CORE_SERVICE_TOKEN nicht gesetzt'); return; }
+  try {
+    const res = await fetch('http://127.0.0.1:18789/api/sharepoint/default-site', {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (data.site_id && data.drive_id) {
+        pass('SP Default-Site', `${data.site_name} / ${data.drive_name} (${data.source})`);
+      } else {
+        fail('SP Default-Site', 'Response fehlt site_id oder drive_id');
+      }
+    } else if (res.status === 503) {
+      fail('SP Default-Site', 'Keine Sites verfügbar (503)');
+    } else {
+      fail('SP Default-Site', `HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    fail('SP Default-Site', e.message);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -640,6 +667,9 @@ async function main() {
 
   // 11. System Settings (Sprint 11)
   await checkSystemSettings();
+
+  // 12. SP Default-Site (Sprint 11.4)
+  await checkDefaultSite();
 
   // ── Report ──────────────────────────────────────────────────────────────
 
