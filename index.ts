@@ -417,14 +417,16 @@ export default function (api: any) {
       };
     }
 
-    // Suppress AI when user is in active craft dialog (direction/adjustment input)
+    // Suppress AI when user is in active craft dialog (any step, TTL-guarded).
+    // Step-agnostic because message_received handler mutates step synchronously
+    // before before_agent_start fires (~575ms race window).
     const senderIdMatch = prompt.match(/id:(\d{5,})/);
     if (senderIdMatch) {
       const senderId = senderIdMatch[1];
       const craftState = activeCraftDialogs.get(senderId);
-      if (craftState && Date.now() <= craftState.expiresAt &&
-          (craftState.step === 'awaiting_direction' || craftState.step === 'adjusting')) {
-        api.logger.info(`[executive-agent] command-guard: Craft-Dialog aktiv (step=${craftState.step}) — AI agent wird unterdrückt`);
+      api.logger.warn(`[E4b] dialog-check senderId=${senderId} dialog=${!!craftState} step=${craftState?.step} expiresAt=${craftState?.expiresAt}`);
+      if (craftState && Date.now() <= craftState.expiresAt) {
+        api.logger.warn(`[E4b] suppress LLM for active craft dialog (senderId=${senderId}, step=${craftState.step})`);
         return {
           prependContext:
             'SYSTEM: This message is direction input for an active Instagram craft dialog, already handled by a plugin hook. ' +

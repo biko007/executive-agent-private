@@ -1,13 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 
 /**
- * E4b — Craft-dialog suppression for before_agent_start.
+ * E4b-v2 — Craft-dialog suppression for before_agent_start.
  *
- * When a user is in an active craft dialog (awaiting_direction or adjusting),
- * their free-text input is consumed by the message_received handler. The
- * before_agent_start hook must suppress the LLM to prevent duplicate responses.
+ * Suppresses LLM for ANY active (non-expired) craft dialog, regardless of step.
+ * Step-agnostic because the message_received handler mutates step synchronously
+ * (~575ms before before_agent_start fires), causing a race condition where the
+ * hook would see 'generating' instead of 'awaiting_direction'.
  *
- * This mirrors the logic added to before_agent_start in index.ts.
+ * Only guard: dialog exists AND TTL not expired.
  */
 
 interface CraftDialogState {
@@ -24,7 +25,7 @@ function shouldSuppressForCraftDialog(
   const senderId = match[1];
   const state = dialogs.get(senderId);
   if (!state || Date.now() > state.expiresAt) return false;
-  return state.step === 'awaiting_direction' || state.step === 'adjusting';
+  return true;
 }
 
 // Realistic envelope prefix used in all tests
@@ -32,37 +33,36 @@ const ENV = '[Telegram Juergen Bickel id:123456789 2026-05-18T13:31:25]';
 const SENDER_ID = '123456789';
 const VALID_EXPIRY = Date.now() + 30 * 60_000; // 30 min from now
 
-describe('shouldSuppressForCraftDialog — craft dialog state detection', () => {
-  // Positive: states where handler consumes input
-  test('suppresses when step is awaiting_direction with valid expiry', () => {
+describe('shouldSuppressForCraftDialog — step-agnostic suppression (E4b-v2)', () => {
+  // Positive: all steps with valid TTL suppress
+  test('suppresses when step is awaiting_direction', () => {
     const dialogs = new Map<string, CraftDialogState>();
     dialogs.set(SENDER_ID, { step: 'awaiting_direction', expiresAt: VALID_EXPIRY });
     expect(shouldSuppressForCraftDialog(`${ENV} Warme Farben, herbstliche Stimmung`, dialogs)).toBe(true);
   });
 
-  test('suppresses when step is adjusting with valid expiry', () => {
+  test('suppresses when step is adjusting', () => {
     const dialogs = new Map<string, CraftDialogState>();
     dialogs.set(SENDER_ID, { step: 'adjusting', expiresAt: VALID_EXPIRY });
     expect(shouldSuppressForCraftDialog(`${ENV} Mehr Kontrast bitte`, dialogs)).toBe(true);
   });
 
-  // Negative: states where handler does NOT consume input
-  test('does not suppress when step is generating', () => {
+  test('suppresses when step is generating (race condition case)', () => {
     const dialogs = new Map<string, CraftDialogState>();
     dialogs.set(SENDER_ID, { step: 'generating', expiresAt: VALID_EXPIRY });
-    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(false);
+    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(true);
   });
 
-  test('does not suppress when step is plan_ready', () => {
+  test('suppresses when step is plan_ready', () => {
     const dialogs = new Map<string, CraftDialogState>();
     dialogs.set(SENDER_ID, { step: 'plan_ready', expiresAt: VALID_EXPIRY });
-    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(false);
+    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(true);
   });
 
-  test('does not suppress when step is executing', () => {
+  test('suppresses when step is executing', () => {
     const dialogs = new Map<string, CraftDialogState>();
     dialogs.set(SENDER_ID, { step: 'executing', expiresAt: VALID_EXPIRY });
-    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(false);
+    expect(shouldSuppressForCraftDialog(`${ENV} some text`, dialogs)).toBe(true);
   });
 
   // Negative: expired dialog
