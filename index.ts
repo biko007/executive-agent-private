@@ -55,6 +55,8 @@ import {
   getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, computeFileSha256,
   // Inbox HTTP endpoint (E2b)
   registerInboxHttpRoute,
+  // Edit Queue (E4a)
+  registerEditQueueRoutes, recoverStaleJobs,
   // Briefing
   getInstagramBriefingLines,
   // Store re-exports for system-health DI
@@ -2398,6 +2400,9 @@ export default function (api: any) {
   // ── Instagram Inbox HTTP API (E2b) ──────────────────────────────────────
   registerInboxHttpRoute(api);
 
+  // ── Instagram Edit Queue HTTP API (E4a) ────────────────────────────────
+  registerEditQueueRoutes(api);
+
   // ── Startup Canary ───────────────────────────────────────────────────────
   if (!coreServiceToken) {
     api.logger.error('[executive-agent] CRITICAL: CORE_SERVICE_TOKEN not set — assets API will reject all requests');
@@ -2564,6 +2569,14 @@ export default function (api: any) {
       if (spApplied > 0) api.logger.info(`[sharepoint] Applied ${spApplied} migration(s)`);
     } catch (e: any) {
       api.logger.error(`[sharepoint] Migration failed: ${e.message}`);
+    }
+
+    // ── Instagram Edit Queue Recovery (E4a) ────────────────────────────────
+    try {
+      const recovered = await recoverStaleJobs();
+      if (recovered > 0) api.logger.info(`[edit-queue] Recovered ${recovered} stale job(s)`);
+    } catch (e: any) {
+      api.logger.error(`[edit-queue] Recovery failed: ${e.message}`);
     }
 
     // ── Health Monitor ────────────────────────────────────────────────────

@@ -41,6 +41,17 @@ export { centerCrop4x5 } from './image-edit.js';
 // Inbox HTTP endpoint (E2b)
 export { registerInboxHttpRoute } from './inbox.js';
 
+// Edit Queue (E4a)
+export {
+  submitJob, registerJobHandler, recoverStaleJobs, getQueueHealth,
+  waitForIdle, registerEditQueueRoutes,
+} from './edit-queue.js';
+export type { EditJob, JobHandler } from './edit-queue.js';
+
+// ffmpeg Engine (E4a)
+export { runFfmpeg, runFfprobe, FfmpegError } from './ffmpeg-engine.js';
+export type { FfmpegResult, RunOptions } from './ffmpeg-engine.js';
+
 // Re-export store functions needed by other modules (Dashboard API, system-health)
 export {
   isAuthorized as instaAuthorized,
