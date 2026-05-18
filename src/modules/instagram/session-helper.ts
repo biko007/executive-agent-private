@@ -239,6 +239,86 @@ export async function softDeleteVariant(params: {
   }
 }
 
+// ── Vision Crop Helpers (E5) ──────────────────────────────────────────────
+
+export function computeVisionParamsHash(
+  bbox: { x: number; y: number; w: number; h: number },
+): string {
+  const input = `vision_4x5:bbox=${bbox.x.toFixed(3)},${bbox.y.toFixed(3)},${bbox.w.toFixed(3)},${bbox.h.toFixed(3)}`;
+  return createHash('sha256').update(input).digest('hex');
+}
+
+export async function recordVisionCropVariant(params: {
+  sessionId: string;
+  mediaIndex: number;
+  sourcePath: string;
+  outputPath: string;
+  sha256Original: string;
+  sha256Output: string;
+  paramsHash: string;
+  source: UploadSource;
+  visionMetadata: Record<string, unknown>;
+}): Promise<number> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO insta_media_edits
+         (session_id, media_index, variant, source_path, output_path,
+          sha256_original, sha256_output, params_hash, status, source, vision_metadata)
+       VALUES ($1, $2, 'vision_4x5', $3, $4, $5, $6, $7, 'edited', $8, $9)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        params.sessionId, params.mediaIndex, params.sourcePath, params.outputPath,
+        params.sha256Original, params.sha256Output, params.paramsHash,
+        params.source, JSON.stringify(params.visionMetadata),
+      ],
+    );
+    return rows[0]?.id ? Number(rows[0].id) : 0;
+  } finally {
+    client.release();
+  }
+}
+
+export async function findExistingVisionCrop(params: {
+  sessionId: string;
+  mediaIndex: number;
+  sha256Original: string;
+}): Promise<{
+  id: number;
+  outputPath: string;
+  sha256Output: string;
+  paramsHash: string;
+  visionMetadata: Record<string, unknown>;
+} | null> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{
+      id: number;
+      output_path: string;
+      sha256_output: string;
+      params_hash: string;
+      vision_metadata: Record<string, unknown>;
+    }>(
+      `SELECT id, output_path, sha256_output, params_hash, vision_metadata
+       FROM insta_media_edits
+       WHERE session_id = $1 AND media_index = $2 AND variant = 'vision_4x5'
+         AND status = 'edited' AND sha256_original = $3`,
+      [params.sessionId, params.mediaIndex, params.sha256Original],
+    );
+    if (rows.length === 0) return null;
+    return {
+      id: Number(rows[0].id),
+      outputPath: rows[0].output_path,
+      sha256Output: rows[0].sha256_output,
+      paramsHash: rows[0].params_hash,
+      visionMetadata: rows[0].vision_metadata,
+    };
+  } finally {
+    client.release();
+  }
+}
+
 // ── recordCropFailure (E3) ────────────────────────────────────────────────
 
 export async function recordCropFailure(params: {

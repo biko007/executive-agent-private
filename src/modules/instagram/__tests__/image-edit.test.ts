@@ -95,6 +95,11 @@ async function getCenterCrop() {
   return mod.centerCrop4x5;
 }
 
+async function getSubjectAwareCrop() {
+  const mod = await import('../image-edit.js');
+  return mod.subjectAwareCrop4x5;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('centerCrop4x5 (E3)', () => {
@@ -204,5 +209,76 @@ describe('centerCrop4x5 (E3)', () => {
     expect(meta.format).toBe('jpeg');
     expect(meta.width).toBe(1080);
     expect(meta.height).toBe(1350);
+  });
+});
+
+// ── subjectAwareCrop4x5 (E5) ─────────────────────────────────────────────────
+
+describe('subjectAwareCrop4x5 (E5)', () => {
+  test('h. Subject left-third bbox → 1080x1350', async () => {
+    const subjectAwareCrop4x5 = await getSubjectAwareCrop();
+    const result = await subjectAwareCrop4x5({
+      sessionId: FAKE_SESSION, mediaIndex: 8,
+      sourcePath: landscapeJpeg, mediaName: '260518-jb-08.jpg',
+      bbox: { x: 0.1, y: 0.2, w: 0.15, h: 0.4 },
+    });
+
+    expect(fs.existsSync(result.outputPath)).toBe(true);
+    const meta = await sharp(result.outputPath).metadata();
+    expect(meta.width).toBe(1080);
+    expect(meta.height).toBe(1350);
+  });
+
+  test('i. Subject centered bbox → 1080x1350', async () => {
+    const subjectAwareCrop4x5 = await getSubjectAwareCrop();
+    const result = await subjectAwareCrop4x5({
+      sessionId: FAKE_SESSION, mediaIndex: 9,
+      sourcePath: landscapeJpeg, mediaName: '260518-jb-09.jpg',
+      bbox: { x: 0.4, y: 0.3, w: 0.2, h: 0.4 },
+    });
+
+    const meta = await sharp(result.outputPath).metadata();
+    expect(meta.width).toBe(1080);
+    expect(meta.height).toBe(1350);
+  });
+
+  test('j. Subject at bottom-right edge → clamp, no error', async () => {
+    const subjectAwareCrop4x5 = await getSubjectAwareCrop();
+    const result = await subjectAwareCrop4x5({
+      sessionId: FAKE_SESSION, mediaIndex: 10,
+      sourcePath: portraitJpeg, mediaName: '260518-jb-10.jpg',
+      bbox: { x: 0.8, y: 0.85, w: 0.15, h: 0.1 },
+    });
+
+    expect(fs.existsSync(result.outputPath)).toBe(true);
+    const meta = await sharp(result.outputPath).metadata();
+    expect(meta.width).toBe(1080);
+    expect(meta.height).toBe(1350);
+  });
+
+  test('k. Output filename is -vision_4x5.jpg', async () => {
+    const subjectAwareCrop4x5 = await getSubjectAwareCrop();
+    const result = await subjectAwareCrop4x5({
+      sessionId: FAKE_SESSION, mediaIndex: 11,
+      sourcePath: landscapeJpeg, mediaName: '260518-jb-11.jpg',
+      bbox: { x: 0.3, y: 0.2, w: 0.3, h: 0.5 },
+    });
+
+    expect(result.relativePath).toContain('-vision_4x5.jpg');
+    expect(result.relativePath).toMatch(/260518-jb-11-vision_4x5\.jpg$/);
+  });
+
+  test('l. SHA256 integrity', async () => {
+    const subjectAwareCrop4x5 = await getSubjectAwareCrop();
+    const result = await subjectAwareCrop4x5({
+      sessionId: FAKE_SESSION, mediaIndex: 12,
+      sourcePath: landscapeJpeg, mediaName: '260518-jb-12.jpg',
+      bbox: { x: 0.5, y: 0.3, w: 0.2, h: 0.4 },
+    });
+
+    const fileHash = createHash('sha256')
+      .update(fs.readFileSync(result.outputPath))
+      .digest('hex');
+    expect(result.sha256Output).toBe(fileHash);
   });
 });

@@ -27,17 +27,18 @@ export {
 
 export type { InstagramDeps } from './commands.js';
 
-// Session + naming helpers (E2a)
+// Session + naming helpers (E2a + E5)
 export {
   getOrCreateActiveSession, nextMediaIndex, buildMediaName,
   sanitizeSessionId, recordMediaUpload, computeFileSha256,
   PARAMS_HASH_CENTER_4X5, recordCropVariant, recordCropFailure,
   insertEditVariant, setEditOutput, softDeleteVariant,
+  computeVisionParamsHash, recordVisionCropVariant, findExistingVisionCrop,
 } from './session-helper.js';
 export type { UploadSource } from './session-helper.js';
 
-// Image editing (E3)
-export { centerCrop4x5 } from './image-edit.js';
+// Image editing (E3 + E5)
+export { centerCrop4x5, subjectAwareCrop4x5 } from './image-edit.js';
 
 // Video editing (E4b)
 export { probeVideo, cropVideoTo4x5, extractCoverFrame, computeVideoParamsHash } from './video-edit.js';

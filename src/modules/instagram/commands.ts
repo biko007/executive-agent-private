@@ -2458,7 +2458,7 @@ export function registerInstagramCommands(api: any): void {
           duration_s = probe.duration_s;
           analysis = await analyzeVideo(filePath);
         } else {
-          analysis = await analyzeImage(filePath);
+          analysis = await analyzeImage(filePath, { includeBbox: true });
         }
 
         results.push({ fileName, type: mediaType, analysis, duration_s, probe });
@@ -3086,10 +3086,116 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           const sourceFile = plan.source_files[0];
           const sourcePath = path.join(sessionDir(sessionId), 'original', sourceFile);
 
+          // ── Vision-aware 4:5 re-crop (E5) ──────────────────────────────
+          let mediaPathForDraft = sourcePath;
+          let visionCropTag = '';
+
+          if (analysis?.subject_bbox) {
+            try {
+              const bbox = analysis.subject_bbox;
+              const { computeFileSha256: computeSha } = await import('./session-helper.js');
+              const sha256Original = computeSha(sourcePath);
+
+              // Determine mediaIndex from DB
+              const { getClient: getDbClient } = await import('../../shared/db/index.js');
+              const dbClient = await getDbClient();
+              let mediaIndex = 1;
+              try {
+                const { rows: origRows } = await dbClient.query<{ media_index: number }>(
+                  `SELECT media_index FROM insta_media_edits
+                   WHERE session_id = $1 AND variant = 'original' AND status != 'deleted'
+                   ORDER BY media_index LIMIT 1`,
+                  [sessionId],
+                );
+                if (origRows.length > 0) mediaIndex = origRows[0].media_index;
+              } finally {
+                dbClient.release();
+              }
+
+              // Idempotency check
+              const {
+                computeVisionParamsHash, findExistingVisionCrop,
+                recordVisionCropVariant, softDeleteVariant,
+              } = await import('./session-helper.js');
+              const paramsHash = computeVisionParamsHash(bbox);
+
+              const existing = await findExistingVisionCrop({
+                sessionId, mediaIndex, sha256Original,
+              });
+
+              if (existing && existing.paramsHash === paramsHash && fs.existsSync(existing.outputPath)) {
+                // Reuse existing vision crop
+                mediaPathForDraft = existing.outputPath;
+                visionCropTag = ' 🎯 vision_4x5 (cached)';
+              } else {
+                // Soft-delete old vision_4x5 if different params
+                if (existing) {
+                  await softDeleteVariant({ sessionId, mediaIndex, variant: 'vision_4x5' });
+                }
+
+                const { subjectAwareCrop4x5 } = await import('./image-edit.js');
+                const cropResult = await subjectAwareCrop4x5({
+                  sessionId, mediaIndex, sourcePath,
+                  mediaName: sourceFile, bbox,
+                });
+
+                // Determine source from original row
+                const srcClient = await getDbClient();
+                let source: 'telegram' | 'ios_shortcut' | 'dashboard' = 'telegram';
+                try {
+                  const { rows: srcRows } = await srcClient.query<{ source: string }>(
+                    `SELECT source FROM insta_media_edits
+                     WHERE session_id = $1 AND variant = 'original' AND status != 'deleted'
+                     LIMIT 1`,
+                    [sessionId],
+                  );
+                  if (srcRows.length > 0) source = srcRows[0].source as typeof source;
+                } finally {
+                  srcClient.release();
+                }
+
+                const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-sonnet-4-20250514';
+                await recordVisionCropVariant({
+                  sessionId, mediaIndex,
+                  sourcePath: `${sessionId}/original/${sourceFile}`,
+                  outputPath: cropResult.relativePath,
+                  sha256Original, sha256Output: cropResult.sha256Output,
+                  paramsHash, source,
+                  visionMetadata: {
+                    model, schema_version: 'v1',
+                    source_hash: sha256Original,
+                    subject_bbox: bbox,
+                    confidence: bbox.confidence,
+                    cached_at: new Date().toISOString(),
+                  },
+                });
+                audit.log({ module: 'instagram', action: 'media.vision_4x5', entityType: 'session', entityId: sessionId, after: { mediaIndex, bbox, paramsHash } }).catch(() => {});
+
+                mediaPathForDraft = cropResult.outputPath;
+                visionCropTag = ' 🎯 vision_4x5';
+              }
+            } catch (visionErr: any) {
+              api.logger.warn(`[executive-agent] vision crop failed, using fallback: ${visionErr.message}`);
+              // Fallback: try center_4x5 if it exists
+              const baseName = sourceFile.replace(/\.[^.]+$/, '');
+              const centerPath = path.join(sessionDir(sessionId), 'edited', `${baseName}-center_4x5.jpg`);
+              if (fs.existsSync(centerPath)) {
+                mediaPathForDraft = centerPath;
+              }
+            }
+          } else {
+            // No bbox — fallback to center_4x5 if it exists
+            const baseName = sourceFile.replace(/\.[^.]+$/, '');
+            const centerPath = path.join(sessionDir(sessionId), 'edited', `${baseName}-center_4x5.jpg`);
+            if (fs.existsSync(centerPath)) {
+              mediaPathForDraft = centerPath;
+            }
+          }
+
           const submissionId = generateSubmissionId(plan.title);
           const submission: Submission = {
             id: submissionId,
-            media: [{ type: 'image', path: sourcePath, mimeType: 'image/jpeg' }],
+            media: [{ type: 'image', path: mediaPathForDraft, mimeType: 'image/jpeg' }],
             context: { user_note: `Craft ${sessionId}: ${plan.title}` },
             status: 'analyzed',
             analysis,
@@ -3107,7 +3213,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           const draft = await createInstaDraft({
             caption: chosen.caption,
             hashtags: chosen.hashtags,
-            mediaPath: sourcePath,
+            mediaPath: mediaPathForDraft,
             notes: `Craft ${sessionId}: ${plan.title}`,
           });
           audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'craft' } }).catch(() => {});
@@ -3115,7 +3221,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
           const variantsText = formatVariantsOutput(submissionId, variants);
           await sendTelegram(chatId,
             `✅ Craft-Plan umgesetzt\n\n` +
-            `📸 Foto: ${sourceFile}\n` +
+            `📸 Foto: ${sourceFile}${visionCropTag}\n` +
             `📝 Draft: ${draft.id}\n` +
             `📋 Submission: ${submissionId}\n\n` +
             `${variantsText}\n\n` +

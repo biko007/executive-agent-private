@@ -22,6 +22,10 @@ export interface FrameAnalysis {
   mood: string;
 }
 
+export interface SubjectBbox {
+  x: number;  y: number;  w: number;  h: number;  confidence: number;
+}
+
 export interface VisionAnalysis {
   subjects: string[];
   mood: string;
@@ -32,6 +36,7 @@ export interface VisionAnalysis {
   visual_quality: 'high' | 'medium' | 'low';
   pillar_match: string[];
   storyboard?: FrameAnalysis[];
+  subject_bbox?: SubjectBbox;
 }
 
 export interface SubmissionMedia {
@@ -167,18 +172,40 @@ export async function loadSubmission(id: string): Promise<Submission> {
 
 // ── Vision Analysis ────────────────────────────────────────────────────────
 
-async function callVision(base64: string, mimeType: string, retry = true): Promise<VisionAnalysis> {
+function roundBbox(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
+function isValidBbox(x: number, y: number, w: number, h: number, confidence: number): boolean {
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1
+    && w >= 0.05 && w <= 1 && h >= 0.05 && h <= 1
+    && x + w <= 1.01 && y + h <= 1.01
+    && confidence >= 0 && confidence <= 1;
+}
+
+export { roundBbox, isValidBbox };
+
+async function callVision(base64: string, mimeType: string, retry = true, includeBbox = false): Promise<VisionAnalysis> {
   const apiKey = readAnthropicKey();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY nicht gesetzt (in ~/.config/openclaw/env eintragen)');
 
   const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-sonnet-4-20250514';
 
+  const bboxInstruction = includeBbox
+    ? '\nZusaetzlich: Bestimme die Bounding Box des Hauptsubjekts als relative Koordinaten (0-1):\n' +
+      '"subject_bbox": { "x": <left>, "y": <top>, "w": <width>, "h": <height>, "confidence": <0-1> }\n' +
+      'x,y = obere linke Ecke relativ zur Bildgroesse. confidence = wie sicher du dir bist.\n'
+    : '';
+
+  const bboxField = includeBbox ? ',\n  "subject_bbox": { "x": number, "y": number, "w": number, "h": number, "confidence": number }' : '';
+
   const userPrompt =
     'Analysiere dieses Bild und gib ein JSON-Objekt zurueck:\n' +
     '{ "subjects": string[], "mood": string, "setting": string, "composition": string,\n' +
     '  "colors": string[], "narrative_hooks": string[], "visual_quality": "high"|"medium"|"low",\n' +
-    '  "pillar_match": string[] }\n' +
+    '  "pillar_match": string[]' + bboxField + ' }\n' +
     'pillar_match: Welche dieser Felder passen? culture, technology, style, health, freedom\n' +
+    bboxInstruction +
     'Antworte NUR mit dem JSON-Objekt, kein Markdown, keine Erklaerungen.';
 
   const res = await fetchWithTimeout(
@@ -219,12 +246,24 @@ async function callVision(base64: string, mimeType: string, retry = true): Promi
 
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    if (retry) return callVision(base64, mimeType, false);
+    if (retry) return callVision(base64, mimeType, false, includeBbox);
     throw new Error(`Vision: kein JSON in Antwort — ${text.slice(0, 200)}`);
   }
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
+
+    let subject_bbox: SubjectBbox | undefined;
+    if (includeBbox && parsed.subject_bbox) {
+      const bb = parsed.subject_bbox;
+      const x = roundBbox(Number(bb.x)), y = roundBbox(Number(bb.y));
+      const w = roundBbox(Number(bb.w)), h = roundBbox(Number(bb.h));
+      const confidence = roundBbox(Number(bb.confidence));
+      if (isValidBbox(x, y, w, h, confidence)) {
+        subject_bbox = { x, y, w, h, confidence };
+      }
+    }
+
     return {
       subjects: Array.isArray(parsed.subjects) ? parsed.subjects.map(String).slice(0, 5) : [],
       mood: String(parsed.mood || ''),
@@ -234,14 +273,15 @@ async function callVision(base64: string, mimeType: string, retry = true): Promi
       narrative_hooks: Array.isArray(parsed.narrative_hooks) ? parsed.narrative_hooks.map(String) : [],
       visual_quality: ['high', 'medium', 'low'].includes(parsed.visual_quality) ? parsed.visual_quality : 'medium',
       pillar_match: Array.isArray(parsed.pillar_match) ? parsed.pillar_match.map(String) : [],
+      subject_bbox,
     };
   } catch (e: any) {
-    if (retry) return callVision(base64, mimeType, false);
+    if (retry) return callVision(base64, mimeType, false, includeBbox);
     throw new Error(`Vision: JSON parse fehlgeschlagen — ${e.message}`);
   }
 }
 
-export async function analyzeImage(imagePath: string): Promise<VisionAnalysis> {
+export async function analyzeImage(imagePath: string, options?: { includeBbox?: boolean }): Promise<VisionAnalysis> {
   if (!fs.existsSync(imagePath)) {
     throw new Error(`Bilddatei nicht gefunden: ${imagePath}`);
   }
@@ -253,7 +293,7 @@ export async function analyzeImage(imagePath: string): Promise<VisionAnalysis> {
     '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
   };
   const mimeType = mimeMap[ext] || 'image/jpeg';
-  return callVision(base64, mimeType);
+  return callVision(base64, mimeType, true, options?.includeBbox ?? false);
 }
 
 export async function analyzeVideo(videoPath: string): Promise<VisionAnalysis> {

@@ -1,9 +1,11 @@
 /**
- * image-edit.ts — Sharp center-crop pipeline (E3).
+ * image-edit.ts — Sharp crop pipelines (E3 + E5).
  *
- * Produces a 1080x1350 JPEG (4:5 aspect) from any input image.
- * Auto-orients via EXIF rotation, center-crops, strips all EXIF
- * (including GPS), preserves ICC profile for color accuracy.
+ * centerCrop4x5: 1080x1350 JPEG (4:5) center-crop (E3).
+ * subjectAwareCrop4x5: 1080x1350 JPEG (4:5) subject-centered crop (E5).
+ *
+ * Auto-orients via EXIF rotation, strips all EXIF (including GPS),
+ * preserves ICC profile for color accuracy.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -110,6 +112,98 @@ export async function centerCrop4x5(params: {
     fs.renameSync(tmpPath, finalPath);
   } catch (err) {
     // Cleanup on failure
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+
+  const relativePath = `${sessionId}/edited/${outputName}`;
+
+  return {
+    outputPath: finalPath,
+    relativePath,
+    sha256Output,
+    outputSize: outputBuffer.length,
+  };
+}
+
+// ── Subject-Aware Crop (E5) ───────────────────────────────────────────────
+
+export async function subjectAwareCrop4x5(params: {
+  sessionId: string;
+  mediaIndex: number;
+  sourcePath: string;
+  mediaName: string;
+  bbox: { x: number; y: number; w: number; h: number };
+}): Promise<CenterCropResult> {
+  const { sessionId, sourcePath, mediaName, bbox } = params;
+
+  // 1. Load + auto-orient
+  const pipeline = sharp(sourcePath).rotate();
+  const meta = await pipeline.metadata();
+  const w = meta.width;
+  const h = meta.height;
+  if (!w || !h) {
+    throw new Error(`Cannot read image dimensions from ${mediaName}`);
+  }
+
+  // 2. Convert relative bbox to pixel center
+  const bboxCenterX = Math.round((bbox.x + bbox.w / 2) * w);
+  const bboxCenterY = Math.round((bbox.y + bbox.h / 2) * h);
+
+  // 3. Compute max 4:5 crop region (same aspect logic as centerCrop4x5)
+  const srcAspect = w / h;
+  let cropW: number, cropH: number;
+
+  if (srcAspect > TARGET_ASPECT) {
+    // Wider than 4:5 — crop sides
+    cropW = Math.round(h * TARGET_ASPECT);
+    cropH = h;
+  } else if (srcAspect < TARGET_ASPECT) {
+    // Taller than 4:5 — crop top/bottom
+    cropW = w;
+    cropH = Math.round(w / TARGET_ASPECT);
+  } else {
+    cropW = w;
+    cropH = h;
+  }
+
+  // 4. Position crop centered on subject, clamped to image bounds
+  const left = Math.max(0, Math.min(bboxCenterX - Math.round(cropW / 2), w - cropW));
+  const top = Math.max(0, Math.min(bboxCenterY - Math.round(cropH / 2), h - cropH));
+
+  // 5. Extract → resize → JPEG (same pipeline as centerCrop4x5)
+  const outputBuffer = await sharp(sourcePath)
+    .rotate()
+    .extract({ left, top, width: cropW, height: cropH })
+    .resize(TARGET_W, TARGET_H)
+    .keepIccProfile()
+    .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
+    .toBuffer();
+
+  // 6. SHA256 from output buffer
+  const sha256Output = createHash('sha256').update(outputBuffer).digest('hex');
+
+  // 7. Output filename + path
+  const baseName = mediaName.replace(/\.[^.]+$/, '');
+  const outputName = `${baseName}-vision_4x5.jpg`;
+  const editedDir = path.join(sessionDir(sessionId), 'edited');
+  fs.mkdirSync(editedDir, { recursive: true });
+
+  const finalPath = path.join(editedDir, outputName);
+  const tmpPath = `${finalPath}.tmp`;
+
+  // 8. Path security — ensure output is under RAW_DIR
+  const resolvedFinal = path.resolve(finalPath);
+  const resolvedRoot = path.resolve(RAW_DIR);
+  if (!resolvedFinal.startsWith(resolvedRoot)) {
+    throw new Error('Path traversal detected');
+  }
+
+  // 9. Atomic write: tmp → rename
+  try {
+    fs.writeFileSync(tmpPath, outputBuffer);
+    fs.renameSync(tmpPath, finalPath);
+  } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     throw err;
   }
