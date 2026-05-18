@@ -1,12 +1,13 @@
 /**
- * Inbox Endpoint Tests (E2b)
+ * Inbox Endpoint Tests (E2b + E3)
  *
- * Tests: auth rejection, query-string token, MIME reject, size limit,
- * multi-file 207, SHA256 dedup.
+ * Tests 1-7: auth, MIME, size, multi-file, dedup, source (E2b).
+ * Tests 8-11: sharp center-crop integration (E3).
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import sharp from 'sharp';
 import { setupTestDb } from './test-db-setup.js';
 
 const TEST_TOKEN = 'test-inbox-token-e2b';
@@ -15,6 +16,8 @@ const TEST_TOKEN_SHA256 = crypto.createHash('sha256').update(TEST_TOKEN).digest(
 let cleanup: () => Promise<void>;
 let server: http.Server;
 let serverUrl: string;
+let realJpeg: Buffer;       // Sharp-generated valid JPEG for E3 tests
+let corruptJpeg: Buffer;    // JPEG header + garbage (sharp can't decode)
 
 // ── Minimal valid file buffers ───────────────────────────────────────────────
 
@@ -69,6 +72,21 @@ beforeAll(async () => {
       request_id      TEXT
     )
   `);
+
+  // Generate real JPEG via sharp for E3 crop tests
+  realJpeg = await sharp({
+    create: { width: 400, height: 300, channels: 3, background: { r: 128, g: 128, b: 128 } },
+  }).jpeg().toBuffer();
+
+  // Corrupt JPEG: valid SOI + JFIF header but garbage data sharp can't decode
+  const soi = Buffer.from([0xFF, 0xD8]);
+  const jfif = Buffer.from([
+    0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+    0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+  ]);
+  const garbage = Buffer.alloc(200);
+  for (let i = 0; i < garbage.length; i++) garbage[i] = Math.floor(Math.random() * 256);
+  corruptJpeg = Buffer.concat([soi, jfif, garbage, Buffer.from([0xFF, 0xD9])]);
 
   const { handleInbox } = await import('../inbox.js');
   server = http.createServer(async (req, res) => {
@@ -224,13 +242,14 @@ describe('Inbox endpoint (E2b)', () => {
     expect(status).toBe(207);
     expect(body.files).toHaveLength(3);
 
-    const uploaded = body.files.filter((f: any) => f.status === 'uploaded');
+    // Non-rejected: JPEG (edit_failed — minimal stub can't be cropped) + MOV (uploaded)
+    const accepted = body.files.filter((f: any) => f.status !== 'rejected');
     const rejected = body.files.filter((f: any) => f.status === 'rejected');
-    expect(uploaded).toHaveLength(2);
+    expect(accepted).toHaveLength(2);
     expect(rejected).toHaveLength(1);
 
-    // Verify uploaded files have expected fields
-    for (const f of uploaded) {
+    // Verify accepted files have expected fields
+    for (const f of accepted) {
       expect(f.edit_id).toBeGreaterThan(0);
       expect(f.sha256).toBeTruthy();
       expect(f.media_index).toBeGreaterThan(0);
@@ -242,13 +261,13 @@ describe('Inbox endpoint (E2b)', () => {
   });
 
   test('6. SHA256 dedup: same file twice to same session', async () => {
-    // First upload — creates session
+    // First upload — creates session (edit_failed because minimal stub can't be cropped)
     const jpegBuf = makeMinimalJpeg(200);
     const { body: first } = await postInbox({
       token: TEST_TOKEN,
       files: [{ name: 'IMG_dup.jpg', buffer: jpegBuf, type: 'image/jpeg' }],
     });
-    expect(first.files[0].status).toBe('uploaded');
+    expect(['uploaded', 'edited', 'edit_failed']).toContain(first.files[0].status);
     const sessionId = first.session_id;
     const firstEditId = first.files[0].edit_id;
 
@@ -315,7 +334,8 @@ describe('Inbox endpoint (E2b)', () => {
     const result = await response.json() as any;
 
     expect(result.files).toHaveLength(1);
-    expect(result.files[0].status).toBe('uploaded');
+    // Minimal JPEG stub can't be cropped → edit_failed (or edited if sharp somehow succeeds)
+    expect(['edited', 'edit_failed']).toContain(result.files[0].status);
     const editId = result.files[0].edit_id;
 
     // Verify DB row has source = 'dashboard'
@@ -326,5 +346,96 @@ describe('Inbox endpoint (E2b)', () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].source).toBe('dashboard');
+  });
+
+  // ── E3 Integration Tests ────────────────────────────────────────────────
+
+  test('8. JPEG upload → status=edited with crop fields', async () => {
+    const { status, body } = await postInbox({
+      token: TEST_TOKEN,
+      files: [{ name: 'real-photo.jpg', buffer: realJpeg, type: 'image/jpeg' }],
+    });
+    expect([200, 207]).toContain(status);
+    expect(body.files).toHaveLength(1);
+
+    const f = body.files[0];
+    expect(f.status).toBe('edited');
+    expect(f.crop_edit_id).toBeGreaterThan(0);
+    expect(f.crop_output).toMatch(/\/edited\/.*-center_4x5\.jpg$/);
+    expect(f.edit_id).toBeGreaterThan(0);
+    expect(f.sha256).toBeTruthy();
+  });
+
+  test('9. MP4 upload → status=uploaded (no crop)', async () => {
+    const { status, body } = await postInbox({
+      token: TEST_TOKEN,
+      files: [{ name: 'clip.mp4', buffer: makeMinimalMp4(), type: 'video/mp4' }],
+    });
+    expect([200, 207]).toContain(status);
+    expect(body.files).toHaveLength(1);
+
+    const f = body.files[0];
+    expect(f.status).toBe('uploaded');
+    expect(f.type).toBe('video');
+    // No crop fields for video
+    expect(f.crop_edit_id).toBeUndefined();
+    expect(f.crop_output).toBeUndefined();
+  });
+
+  test('10. DB has 2 rows after image upload (original + center_4x5)', async () => {
+    const { body } = await postInbox({
+      token: TEST_TOKEN,
+      files: [{ name: 'db-check.jpg', buffer: realJpeg, type: 'image/jpeg' }],
+    });
+    const f = body.files[0];
+    expect(f.status).toBe('edited');
+    const sessionId = body.session_id;
+    const mediaIndex = f.media_index;
+
+    const db = await import('../../../shared/db/index.js');
+    const { rows } = await db.query(
+      `SELECT variant, status, output_path, sha256_output
+       FROM insta_media_edits
+       WHERE session_id = $1 AND media_index = $2
+       ORDER BY variant`,
+      [sessionId, mediaIndex],
+    );
+
+    expect(rows).toHaveLength(2);
+    // center_4x5 (alphabetically first)
+    expect(rows[0].variant).toBe('center_4x5');
+    expect(rows[0].status).toBe('edited');
+    expect(rows[0].output_path).toMatch(/center_4x5\.jpg$/);
+    expect(rows[0].sha256_output).toBeTruthy();
+    // original
+    expect(rows[1].variant).toBe('original');
+    expect(rows[1].status).toBe('uploaded');
+  });
+
+  test('11. Corrupt JPEG → status=edit_failed, original preserved', async () => {
+    const { body } = await postInbox({
+      token: TEST_TOKEN,
+      files: [{ name: 'broken.jpg', buffer: corruptJpeg, type: 'image/jpeg' }],
+    });
+    expect(body.files).toHaveLength(1);
+
+    const f = body.files[0];
+    expect(f.status).toBe('edit_failed');
+    expect(f.error).toContain('Crop failed');
+    expect(f.edit_id).toBeGreaterThan(0);
+
+    // Verify DB has center_4x5 row with edit_failed
+    const db = await import('../../../shared/db/index.js');
+    const sessionId = body.session_id;
+    const { rows } = await db.query(
+      `SELECT variant, status, error_code, error_message
+       FROM insta_media_edits
+       WHERE session_id = $1 AND media_index = $2 AND variant = 'center_4x5'`,
+      [sessionId, f.media_index],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('edit_failed');
+    expect(rows[0].error_code).toBe('CROP_FAILED');
+    expect(rows[0].error_message).toBeTruthy();
   });
 });

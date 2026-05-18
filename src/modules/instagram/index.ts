@@ -31,8 +31,12 @@ export type { InstagramDeps } from './commands.js';
 export {
   getOrCreateActiveSession, nextMediaIndex, buildMediaName,
   sanitizeSessionId, recordMediaUpload, computeFileSha256,
+  PARAMS_HASH_CENTER_4X5, recordCropVariant, recordCropFailure,
 } from './session-helper.js';
 export type { UploadSource } from './session-helper.js';
+
+// Image editing (E3)
+export { centerCrop4x5 } from './image-edit.js';
 
 // Inbox HTTP endpoint (E2b)
 export { registerInboxHttpRoute } from './inbox.js';

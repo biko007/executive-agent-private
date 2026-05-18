@@ -10,12 +10,18 @@ import path from 'node:path';
 import {
   activeRawSessions, generateRawSessionId, createRawSession, loadRawSession, sessionDir,
 } from './commands.js';
+import { createHash } from 'node:crypto';
 import { getClient } from '../../shared/db/index.js';
 import type { RawSession } from './types.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
 export type UploadSource = 'telegram' | 'ios_shortcut' | 'dashboard';
+
+// ── E3 Constants ──────────────────────────────────────────────────────────
+
+export const PARAMS_HASH_CENTER_4X5 = createHash('sha256')
+  .update('center_4x5:1080x1350:q90').digest('hex');
 
 // ── sanitizeSessionId ─────────────────────────────────────────────────────
 
@@ -121,4 +127,69 @@ export async function recordMediaUpload(params: {
 export function computeFileSha256(filePath: string): string {
   const buf = fs.readFileSync(filePath);
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+// ── recordCropVariant (E3) ────────────────────────────────────────────────
+
+export async function recordCropVariant(params: {
+  sessionId: string;
+  mediaIndex: number;
+  sourcePath: string;
+  outputPath: string;
+  sha256Original: string;
+  sha256Output: string;
+  source: UploadSource;
+  requestId: string;
+}): Promise<number> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO insta_media_edits
+         (session_id, media_index, variant, source_path, output_path,
+          sha256_original, sha256_output, params_hash, status, source, request_id)
+       VALUES ($1, $2, 'center_4x5', $3, $4, $5, $6, $7, 'edited', $8, $9)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        params.sessionId, params.mediaIndex, params.sourcePath, params.outputPath,
+        params.sha256Original, params.sha256Output, PARAMS_HASH_CENTER_4X5,
+        params.source, params.requestId,
+      ],
+    );
+    return rows[0]?.id ? Number(rows[0].id) : 0;
+  } finally {
+    client.release();
+  }
+}
+
+// ── recordCropFailure (E3) ────────────────────────────────────────────────
+
+export async function recordCropFailure(params: {
+  sessionId: string;
+  mediaIndex: number;
+  sourcePath: string;
+  sha256Original: string;
+  source: UploadSource;
+  errorMessage: string;
+  requestId: string;
+}): Promise<number> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO insta_media_edits
+         (session_id, media_index, variant, source_path, sha256_original,
+          params_hash, status, error_code, error_message, source, request_id)
+       VALUES ($1, $2, 'center_4x5', $3, $4, $5, 'edit_failed', 'CROP_FAILED', $6, $7, $8)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        params.sessionId, params.mediaIndex, params.sourcePath,
+        params.sha256Original, PARAMS_HASH_CENTER_4X5,
+        params.errorMessage, params.source, params.requestId,
+      ],
+    );
+    return rows[0]?.id ? Number(rows[0].id) : 0;
+  } finally {
+    client.release();
+  }
 }

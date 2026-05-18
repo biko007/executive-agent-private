@@ -17,8 +17,10 @@ import { validateInboxAuth } from './inbox-auth.js';
 import {
   sanitizeSessionId, buildMediaName, nextMediaIndex,
   recordMediaUpload, computeFileSha256,
+  recordCropVariant, recordCropFailure,
   type UploadSource,
 } from './session-helper.js';
+import { centerCrop4x5 } from './image-edit.js';
 import { loadRawSession, saveRawSession, createRawSession, generateRawSessionId, sessionDir } from './commands.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
 import { getClient } from '../../shared/db/index.js';
@@ -43,21 +45,15 @@ const RAW_DIR = path.join(process.env.HOME || '/root', '.openclaw/workspace/arti
 
 interface FileResult {
   original_name: string;
-  status: 'uploaded' | 'duplicate' | 'rejected';
+  status: 'uploaded' | 'duplicate' | 'rejected' | 'edited' | 'edit_failed';
   media_index?: number;
   name?: string;
   edit_id?: number;
   sha256?: string;
   type?: 'image' | 'video';
   error?: string;
-}
-
-// ── E3 Stub ──────────────────────────────────────────────────────────────────
-
-function processImageEditStub(_params: {
-  sessionId: string; mediaIndex: number; sourcePath: string; mediaName: string;
-}): void {
-  // E3 hookpoint — will be replaced with sharp center-crop pipeline
+  crop_edit_id?: number;
+  crop_output?: string;
 }
 
 // ── JSON Response Helper ─────────────────────────────────────────────────────
@@ -265,7 +261,10 @@ async function processMultipart(
         }
 
         // Determine HTTP status
-        const uploaded = fileResults.filter(f => f.status === 'uploaded' || f.status === 'duplicate');
+        const uploaded = fileResults.filter(f =>
+          f.status === 'uploaded' || f.status === 'duplicate' ||
+          f.status === 'edited' || f.status === 'edit_failed'
+        );
         const rejected = fileResults.filter(f => f.status === 'rejected');
         let httpStatus: number;
         if (rejected.length === 0) httpStatus = 200;
@@ -345,7 +344,7 @@ async function processUploadedFile(params: {
   try {
     const { rows: dupRows } = await client.query<{ id: number; media_index: number }>(
       `SELECT id, media_index FROM insta_media_edits
-       WHERE sha256_original = $1 AND session_id = $2 AND status != 'deleted'`,
+       WHERE sha256_original = $1 AND session_id = $2 AND variant = 'original' AND status != 'deleted'`,
       [sha256, sessionId],
     );
     if (dupRows.length > 0) {
@@ -429,16 +428,56 @@ async function processUploadedFile(params: {
     requestId,
   });
 
-  // 13. E3 stub — fire-and-forget for images
+  // 13. Center-crop 4:5 for images (synchronous, before response)
   if (mimeInfo.type === 'image') {
-    processImageEditStub({
-      sessionId,
-      mediaIndex,
-      sourcePath: destPath,
-      mediaName,
-    });
+    try {
+      const cropResult = await centerCrop4x5({ sessionId, mediaIndex, sourcePath: destPath, mediaName });
+
+      const cropEditId = await recordCropVariant({
+        sessionId, mediaIndex, sourcePath: relativePath,
+        outputPath: cropResult.relativePath,
+        sha256Original: sha256, sha256Output: cropResult.sha256Output,
+        source: params.source, requestId,
+      });
+
+      await audit.log({
+        module: 'instagram', action: 'media.center_crop_4x5',
+        entityType: 'media_edit', entityId: String(cropEditId),
+        after: { session_id: sessionId, media_index: mediaIndex, variant: 'center_4x5',
+                 output_path: cropResult.relativePath, sha256_output: cropResult.sha256Output },
+        requestId,
+      });
+
+      fileResults.push({
+        original_name: originalName, status: 'edited',
+        media_index: mediaIndex, name: mediaName, edit_id: editId, sha256,
+        type: mimeInfo.type, crop_edit_id: cropEditId, crop_output: cropResult.relativePath,
+      });
+    } catch (cropErr) {
+      const errMsg = cropErr instanceof Error ? cropErr.message : 'Unknown crop error';
+
+      await recordCropFailure({
+        sessionId, mediaIndex, sourcePath: relativePath,
+        sha256Original: sha256, source: params.source, errorMessage: errMsg, requestId,
+      });
+
+      await audit.log({
+        module: 'instagram', action: 'media.center_crop_4x5_failed',
+        entityType: 'media_edit', entityId: String(editId),
+        after: { session_id: sessionId, media_index: mediaIndex, error: errMsg },
+        requestId,
+      });
+
+      fileResults.push({
+        original_name: originalName, status: 'edit_failed',
+        media_index: mediaIndex, name: mediaName, edit_id: editId, sha256,
+        type: mimeInfo.type, error: `Crop failed: ${errMsg}`,
+      });
+    }
+    return;
   }
 
+  // Videos: no crop, status='uploaded'
   fileResults.push({
     original_name: originalName,
     status: 'uploaded',
