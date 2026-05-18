@@ -29,6 +29,7 @@ import {
   preFlightInstagram, formatPreFlightFailure,
 } from '../../../system-health.js';
 import { fetchWithTimeout, readAnthropicKey, readOpenAIKey } from '../../shared/utils/index.js';
+import { parseCallbackEvent } from '../../shared/telegram-callback/index.js';
 import * as audit from '../../shared/audit/index.js';
 import type {
   CutSegment, CutPlan, InstaFormat, CutResult, VideoProbe,
@@ -386,7 +387,7 @@ export async function transcribeVoice(audioPath: string): Promise<string> {
 
 export function registerInstagramCommands(api: any): void {
   _log = api.logger;
-  const { sendTelegram, sendTelegramWithKeyboard, answerCallbackQuery, telegramBotToken, metaAppId, metaAppSecret, igBusinessId } = deps;
+  const { sendTelegram, sendTelegramWithKeyboard, telegramBotToken, metaAppId, metaAppSecret, igBusinessId } = deps;
 
   // Module-level state (inside registerInstagramCommands for api access)
   const instaScanActive = new Set<string>();
@@ -2589,9 +2590,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
     return msg.length > 4000 ? msg.slice(0, 3997) + '...' : msg;
   }
 
-  async function handleInstasubmitCallback(callbackQueryId: string, chatId: string, sessionId: string): Promise<void> {
-    await answerCallbackQuery(callbackQueryId, 'Wird gestartet...');
-
+  async function handleInstasubmitCallback(chatId: string, sessionId: string): Promise<void> {
     const session = loadRawSession(sessionId);
     if (!session) {
       await sendTelegram(chatId, `❌ Session "${sessionId}" nicht gefunden.`);
@@ -2664,17 +2663,14 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
     });
   }
 
-  async function handleInstascanCallback(callbackQueryId: string, chatId: string, data: string): Promise<void> {
-    // Parse: iscan_<sessionId>::<proposalId>
-    const sepIdx = data.indexOf('::');
-    if (sepIdx === -1) {
-      await answerCallbackQuery(callbackQueryId, 'Ungültige Daten');
+  async function handleInstascanCallback(chatId: string, args: string[]): Promise<void> {
+    // args = ['<sessionId>', '<proposalId>']
+    if (args.length < 2) {
+      await sendTelegram(chatId, '❌ Ungültige Callback-Daten.');
       return;
     }
-    const sessionId = data.slice(6, sepIdx); // skip "iscan_"
-    const proposalId = data.slice(sepIdx + 2);
-
-    await answerCallbackQuery(callbackQueryId, 'Wird ausgeführt...');
+    const sessionId = args[0];
+    const proposalId = args[1];
 
     const session = loadRawSession(sessionId);
     if (!session?.scan_result) {
@@ -3003,30 +2999,26 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
     ];
   }
 
-  async function handleCraftCallback(callbackQueryId: string, chatId: string, data: string): Promise<void> {
-    // Parse: icraft_<sessionId>::<action>
-    const sepIdx = data.indexOf('::');
-    if (sepIdx === -1) {
-      await answerCallbackQuery(callbackQueryId, 'Ungültige Daten');
+  async function handleCraftCallback(chatId: string, args: string[]): Promise<void> {
+    // args = ['<sessionId>', '<action>']
+    if (args.length < 2) {
+      await sendTelegram(chatId, '❌ Ungültige Callback-Daten.');
       return;
     }
-    const sessionId = data.slice(7, sepIdx); // skip "icraft_"
-    const action = data.slice(sepIdx + 2);
+    const sessionId = args[0];
+    const action = args[1];
 
     const state = activeCraftDialogs.get(chatId);
     if (!state || state.sessionId !== sessionId || Date.now() > state.expiresAt) {
-      await answerCallbackQuery(callbackQueryId, 'Dialog abgelaufen');
       activeCraftDialogs.delete(chatId);
       return;
     }
 
     if (action === 'ja') {
       if (state.step !== 'plan_ready') {
-        await answerCallbackQuery(callbackQueryId, 'Plan noch nicht bereit');
         return;
       }
 
-      await answerCallbackQuery(callbackQueryId, 'Wird ausgeführt...');
       state.step = 'executing';
 
       const plan = state.currentPlan!;
@@ -3242,14 +3234,11 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
       }
     } else if (action === 'anpassen') {
       if (state.step !== 'plan_ready') {
-        await answerCallbackQuery(callbackQueryId, 'Plan noch nicht bereit');
         return;
       }
-      await answerCallbackQuery(callbackQueryId, 'Anpassung');
       state.step = 'adjusting';
       await sendTelegram(chatId, '✏️ Sende deine Anpassung (Text oder Sprachnachricht):');
     } else if (action === 'abbrechen') {
-      await answerCallbackQuery(callbackQueryId, 'Abgebrochen');
       activeCraftDialogs.delete(chatId);
       const freshSession = loadRawSession(sessionId);
       if (freshSession && freshSession.status === 'crafting') {
@@ -3257,8 +3246,6 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         saveRawSession(freshSession);
       }
       await sendTelegram(chatId, '❌ Craft-Dialog abgebrochen.');
-    } else {
-      await answerCallbackQuery(callbackQueryId, 'Unbekannte Aktion');
     }
   }
 
@@ -3311,78 +3298,71 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
   // ── Instagram Callback Dispatcher ───────────────────────────────────────
   api.on('message_received', async (event: any) => {
     try {
-      const cbq = event?.raw?.callback_query;
-      if (!cbq) return;
-
-      const callbackQueryId = String(cbq.id || '');
-      const chatId = String(cbq.message?.chat?.id || '');
-      const data = String(cbq.data || '');
-
-      if (data.startsWith('icraft_go_')) {
-        const sessionId = data.slice(10);
-        await answerCallbackQuery(callbackQueryId, 'Craft wird gestartet...');
-        await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
-        return;
-      }
-
-      if (data.startsWith('iscan_ask_')) {
-        const sepIdx2 = data.indexOf('::');
-        if (sepIdx2 === -1) { await answerCallbackQuery(callbackQueryId, 'Ungültig'); return; }
-        const askSessionId = data.slice(10, sepIdx2);
-        const askAction = data.slice(sepIdx2 + 2);
-        if (askAction === 'craft') {
-          await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
-          pendingScanResponse.set(chatId, { sessionId: askSessionId, expiresAt: Date.now() + 10 * 60_000 });
-          await sendTelegram(chatId, `🎯 Sende deine Vorstellung als Text oder Sprachnachricht für Session ${askSessionId}.`);
-        } else {
-          if (instaScanActive.has(chatId)) {
-            await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
-            return;
-          }
-          await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
-          instaScanActive.add(chatId);
-          runInstascanPipeline(askSessionId, chatId).catch(err => {
-            api.logger.error(`[executive-agent] iscan_ask scan CRASH: ${err?.message}`);
-          });
-        }
-        return;
-      }
-
-      if (data.startsWith('iscan_dir_')) {
-        const sessionId = data.slice(10);
-        await answerCallbackQuery(callbackQueryId, 'Richtung eingeben');
-        pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
-        await sendTelegram(chatId, `🎤 Sende deine kreative Richtung für Session ${sessionId} als Text oder Sprachnachricht.`);
-        return;
-      }
-
-      if (data.startsWith('iscan_go_')) {
-        const sessionId = data.slice(9);
-        if (instaScanActive.has(chatId)) {
-          await answerCallbackQuery(callbackQueryId, 'Scan läuft bereits');
+      // ── icraft_ callbacks ──
+      const icraftCb = parseCallbackEvent(event, 'icraft');
+      if (icraftCb) {
+        const chatId = icraftCb.senderId;
+        if (icraftCb.payload.startsWith('go_')) {
+          // icraft_go_<sessionId> → launch craft mode
+          const sessionId = icraftCb.payload.slice(3);
+          await sendTelegram(chatId, `🎨 Craft-Modus für ${sessionId} — sende deine kreative Richtung als nächste Nachricht.\n\nOder direkt:\n\`/instacraft ${sessionId} <richtung>\``);
           return;
         }
-        await answerCallbackQuery(callbackQueryId, 'Scan wird gestartet...');
-        instaScanActive.add(chatId);
-        runInstascanPipeline(sessionId, chatId).catch(err => {
-          api.logger.error(`[executive-agent] iscan_go callback CRASH: ${err?.message}`);
-        });
+        // icraft_<sessionId>::<action>
+        await handleCraftCallback(chatId, icraftCb.args);
         return;
       }
 
-      if (data.startsWith('icraft_')) {
-        await handleCraftCallback(callbackQueryId, chatId, data);
+      // ── iscan_ callbacks ──
+      const iscanCb = parseCallbackEvent(event, 'iscan');
+      if (iscanCb) {
+        const chatId = iscanCb.senderId;
+        if (iscanCb.payload.startsWith('ask_')) {
+          // iscan_ask_<sessionId>::<action>
+          if (iscanCb.args.length < 2) return;
+          // args[0] = 'ask_<sessionId>', extract sessionId
+          const askSessionId = iscanCb.args[0].slice(4);
+          const askAction = iscanCb.args[1];
+          if (askAction === 'craft') {
+            pendingScanResponse.set(chatId, { sessionId: askSessionId, expiresAt: Date.now() + 10 * 60_000 });
+            await sendTelegram(chatId, `🎯 Sende deine Vorstellung als Text oder Sprachnachricht für Session ${askSessionId}.`);
+          } else {
+            if (instaScanActive.has(chatId)) return;
+            instaScanActive.add(chatId);
+            runInstascanPipeline(askSessionId, chatId).catch(err => {
+              api.logger.error(`[executive-agent] iscan_ask scan CRASH: ${err?.message}`);
+            });
+          }
+          return;
+        }
+        if (iscanCb.payload.startsWith('dir_')) {
+          // iscan_dir_<sessionId>
+          const sessionId = iscanCb.payload.slice(4);
+          pendingScanResponse.set(chatId, { sessionId, expiresAt: Date.now() + 10 * 60_000 });
+          await sendTelegram(chatId, `🎤 Sende deine kreative Richtung für Session ${sessionId} als Text oder Sprachnachricht.`);
+          return;
+        }
+        if (iscanCb.payload.startsWith('go_')) {
+          // iscan_go_<sessionId>
+          const sessionId = iscanCb.payload.slice(3);
+          if (instaScanActive.has(chatId)) return;
+          instaScanActive.add(chatId);
+          runInstascanPipeline(sessionId, chatId).catch(err => {
+            api.logger.error(`[executive-agent] iscan_go callback CRASH: ${err?.message}`);
+          });
+          return;
+        }
+        // iscan_<sessionId>::<proposalId>
+        await handleInstascanCallback(chatId, iscanCb.args);
         return;
       }
 
-      if (data.startsWith('iscan_')) {
-        await handleInstascanCallback(callbackQueryId, chatId, data);
-        return;
-      }
-
-      if (data.startsWith('isub_')) {
-        const sessionId = data.slice(5);
-        handleInstasubmitCallback(callbackQueryId, chatId, sessionId).catch(err => {
+      // ── isub_ callbacks ──
+      const isubCb = parseCallbackEvent(event, 'isub');
+      if (isubCb) {
+        const chatId = isubCb.senderId;
+        const sessionId = isubCb.args[0];
+        handleInstasubmitCallback(chatId, sessionId).catch(err => {
           api.logger.error(`[executive-agent] isub callback CRASH: ${err?.message}`);
         });
         return;
