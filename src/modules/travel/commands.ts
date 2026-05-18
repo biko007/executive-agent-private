@@ -127,31 +127,23 @@ export async function addBookingAsSegment(tripId: string, booking: ParsedBooking
 // ── Segment Deletion Callback Handler ──────────────────────────────────────
 
 export async function handleSegmentDeletionCallback(
-  callbackQueryId: string,
   chatId: string,
-  data: string,
+  delKey: string,
+  action: string,
 ): Promise<boolean> {
-  if (!data.startsWith('segdel_')) return false;
-
-  const sepIdx = data.indexOf('::');
-  if (sepIdx === -1) return false;
-  const delKey = data.slice(0, sepIdx);
-  const action = data.slice(sepIdx + 2);
   const pending = pendingSegmentDeletions.get(delKey);
   if (!pending || Date.now() > pending.expiresAt) {
     pendingSegmentDeletions.delete(delKey);
-    await deps.answerCallbackQuery(callbackQueryId, 'Abgelaufen.');
+    await deps.sendTelegram(chatId, '⏰ Auswahl abgelaufen.');
     return true;
   }
   pendingSegmentDeletions.delete(delKey);
   if (action === 'yes') {
-    await deps.answerCallbackQuery(callbackQueryId, 'Wird gelöscht...');
     const ok = await deleteSegmentCalendarEvent(pending.calendarEventId);
     await deps.sendTelegram(chatId, ok
       ? '✅ Kalendereintrag gelöscht.'
       : '❌ Kalendereintrag konnte nicht gelöscht werden.');
   } else {
-    await deps.answerCallbackQuery(callbackQueryId, 'Beibehalten');
     await deps.sendTelegram(chatId, '📅 Kalendereintrag beibehalten.');
   }
   return true;

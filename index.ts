@@ -91,6 +91,7 @@ import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
 import {
   graphToken, graphRequest, graphGet, graphPost, graphDelete,
 } from "./src/shared/m365/index.js";
+import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -1486,21 +1487,14 @@ export default function (api: any) {
   // addBookingAsSegment → src/modules/travel/commands.ts
 
   async function handleBookingCallback(
-    callbackQueryId: string,
     chatId: string,
-    data: string,
+    bookingKey: string,
+    action: string,
   ): Promise<void> {
-    // data format: "booking_<hex>::<action>"
-    const sepIdx = data.indexOf('::');
-    if (sepIdx === -1) return;
-
-    const bookingKey = data.slice(0, sepIdx);
-    const action = data.slice(sepIdx + 2);
-
     const pending = pendingBookings.get(bookingKey);
     if (!pending || Date.now() > pending.expiresAt) {
       pendingBookings.delete(bookingKey);
-      await answerCallbackQuery(callbackQueryId, 'Buchung abgelaufen.');
+      await sendTelegram(chatId, '⏰ Buchung abgelaufen.');
       return;
     }
 
@@ -1509,14 +1503,12 @@ export default function (api: any) {
 
     if (action === 'ignore') {
       pendingBookings.delete(bookingKey);
-      await answerCallbackQuery(callbackQueryId, 'Ignoriert');
       await sendTelegram(chatId, `${emoji} ${booking.title} — ignoriert.`);
       return;
     }
 
     if (action === 'new') {
       pendingBookings.delete(bookingKey);
-      await answerCallbackQuery(callbackQueryId, 'Neue Reise wird erstellt...');
 
       try {
         const tripName = booking.destination || booking.title;
@@ -1534,8 +1526,6 @@ export default function (api: any) {
     }
 
     if (action === 'existing') {
-      await answerCallbackQuery(callbackQueryId, 'Reisen werden geladen...');
-
       const trips = listTrips();
       if (!trips.length) {
         pendingBookings.delete(bookingKey);
@@ -1562,12 +1552,11 @@ export default function (api: any) {
       const tripIdx = parseInt(action.slice(5), 10);
       const trips = listTrips();
       if (isNaN(tripIdx) || tripIdx < 0 || tripIdx >= trips.length) {
-        await answerCallbackQuery(callbackQueryId, 'Ungültige Auswahl');
+        await sendTelegram(chatId, '❌ Ungültige Auswahl.');
         return;
       }
 
       pendingBookings.delete(bookingKey);
-      await answerCallbackQuery(callbackQueryId, 'Wird hinzugefügt...');
 
       const trip = trips[tripIdx];
       await addBookingAsSegment(trip.id, booking);
@@ -1614,27 +1603,30 @@ export default function (api: any) {
     } catch {}
   });
 
-  // Hook to handle callback_query from Telegram (if framework routes them)
+  // Hook to handle callback_query from Telegram (content-event pattern, E3)
   api.on('message_received', async (event: any) => {
     try {
-      const cbq = event?.raw?.callback_query;
-      if (!cbq) return;
-
-      const callbackQueryId = String(cbq.id || '');
-      const chatId = String(cbq.message?.chat?.id || '');
-      const data = String(cbq.data || '');
-
-      if (data.startsWith('segdel_')) {
-        const handled = await handleSegmentDeletionCallback(callbackQueryId, chatId, data);
-        if (handled) return;
+      // ── segdel_ callbacks (Travel segment deletion) ──
+      const segdelCb = parseCallbackEvent(event, 'segdel');
+      if (segdelCb) {
+        const chatId = segdelCb.senderId;
+        if (segdelCb.args.length < 2) return;
+        const delKey = `segdel_${segdelCb.args[0]}`;
+        const action = segdelCb.args[1];
+        await handleSegmentDeletionCallback(chatId, delKey, action);
+        return;
       }
 
-      // Instagram callbacks (icraft_, iscan_, isub_) handled by registerInstagramCommands
-
-      if (!data.startsWith('booking_')) return;
-      if (!chatId || !callbackQueryId) return;
-
-      await handleBookingCallback(callbackQueryId, chatId, data);
+      // ── booking_ callbacks (Mail booking → trip assignment) ──
+      const bookingCb = parseCallbackEvent(event, 'booking');
+      if (bookingCb) {
+        const chatId = bookingCb.senderId;
+        if (bookingCb.args.length < 2) return;
+        const bookingKey = `booking_${bookingCb.args[0]}`;
+        const action = bookingCb.args[1];
+        await handleBookingCallback(chatId, bookingKey, action);
+        return;
+      }
     } catch (e: any) {
       api.logger.error(`[executive-agent] callback Fehler: ${e?.message}`);
     }
