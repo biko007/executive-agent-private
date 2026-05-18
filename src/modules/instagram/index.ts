@@ -15,7 +15,7 @@ export {
   registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken,
   // State exports for command-guard in index.ts
   instaSubmitActive, instaSubmitLastActivatedAt, setInstaSubmitLastActivatedAt,
-  pendingInstaSubmits, activeRawSessions,
+  pendingInstaSubmits, activeRawSessions, activeCraftDialogs,
   // Helpers used by command-guard in index.ts
   detectMediaType, formatFileSize, loadRawSession, saveRawSession, createRawSession,
   generateRawSessionId, sessionDir,

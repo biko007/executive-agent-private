@@ -90,6 +90,7 @@ export let instaSubmitLastActivatedAt = 0;
 export function setInstaSubmitLastActivatedAt(ts: number): void { instaSubmitLastActivatedAt = ts; }
 export const pendingInstaSubmits = new Map<string, { expiresAt: number; note: string }>();
 export const activeRawSessions = new Map<string, string>();
+export const activeCraftDialogs = new Map<string, CraftDialogState>();
 
 
 // ── Paths ───────────────────────────────────────────────────────────────
@@ -391,7 +392,6 @@ export function registerInstagramCommands(api: any): void {
 
   // Module-level state (inside registerInstagramCommands for api access)
   const instaScanActive = new Set<string>();
-  const activeCraftDialogs = new Map<string, CraftDialogState>();
   const pendingScanResponse = new Map<string, { sessionId: string; expiresAt: number }>();
 
   // 4.1 /insta — Account-Überblick

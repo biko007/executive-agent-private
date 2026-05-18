@@ -15,7 +15,7 @@ import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDr
 import { registerSharePointCommands, initSharePointCommands, getLinksForEntity, formatLinksForTelegram, } from "./src/modules/sharepoint/index.js";
 import { registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken, 
 // State exports for command-guard
-instaSubmitActive, instaSubmitLastActivatedAt, pendingInstaSubmits, 
+instaSubmitActive, instaSubmitLastActivatedAt, pendingInstaSubmits, activeCraftDialogs, 
 // Helpers for command-guard
 detectMediaType, formatFileSize, saveRawSession, sessionDir, findRecentAudioFile, transcribeVoice, 
 // Session + naming helpers (E2a)
@@ -341,6 +341,20 @@ export default function (api) {
                 prependContext: 'SYSTEM: This message is a Telegram inline-button callback, already handled by a plugin hook. ' +
                     'You MUST NOT generate any response. Reply with exactly: NO_REPLY',
             };
+        }
+        // Suppress AI when user is in active craft dialog (direction/adjustment input)
+        const senderIdMatch = prompt.match(/id:(\d{5,})/);
+        if (senderIdMatch) {
+            const senderId = senderIdMatch[1];
+            const craftState = activeCraftDialogs.get(senderId);
+            if (craftState && Date.now() <= craftState.expiresAt &&
+                (craftState.step === 'awaiting_direction' || craftState.step === 'adjusting')) {
+                api.logger.info(`[executive-agent] command-guard: Craft-Dialog aktiv (step=${craftState.step}) — AI agent wird unterdrückt`);
+                return {
+                    prependContext: 'SYSTEM: This message is direction input for an active Instagram craft dialog, already handled by a plugin hook. ' +
+                        'You MUST NOT generate any response. Reply with exactly: NO_REPLY',
+                };
+            }
         }
         // Suppress AI for registered commands
         const match = prompt.match(/^\s*\/([a-z_]+)/i);
