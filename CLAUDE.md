@@ -204,6 +204,9 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
+- **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
+  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`. Bei neuem Callback-Prefix hier UND in
+  `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
 
 ### Sprint-Roadmap
 

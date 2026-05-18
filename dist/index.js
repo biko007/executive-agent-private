@@ -331,6 +331,17 @@ export default function (api) {
     // - For bare media (image/video): saves to raw session and suppresses AI commentary.
     api.on('before_agent_start', async (event) => {
         const prompt = event?.prompt ?? '';
+        // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
+        // Framework wraps prompts in "[Telegram sender timestamp] body" envelope.
+        // We match the envelope boundary "] " followed by the callback prefix.
+        const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_'];
+        if (CALLBACK_PREFIXES.some(p => prompt.includes('] ' + p))) {
+            api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
+            return {
+                prependContext: 'SYSTEM: This message is a Telegram inline-button callback, already handled by a plugin hook. ' +
+                    'You MUST NOT generate any response. Reply with exactly: NO_REPLY',
+            };
+        }
         // Suppress AI for registered commands
         const match = prompt.match(/^\s*\/([a-z_]+)/i);
         if (match) {
