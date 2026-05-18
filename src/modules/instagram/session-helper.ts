@@ -164,6 +164,83 @@ export async function recordCropVariant(params: {
 
 // ── recordCropFailure (E3) ────────────────────────────────────────────────
 
+// ── insertEditVariant (E4b) ──────────────────────────────────────────────
+
+export async function insertEditVariant(params: {
+  sessionId: string;
+  mediaIndex: number;
+  variant: string;
+  sourcePath: string;
+  sha256Original: string;
+  paramsHash: string;
+  source: UploadSource;
+  requestId?: string;
+}): Promise<number> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO insta_media_edits
+         (session_id, media_index, variant, source_path, sha256_original,
+          params_hash, status, source, request_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'uploaded', $7, $8)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        params.sessionId, params.mediaIndex, params.variant, params.sourcePath,
+        params.sha256Original, params.paramsHash, params.source,
+        params.requestId ?? null,
+      ],
+    );
+    return rows[0]?.id ? Number(rows[0].id) : 0;
+  } finally {
+    client.release();
+  }
+}
+
+// ── setEditOutput (E4b) ──────────────────────────────────────────────────
+
+export async function setEditOutput(params: {
+  editId: number;
+  outputPath: string;
+  sha256Output: string;
+}): Promise<void> {
+  const client = await getClient();
+  try {
+    await client.query(
+      `UPDATE insta_media_edits
+       SET output_path = $1, sha256_output = $2, updated_at = NOW()
+       WHERE id = $3`,
+      [params.outputPath, params.sha256Output, params.editId],
+    );
+  } finally {
+    client.release();
+  }
+}
+
+// ── softDeleteVariant (E4b) ──────────────────────────────────────────────
+
+export async function softDeleteVariant(params: {
+  sessionId: string;
+  mediaIndex: number;
+  variant: string;
+}): Promise<number> {
+  const client = await getClient();
+  try {
+    const { rows } = await client.query<{ id: number }>(
+      `UPDATE insta_media_edits
+       SET status = 'deleted', updated_at = NOW()
+       WHERE session_id = $1 AND media_index = $2 AND variant = $3 AND status != 'deleted'
+       RETURNING id`,
+      [params.sessionId, params.mediaIndex, params.variant],
+    );
+    return rows.length;
+  } finally {
+    client.release();
+  }
+}
+
+// ── recordCropFailure (E3) ────────────────────────────────────────────────
+
 export async function recordCropFailure(params: {
   sessionId: string;
   mediaIndex: number;

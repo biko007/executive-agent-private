@@ -17,6 +17,7 @@ let cleanup: () => Promise<void>;
 let server: http.Server;
 let serverUrl: string;
 let realJpeg: Buffer;       // Sharp-generated valid JPEG for E3 tests
+let realMp4: Buffer;        // ffmpeg-generated valid MP4 for E4b tests
 let corruptJpeg: Buffer;    // JPEG header + garbage (sharp can't decode)
 
 // ── Minimal valid file buffers ───────────────────────────────────────────────
@@ -77,6 +78,22 @@ beforeAll(async () => {
   realJpeg = await sharp({
     create: { width: 400, height: 300, channels: 3, background: { r: 128, g: 128, b: 128 } },
   }).jpeg().toBuffer();
+
+  // Generate real MP4 via ffmpeg for E4b tests
+  const fs = await import('node:fs');
+  const tmpMp4Path = `/tmp/inbox-test-${Date.now()}.mp4`;
+  const { execSync } = await import('node:child_process');
+  try {
+    execSync(
+      `ffmpeg -y -f lavfi -i color=c=blue:s=640x480:d=2 -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -an "${tmpMp4Path}"`,
+      { stdio: 'pipe' },
+    );
+    realMp4 = fs.readFileSync(tmpMp4Path);
+    fs.unlinkSync(tmpMp4Path);
+  } catch {
+    // Fallback: minimal MP4 stub (video handlers will fail but we test DB row creation)
+    realMp4 = makeMinimalMp4();
+  }
 
   // Corrupt JPEG: valid SOI + JFIF header but garbage data sharp can't decode
   const soi = Buffer.from([0xFF, 0xD8]);
@@ -366,7 +383,7 @@ describe('Inbox endpoint (E2b)', () => {
     expect(f.sha256).toBeTruthy();
   });
 
-  test('9. MP4 upload → status=uploaded (no crop)', async () => {
+  test('9. MP4 upload → status=processing (E4b video jobs enqueued)', async () => {
     const { status, body } = await postInbox({
       token: TEST_TOKEN,
       files: [{ name: 'clip.mp4', buffer: makeMinimalMp4(), type: 'video/mp4' }],
@@ -375,7 +392,7 @@ describe('Inbox endpoint (E2b)', () => {
     expect(body.files).toHaveLength(1);
 
     const f = body.files[0];
-    expect(f.status).toBe('uploaded');
+    expect(f.status).toBe('processing');
     expect(f.type).toBe('video');
     // No crop fields for video
     expect(f.crop_edit_id).toBeUndefined();
@@ -438,4 +455,51 @@ describe('Inbox endpoint (E2b)', () => {
     expect(rows[0].error_code).toBe('CROP_FAILED');
     expect(rows[0].error_message).toBeTruthy();
   });
+
+  // ── E4b Integration Tests ────────────────────────────────────────────────
+
+  test('12. MP4 upload → 3 DB rows (original + video_4x5 + cover_frame)', async () => {
+    const { body } = await postInbox({
+      token: TEST_TOKEN,
+      files: [{ name: 'real-video.mp4', buffer: realMp4, type: 'video/mp4' }],
+    });
+    expect(body.files).toHaveLength(1);
+
+    const f = body.files[0];
+    expect(f.status).toBe('processing');
+    const sessionId = body.session_id;
+    const mediaIndex = f.media_index;
+
+    // Wait for async queue to finish
+    const { waitForIdle } = await import('../edit-queue.js');
+    await waitForIdle();
+
+    // Check DB: should have 3 rows for this media_index
+    const db = await import('../../../shared/db/index.js');
+    const { rows } = await db.query<{ variant: string; status: string; output_path: string | null }>(
+      `SELECT variant, status, output_path
+       FROM insta_media_edits
+       WHERE session_id = $1 AND media_index = $2 AND status != 'deleted'
+       ORDER BY variant`,
+      [sessionId, mediaIndex],
+    );
+
+    // Should have 3 rows: cover_frame, original, video_4x5 (alphabetical order)
+    expect(rows).toHaveLength(3);
+
+    const coverRow = rows.find(r => r.variant === 'cover_frame')!;
+    const origRow = rows.find(r => r.variant === 'original')!;
+    const videoRow = rows.find(r => r.variant === 'video_4x5')!;
+
+    expect(origRow).toBeTruthy();
+    expect(origRow.status).toBe('uploaded');
+
+    expect(videoRow).toBeTruthy();
+    expect(videoRow.status).toBe('edited');
+    expect(videoRow.output_path).toMatch(/video_4x5\.mp4$/);
+
+    expect(coverRow).toBeTruthy();
+    expect(coverRow.status).toBe('edited');
+    expect(coverRow.output_path).toMatch(/cover_frame\.jpg$/);
+  }, 60_000);
 });

@@ -682,8 +682,93 @@ export function registerInstagramCommands(api: any): void {
       try {
         const parts = String(ctx.args || '').trim().split(/\s+/);
         const id = parts[0];
-        if (!id) return { text: '❌ Nutzung: `/instaedit <id> [caption=...|status=...|hashtags=...]`' };
+        if (!id) return { text: '❌ Nutzung: `/instaedit <id> [caption=...|status=...|hashtags=...|cover_frame=<sec>]`' };
 
+        // ── cover_frame= override: session-based, skip draft lookup (E4b) ──
+        const hasCoverFrame = parts.slice(1).some(p => p.startsWith('cover_frame='));
+        if (hasCoverFrame) {
+          const cfPart = parts.slice(1).find(p => p.startsWith('cover_frame='))!;
+          const positionSec = parseFloat(cfPart.split('=')[1]);
+          if (isNaN(positionSec) || positionSec < 0) {
+            return { text: '❌ cover_frame muss eine Zahl >= 0 sein (Sekunden).' };
+          }
+
+          // id = session_id for cover_frame override
+          const sessionId = id;
+          const { getClient: getDbClient } = await import('../../shared/db/index.js');
+          const client = await getDbClient();
+          try {
+            const { rows: origRows } = await client.query<{
+              media_index: number; source_path: string; sha256_original: string; source: string;
+            }>(
+              `SELECT media_index, source_path, sha256_original, source
+               FROM insta_media_edits
+               WHERE session_id = $1 AND variant = 'original' AND status != 'deleted'
+               ORDER BY media_index`,
+              [sessionId],
+            );
+            if (origRows.length === 0) {
+              return { text: `❌ Session "${sessionId}" nicht gefunden oder keine Dateien.` };
+            }
+
+            // Find first video file
+            const videoRow = origRows.find(r =>
+              r.source_path.endsWith('.mp4') || r.source_path.endsWith('.mov'),
+            );
+            if (!videoRow) {
+              return { text: `❌ Keine Videodatei in Session "${sessionId}" gefunden.` };
+            }
+
+            const absSourcePath = path.join(RAW_DIR, videoRow.source_path);
+            const { probeVideo, computeVideoParamsHash } = await import('./video-edit.js');
+            const probe = await probeVideo(absSourcePath);
+
+            if (positionSec > probe.duration_s) {
+              return { text: `❌ Position ${positionSec}s > Video-Dauer ${probe.duration_s.toFixed(1)}s.` };
+            }
+
+            const { softDeleteVariant, insertEditVariant } = await import('./session-helper.js');
+            const { submitJob: submitEditJob } = await import('./edit-queue.js');
+
+            const deleted = await softDeleteVariant({
+              sessionId, mediaIndex: videoRow.media_index, variant: 'cover_frame',
+            });
+
+            const paramsHash = computeVideoParamsHash('cover_frame', positionSec);
+            const newEditId = await insertEditVariant({
+              sessionId, mediaIndex: videoRow.media_index, variant: 'cover_frame',
+              sourcePath: videoRow.source_path, sha256Original: videoRow.sha256_original,
+              paramsHash, source: videoRow.source as any,
+            });
+
+            if (newEditId > 0) {
+              await submitEditJob({
+                editId: newEditId, jobType: 'cover_frame',
+                sessionId, mediaIndex: videoRow.media_index,
+                sourcePath: videoRow.source_path,
+                params: { positionSec },
+              });
+            }
+
+            audit.log({
+              module: 'instagram', action: 'media.cover_frame_override',
+              entityType: 'media_edit', entityId: String(newEditId),
+              after: { session_id: sessionId, media_index: videoRow.media_index,
+                       position_sec: positionSec, deleted_count: deleted },
+            }).catch(() => {});
+
+            return {
+              text: `✅ Cover Frame Override für Session ${sessionId}:\n` +
+                `Position: ${positionSec}s\n` +
+                (deleted > 0 ? `${deleted} alte(r) Cover Frame(s) gelöscht\n` : '') +
+                `Neuer Job eingereicht (Edit #${newEditId})`,
+            };
+          } finally {
+            client.release();
+          }
+        }
+
+        // ── Standard draft edit logic ──────────────────────────────────────
         const draft = await loadInstaDraft(id);
         if (!draft) return { text: `❌ Draft "${id}" nicht gefunden.` };
 
@@ -725,7 +810,7 @@ export function registerInstagramCommands(api: any): void {
               updates.push(`Hashtags → ${draft.hashtags.length} Tags`);
               break;
             default:
-              return { text: `❌ Unbekannter Key "${key}". Erlaubt: caption, status, hashtags` };
+              return { text: `❌ Unbekannter Key "${key}". Erlaubt: caption, status, hashtags, cover_frame` };
           }
         }
         await saveInstaDraft(draft);

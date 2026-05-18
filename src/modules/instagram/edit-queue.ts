@@ -6,9 +6,12 @@
  * Real handlers (video_4x5, cover_frame) added in E4b.
  */
 import PQueue from 'p-queue';
+import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
+import { cropVideoTo4x5, extractCoverFrame } from './video-edit.js';
+import { setEditOutput } from './session-helper.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +41,61 @@ export function registerJobHandler(jobType: string, handler: JobHandler): void {
 
 registerJobHandler('_test_mock', async () => {
   await new Promise(resolve => setTimeout(resolve, 1000));
+});
+
+// ── Video Handlers (E4b) ────────────────────────────────────────────────────
+
+const MEDIA_ROOT = path.join(process.env.HOME || '/root',
+  '.openclaw/workspace/artifacts/personal/instagram/raw');
+
+registerJobHandler('video_4x5', async (job: EditJob) => {
+  const sourcePath = path.join(MEDIA_ROOT, job.sourcePath);
+  const mediaName = path.basename(job.sourcePath);
+
+  const result = await cropVideoTo4x5({
+    sessionId: job.sessionId,
+    mediaIndex: job.mediaIndex,
+    sourcePath, mediaName,
+  });
+
+  await setEditOutput({
+    editId: job.editId,
+    outputPath: result.relativePath,
+    sha256Output: result.sha256Output,
+  });
+
+  await audit.log({
+    module: 'instagram', action: 'media.video_4x5',
+    entityType: 'media_edit', entityId: String(job.editId),
+    after: { session_id: job.sessionId, media_index: job.mediaIndex,
+             variant: 'video_4x5', output_path: result.relativePath },
+  });
+});
+
+registerJobHandler('cover_frame', async (job: EditJob) => {
+  const sourcePath = path.join(MEDIA_ROOT, job.sourcePath);
+  const mediaName = path.basename(job.sourcePath);
+  const positionSec = (job.params?.positionSec as number) ?? undefined;
+
+  const result = await extractCoverFrame({
+    sessionId: job.sessionId,
+    mediaIndex: job.mediaIndex,
+    sourcePath, mediaName, positionSec,
+  });
+
+  await setEditOutput({
+    editId: job.editId,
+    outputPath: result.relativePath,
+    sha256Output: result.sha256Output,
+  });
+
+  await audit.log({
+    module: 'instagram', action: 'media.cover_frame',
+    entityType: 'media_edit', entityId: String(job.editId),
+    after: { session_id: job.sessionId, media_index: job.mediaIndex,
+             variant: 'cover_frame', output_path: result.relativePath,
+             position_sec: result.positionSec },
+  });
 });
 
 // ── Submit Job ───────────────────────────────────────────────────────────────

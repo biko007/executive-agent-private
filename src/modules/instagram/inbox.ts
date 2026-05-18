@@ -21,6 +21,9 @@ import {
   type UploadSource,
 } from './session-helper.js';
 import { centerCrop4x5 } from './image-edit.js';
+import { submitJob } from './edit-queue.js';
+import { insertEditVariant } from './session-helper.js';
+import { computeVideoParamsHash } from './video-edit.js';
 import { loadRawSession, saveRawSession, createRawSession, generateRawSessionId, sessionDir } from './commands.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
 import { getClient } from '../../shared/db/index.js';
@@ -45,7 +48,7 @@ const RAW_DIR = path.join(process.env.HOME || '/root', '.openclaw/workspace/arti
 
 interface FileResult {
   original_name: string;
-  status: 'uploaded' | 'duplicate' | 'rejected' | 'edited' | 'edit_failed';
+  status: 'uploaded' | 'duplicate' | 'rejected' | 'edited' | 'edit_failed' | 'processing';
   media_index?: number;
   name?: string;
   edit_id?: number;
@@ -263,7 +266,7 @@ async function processMultipart(
         // Determine HTTP status
         const uploaded = fileResults.filter(f =>
           f.status === 'uploaded' || f.status === 'duplicate' ||
-          f.status === 'edited' || f.status === 'edit_failed'
+          f.status === 'edited' || f.status === 'edit_failed' || f.status === 'processing'
         );
         const rejected = fileResults.filter(f => f.status === 'rejected');
         let httpStatus: number;
@@ -477,15 +480,40 @@ async function processUploadedFile(params: {
     return;
   }
 
-  // Videos: no crop, status='uploaded'
+  // Videos: enqueue async video_4x5 + cover_frame jobs (E4b)
+  const videoParamsHash = computeVideoParamsHash('video_4x5');
+  const videoEditId = await insertEditVariant({
+    sessionId, mediaIndex, variant: 'video_4x5',
+    sourcePath: relativePath, sha256Original: sha256,
+    paramsHash: videoParamsHash, source: params.source, requestId,
+  });
+
+  const coverParamsHash = computeVideoParamsHash('cover_frame', 1.0);
+  const coverEditId = await insertEditVariant({
+    sessionId, mediaIndex, variant: 'cover_frame',
+    sourcePath: relativePath, sha256Original: sha256,
+    paramsHash: coverParamsHash, source: params.source, requestId,
+  });
+
+  if (videoEditId > 0) {
+    await submitJob({
+      editId: videoEditId, jobType: 'video_4x5',
+      sessionId, mediaIndex, sourcePath: relativePath,
+    });
+  }
+
+  if (coverEditId > 0) {
+    await submitJob({
+      editId: coverEditId, jobType: 'cover_frame',
+      sessionId, mediaIndex, sourcePath: relativePath,
+      params: { positionSec: 1.0 },
+    });
+  }
+
   fileResults.push({
-    original_name: originalName,
-    status: 'uploaded',
-    media_index: mediaIndex,
-    name: mediaName,
-    edit_id: editId,
-    sha256,
-    type: mimeInfo.type,
+    original_name: originalName, status: 'processing',
+    media_index: mediaIndex, name: mediaName,
+    edit_id: editId, sha256, type: mimeInfo.type,
   });
 }
 

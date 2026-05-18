@@ -32,11 +32,16 @@ export {
   getOrCreateActiveSession, nextMediaIndex, buildMediaName,
   sanitizeSessionId, recordMediaUpload, computeFileSha256,
   PARAMS_HASH_CENTER_4X5, recordCropVariant, recordCropFailure,
+  insertEditVariant, setEditOutput, softDeleteVariant,
 } from './session-helper.js';
 export type { UploadSource } from './session-helper.js';
 
 // Image editing (E3)
 export { centerCrop4x5 } from './image-edit.js';
+
+// Video editing (E4b)
+export { probeVideo, cropVideoTo4x5, extractCoverFrame, computeVideoParamsHash } from './video-edit.js';
+export type { VideoCropResult, CoverFrameResult } from './video-edit.js';
 
 // Inbox HTTP endpoint (E2b)
 export { registerInboxHttpRoute } from './inbox.js';
