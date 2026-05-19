@@ -55,6 +55,7 @@ async function getInstitutionById(id: number): Promise<InstitutionRow | null> {
  */
 export async function initiateConnect(
   sessionId: number,
+  clientDataB64?: string | null,
 ): Promise<{ status: string; challengeType?: string; message?: string; accountCount?: number; error?: string }> {
   const decrypted = await getDecryptedSession(sessionId);
   if (!decrypted) {
@@ -90,7 +91,8 @@ export async function initiateConnect(
       fints_url: institution.fints_url,
       // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
       product_id: sessionRows[0].product_id === 'env-default' ? undefined : sessionRows[0].product_id,
-    }) as any;
+      client_data_b64: clientDataB64 ?? undefined,
+    });
 
     // Sidecar returned needs_tan
     if (response?.needs_tan) {

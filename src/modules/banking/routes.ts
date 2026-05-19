@@ -226,7 +226,7 @@ export function registerBankingHttpRoutes(api: any) {
                 return;
               }
 
-              const result = await initiateConnect(connectSessionId);
+              const result = await initiateConnect(connectSessionId, reuseCtx?.clientDataB64 ?? null);
 
               // Audit successful session reuse
               if (reuseCtx?.reuseMode === 'reuse' && result.status === 'connected') {

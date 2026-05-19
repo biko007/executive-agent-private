@@ -98,6 +98,42 @@ export async function health(): Promise<{ status: string }> {
   return res.json();
 }
 
+export interface ConnectResponse {
+  needs_tan?: boolean;
+  tan_type?: string;
+  tan_message?: string;
+  tan_decoupled?: boolean;
+  client_data?: string;
+  client_data_b64?: string;
+  tan_data?: string;
+  accounts?: Array<{
+    iban: string; display_name?: string; account_number?: string;
+    account_type?: string; owner_name?: string; currency?: string;
+    balance?: number;
+  }>;
+  error?: string;
+}
+
+/**
+ * Redact `client_data` and `client_data_b64` fields in objects for safe logging.
+ * Recursively walks objects and arrays.
+ */
+export function redactClientData<T>(obj: T): T {
+  if (obj == null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(redactClientData) as T;
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+    if ((key === 'client_data_b64' || key === 'client_data') && typeof val === 'string') {
+      result[key] = `<REDACTED:${val.length}-chars>`;
+    } else if (val != null && typeof val === 'object') {
+      result[key] = redactClientData(val);
+    } else {
+      result[key] = val;
+    }
+  }
+  return result as T;
+}
+
 /**
  * Connect to bank — POST /fints/connect
  */
@@ -108,12 +144,16 @@ export async function connect(params: {
   pin: string;
   fints_url: string;
   product_id?: string;
-}): Promise<unknown> {
+  client_data_b64?: string | null;
+}): Promise<ConnectResponse> {
+  console.log('[banking/sidecar] connect →', redactClientData(params));
   const res = await sidecarFetch('/fints/connect', {
     method: 'POST',
     body: JSON.stringify(params),
   }, 0);
-  return res.json();
+  const body: ConnectResponse = await res.json();
+  console.log('[banking/sidecar] connect ←', redactClientData(body));
+  return body;
 }
 
 /**
