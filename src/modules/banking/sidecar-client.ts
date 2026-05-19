@@ -33,13 +33,16 @@ function getToken(): string {
 /**
  * Internal fetch helper with retry on 5xx/network errors.
  * No retry on 4xx — those are client errors.
+ * @param maxRetries Override default MAX_RETRIES (use 0 for no retry).
  */
 async function sidecarFetch(
   path: string,
   init?: RequestInit,
+  maxRetries?: number,
 ): Promise<Response> {
   const url = `${getBaseUrl()}${path}`;
   const token = getToken();
+  const retries = maxRetries ?? MAX_RETRIES;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -47,7 +50,7 @@ async function sidecarFetch(
 
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetchWithTimeout(url, {
         ...init,
@@ -70,7 +73,7 @@ async function sidecarFetch(
           `Sidecar returned ${res.status}: ${body}`,
           res.status, body,
         );
-        if (attempt < MAX_RETRIES) continue;
+        if (attempt < retries) continue;
         throw lastError;
       }
 
@@ -80,7 +83,7 @@ async function sidecarFetch(
         throw e; // Don't retry 4xx
       }
       lastError = e;
-      if (attempt >= MAX_RETRIES) throw lastError;
+      if (attempt >= retries) throw lastError;
     }
   }
 
@@ -109,7 +112,7 @@ export async function connect(params: {
   const res = await sidecarFetch('/fints/connect', {
     method: 'POST',
     body: JSON.stringify(params),
-  });
+  }, 0);
   return res.json();
 }
 
@@ -130,7 +133,7 @@ export async function completeTan(params: {
   const res = await sidecarFetch('/fints/complete-tan', {
     method: 'POST',
     body: JSON.stringify(params),
-  });
+  }, 0);
   return res.json();
 }
 
@@ -173,4 +176,14 @@ export async function refreshSession(params: {
     body: JSON.stringify(params),
   });
   return res.json();
+}
+
+/**
+ * Cancel a parked sidecar session — fire-and-forget.
+ * DELETE /fints/session/:id — always 204, errors suppressed.
+ */
+export async function cancelSession(sessionId: number): Promise<void> {
+  try {
+    await sidecarFetch(`/fints/session/${sessionId}`, { method: 'DELETE' }, 0);
+  } catch { /* fire-and-forget */ }
 }

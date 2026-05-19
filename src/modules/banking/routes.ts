@@ -238,8 +238,8 @@ export function registerBankingHttpRoutes(api: any) {
               markSensitiveResponse(res);
 
               const body = await parseJsonBody(req);
-              if (!body.session_id || !body.tan) {
-                err(res, 400, 'session_id and tan required');
+              if (!body.session_id || typeof body.tan !== 'string') {
+                err(res, 400, 'session_id and tan (string) required');
                 return;
               }
 
@@ -247,6 +247,16 @@ export function registerBankingHttpRoutes(api: any) {
               json(res, 200, result);
             } catch (e: any) { err(res, 500, e.message); }
           });
+          return true;
+        }
+
+        // DELETE /api/banking/session/:sessionId — fire-and-forget cancel parked sidecar session
+        if (resource === 'session' && segments[1] && req.method === 'DELETE') {
+          const sid = parseInt(segments[1], 10);
+          if (isNaN(sid)) { err(res, 400, 'Invalid session_id'); return true; }
+          sidecar.cancelSession(sid).catch(() => {});
+          res.writeHead(204);
+          res.end();
           return true;
         }
 
