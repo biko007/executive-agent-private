@@ -88,7 +88,8 @@ export async function initiateConnect(
       user_id: decrypted.userId,
       pin: decrypted.pin,
       fints_url: institution.fints_url,
-      product_id: sessionRows[0].product_id,
+      // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
+      product_id: sessionRows[0].product_id === 'env-default' ? undefined : sessionRows[0].product_id,
     }) as any;
 
     // Sidecar returned needs_tan
@@ -217,7 +218,8 @@ export async function completeTan(
       fints_url: institution.fints_url,
       user_id: decrypted.userId,
       pin: decrypted.pin,
-      product_id: sessionRows[0].product_id,
+      // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
+      product_id: sessionRows[0].product_id === 'env-default' ? undefined : sessionRows[0].product_id,
       client_data: clientData,
       tan_data: tanData,
       tan, // TAN value — never persisted, never logged

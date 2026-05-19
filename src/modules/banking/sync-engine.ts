@@ -177,7 +177,8 @@ export async function dailySync(): Promise<DailySyncResult> {
             fints_url: institution.fints_url,
             user_id: decrypted.userId,
             pin: decrypted.pin,
-            product_id: productId,
+            // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
+            product_id: productId === 'env-default' ? undefined : productId,
             client_data: decrypted.state || undefined,
             account_iban: account.iban,
           });
