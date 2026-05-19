@@ -2,6 +2,7 @@
  * banking/store — Postgres-backed persistence for Banking module.
  * Sprint 7b Etappe c: CRUD for 4 banking tables with encryption.
  */
+import crypto from 'node:crypto';
 import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import { encrypt, decrypt } from './encryption.js';
@@ -13,6 +14,7 @@ import type {
   DecryptedSession,
   EncryptedPayload,
   PendingChallenge,
+  ReusableSession,
 } from './types.js';
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -620,4 +622,110 @@ export async function clearReminders(sessionId: number): Promise<void> {
     `DELETE FROM banking_sync_reminders WHERE session_id = $1`,
     [sessionId],
   );
+}
+
+// ── Session Reuse (Etappe 2.10a) ────────────────────────────────────────────
+
+/**
+ * Find a reusable session for an institution + user.
+ *
+ * Because user_id is stored encrypted (no plaintext column), we query by
+ * institution_id + validity criteria, then decrypt and compare user_id in
+ * code with constant-time comparison.
+ */
+export async function findReusableSession(
+  institutionId: number,
+  expectedUserId: string,
+): Promise<ReusableSession | null> {
+  const { rows } = await dbQuery<SessionRow>(
+    `SELECT id, user_id_encrypted, session_state_encrypted,
+            last_success_at, session_expires_at
+     FROM banking_sessions
+     WHERE institution_id = $1
+       AND session_format = 'fints5'
+       AND last_success_at IS NOT NULL
+       AND last_success_at > NOW() - INTERVAL '30 days'
+       AND session_expires_at > NOW()
+       AND session_state_encrypted IS NOT NULL
+     ORDER BY last_success_at DESC, id DESC
+     LIMIT 5`,
+    [institutionId],
+  );
+
+  let candidatesChecked = 0;
+
+  for (const row of rows) {
+    candidatesChecked++;
+    const sid = String(row.id);
+
+    // Decrypt user_id for comparison
+    let decryptedUserId: string;
+    try {
+      decryptedUserId = decrypt(JSON.parse(row.user_id_encrypted), sid, 'user_id');
+    } catch {
+      await audit.log({
+        module: 'banking', action: 'session.state.decrypt_failed',
+        entityType: 'banking_session', entityId: sid,
+        after: { field: 'user_id' },
+      });
+      await markSessionStateInvalid(num(row.id));
+      continue;
+    }
+
+    // Constant-time comparison
+    const a = Buffer.from(decryptedUserId);
+    const b = Buffer.from(expectedUserId);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      continue;
+    }
+
+    // User matches — decrypt session state
+    try {
+      const encState: EncryptedPayload = JSON.parse(
+        row.session_state_encrypted!.toString('utf-8'),
+      );
+      const clientDataB64 = decrypt(encState, sid, 'state');
+
+      return {
+        sessionId: num(row.id),
+        clientDataB64,
+        lastSuccessAt: ts(row.last_success_at),
+        sessionExpiresAt: ts(row.session_expires_at),
+      };
+    } catch {
+      await audit.log({
+        module: 'banking', action: 'session.state.decrypt_failed',
+        entityType: 'banking_session', entityId: sid,
+        after: { field: 'state' },
+      });
+      await markSessionStateInvalid(num(row.id));
+      continue;
+    }
+  }
+
+  if (candidatesChecked > 0) {
+    await audit.log({
+      module: 'banking', action: 'session.user_mismatch',
+      entityType: 'banking_session', entityId: String(institutionId),
+      after: { institutionId, candidatesChecked },
+    });
+  }
+
+  return null;
+}
+
+/**
+ * Mark a session's state as invalid by clearing last_success_at.
+ * This removes it from the reusable-session candidate pool.
+ */
+export async function markSessionStateInvalid(sessionId: number): Promise<void> {
+  await dbQuery(
+    `UPDATE banking_sessions SET last_success_at = NULL WHERE id = $1`,
+    [sessionId],
+  );
+  await audit.log({
+    module: 'banking', action: 'session.state.marked_invalid',
+    entityType: 'banking_session', entityId: String(sessionId),
+    after: { lastSuccessAt: null },
+  });
 }

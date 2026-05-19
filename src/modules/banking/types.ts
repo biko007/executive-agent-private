@@ -157,6 +157,17 @@ export interface SessionRow {
 }
 
 /**
+ * Reusable session — returned by findReusableSession().
+ * Contains decrypted client_data_b64 for sidecar session reuse.
+ */
+export interface ReusableSession {
+  sessionId: number;
+  clientDataB64: string;
+  lastSuccessAt: string;
+  sessionExpiresAt: string;
+}
+
+/**
  * Pending TAN challenge — returned by getPendingChallenge().
  * Contains encrypted sidecar dialog state (BYTEA from DB).
  */
