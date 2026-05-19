@@ -168,6 +168,16 @@ export interface ReusableSession {
 }
 
 /**
+ * Session reuse decision — returned by decideReuse().
+ * Captures whether an existing session was reused or a fresh one created.
+ */
+export interface SessionReuseContext {
+  reuseMode: 'reuse' | 'fresh';
+  sessionId: number;
+  clientDataB64: string | null;
+}
+
+/**
  * Pending TAN challenge — returned by getPendingChallenge().
  * Contains encrypted sidecar dialog state (BYTEA from DB).
  */

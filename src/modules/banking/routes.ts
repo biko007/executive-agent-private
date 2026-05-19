@@ -13,7 +13,7 @@ import { isSensitiveRoute, markSensitiveResponse, checkSensitiveRateLimit } from
 import {
   listInstitutions, listAccounts, listTransactions,
   archiveAccount, deleteAccount,
-  upsertInstitution, createSession,
+  upsertInstitution, decideReuse,
 } from './store.js';
 import { initiateConnect, completeTan } from './tan-bridge.js';
 import { dailySync, getSyncStatus } from './sync-engine.js';
@@ -199,10 +199,11 @@ export function registerBankingHttpRoutes(api: any) {
 
               // Accept either { session_id } or { blz, user_id, pin } (Dashboard form flow)
               let connectSessionId: number;
+              let reuseCtx: { reuseMode: 'reuse' | 'fresh'; sessionId: number; clientDataB64: string | null } | undefined;
               if (body.session_id) {
                 connectSessionId = Number(body.session_id);
               } else if (body.blz && body.user_id && body.pin) {
-                // Dashboard credential flow: upsert institution + create session
+                // Dashboard credential flow: upsert institution + decideReuse (find-or-create)
                 const inst = await upsertInstitution(
                   body.blz,
                   body.bank_name || `Bank ${body.blz}`,
@@ -210,7 +211,7 @@ export function registerBankingHttpRoutes(api: any) {
                   body.fints_url || '',
                   actor,
                 );
-                const session = await createSession(
+                const ctx = await decideReuse(
                   inst.id,
                   body.user_id,
                   body.pin,
@@ -218,14 +219,25 @@ export function registerBankingHttpRoutes(api: any) {
                   body.tan_medium || undefined,
                   actor,
                 );
-                connectSessionId = session.id;
+                connectSessionId = ctx.sessionId;
+                reuseCtx = ctx;
               } else {
                 err(res, 400, 'session_id or (blz, user_id, pin) required');
                 return;
               }
 
               const result = await initiateConnect(connectSessionId);
-              json(res, 200, { ...result, session_id: connectSessionId });
+
+              // Audit successful session reuse
+              if (reuseCtx?.reuseMode === 'reuse' && result.status === 'connected') {
+                await audit.log({
+                  module: 'banking', action: 'session.reused',
+                  entityType: 'banking_session', entityId: String(reuseCtx.sessionId),
+                  after: null,
+                });
+              }
+
+              json(res, 200, { ...result, session_id: connectSessionId, reuse_mode: reuseCtx?.reuseMode ?? 'direct' });
             } catch (e: any) { err(res, 500, e.message); }
           });
           return true;

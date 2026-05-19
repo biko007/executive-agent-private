@@ -15,6 +15,7 @@ import type {
   EncryptedPayload,
   PendingChallenge,
   ReusableSession,
+  SessionReuseContext,
 } from './types.js';
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -728,4 +729,65 @@ export async function markSessionStateInvalid(sessionId: number): Promise<void> 
     entityType: 'banking_session', entityId: String(sessionId),
     after: { lastSuccessAt: null },
   });
+}
+
+// ── Session Reuse Decision (Etappe 2.10c) ────────────────────────────────
+
+/**
+ * Compute a stable int32 lock key from userId + institutionId.
+ * Used as the second argument to pg_advisory_lock(46, key).
+ */
+function sessionLockKey(userId: string, institutionId: number): number {
+  const hash = crypto.createHash('sha256')
+    .update(`${userId}:${institutionId}`)
+    .digest();
+  return hash.readInt32BE(0); // first 4 bytes as signed int32
+}
+
+/**
+ * Decide whether to reuse an existing session or create a fresh one.
+ *
+ * Serialized per user+institution via pg_advisory_lock(46, key) to prevent
+ * concurrent duplicate session creation. Uses a dedicated pool connection
+ * for lock affinity.
+ */
+export async function decideReuse(
+  institutionId: number,
+  userId: string,
+  pin: string,
+  productId: string,
+  tanMedium?: string,
+  actor?: string,
+): Promise<SessionReuseContext> {
+  const lockKey = sessionLockKey(userId, institutionId);
+  const lockClient = await getClient();
+
+  await lockClient.query('SELECT pg_advisory_lock(46, $1::integer)', [lockKey]);
+
+  try {
+    const candidate = await findReusableSession(institutionId, userId);
+
+    if (candidate) {
+      await audit.log({
+        module: 'banking', action: 'session.reuse_attempted',
+        entityType: 'banking_session', entityId: String(candidate.sessionId),
+        after: { lastSuccessAt: candidate.lastSuccessAt },
+      });
+      return {
+        reuseMode: 'reuse',
+        sessionId: candidate.sessionId,
+        clientDataB64: candidate.clientDataB64,
+      };
+    }
+
+    const session = await createSession(institutionId, userId, pin, productId, tanMedium, actor);
+    return {
+      reuseMode: 'fresh',
+      sessionId: session.id,
+      clientDataB64: null,
+    };
+  } finally {
+    await lockClient.query('SELECT pg_advisory_unlock(46, $1::integer)', [lockKey]).catch(() => {});
+    lockClient.release();
+  }
 }
