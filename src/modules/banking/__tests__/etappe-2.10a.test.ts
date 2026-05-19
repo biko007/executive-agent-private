@@ -258,6 +258,54 @@ describe('findReusableSession + markSessionStateInvalid', () => {
     expect(actions).toContain('session.state.marked_invalid');
   });
 
+  test('T9: all candidates decrypt-fail → decideReuse returns fresh, no session.reused audit', async () => {
+    const { decideReuse, upsertInstitution, createSession, updateSessionState } = await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+
+    const inst = await upsertInstitution('10000009', 'T9 Bank', null, 'https://example.com/fints');
+
+    // Create two sessions, both with corrupted user_id_encrypted
+    const s1 = await createSession(inst.id, 'USER_T9', 'PIN', 'test-product');
+    await updateSessionState(s1.id, 'c3RhdGUx', 'fints5', '4.1.0', new Date(Date.now() + 86400000).toISOString());
+    await query(
+      `UPDATE banking_sessions SET user_id_encrypted = $1 WHERE id = $2`,
+      ['{"ciphertext":"AAAA","iv":"AAAA","authTag":"AAAA","keyVersion":1}', s1.id],
+    );
+
+    const s2 = await createSession(inst.id, 'USER_T9', 'PIN', 'test-product');
+    await updateSessionState(s2.id, 'c3RhdGUy', 'fints5', '4.1.0', new Date(Date.now() + 86400000).toISOString());
+    await query(
+      `UPDATE banking_sessions SET user_id_encrypted = $1 WHERE id = $2`,
+      ['{"ciphertext":"BBBB","iv":"BBBB","authTag":"BBBB","keyVersion":1}', s2.id],
+    );
+
+    // Clear any prior audit entries for these sessions
+    await query(`DELETE FROM audit_log WHERE entity_id IN ($1, $2)`, [String(s1.id), String(s2.id)]);
+
+    const ctx = await decideReuse(inst.id, 'USER_T9', 'PIN', 'test-product');
+
+    // Must be fresh — all candidates were corrupt
+    expect(ctx.reuseMode).toBe('fresh');
+    expect(ctx.clientDataB64).toBeNull();
+    // New session created (different from s1/s2)
+    expect(ctx.sessionId).not.toBe(s1.id);
+    expect(ctx.sessionId).not.toBe(s2.id);
+
+    // Both corrupted sessions got decrypt_failed audit
+    const { rows: decryptAudit } = await query(
+      `SELECT entity_id FROM audit_log WHERE action = 'session.state.decrypt_failed' AND entity_id IN ($1, $2)`,
+      [String(s1.id), String(s2.id)],
+    );
+    expect(decryptAudit.length).toBe(2);
+
+    // No session.reused audit for ANY session in this institution
+    const { rows: reusedAudit } = await query(
+      `SELECT * FROM audit_log WHERE action = 'session.reused' AND entity_id IN ($1, $2, $3)`,
+      [String(s1.id), String(s2.id), String(ctx.sessionId)],
+    );
+    expect(reusedAudit.length).toBe(0);
+  });
+
   test('T8: roundtrip — encrypt(b64) → DB → decrypt → identical b64 string', async () => {
     const { findReusableSession } = await import('../store.js');
 
