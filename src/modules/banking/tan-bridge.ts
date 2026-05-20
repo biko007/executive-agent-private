@@ -129,7 +129,7 @@ export async function initiateConnect(
     if (response?.accounts && Array.isArray(response.accounts)) {
       let accountCount = 0;
       for (const acct of response.accounts) {
-        await upsertAccount(
+        const account = await upsertAccount(
           sessionRows[0].institution_id,
           acct.iban,
           acct.display_name || acct.iban,
@@ -141,6 +141,15 @@ export async function initiateConnect(
             currentBalance: acct.balance != null ? Number(acct.balance) : undefined,
           },
         );
+        if (account.status === 'archived') {
+          await audit.log({
+            module: 'banking',
+            action: 'account.archive_preserved',
+            entityType: 'banking_account',
+            entityId: String(account.id),
+            after: { iban: account.iban, status: 'archived', reason: 'reconnect_upsert_skipped_status' },
+          });
+        }
         accountCount++;
       }
       return { status: 'connected', accountCount };
@@ -254,7 +263,7 @@ export async function completeTan(
 
       let accountCount = 0;
       for (const acct of response.accounts) {
-        await upsertAccount(
+        const account = await upsertAccount(
           institutionId,
           acct.iban,
           acct.display_name || acct.iban,
@@ -266,6 +275,15 @@ export async function completeTan(
             currentBalance: acct.balance != null ? Number(acct.balance) : undefined,
           },
         );
+        if (account.status === 'archived') {
+          await audit.log({
+            module: 'banking',
+            action: 'account.archive_preserved',
+            entityType: 'banking_account',
+            entityId: String(account.id),
+            after: { iban: account.iban, status: 'archived', reason: 'reconnect_upsert_skipped_status' },
+          });
+        }
         accountCount++;
       }
       return { status: 'connected', accountCount };

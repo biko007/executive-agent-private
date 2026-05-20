@@ -311,12 +311,13 @@ export async function upsertAccount(
         owner_name, currency, current_balance, last_sync_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (iban) DO UPDATE SET
-       display_name = EXCLUDED.display_name,
+       display_name = COALESCE(banking_accounts.display_name, EXCLUDED.display_name),
        account_number = COALESCE(EXCLUDED.account_number, banking_accounts.account_number),
        account_type = COALESCE(EXCLUDED.account_type, banking_accounts.account_type),
        owner_name = COALESCE(EXCLUDED.owner_name, banking_accounts.owner_name),
-       current_balance = COALESCE(EXCLUDED.current_balance, banking_accounts.current_balance),
-       last_sync_at = COALESCE(EXCLUDED.last_sync_at, banking_accounts.last_sync_at)
+       currency = COALESCE(EXCLUDED.currency, banking_accounts.currency),
+       updated_at = NOW()
+       -- intentionally NOT updated on re-connect: status, current_balance, last_sync_at (Sprint 2.10-B r4)
      RETURNING *`,
     [
       institutionId, iban,
