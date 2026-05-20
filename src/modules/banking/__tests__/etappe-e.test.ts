@@ -235,3 +235,68 @@ describe('getSyncStatus', () => {
     }
   });
 });
+
+// ── Sync-Filter: status='active' (Sprint 2.10-B Etappe a) ──────────────────
+
+describe('sync-engine status filter', () => {
+  test('9. listAccounts({status:"active"}) excludes archived accounts', async () => {
+    const { upsertInstitution, upsertAccount, archiveAccount, listAccounts } =
+      await import('../store.js');
+
+    const inst = await upsertInstitution('50000009', 'Filter Bank', null, 'https://example.com/fints');
+    const active1 = await upsertAccount(inst.id, 'DE89370400440532019001', 'Active Konto');
+    const active2 = await upsertAccount(inst.id, 'DE89370400440532019002', 'Archived Konto');
+
+    // Archive one account
+    await archiveAccount(active2.id);
+
+    // listAccounts with status filter → only active
+    const accounts = await listAccounts({ institution_id: inst.id, status: 'active' });
+    const ibans = accounts.map(a => a.iban);
+
+    expect(ibans).toContain('DE89370400440532019001');
+    expect(ibans).not.toContain('DE89370400440532019002');
+  });
+
+  test('10. dailySync calls sidecar only for active accounts', async () => {
+    const { upsertInstitution, createSession, upsertAccount, archiveAccount } =
+      await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+
+    // Setup: institution + session with valid state
+    const inst = await upsertInstitution('50000010', 'Sync Filter Bank', null, 'https://example.com/fints');
+    const session = await createSession(inst.id, 'USER_SF', 'PIN_SF', 'product-sf');
+
+    // Set session_expires_at far in the future so it's active
+    await query(
+      `UPDATE banking_sessions SET session_expires_at = $1, last_success_at = NOW() WHERE id = $2`,
+      [new Date(Date.now() + 90 * 86_400_000).toISOString(), session.id],
+    );
+
+    // Create 1 active + 1 archived account
+    const activeAcct = await upsertAccount(inst.id, 'DE89370400440532010001', 'Active Sync');
+    const archivedAcct = await upsertAccount(inst.id, 'DE89370400440532010002', 'Archived Sync');
+    await archiveAccount(archivedAcct.id);
+
+    // Track sidecar sync calls
+    const syncedIbans: string[] = [];
+
+    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+
+    initSyncEngine({
+      sendTelegram: async () => true,
+      telegramChatId: () => undefined,
+      _sidecarHealth: async () => ({ status: 'ok' }),
+      _sidecarSync: async (params) => {
+        syncedIbans.push(params.account_iban);
+        return { transactions: [], balance: 100.00 };
+      },
+    });
+
+    await dailySync();
+
+    // Only the active account should have been synced
+    expect(syncedIbans).toContain('DE89370400440532010001');
+    expect(syncedIbans).not.toContain('DE89370400440532010002');
+  });
+});

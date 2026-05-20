@@ -163,8 +163,8 @@ export async function dailySync(): Promise<DailySyncResult> {
       }
       const productId = sessDbRows[0].product_id;
 
-      // Load accounts for this session's institution
-      const accounts = await listAccounts({ institution_id: session.institutionId });
+      // Load only active accounts — archived accounts are excluded from sync (Sprint 2.10-B)
+      const accounts = await listAccounts({ institution_id: session.institutionId, status: 'active' });
       let okCount = 0;
       let errCount = 0;
 
