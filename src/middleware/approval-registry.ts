@@ -106,6 +106,7 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
   // Banking — Account operations
   'banking-accounts.archive': { endpointKey: 'banking-accounts.archive', method: 'POST', pathPattern: '/api/banking/accounts/:id/archive', requiresApproval: true, idempotency: false, description: 'Archive banking account' },
   'banking-accounts.delete': { endpointKey: 'banking-accounts.delete', method: 'DELETE', pathPattern: '/api/banking/accounts/:id', requiresApproval: true, idempotency: false, description: 'Delete banking account' },
+  'banking-accounts.bulk-archive': { endpointKey: 'banking-accounts.bulk-archive', method: 'POST', pathPattern: '/api/banking/accounts/bulk-archive', requiresApproval: true, idempotency: false, description: 'Bulk archive banking accounts' },
 
   // Banking — Approval preview
   'banking-approval-preview.create': { endpointKey: 'banking-approval-preview.create', method: 'POST', pathPattern: '/api/banking/approval-preview', requiresApproval: false, idempotency: false, description: 'Create banking approval preview' },

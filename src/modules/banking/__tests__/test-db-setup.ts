@@ -83,6 +83,30 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
   const v029Sql = readFileSync(v029Path, 'utf-8');
   await testPool.query(v029Sql);
 
+  // approval_tokens table (needed by approval workflow tests)
+  await testPool.query(`
+    CREATE TABLE IF NOT EXISTS approval_tokens (
+      id SERIAL PRIMARY KEY,
+      token UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+      session_id TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      method TEXT NOT NULL,
+      endpoint_key TEXT NOT NULL,
+      canonical_body_hash TEXT NOT NULL,
+      entity_versions JSONB,
+      diff_summary JSONB,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      superseded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await testPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_approval_tokens_active
+      ON approval_tokens(session_id, endpoint_key)
+      WHERE used_at IS NULL AND superseded_at IS NULL
+  `);
+
   await testPool.end();
 
   // 3. Point POSTGRES_URL to test database

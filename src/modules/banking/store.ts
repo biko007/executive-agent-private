@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
+import { getCorrelationId, getRequestId } from '../../shared/correlation/index.js';
 import { encrypt, decrypt } from './encryption.js';
 import type {
   Institution, InstitutionRow,
@@ -381,6 +382,86 @@ export async function deleteAccount(accountId: number, actor?: string): Promise<
   });
 
   return true;
+}
+
+// ── Bulk-Archive (Sprint 2.10-B) ─────────────────────────────────────────────
+
+/**
+ * Check if all account IDs belong to the same institution.
+ * Returns the institution_id if uniform, null if mixed or empty.
+ */
+export async function getUniformInstitutionId(accountIds: number[]): Promise<number | null> {
+  if (accountIds.length === 0) return null;
+  const { rows } = await dbQuery<{ institution_id: string }>(
+    'SELECT DISTINCT institution_id FROM banking_accounts WHERE id = ANY($1)',
+    [accountIds],
+  );
+  if (rows.length !== 1) return null;
+  return num(rows[0].institution_id);
+}
+
+/**
+ * Bulk-archive accounts within a caller-owned transaction.
+ * - Locks rows via SELECT ... FOR UPDATE (sorted IDs = deadlock prevention)
+ * - Updates active → archived, skips already_archived and not_found
+ * - Writes one audit_log row per archived account (inside TX)
+ */
+export async function bulkArchiveAccounts(
+  client: import('pg').PoolClient,
+  accountIds: number[],
+  institutionId: number,
+  actor: string,
+): Promise<{ archived: { id: number; iban: string }[]; skipped: { id: number; iban: string | null; reason: string }[] }> {
+  const sorted = [...accountIds].sort((a, b) => a - b);
+
+  // Lock rows in sorted order to prevent deadlocks
+  const { rows: locked } = await client.query<AccountRow>(
+    `SELECT * FROM banking_accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+    [sorted],
+  );
+
+  const lockedMap = new Map(locked.map(r => [num(r.id), r]));
+
+  // Update only active accounts — institution_id guard as defense-in-depth
+  const activeIds = locked.filter(r => r.status === 'active').map(r => r.id);
+  let updatedRows: AccountRow[] = [];
+  if (activeIds.length > 0) {
+    const { rows } = await client.query<AccountRow>(
+      `UPDATE banking_accounts SET status = 'archived', updated_at = NOW()
+       WHERE id = ANY($1) AND status = 'active' AND institution_id = $2 RETURNING *`,
+      [activeIds, institutionId],
+    );
+    updatedRows = rows;
+  }
+
+  const updatedMap = new Map(updatedRows.map(r => [num(r.id), r]));
+
+  const archived: { id: number; iban: string }[] = [];
+  const skipped: { id: number; iban: string | null; reason: string }[] = [];
+
+  for (const id of sorted) {
+    const row = lockedMap.get(id);
+    if (!row) {
+      skipped.push({ id, iban: null, reason: 'not_found' });
+      continue;
+    }
+    const updated = updatedMap.get(id);
+    if (updated) {
+      archived.push({ id: num(updated.id), iban: updated.iban });
+      // Audit log per archived account — inside TX, with correlation context
+      await client.query(
+        `INSERT INTO audit_log (actor, module, action, entity_type, entity_id, before_jsonb, after_jsonb, correlation_id, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [actor, 'banking', 'account.bulk-archive', 'banking_account', String(id),
+         JSON.stringify(row), JSON.stringify(updated),
+         getCorrelationId(), getRequestId()],
+      );
+    } else {
+      skipped.push({ id: num(row.id), iban: row.iban, reason: 'already_archived' });
+    }
+  }
+
+  return { archived, skipped };
 }
 
 // ── Transaction CRUD ──────────────────────────────────────────────────────────

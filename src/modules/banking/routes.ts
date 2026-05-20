@@ -14,7 +14,9 @@ import {
   listInstitutions, listAccounts, listTransactions,
   archiveAccount, deleteAccount,
   upsertInstitution, decideReuse,
+  getUniformInstitutionId, bulkArchiveAccounts,
 } from './store.js';
+import { getClient } from '../../shared/db/index.js';
 import { initiateConnect, completeTan } from './tan-bridge.js';
 import { dailySync, getSyncStatus } from './sync-engine.js';
 import * as sidecar from './sidecar-client.js';
@@ -107,6 +109,59 @@ export function registerBankingHttpRoutes(api: any) {
                 institution_id: institutionId ? parseInt(institutionId, 10) : undefined,
               });
               json(res, 200, accounts);
+            } catch (e: any) { err(res, 500, e.message); }
+          });
+          return true;
+        }
+
+        // POST /api/banking/accounts/bulk-archive
+        if (resource === 'accounts' && segments[1] === 'bulk-archive' && req.method === 'POST') {
+          await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+            try {
+              const body = await parseJsonBody(req);
+              const rawIds = body.account_ids;
+
+              // Validation: must be non-empty array of positive integers
+              if (!Array.isArray(rawIds) || rawIds.length === 0) {
+                err(res, 400, 'account_ids must be a non-empty array'); return;
+              }
+              for (const id of rawIds) {
+                if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
+                  err(res, 400, 'All account_ids must be positive integers'); return;
+                }
+              }
+
+              // Dedup + sort for canonical hashing
+              const sortedIds = [...new Set(rawIds as number[])].sort((a, b) => a - b);
+
+              // Batch limit
+              if (sortedIds.length > 50) {
+                err(res, 400, 'Maximum 50 accounts per bulk-archive request'); return;
+              }
+
+              // Cross-institution check
+              const institutionId = await getUniformInstitutionId(sortedIds);
+              if (institutionId === null) {
+                err(res, 400, 'All accounts must belong to the same institution'); return;
+              }
+
+              // Approval check with normalized body
+              const normalizedBody = { account_ids: sortedIds };
+              if (!(await checkApproval(req, res, 'banking-accounts.bulk-archive', sessionId, actor, 'POST', normalizedBody))) return;
+
+              // Execute in transaction
+              const client = await getClient();
+              try {
+                await client.query('BEGIN');
+                const result = await bulkArchiveAccounts(client, sortedIds, institutionId, actor);
+                await client.query('COMMIT');
+                json(res, 200, { ok: true, ...result });
+              } catch (e) {
+                await client.query('ROLLBACK').catch(() => {});
+                throw e;
+              } finally {
+                client.release();
+              }
             } catch (e: any) { err(res, 500, e.message); }
           });
           return true;
