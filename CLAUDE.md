@@ -1,10 +1,10 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-17**
+**Stand: 2026-05-20**
 
-## Stand 2026-05-17
+## Stand 2026-05-20
 
-Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -60,8 +60,21 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 vollständig abgeschlossen.
     Hard-Delete Phase 1 (Dry-Run only). Phase 2 BEDINGT an 3 synthetische Tests.
   - **11.7:** Closure-Docs. Smoke 28/28. Drift-Detector clean. CLAUDE.md finalisiert.
   Archive-Status: `history.jsonl`, `links.json`, 3× `sharepoint-index*.json`, 6× Instagram-Drafts.
+- **Sprint 2.10-A (Banking Session Reuse):** FinTS BPD/UPD-Cache Passthrough.
+  Etappen: d (encryption) → a (findReusableSession) → c (decideReuse + advisory-lock) →
+  b (sidecar-client + tan-bridge clientDataB64 passthrough) → g (sidecar fetch_tan_mechanisms fix).
+  Session-Reuse: `decideReuse()` findet existierende Session mit gültigem encrypted State,
+  `clientDataB64` wird durch routes → tan-bridge → sidecar-client → Python-Sidecar geschleust.
+  Python-Sidecar gibt `from_data` an python-fints Library weiter → kein TAN bei Reuse.
+  `ConnectResponse` Typ, `redactClientData()` Log-Redaction (Hard Rule 8).
+  Advisory-Lock(46) für User+Institution-Serialisierung. Decrypt-Failure-Policy mit
+  `markSessionStateInvalid()` + Audit. 71 Tests (Agent 35 + Sidecar 36).
+  E2E: KSK Tuttlingen, 12 Konten, HAPPY PATH ohne TAN (Tag `2.10-a-e2e-passed`).
+  Sidecar-Fix (Etappe g): `fetch_tan_mechanisms()` bei Reuse übersprungen — Library setzt
+  blind `set_tan_mechanism('999')` was den aus `from_data` restaurierten Mechanismus zerstört.
+  Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).
 
-### Module (11)
+### Module (12)
 
 | Modul | Pfad | Commands | DI |
 |-------|------|----------|----|
@@ -76,6 +89,7 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 vollständig abgeschlossen.
 | mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
 | calendar | src/modules/calendar/ | 4 | M365 |
 | sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
+| banking | src/modules/banking/ | — (via routes.ts) | Postgres, Encryption, Python-Sidecar (FinTS) |
 
 ### Daten-Hygiene
 
@@ -134,6 +148,27 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
     Phase 1: Dry-Run only. Phase 2 bedingt an 3 synthetische Tests (siehe Runbook).
 - Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
 - Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
+
+### Banking Session Reuse (Sprint 2.10-A)
+
+- DB-Tabellen: `banking_institutions`, `banking_sessions`, `banking_accounts`, `banking_pending_challenges`, `banking_sync_reminders` (V027-V029)
+- Session-Reuse: `decideReuse()` in store.ts findet existierende Session mit gültigem encrypted State
+  - Kriterien: `session_format = 'fints5'`, `last_success_at < 30d`, `session_expires_at > NOW()`, User-Match (decrypt + timingSafeEqual)
+  - Decrypt-Failure-Policy: `markSessionStateInvalid()` (last_success_at = NULL) + Audit, nächste Candidate
+- Advisory-Lock: `pg_advisory_lock(46, hash(userId:institutionId))` — serialisiert parallele decideReuse-Calls
+- Encryption: AES-256-GCM, Key aus `BANKING_ENCRYPTION_KEY` (64 hex), AAD = sessionId + field-name
+- Sidecar: Python FastAPI (`~/openclaw-banking-fints`, Port 18794), python-fints Library
+  - `from_data` restauriert BPD/UPD/TAN-Mechanismus aus `client_data_b64`
+  - WICHTIG: `fetch_tan_mechanisms()` bei Reuse NICHT aufrufen (setzt blind '999', Etappe g)
+  - Parked-Client-Pattern für decoupled pushTAN (3955/3956)
+- Log-Redaction: `redactClientData()` in sidecar-client.ts — redacts `client_data`/`client_data_b64` in connect request/response logs
+- Core-Endpoints (Bearer `CORE_SERVICE_TOKEN`):
+  - `POST /api/banking/connect` — Dashboard-Flow (blz/user_id/pin) oder Telegram-Flow (session_id)
+  - `POST /api/banking/complete-tan` — TAN-Eingabe
+  - `GET /api/banking/institutions` — Institutionen-Liste
+  - `GET /api/banking/accounts` — Konten-Liste
+  - `GET /api/banking/accounts/:id/transactions` — Umsätze
+  - `DELETE /api/banking/session/:id` — Sidecar-Session cancel (fire-and-forget)
 
 ### Settings (Sprint 11)
 
@@ -207,6 +242,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
   Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`. Bei neuem Callback-Prefix hier UND in
   `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
+- **TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.
 
 ### Sprint-Roadmap
 
@@ -220,6 +256,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 | 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
 | 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
 | 11 | Closure + Housekeeping (7 Etappen, V035) | abgeschlossen |
+| 2.10-A | Banking Session Reuse (5 Etappen, 71 Tests, E2E KSK) | abgeschlossen |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 
@@ -227,6 +264,12 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 
 - **Postgres-Bootstrap-User:** `ALTER ROLE n8n NOSUPERUSER` → `permission denied to alter role`.
   Lösung: separater App-User `n8n_app` mit GRANT-Modell. Smoke-Test verhindert Rückfall.
+- **python-fints fetch_tan_mechanisms() bei Reuse:** `fetch_tan_mechanisms()` setzt blind
+  `set_tan_mechanism('999')`. Bei `from_data`-Restore mit bestehendem `system_id` wird
+  `_ensure_system_id()` zum No-Op → kein Server-Roundtrip korrigiert den Mechanismus →
+  `KeyError: '999'`. Fix: Skip bei Reuse — TAN-Mechanismus kommt aus dem gespeicherten State.
+- **Mock-Sidecar ≠ Library-Edge-Cases:** Bun.serve()-Mocks validieren HTTP-Contract, fangen
+  aber keine Library-Interaktions-Bugs. E2E gegen echte Bank ist unersetzlich für FinTS.
 
 ## Telegram-Notify aus Skripten/Claude Code
 
@@ -361,7 +404,7 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 54+ Tests über 6+ Dateien
+npm test   # bun test — 89+ Tests über 13+ Dateien (inkl. Banking 35)
 ```
 
 **Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
@@ -384,6 +427,14 @@ sind grün wenn sie einzeln/sequenziell laufen.
   Prüft: Preview → Finalize → Snapshot → Re-Render → Serve → Lock → Version-Cascade.
 - `src/modules/assets/__tests__/bulk-readings.test.ts` — Sprint 11.1
   Prüft: Atomicity (BEGIN/COMMIT), Idempotency-Replay, Audit innerhalb TX, Pool-Release.
+- `src/modules/banking/__tests__/etappe-2.10a.test.ts` — Sprint 2.10-A
+  Prüft: findReusableSession (9 Tests: happy path, user-mismatch, expired, stale, format-mismatch,
+  multi-candidate, decrypt-failure + invalidation, roundtrip, all-decrypt-fail → fresh).
+- `src/modules/banking/__tests__/etappe-2.10b.test.ts` — Sprint 2.10-A
+  Prüft: clientDataB64 passthrough (8 Tests: sidecar connect with/without b64, redactClientData,
+  initiateConnect passthrough, E2E state persistence, log-redaction spy).
+- `src/modules/banking/__tests__/etappe-2.10c.test.ts` — Sprint 2.10-A
+  Prüft: decideReuse + advisory-lock (7 Tests: fresh/reuse modes, lock release, concurrency).
 
 **Vor jedem Merge: `npm test` MUSS grün sein.**
 
@@ -411,10 +462,10 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 vollständig abgeschlossen (2026-05-17). Details siehe "Stand" oben.
-Smoke Test: 28/28 PASS, Tests: 54/54 PASS (einzeln). Drift-Detector: clean.
+Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 + 2.10-A vollständig abgeschlossen (2026-05-20). Details siehe "Stand" oben.
+Banking Tests: 71/71 PASS (Agent 35 + Sidecar 36). E2E: KSK Tuttlingen HAPPY PATH (Tag `2.10-a-e2e-passed`).
 Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index in `archive/`.
-Nächste Schritte: Etappe n (Real-Test L19 2024) wenn Datenpflege abgeschlossen.
+Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege), TD-3 Sidecar-Remote.
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 
 ## Role
