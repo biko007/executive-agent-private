@@ -507,6 +507,16 @@ engineering best practices.
 - Secrets immer aus ~/.config/openclaw/env — nie hardcoded, nie geloggt
 - Bestehende Architektur erhalten — neue Patterns nur wenn klar begründet
 
+## Alpine CSP Hard Rules (gilt für alle Dashboard-JS-Files)
+
+1. **x-if Template: EXAKT 1 direktes Kind-Element** (Single-Root-Constraint).
+   Mehrere Siblings → in Wrapper-Div einschließen.
+2. **x-show/x-text/x-if: keine &&/||/+/Regex/Globals** (Number, Date, Array-Methods).
+   Alles via Alpine-Methods auslagern.
+3. **Kein `<style>`-Block im Template-String.**
+4. **Vor jedem Dashboard-Commit prüfen:**
+   `grep -n "x-if" public/js/*.js` → jede x-if auf Single-Root prüfen.
+
 ## Debugging
 
 - Hypothesen nach Wahrscheinlichkeit geordnet
