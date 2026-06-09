@@ -38,7 +38,7 @@ export function initHealthCommands(deps: HealthDeps): void {
 
 const withingsClientId     = process.env.WITHINGS_CLIENT_ID || '';
 const withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET || '';
-const withingsRedirectUri  = 'http://46.62.153.181:8080/withings/callback';
+const withingsRedirectUri  = process.env.WITHINGS_REDIRECT_URI || 'https://app.bikobickel.de/withings/callback';
 const withingsCallbackPort = 8080;
 
 let withingsCallbackServer: http.Server | null = null;
@@ -436,7 +436,7 @@ export function registerHealthCommands(api: any): void {
         withingsCallbackServer = null;
       });
 
-      server.listen(withingsCallbackPort, '0.0.0.0', () => {
+      server.listen(withingsCallbackPort, '127.0.0.1', () => {
         api.logger.info(`[withings] Callback-Server gestartet auf Port ${withingsCallbackPort}`);
       });
 
