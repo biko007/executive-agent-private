@@ -74,22 +74,24 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlo
   blind `set_tan_mechanism('999')` was den aus `from_data` restaurierten Mechanismus zerstört.
   Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).
 
-### Module (12)
+### Module (14)
 
 | Modul | Pfad | Commands | DI |
 |-------|------|----------|----|
-| executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
-| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
 | assets | src/modules/assets/ | 7 | Postgres, NK-Engine |
-| nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
-| health | src/modules/health/ | 12 | sendTelegram, Postgres |
-| fleet | src/modules/fleet/ | 10 | Links |
-| travel | src/modules/travel/ | 8 | M365, Telegram, Links |
-| pe | src/modules/pe/ | 5 | self-contained |
-| mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
-| calendar | src/modules/calendar/ | 4 | M365 |
-| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
 | banking | src/modules/banking/ | — (via routes.ts) | Postgres, Encryption, Python-Sidecar (FinTS) |
+| calendar | src/modules/calendar/ | 4 | M365 |
+| executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
+| fleet | src/modules/fleet/ | 10 | Links |
+| health | src/modules/health/ | 12 | sendTelegram, Postgres |
+| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
+| links | src/modules/links/ | — | Postgres |
+| location | src/modules/location/ | — | Postgres |
+| mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
+| nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
+| pe | src/modules/pe/ | 5 | self-contained |
+| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
+| travel | src/modules/travel/ | 8 | M365, Telegram, Links |
 
 ### Daten-Hygiene
 
@@ -195,13 +197,17 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 
 | Skript | Modul | Versions |
 |--------|-------|----------|
-| `scripts/migrate-sprint3-instagram.ts` | instagram | V020 |
+| `scripts/migrate-sprint3-instagram.ts` | instagram | 020_insta_tables.sql |
 | `scripts/migrate-sprint4-health.ts` | health | V021 |
 | `scripts/migrate-sprint5-assets.ts` | assets | V022, V023, V024 |
 | `src/modules/fleet/migrate-v025.ts` | fleet | V025 |
+| (manual) | fleet | V026__fleet_tire_sets.sql |
 | `src/modules/banking/migrate-v027.ts` | banking | V027, V028, V029 |
 | `src/modules/assets/migrate-v030.ts` | assets | V030 |
 | `src/modules/assets/migrate-v031.ts` | assets | V031 |
+| (manual) | assets | V036__properties_polish_fields.sql |
+| (manual) | fleet | V037__vehicles_fuel_type.sql |
+| (manual) | instagram | V037_insta_media_edits.sql |
 | `scripts/migrate-sprint8-location.ts` | location | V032 |
 | `scripts/migrate-sprint9-links.ts` | links | V033 |
 
@@ -285,7 +291,7 @@ Body: `{ "message": "...", "severity": "info"|"warn"|"error" }`
 Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen wird:
 
 1. **Eine Schraube pro Sprint.** Niemals zwei Module gleichzeitig migrieren.
-2. **n8n bleibt dumm.** Nur Trigger an `/api/n8n/trigger/*`. Linter erzwingt das.
+2. **n8n bleibt dumm.** n8n macht nur Trigger + Routing, keine Business-Logik. n8n ruft dedizierte, Bearer-`CORE_SERVICE_TOKEN`-geschützte Core-Endpoints auf (z.B. `/api/internal/banking/*`, `/api/sharepoint/cleanup-missing`, `/api/health/*`, `/api/instagram/*`). Der Core bindet ausschließlich auf `127.0.0.1`; `/api/internal/*` ist zusätzlich per nginx-IP-Whitelist (127.0.0.1) abgesichert. Es gibt KEINE Linter-Regel für Routen — ESLint erzwingt nur Modul-Grenzen (`no-deep-module-import`).
 3. **Modul-Grenzen sind heilig.** ESLint erzwingt — nicht Disziplin.
 4. **Backup-Restore vor Backup-Schreiben.** Jedes neue Backup-Ziel: erst Restore-Test.
 5. **Tests für Geld.** Alles, was IBANs oder Posts ins Internet schickt, hat Tests.
@@ -404,11 +410,11 @@ Fehler beheben bevor "Erledigt" gemeldet wird.
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 89+ Tests über 13+ Dateien (inkl. Banking 35)
+npm test   # bun test — 345 test blocks über 34 Dateien
 ```
 
 **Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
-`POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 54 Tests
+`POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 345 Tests
 sind grün wenn sie einzeln/sequenziell laufen.
 
 **Pflicht-Tests (Spec §17):**
