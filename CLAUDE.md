@@ -300,6 +300,7 @@ Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen 
 8. **Idempotency vor Side-Effects.** Jeder externe Call braucht einen Idempotency-Key.
 9. **Sensitive Daten klassifiziert.** Nie in Logs, callback_data oder n8n-Logs.
 10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst.
+11. **Human-Reviewability (Hard Rule).** All code must be traceable by a human reviewer: descriptive names instead of cryptic identifiers; comments explain the *why* for non-obvious logic (triggers, guards, security paths); no clever one-liners where a readable form exists; one commit per etappe, never bundled. No code goes to `origin` unreviewed.
 
 ## Projekt
 
@@ -512,6 +513,15 @@ engineering best practices.
 - Explizites Error-Handling, keine hidden Side Effects
 - Secrets immer aus ~/.config/openclaw/env — nie hardcoded, nie geloggt
 - Bestehende Architektur erhalten — neue Patterns nur wenn klar begründet
+
+## Task Output Protocol (mandatory — cc and Codex)
+
+- Every cc/Codex task writes its complete result to ONE timestamped file:
+  cc → `~/bikosoc-spec/<task>.md`, Codex → `~/codex-audit/bikosoc/<date>-<type>.md`.
+- Terminal output is ONLY: `DONE → <path>`. No result content, no diffs, no logs to stdout.
+- Owner uploads the FILE for review — never raw terminal scrollback.
+- Secrets NEVER go to stdout, logs, or report files. If a secret must be handed over:
+  write it to a chmod-600 temp file (or 1Password/op), reference the path, shred after use.
 
 ## Alpine CSP Hard Rules (gilt für alle Dashboard-JS-Files)
 
