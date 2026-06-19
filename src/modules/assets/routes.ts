@@ -81,8 +81,10 @@ export function registerAssetsHttpRoutes(api: any) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
 
-    // Only handle /api/assets paths
-    if (!pathname.startsWith('/api/assets')) return false;
+    // Handle /api/assets paths and /api/internal/nk-trigger (localhost-only via nginx)
+    const isAssetsRoute = pathname.startsWith('/api/assets');
+    const isInternalNkTrigger = pathname.startsWith('/api/internal/nk-trigger');
+    if (!isAssetsRoute && !isInternalNkTrigger) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -700,9 +702,11 @@ export function registerAssetsHttpRoutes(api: any) {
         return true;
       }
 
-      // ── NK Trigger (n8n cron → localhost-only) ─────────────────────
-      if (resource === 'nk-trigger') {
-        if (segments[1] === 'obligations-alert' && req.method === 'POST') {
+      // ── NK Trigger (n8n cron → /api/internal/, localhost-only via nginx) ──
+      if (isInternalNkTrigger) {
+        const internalRest = pathname.replace(/^\/api\/internal\/nk-trigger\/?/, '');
+        const internalSegments = internalRest.split('/').filter(Boolean);
+        if (internalSegments[0] === 'obligations-alert' && req.method === 'POST') {
           try {
             const result = await handleObligationsAlert();
             json(res, 200, { ok: true, ...result });
