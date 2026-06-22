@@ -166,15 +166,11 @@ async function getTokenExpirations(): Promise<TokenInfo[]> {
     }
   } catch { /* ignore */ }
 
-  // Withings token — Postgres-backed (Sprint 4)
-  try {
-    const { rows } = await query<{ expires_at: Date }>(
-      `SELECT expires_at FROM health_withings_tokens WHERE active = true LIMIT 1`
-    );
-    if (rows.length && rows[0].expires_at) {
-      results.push({ name: 'Withings', expiresAt: new Date(rows[0].expires_at).getTime() });
-    }
-  } catch { /* ignore */ }
+  // Withings: NOT monitored here. The DB field `expires_at` tracks the
+  // access token (~3h validity), not the refresh token. The access token is
+  // auto-rotated by the Briefing Scheduler (syncWithingsForBriefing), so
+  // checking it always yields "0 days" at 08:00 — a false alarm.
+  // Real protection: retry-on-401 + Telegram fatal-error in withings.ts.
 
   return results;
 }
