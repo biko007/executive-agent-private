@@ -41,9 +41,9 @@ export { initTanBridge, initiateConnect, completeTan, cleanupExpiredChallenges }
 // Commands
 export { initBankingCommands, registerBankingCommands } from './commands.js';
 
-// Sync Engine (Etappe e)
+// Sync Engine (Etappe e + E1)
 export { initSyncEngine, dailySync, getSyncStatus } from './sync-engine.js';
-export type { DailySyncResult, Anomaly, SyncStatus, SyncEngineDeps } from './sync-engine.js';
+export type { DailySyncResult, AccountSyncResult, ContractStatus, SyncStatus, SyncEngineDeps } from './sync-engine.js';
 
 // HTTP routes
 export { registerBankingHttpRoutes } from './routes.js';

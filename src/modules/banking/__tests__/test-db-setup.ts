@@ -83,6 +83,20 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
   const v029Sql = readFileSync(v029Path, 'utf-8');
   await testPool.query(v029Sql);
 
+  // Apply V038 transaction_code widening
+  const v038Path = join(import.meta.dir, '../migrations/V038__banking_transaction_code_widen.sql');
+  if (existsSync(v038Path)) {
+    const v038Sql = readFileSync(v038Path, 'utf-8');
+    await testPool.query(v038Sql);
+  }
+
+  // Apply V039 sync_runs + circuit-breaker columns (E0/E1)
+  const v039Path = join(import.meta.dir, '../migrations/V039__banking_sync_runs.sql');
+  if (existsSync(v039Path)) {
+    const v039Sql = readFileSync(v039Path, 'utf-8');
+    await testPool.query(v039Sql);
+  }
+
   // approval_tokens table (needed by approval workflow tests)
   await testPool.query(`
     CREATE TABLE IF NOT EXISTS approval_tokens (

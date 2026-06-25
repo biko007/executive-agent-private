@@ -17,6 +17,9 @@ import {
   markReminderSent,
   getDecryptedSession,
   updateSessionState,
+  insertSyncRun,
+  updateSyncRun,
+  getInstitutionSyncPauseStatus,
 } from './store.js';
 import type { Session, InstitutionRow } from './types.js';
 
@@ -47,21 +50,34 @@ export function initSyncEngine(deps: SyncEngineDeps): void {
   _deps = deps;
 }
 
-// ── Result types ──────────────────────────────────────────────────────────────
+// ── Result types (Spec v2 §4 API-Response-Contract) ──────────────────────────
 
-export interface DailySyncResult {
-  status: 'ok' | 'error' | 'locked' | 'SKIPPED_ALREADY_RUNNING';
-  sessions_checked: number;
-  accounts_synced: number;
-  transactions_new: number;
-  anomalies: Anomaly[];
-  error?: string;
-  started_at: string;
-  finished_at: string;
+export interface AccountSyncResult {
+  account_id: number;
+  result: 'success' | 'tan_required' | 'timeout' | 'import_failed' | 'skipped_due_to_tan';
+  fints_codes: string[];
+  transactions_seen: number;
+  transactions_inserted: number;
 }
 
-export interface Anomaly {
-  type: 'sidecar_down' | 're_auth_required' | 'needs_tan' | 'session_expiry' | 'partial_sync' | 'sync_error';
+export type ContractStatus =
+  | 'SUCCESS_FULL' | 'TAN_REQUIRED'
+  | 'BANK_TIMEOUT_UNKNOWN' | 'IMPORT_FAILED'
+  | 'SKIPPED_ALREADY_SYNCED' | 'SKIPPED_ALREADY_RUNNING'
+  | 'AUTO_PAUSED_PENDING_TAN';
+
+export interface DailySyncResult {
+  run_id: string;
+  status: ContractStatus;
+  sca_required: boolean;
+  alert_delivered: boolean;
+  safe_to_schedule_resync: boolean;
+  accounts: AccountSyncResult[];
+}
+
+/** Internal anomaly type for Telegram alert formatting — not part of API contract. */
+interface Anomaly {
+  type: 'sidecar_down' | 're_auth_required' | 'needs_tan' | 'session_expiry' | 'sync_error';
   session_id?: number;
   account_id?: number;
   message: string;
@@ -83,11 +99,52 @@ const EXPIRY_THRESHOLDS = [
   { days: 14, label: '14 Tage', severity: 'info'  as const },
 ];
 
+// ── Helpers (E1) ─────────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['so', 'mo', 'di', 'mi', 'do', 'fr', 'sa'] as const;
+
+function generateRunId(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const day = DAY_NAMES[now.getDay()];
+  return `${yyyy}-${mm}-${dd}-${day}`;
+}
+
+function isTimeoutError(e: any): boolean {
+  const msg = e?.message || '';
+  return msg.includes('AbortError') || msg.includes('fetch_timeout')
+    || msg.includes('ETIMEDOUT') || msg.includes('ECONNRESET')
+    || msg.includes('Socket timeout') || msg.includes('UND_ERR_SOCKET');
+}
+
+function determineStatus(
+  accountResults: AccountSyncResult[],
+  globalStop: 'tan_required' | 'timeout' | false,
+  sidecarUp: boolean,
+  anyPaused: boolean,
+): ContractStatus {
+  if (anyPaused && accountResults.length === 0) return 'AUTO_PAUSED_PENDING_TAN';
+  if (globalStop === 'timeout') return 'BANK_TIMEOUT_UNKNOWN';
+  if (globalStop === 'tan_required') return 'TAN_REQUIRED';
+  if (!sidecarUp) return 'IMPORT_FAILED';
+  if (accountResults.length === 0) return 'SUCCESS_FULL'; // no accounts to sync = success
+  const allSuccess = accountResults.every(a => a.result === 'success');
+  if (allSuccess) return 'SUCCESS_FULL';
+  // Any mix of success + failure, or all failures → IMPORT_FAILED (no SUCCESS_PARTIAL per §4)
+  return 'IMPORT_FAILED';
+}
+
 // ── Daily sync ────────────────────────────────────────────────────────────────
 
 export async function dailySync(): Promise<DailySyncResult> {
-  const startedAt = new Date().toISOString();
+  const runId = generateRunId();
+  const accountResults: AccountSyncResult[] = [];
   const anomalies: Anomaly[] = [];
+  let globalStop: 'tan_required' | 'timeout' | false = false;
+  let scaRequired = false;
+  let anyPaused = false;
 
   // Advisory lock (non-blocking)
   const { rows: lockRows } = await dbQuery<{ pg_try_advisory_lock: boolean }>(
@@ -95,19 +152,19 @@ export async function dailySync(): Promise<DailySyncResult> {
   );
   if (!lockRows[0].pg_try_advisory_lock) {
     return {
+      run_id: runId,
       status: 'SKIPPED_ALREADY_RUNNING',
-      sessions_checked: 0,
-      accounts_synced: 0,
-      transactions_new: 0,
-      anomalies: [],
-      started_at: startedAt,
-      finished_at: new Date().toISOString(),
+      sca_required: false,
+      alert_delivered: false,
+      safe_to_schedule_resync: false,
+      accounts: [],
     };
   }
 
-  let sessionsChecked = 0;
-  let accountsSynced = 0;
-  let transactionsNew = 0;
+  const syncRunIds = new Map<number, number>(); // institutionId → DB sync_run.id
+  const processedInstitutions = new Set<number>();
+  let totalAccountsSynced = 0;
+  let totalTransactionsNew = 0;
 
   try {
     // Sidecar health check
@@ -126,21 +183,42 @@ export async function dailySync(): Promise<DailySyncResult> {
 
     // Load active sessions
     const sessions = await listActiveSessions();
-    sessionsChecked = sessions.length;
 
     // Per session
     for (const session of sessions) {
-      // Expiry reminders always run (even if sidecar is down)
+      // Expiry reminders always run (even if sidecar is down or global stop)
       await checkExpiryReminders(session, anomalies);
 
       if (!sidecarUp) continue;
+
+      // Skip already-processed institutions (multiple sessions for same institution)
+      if (processedInstitutions.has(session.institutionId)) continue;
+
+      // §3.2 Global stop: first 3955/timeout stops the ENTIRE run — all remaining institutions
+      if (globalStop) {
+        processedInstitutions.add(session.institutionId);
+        const accounts = await listAccounts({ institution_id: session.institutionId, status: 'active' });
+        const dbRunId = await insertSyncRun({ institutionId: session.institutionId, runPhase: 'scheduled' });
+        syncRunIds.set(session.institutionId, dbRunId);
+        for (const account of accounts) {
+          accountResults.push({
+            account_id: account.id, result: 'skipped_due_to_tan',
+            fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+          });
+        }
+        await updateSyncRun(dbRunId, {
+          status: globalStop === 'timeout' ? 'BANK_TIMEOUT_UNKNOWN' : 'TAN_REQUIRED',
+          scaRequired: globalStop === 'tan_required',
+          accountsSynced: 0, transactionsNew: 0,
+        });
+        continue;
+      }
 
       // Decrypt session credentials + look up institution (Etappe f)
       const decrypted = await getDecryptedSession(session.id);
       if (!decrypted) {
         anomalies.push({
-          type: 'sync_error',
-          session_id: session.id,
+          type: 'sync_error', session_id: session.id,
           message: `Session ${session.id}: Credentials konnten nicht entschluesselt werden`,
           severity: 'error',
         });
@@ -154,8 +232,7 @@ export async function dailySync(): Promise<DailySyncResult> {
       const institution = sessDbRows.length > 0 ? await getInstitutionById(sessDbRows[0].institution_id) : null;
       if (!institution) {
         anomalies.push({
-          type: 'sync_error',
-          session_id: session.id,
+          type: 'sync_error', session_id: session.id,
           message: `Session ${session.id}: Institution nicht gefunden`,
           severity: 'error',
         });
@@ -163,13 +240,36 @@ export async function dailySync(): Promise<DailySyncResult> {
       }
       const productId = sessDbRows[0].product_id;
 
+      processedInstitutions.add(institution.id);
+
+      // §3.3 Circuit-breaker guard (defensive — SETTING pause is E2)
+      const pauseStatus = await getInstitutionSyncPauseStatus(institution.id);
+      if (pauseStatus.syncPausedStatus === 'AUTO_PAUSED_PENDING_TAN') {
+        anyPaused = true;
+        const accounts = await listAccounts({ institution_id: session.institutionId, status: 'active' });
+        for (const account of accounts) {
+          accountResults.push({
+            account_id: account.id, result: 'skipped_due_to_tan',
+            fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+          });
+        }
+        continue;
+      }
+
+      // Insert sync run for this institution
+      const dbRunId = await insertSyncRun({ institutionId: institution.id, runPhase: 'scheduled' });
+      syncRunIds.set(institution.id, dbRunId);
+
       // Load only active accounts — archived accounts are excluded from sync (Sprint 2.10-B)
       const accounts = await listAccounts({ institution_id: session.institutionId, status: 'active' });
-      let okCount = 0;
-      let errCount = 0;
+      let instAccountsSynced = 0;
+      let instTransactionsNew = 0;
 
       const syncFn = _deps?._sidecarSync ?? sidecar.sync;
-      for (const account of accounts) {
+      let accountIndex = 0;
+      for (; accountIndex < accounts.length; accountIndex++) {
+        const account = accounts[accountIndex];
+
         try {
           const result: any = await syncFn({
             session_id: session.id,
@@ -177,7 +277,6 @@ export async function dailySync(): Promise<DailySyncResult> {
             fints_url: institution.fints_url,
             user_id: decrypted.userId,
             pin: decrypted.pin,
-            // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
             product_id: productId === 'env-default' ? undefined : productId,
             client_data: decrypted.state || undefined,
             account_iban: account.iban,
@@ -186,31 +285,39 @@ export async function dailySync(): Promise<DailySyncResult> {
           // Check for re-auth required
           if (result?.re_auth_required) {
             anomalies.push({
-              type: 're_auth_required',
-              session_id: session.id,
+              type: 're_auth_required', session_id: session.id,
               message: `Session ${session.id} erfordert erneute Authentifizierung`,
               severity: 'error',
             });
-            errCount++;
+            accountResults.push({
+              account_id: account.id, result: 'import_failed',
+              fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+            });
             continue;
           }
 
-          // Guard: sidecar returned needs_tan (3955 pushTAN/SCA during sync)
-          // No interactive TAN flow in dailySync — skip this account, alert operator.
+          // §3.2 Guard: sidecar returned needs_tan (3955 pushTAN/SCA during sync)
+          // GLOBAL STOP — no further bank contact for ANY institution.
           if (result?.needs_tan) {
             anomalies.push({
-              type: 'needs_tan',
-              session_id: session.id,
-              account_id: account.id,
-              message: `Sync ${account.iban}: Bank verlangt TAN (${result.tan_type || '3955'}) — Konto übersprungen`,
+              type: 'needs_tan', session_id: session.id, account_id: account.id,
+              message: `Sync ${account.iban}: Bank verlangt TAN (${result.tan_type || '3955'}) — Lauf gestoppt`,
               severity: 'warn',
             });
-            errCount++;
-            continue;
+            accountResults.push({
+              account_id: account.id, result: 'tan_required',
+              fints_codes: ['3955'], transactions_seen: 0, transactions_inserted: 0,
+            });
+            scaRequired = true;
+            globalStop = 'tan_required';
+            break; // §3.2: stop account loop, globalStop stops session loop too
           }
 
-          // Process transactions from sync result
+          // Success: process transactions
+          let txSeen = 0;
+          let txInserted = 0;
           if (result?.transactions && Array.isArray(result.transactions)) {
+            txSeen = result.transactions.length;
             for (const tx of result.transactions) {
               const inserted = await insertTransaction(account.id, {
                 bank_transaction_id: tx.bank_transaction_id,
@@ -224,7 +331,7 @@ export async function dailySync(): Promise<DailySyncResult> {
                 transaction_code: tx.transaction_code,
                 raw_payload: tx,
               });
-              if (inserted) transactionsNew++;
+              if (inserted) txInserted++;
             }
           }
 
@@ -238,79 +345,137 @@ export async function dailySync(): Promise<DailySyncResult> {
             await updateSessionState(session.id, result.client_data_updated, 'fints5', '5.0.0');
           }
 
-          accountsSynced++;
-          okCount++;
+          accountResults.push({
+            account_id: account.id, result: 'success',
+            fints_codes: ['3076'], transactions_seen: txSeen, transactions_inserted: txInserted,
+          });
+          instAccountsSynced++;
+          instTransactionsNew += txInserted;
         } catch (e: any) {
           // SidecarError 501 = expected (sidecar stubs not implemented yet)
           if (e instanceof SidecarError && e.statusCode === 501) {
-            okCount++; // Count as attempted, not an error
+            accountResults.push({
+              account_id: account.id, result: 'success',
+              fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+            });
+            instAccountsSynced++;
             continue;
           }
-          // Real sync error
+
+          // §3.4 Timeout = unknown bank state → GLOBAL STOP, no auto-retry
+          if (isTimeoutError(e)) {
+            anomalies.push({
+              type: 'sync_error', session_id: session.id, account_id: account.id,
+              message: `Timeout Account ${account.iban}: Bankstatus unklar, bitte App prüfen`,
+              severity: 'error',
+            });
+            accountResults.push({
+              account_id: account.id, result: 'timeout',
+              fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+            });
+            globalStop = 'timeout';
+            break; // §3.4: stop everything
+          }
+
+          // Definitive error — only this account affected, loop continues
           anomalies.push({
-            type: 'sync_error',
-            session_id: session.id,
-            account_id: account.id,
+            type: 'sync_error', session_id: session.id, account_id: account.id,
             message: `Sync-Fehler Account ${account.iban}: ${e.message}`,
             severity: 'error',
           });
-          errCount++;
+          accountResults.push({
+            account_id: account.id, result: 'import_failed',
+            fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
+          });
         }
       }
 
-      // Partial sync detection
-      if (okCount > 0 && errCount > 0) {
-        anomalies.push({
-          type: 'partial_sync',
-          session_id: session.id,
-          message: `Teilweiser Sync: ${okCount} OK, ${errCount} Fehler`,
-          severity: 'warn',
+      // Mark remaining accounts as skipped after global stop break
+      for (let i = accountIndex + 1; i < accounts.length; i++) {
+        accountResults.push({
+          account_id: accounts[i].id, result: 'skipped_due_to_tan',
+          fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
         });
       }
+
+      totalAccountsSynced += instAccountsSynced;
+      totalTransactionsNew += instTransactionsNew;
     }
 
-    // Audit log
-    await audit.log({
-      module: 'banking',
-      action: 'daily_sync.completed',
-      entityType: 'banking_sync',
-      entityId: 'daily',
-      after: {
-        sessions_checked: sessionsChecked,
-        accounts_synced: accountsSynced,
-        transactions_new: transactionsNew,
-        anomaly_count: anomalies.length,
-      },
-    });
+    // Determine final status
+    const finalStatus = determineStatus(accountResults, globalStop, sidecarUp, anyPaused);
 
-    // Send Telegram alerts if there are anomalies
+    // Alert delivery — capture real sendTelegram return value (not fire-and-forget)
+    let alertDelivered = false;
     if (anomalies.length > 0 && _deps) {
       const chatId = _deps.telegramChatId();
       if (chatId) {
         const message = formatAnomalyReport(anomalies);
-        await _deps.sendTelegram(chatId, message).catch(() => {});
+        try {
+          alertDelivered = await _deps.sendTelegram(chatId, message);
+        } catch {
+          alertDelivered = false;
+        }
+      }
+      if (!alertDelivered) {
+        await audit.log({
+          module: 'banking', action: 'daily_sync.alert_delivery_failed',
+          entityType: 'banking_sync', entityId: runId,
+          after: { chatId: _deps.telegramChatId() ? 'set' : 'missing', anomaly_count: anomalies.length },
+        });
       }
     }
 
+    // Update sync run records
+    for (const [instId, dbRunId] of syncRunIds) {
+      await updateSyncRun(dbRunId, {
+        status: finalStatus,
+        scaRequired,
+        alertDelivered,
+        accountsSynced: totalAccountsSynced,
+        transactionsNew: totalTransactionsNew,
+      });
+    }
+
+    // Audit log
+    await audit.log({
+      module: 'banking', action: 'daily_sync.completed',
+      entityType: 'banking_sync', entityId: runId,
+      after: {
+        run_id: runId,
+        status: finalStatus,
+        accounts_synced: totalAccountsSynced,
+        transactions_new: totalTransactionsNew,
+        sca_required: scaRequired,
+        alert_delivered: alertDelivered,
+        anomaly_count: anomalies.length,
+      },
+    });
+
     return {
-      status: 'ok',
-      sessions_checked: sessionsChecked,
-      accounts_synced: accountsSynced,
-      transactions_new: transactionsNew,
-      anomalies,
-      started_at: startedAt,
-      finished_at: new Date().toISOString(),
+      run_id: runId,
+      status: finalStatus,
+      sca_required: scaRequired,
+      alert_delivered: alertDelivered,
+      safe_to_schedule_resync: finalStatus === 'TAN_REQUIRED' && alertDelivered,
+      accounts: accountResults,
     };
   } catch (e: any) {
+    // Update any created sync runs with error
+    for (const [, dbRunId] of syncRunIds) {
+      await updateSyncRun(dbRunId, {
+        status: 'IMPORT_FAILED',
+        errorMessage: e.message,
+      }).catch(() => {});
+    }
+
     return {
-      status: 'error',
-      sessions_checked: sessionsChecked,
-      accounts_synced: accountsSynced,
-      transactions_new: transactionsNew,
-      anomalies,
-      error: e.message,
-      started_at: startedAt,
-      finished_at: new Date().toISOString(),
+      run_id: runId,
+      status: 'IMPORT_FAILED',
+      sca_required: scaRequired,
+      alert_delivered: false,
+      safe_to_schedule_resync: false,
+      accounts: accountResults,
     };
   } finally {
     await dbQuery('SELECT pg_advisory_unlock(43)').catch(() => {});

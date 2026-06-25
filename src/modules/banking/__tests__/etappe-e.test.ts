@@ -144,7 +144,7 @@ describe('checkExpiryReminders', () => {
 // ── Sync engine: dailySync ───────────────────────────────────────────────────
 
 describe('dailySync', () => {
-  test('5. handles sidecar down', async () => {
+  test('5. handles sidecar down → IMPORT_FAILED', async () => {
     const { dailySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
@@ -154,11 +154,13 @@ describe('dailySync', () => {
     });
 
     const result = await dailySync();
-    expect(result.status).toBe('ok');
-
-    const sidecarDown = result.anomalies.find(a => a.type === 'sidecar_down');
-    expect(sidecarDown).toBeDefined();
-    expect(sidecarDown!.severity).toBe('error');
+    expect(result.status).toBe('IMPORT_FAILED');
+    // Contract fields present
+    expect(result).toHaveProperty('run_id');
+    expect(result).toHaveProperty('sca_required');
+    expect(result).toHaveProperty('alert_delivered');
+    expect(result).toHaveProperty('safe_to_schedule_resync');
+    expect(result).toHaveProperty('accounts');
   });
 
   test('6. treats sidecar sync 501 as non-error', async () => {
@@ -184,11 +186,11 @@ describe('dailySync', () => {
     });
 
     const result = await dailySync();
-    expect(result.status).toBe('ok');
-
-    // No sync_error anomaly for 501
-    const syncErrors = result.anomalies.filter(a => a.type === 'sync_error');
-    expect(syncErrors.length).toBe(0);
+    // 501 stub treated as success
+    expect(result.status).toBe('SUCCESS_FULL');
+    // Account result should be success (not import_failed)
+    const acct = result.accounts.find((a: any) => a.result === 'import_failed');
+    expect(acct).toBeUndefined();
   });
 
   test('7. advisory lock prevents concurrent sync', async () => {
@@ -208,7 +210,7 @@ describe('dailySync', () => {
     try {
       const result = await dailySync();
       expect(result.status).toBe('SKIPPED_ALREADY_RUNNING');
-      expect(result.sessions_checked).toBe(0);
+      expect(result.accounts).toEqual([]);
     } finally {
       await lockClient.query('SELECT pg_advisory_unlock(43)');
       lockClient.release();
@@ -424,13 +426,15 @@ describe('needs_tan guard', () => {
 
     const result = await dailySync();
 
-    // Anomaly for THIS session must exist
-    const tanAnomaly = result.anomalies.find(
-      a => a.type === 'needs_tan' && a.session_id === session.id,
-    );
-    expect(tanAnomaly).toBeDefined();
-    expect(tanAnomaly!.severity).toBe('warn');
-    expect(tanAnomaly!.message).toContain('pushTAN');
+    // Contract: status TAN_REQUIRED, sca_required true
+    expect(result.status).toBe('TAN_REQUIRED');
+    expect(result.sca_required).toBe(true);
+    // Account result shows tan_required with 3955 code
+    const tanAccount = result.accounts.find((a: any) => a.result === 'tan_required');
+    expect(tanAccount).toBeDefined();
+    expect(tanAccount!.fints_codes).toContain('3955');
+    // alert_delivered true (sendTelegram returns true, chatId is set)
+    expect(result.alert_delivered).toBe(true);
   });
 
   test('15. empty account without needs_tan counts as success', async () => {
@@ -463,12 +467,12 @@ describe('needs_tan guard', () => {
 
     const result = await dailySync();
 
-    // Empty account without needs_tan → success
-    expect(result.accounts_synced).toBeGreaterThanOrEqual(1);
-
-    // No needs_tan anomaly
-    const tanAnomaly = result.anomalies.find(a => a.type === 'needs_tan');
-    expect(tanAnomaly).toBeUndefined();
+    // Empty account without needs_tan → SUCCESS_FULL
+    expect(result.status).toBe('SUCCESS_FULL');
+    expect(result.sca_required).toBe(false);
+    // At least one account with result: 'success'
+    const successAccounts = result.accounts.filter((a: any) => a.result === 'success');
+    expect(successAccounts.length).toBeGreaterThanOrEqual(1);
   });
 
   test('16. normal sync with transactions counts as success', async () => {
@@ -513,12 +517,13 @@ describe('needs_tan guard', () => {
 
     const result = await dailySync();
 
-    // Normal sync → success
-    expect(result.accounts_synced).toBeGreaterThanOrEqual(1);
-    expect(result.transactions_new).toBeGreaterThanOrEqual(1);
-
-    // No needs_tan anomaly
-    const tanAnomaly = result.anomalies.find(a => a.type === 'needs_tan');
-    expect(tanAnomaly).toBeUndefined();
+    // Normal sync → SUCCESS_FULL
+    expect(result.status).toBe('SUCCESS_FULL');
+    // At least one account with transactions_inserted > 0
+    const withTx = result.accounts.filter((a: any) => a.transactions_inserted > 0);
+    expect(withTx.length).toBeGreaterThanOrEqual(1);
+    expect(withTx[0].transactions_seen).toBeGreaterThanOrEqual(1);
+    expect(withTx[0].result).toBe('success');
+    expect(withTx[0].fints_codes).toContain('3076');
   });
 });
