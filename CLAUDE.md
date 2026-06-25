@@ -72,7 +72,7 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlo
   E2E: KSK Tuttlingen, 12 Konten, HAPPY PATH ohne TAN (Tag `2.10-a-e2e-passed`).
   Sidecar-Fix (Etappe g): `fetch_tan_mechanisms()` bei Reuse übersprungen — Library setzt
   blind `set_tan_mechanism('999')` was den aus `from_data` restaurierten Mechanismus zerstört.
-  Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).
+  ~~Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).~~ Erledigt 2026-06-25.
 
 ### Module (14)
 
@@ -248,7 +248,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
   Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`. Bei neuem Callback-Prefix hier UND in
   `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
-- **TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.
+- ~~**TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.~~ Erledigt 2026-06-25: `biko007/openclaw-banking-fints-private.git`, 5 Commits gepusht.
 
 ### Sprint-Roadmap
 
@@ -472,7 +472,7 @@ Reconnect den Kontext findet -->
 Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 + 2.10-A vollständig abgeschlossen (2026-05-20). Details siehe "Stand" oben.
 Banking Tests: 71/71 PASS (Agent 35 + Sidecar 36). E2E: KSK Tuttlingen HAPPY PATH (Tag `2.10-a-e2e-passed`).
 Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index in `archive/`.
-Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege), TD-3 Sidecar-Remote.
+Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 
 ## Role
