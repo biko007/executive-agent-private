@@ -873,3 +873,93 @@ export async function decideReuse(
     lockClient.release();
   }
 }
+
+// ── Sync Runs (E0 scaffold) ────────────────────────────────────────────────
+
+export async function insertSyncRun(params: {
+  institutionId: number;
+  runPhase: 'scheduled' | 'event_resync' | 'manual';
+  triggerSource?: string;
+  triggerId?: string;
+}): Promise<number> {
+  const { rows } = await dbQuery<{ id: string }>(
+    `INSERT INTO banking_sync_runs (institution_id, run_phase, trigger_source, trigger_id)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [params.institutionId, params.runPhase, params.triggerSource ?? null, params.triggerId ?? null],
+  );
+  return num(rows[0].id);
+}
+
+export async function updateSyncRun(runId: number, params: {
+  status: string;
+  scaRequired?: boolean;
+  alertDelivered?: boolean;
+  accountsSynced?: number;
+  transactionsNew?: number;
+  errorMessage?: string;
+}): Promise<void> {
+  await dbQuery(
+    `UPDATE banking_sync_runs
+     SET status = $2,
+         sca_required = COALESCE($3, sca_required),
+         alert_delivered = COALESCE($4, alert_delivered),
+         accounts_synced = COALESCE($5, accounts_synced),
+         transactions_new = COALESCE($6, transactions_new),
+         error_message = COALESCE($7, error_message),
+         finished_at = now()
+     WHERE id = $1`,
+    [
+      runId,
+      params.status,
+      params.scaRequired ?? null,
+      params.alertDelivered ?? null,
+      params.accountsSynced ?? null,
+      params.transactionsNew ?? null,
+      params.errorMessage ?? null,
+    ],
+  );
+}
+
+// ── Circuit Breaker (E0 scaffold) ──────────────────────────────────────────
+
+export async function getInstitutionSyncPauseStatus(institutionId: number): Promise<{
+  syncPausedStatus: string | null;
+  syncPausedSince: string | null;
+}> {
+  const { rows } = await dbQuery<{ sync_paused_status: string | null; sync_paused_since: string | null }>(
+    'SELECT sync_paused_status, sync_paused_since FROM banking_institutions WHERE id = $1',
+    [institutionId],
+  );
+  if (rows.length === 0) return { syncPausedStatus: null, syncPausedSince: null };
+  return {
+    syncPausedStatus: rows[0].sync_paused_status,
+    syncPausedSince: rows[0].sync_paused_since ? new Date(rows[0].sync_paused_since).toISOString() : null,
+  };
+}
+
+export async function setInstitutionSyncPaused(
+  institutionId: number,
+  status: 'AUTO_PAUSED_PENDING_TAN' | null,
+): Promise<void> {
+  await dbQuery(
+    `UPDATE banking_institutions
+     SET sync_paused_status = $2,
+         sync_paused_since = CASE WHEN $2 IS NULL THEN NULL ELSE now() END
+     WHERE id = $1`,
+    [institutionId, status],
+  );
+}
+
+export async function countRecentScaEvents(
+  institutionId: number,
+  windowDays: number,
+): Promise<number> {
+  const { rows } = await dbQuery<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM banking_sync_runs
+     WHERE institution_id = $1 AND sca_required = true
+       AND started_at > now() - ($2 || ' days')::interval`,
+    [institutionId, windowDays],
+  );
+  return parseInt(rows[0].count, 10);
+}

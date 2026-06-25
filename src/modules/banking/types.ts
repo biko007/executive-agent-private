@@ -101,6 +101,9 @@ export interface InstitutionRow {
   country: string;
   created_at: Date;
   updated_at: Date;
+  // Circuit-breaker columns (V039)
+  sync_paused_status?: string | null;
+  sync_paused_since?: string | null;
 }
 
 export interface AccountRow {

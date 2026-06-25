@@ -50,7 +50,7 @@ export function initSyncEngine(deps: SyncEngineDeps): void {
 // ── Result types ──────────────────────────────────────────────────────────────
 
 export interface DailySyncResult {
-  status: 'ok' | 'error' | 'locked';
+  status: 'ok' | 'error' | 'locked' | 'SKIPPED_ALREADY_RUNNING';
   sessions_checked: number;
   accounts_synced: number;
   transactions_new: number;
@@ -95,7 +95,7 @@ export async function dailySync(): Promise<DailySyncResult> {
   );
   if (!lockRows[0].pg_try_advisory_lock) {
     return {
-      status: 'locked',
+      status: 'SKIPPED_ALREADY_RUNNING',
       sessions_checked: 0,
       accounts_synced: 0,
       transactions_new: 0,

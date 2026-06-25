@@ -207,7 +207,7 @@ describe('dailySync', () => {
 
     try {
       const result = await dailySync();
-      expect(result.status).toBe('locked');
+      expect(result.status).toBe('SKIPPED_ALREADY_RUNNING');
       expect(result.sessions_checked).toBe(0);
     } finally {
       await lockClient.query('SELECT pg_advisory_unlock(43)');
