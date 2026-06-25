@@ -61,7 +61,7 @@ export interface DailySyncResult {
 }
 
 export interface Anomaly {
-  type: 'sidecar_down' | 're_auth_required' | 'session_expiry' | 'partial_sync' | 'sync_error';
+  type: 'sidecar_down' | 're_auth_required' | 'needs_tan' | 'session_expiry' | 'partial_sync' | 'sync_error';
   session_id?: number;
   account_id?: number;
   message: string;
@@ -190,6 +190,20 @@ export async function dailySync(): Promise<DailySyncResult> {
               session_id: session.id,
               message: `Session ${session.id} erfordert erneute Authentifizierung`,
               severity: 'error',
+            });
+            errCount++;
+            continue;
+          }
+
+          // Guard: sidecar returned needs_tan (3955 pushTAN/SCA during sync)
+          // No interactive TAN flow in dailySync — skip this account, alert operator.
+          if (result?.needs_tan) {
+            anomalies.push({
+              type: 'needs_tan',
+              session_id: session.id,
+              account_id: account.id,
+              message: `Sync ${account.iban}: Bank verlangt TAN (${result.tan_type || '3955'}) — Konto übersprungen`,
+              severity: 'warn',
             });
             errCount++;
             continue;
@@ -384,7 +398,7 @@ function formatAnomalyReport(anomalies: Anomaly[]): string {
   }
 
   // Add re-auth link if any session needs it
-  const needsReAuth = anomalies.some(a => a.type === 're_auth_required' || a.type === 'session_expiry');
+  const needsReAuth = anomalies.some(a => a.type === 're_auth_required' || a.type === 'needs_tan' || a.type === 'session_expiry');
   if (needsReAuth) {
     lines.push('');
     lines.push('\u2192 https://app.bikobickel.de/dashboard/?tab=banking-connect');

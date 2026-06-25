@@ -388,3 +388,137 @@ describe('upsertAccount status protection', () => {
     expect(afterData.iban).toMatch(/3001$/);
   });
 });
+
+// ── pushTAN 3955 Guard (Sprint 2.10-B Schritt 3) ────────────────────────────
+
+describe('needs_tan guard', () => {
+  test('14. needs_tan guard skips account and creates anomaly', async () => {
+    const { upsertInstitution, createSession, upsertAccount } =
+      await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+
+    const inst = await upsertInstitution('50000014', 'TAN Guard Bank', null, 'https://example.com/fints');
+    const session = await createSession(inst.id, 'USER_TG', 'PIN_TG', 'product-tg');
+
+    await query(
+      `UPDATE banking_sessions SET session_expires_at = $1, last_success_at = NOW() WHERE id = $2`,
+      [new Date(Date.now() + 90 * 86_400_000).toISOString(), session.id],
+    );
+
+    await upsertAccount(inst.id, 'DE89370400440532014001', 'TAN Guard Konto');
+
+    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+
+    initSyncEngine({
+      sendTelegram: async () => true,
+      telegramChatId: () => 'test-chat',
+      _sidecarHealth: async () => ({ status: 'ok' }),
+      _sidecarSync: async () => ({
+        needs_tan: true,
+        tan_type: 'pushTAN',
+        tan_message: 'Bitte TAN bestätigen',
+        tan_decoupled: true,
+        transactions: [],
+      }),
+    });
+
+    const result = await dailySync();
+
+    // Anomaly for THIS session must exist
+    const tanAnomaly = result.anomalies.find(
+      a => a.type === 'needs_tan' && a.session_id === session.id,
+    );
+    expect(tanAnomaly).toBeDefined();
+    expect(tanAnomaly!.severity).toBe('warn');
+    expect(tanAnomaly!.message).toContain('pushTAN');
+  });
+
+  test('15. empty account without needs_tan counts as success', async () => {
+    const { upsertInstitution, createSession, upsertAccount } =
+      await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+
+    const inst = await upsertInstitution('50000015', 'Empty OK Bank', null, 'https://example.com/fints');
+    const session = await createSession(inst.id, 'USER_EO', 'PIN_EO', 'product-eo');
+
+    await query(
+      `UPDATE banking_sessions SET session_expires_at = $1, last_success_at = NOW() WHERE id = $2`,
+      [new Date(Date.now() + 90 * 86_400_000).toISOString(), session.id],
+    );
+
+    await upsertAccount(inst.id, 'DE89370400440532015001', 'Empty OK Konto');
+
+    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+
+    initSyncEngine({
+      sendTelegram: async () => true,
+      telegramChatId: () => undefined,
+      _sidecarHealth: async () => ({ status: 'ok' }),
+      _sidecarSync: async () => ({
+        needs_tan: false,
+        transactions: [],
+        balance: 100.00,
+      }),
+    });
+
+    const result = await dailySync();
+
+    // Empty account without needs_tan → success
+    expect(result.accounts_synced).toBeGreaterThanOrEqual(1);
+
+    // No needs_tan anomaly
+    const tanAnomaly = result.anomalies.find(a => a.type === 'needs_tan');
+    expect(tanAnomaly).toBeUndefined();
+  });
+
+  test('16. normal sync with transactions counts as success', async () => {
+    const { upsertInstitution, createSession, upsertAccount } =
+      await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+
+    const inst = await upsertInstitution('50000016', 'Normal Sync Bank', null, 'https://example.com/fints');
+    const session = await createSession(inst.id, 'USER_NS', 'PIN_NS', 'product-ns');
+
+    await query(
+      `UPDATE banking_sessions SET session_expires_at = $1, last_success_at = NOW() WHERE id = $2`,
+      [new Date(Date.now() + 90 * 86_400_000).toISOString(), session.id],
+    );
+
+    await upsertAccount(inst.id, 'DE89370400440532016001', 'Normal Sync Konto');
+
+    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+
+    initSyncEngine({
+      sendTelegram: async () => true,
+      telegramChatId: () => undefined,
+      _sidecarHealth: async () => ({ status: 'ok' }),
+      _sidecarSync: async () => ({
+        needs_tan: false,
+        transactions: [
+          {
+            bank_transaction_id: 'TX-TEST-16-001',
+            booking_date: '2026-06-25',
+            value_date: '2026-06-25',
+            amount: -42.50,
+            currency: 'EUR',
+            counterparty_name: 'Test Empfänger',
+            counterparty_iban: 'DE89370400440532099001',
+            reference: 'Test Buchung',
+            transaction_code: 'EINZELUEBERWEISUNG',
+          },
+        ],
+        balance: 500.00,
+      }),
+    });
+
+    const result = await dailySync();
+
+    // Normal sync → success
+    expect(result.accounts_synced).toBeGreaterThanOrEqual(1);
+    expect(result.transactions_new).toBeGreaterThanOrEqual(1);
+
+    // No needs_tan anomaly
+    const tanAnomaly = result.anomalies.find(a => a.type === 'needs_tan');
+    expect(tanAnomaly).toBeUndefined();
+  });
+});
