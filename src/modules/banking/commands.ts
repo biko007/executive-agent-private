@@ -7,7 +7,8 @@
  *   - TAN code values NEVER persisted or logged — in-memory only, audit with after: null
  */
 import { query as dbQuery } from '../../shared/db/index.js';
-import { listInstitutions, listAccounts } from './store.js';
+import { listInstitutions, listAccounts, setInstitutionSyncPaused, getInstitutionSyncPauseStatus } from './store.js';
+import { dailySync, getSyncStatus } from './sync-engine.js';
 import { completeTan } from './tan-bridge.js';
 import type { SessionRow } from './types.js';
 
@@ -120,6 +121,44 @@ async function handleTanCode(code: string): Promise<{ text: string }> {
   return { text: `❌ Fehler: ${result.error || 'Unbekannter Fehler'}` };
 }
 
+/** /banking sync — Trigger manual daily sync. */
+async function handleBankingSync(): Promise<{ text: string }> {
+  const result = await dailySync({ runPhase: 'manual' });
+
+  if (result.status === 'SKIPPED_ALREADY_SYNCED') {
+    const syncStatus = await getSyncStatus();
+    const lastInfo = syncStatus.last_sync
+      ? `Letzter Sync: ${new Date(syncStatus.last_sync).toLocaleString('de-DE')}`
+      : '';
+    return { text: `\u2139\uFE0F Heute bereits synchronisiert. ${lastInfo}` };
+  }
+  if (result.status === 'SUCCESS_FULL') {
+    const totalTx = result.accounts.reduce((s, a) => s + a.transactions_inserted, 0);
+    return { text: `\u2705 Sync erfolgreich! ${totalTx} neue Umsaetze.` };
+  }
+  if (result.status === 'TAN_REQUIRED') {
+    return { text: '\u26A0\uFE0F Bank verlangt TAN. Bitte Button im Alert nutzen oder /tan verwenden.' };
+  }
+  return { text: `\u2139\uFE0F Sync-Status: ${result.status}` };
+}
+
+/** /banking resume — Clear all paused institutions. */
+async function handleBankingResume(): Promise<{ text: string }> {
+  const institutions = await listInstitutions();
+  let resumed = 0;
+  for (const inst of institutions) {
+    const pauseStatus = await getInstitutionSyncPauseStatus(inst.id);
+    if (pauseStatus.syncPausedStatus) {
+      await setInstitutionSyncPaused(inst.id, null);
+      resumed++;
+    }
+  }
+  if (resumed === 0) {
+    return { text: '\u2139\uFE0F Keine pausierten Banken gefunden.' };
+  }
+  return { text: `\u2705 ${resumed} Bank(en) wieder aktiviert.` };
+}
+
 // ── Command registration ───────────────────────────────────────────────────
 
 export function registerBankingCommands(api: any): void {
@@ -132,6 +171,12 @@ export function registerBankingCommands(api: any): void {
         const args = String(ctx.args || '').trim().toLowerCase();
         if (args === 'connect') {
           return await handleBankingConnect();
+        }
+        if (args === 'sync') {
+          return await handleBankingSync();
+        }
+        if (args === 'resume') {
+          return await handleBankingResume();
         }
         return await handleBankingStatus();
       } catch (e: any) { return { text: `❌ Fehler: ${e.message}` }; }

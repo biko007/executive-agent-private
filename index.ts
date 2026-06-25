@@ -407,7 +407,7 @@ export default function (api: any) {
     // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
     // Framework wraps prompts in "[Telegram sender timestamp] body" envelope.
     // We match the envelope boundary "] " followed by the callback prefix.
-    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_'];
+    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_'];
     if (CALLBACK_PREFIXES.some(p => prompt.includes('] ' + p))) {
       api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
       return {
@@ -1102,7 +1102,7 @@ export default function (api: any) {
   initBankingCommands({ sendTelegram, telegramChatId: bankingTelegramChatId });
   registerBankingCommands(api);
   initTanBridge({ sendTelegram, telegramChatId: bankingTelegramChatId });
-  initSyncEngine({ sendTelegram, telegramChatId: bankingTelegramChatId });
+  initSyncEngine({ sendTelegram, sendTelegramWithKeyboard, telegramChatId: bankingTelegramChatId });
 
   // Banking: expire stale TAN challenges every 60s
   setInterval(() => { cleanupExpiredChallenges().catch(() => {}); }, 60_000);
@@ -1656,6 +1656,38 @@ export default function (api: any) {
         const bookingKey = `booking_${bookingCb.args[0]}`;
         const action = bookingCb.args[1];
         await handleBookingCallback(chatId, bookingKey, action);
+        return;
+      }
+
+      // ── bsync_ callbacks (Banking re-sync after TAN confirmation) ──
+      const bsyncCb = parseCallbackEvent(event, 'bsync');
+      if (bsyncCb) {
+        const chatId = bsyncCb.senderId;
+        const dbRunId = parseInt(bsyncCb.payload, 10);
+        if (isNaN(dbRunId)) {
+          await sendTelegram(chatId, '\u274C Ungueltige Sync-Run-ID.');
+          return;
+        }
+
+        const { validateResyncRequest, eventResync } = await import('./src/modules/banking/sync-engine.js');
+
+        const validation = await validateResyncRequest(dbRunId);
+        if (!validation.ok) {
+          await sendTelegram(chatId, `\u274C ${validation.reason}`);
+          return;
+        }
+
+        await sendTelegram(chatId, '\uD83D\uDD04 Re-Sync wird gestartet...');
+        const result = await eventResync(validation.institutionId, 'telegram_button', String(dbRunId));
+
+        if (result.status === 'SUCCESS_FULL') {
+          const totalTx = result.accounts.reduce((s: number, a: any) => s + a.transactions_inserted, 0);
+          await sendTelegram(chatId, `\u2705 Re-Sync erfolgreich! ${totalTx} neue Umsaetze.`);
+        } else if (result.status === 'TAN_REQUIRED') {
+          await sendTelegram(chatId, '\u26A0\uFE0F Bank verlangt erneut TAN. Sync pausiert.');
+        } else {
+          await sendTelegram(chatId, `\u26A0\uFE0F Re-Sync Status: ${result.status}`);
+        }
         return;
       }
     } catch (e: any) {

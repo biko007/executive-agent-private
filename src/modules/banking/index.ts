@@ -23,7 +23,10 @@ export {
   setPendingChallenge, getPendingChallenge, clearPendingChallenge, expireOldPendingChallenges,
   listActiveSessions, updateAccountBalance,
   hasReminderBeenSent, markReminderSent, clearReminders,
+  hasTodayBankContact, getSyncRunById, getLastCompletedSyncRunBeforeToday,
+  getLastBookingDate, hasEventResyncToday,
 } from './store.js';
+export type { SyncRunRow } from './store.js';
 
 // Sidecar client
 export {
@@ -41,8 +44,8 @@ export { initTanBridge, initiateConnect, completeTan, cleanupExpiredChallenges }
 // Commands
 export { initBankingCommands, registerBankingCommands } from './commands.js';
 
-// Sync Engine (Etappe e + E1)
-export { initSyncEngine, dailySync, getSyncStatus } from './sync-engine.js';
+// Sync Engine (Etappe e + E1 + E2)
+export { initSyncEngine, dailySync, getSyncStatus, eventResync, validateResyncRequest } from './sync-engine.js';
 export type { DailySyncResult, AccountSyncResult, ContractStatus, SyncStatus, SyncEngineDeps } from './sync-engine.js';
 
 // HTTP routes
