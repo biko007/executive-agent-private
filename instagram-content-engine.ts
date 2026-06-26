@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { ANTHROPIC_MODEL } from './src/shared/utils/index.js';
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -189,7 +190,7 @@ async function callVision(base64: string, mimeType: string, retry = true, includ
   const apiKey = readAnthropicKey();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY nicht gesetzt (in ~/.config/openclaw/env eintragen)');
 
-  const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-sonnet-4-20250514';
+  const model = process.env.ANTHROPIC_VISION_MODEL || ANTHROPIC_MODEL;
 
   const bboxInstruction = includeBbox
     ? '\nZusaetzlich: Bestimme die Bounding Box des Hauptsubjekts als relative Koordinaten (0-1):\n' +
@@ -568,7 +569,7 @@ export async function generateVariants(submission: Submission): Promise<ContentV
     'Sprache: EN wenn international/lifestyle, DE wenn Politik/gesellschaftlich.',
   ].filter(Boolean).join('\n');
 
-  const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-sonnet-4-20250514';
+  const model = process.env.ANTHROPIC_VISION_MODEL || ANTHROPIC_MODEL;
 
   const callApi = async (retry: boolean): Promise<ContentVariant[]> => {
     const res = await fetchWithTimeout(

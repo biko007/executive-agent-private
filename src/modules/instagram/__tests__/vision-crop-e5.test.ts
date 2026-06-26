@@ -5,6 +5,7 @@
  * recordVisionCropVariant, findExistingVisionCrop, soft-delete + re-insert.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { ANTHROPIC_MODEL } from '../../../shared/utils/index.js';
 import { setupTestDb } from './test-db-setup.js';
 
 let cleanup: () => Promise<void>;
@@ -100,7 +101,7 @@ describe('recordVisionCropVariant + findExistingVisionCrop', () => {
       sha256Original: sha256Orig, sha256Output: sha256Out,
       paramsHash, source: 'telegram',
       visionMetadata: {
-        model: 'claude-sonnet-4-20250514', schema_version: 'v1',
+        model: ANTHROPIC_MODEL, schema_version: 'v1',
         source_hash: sha256Orig, subject_bbox: bbox, confidence: 0.92,
       },
     });
@@ -112,7 +113,7 @@ describe('recordVisionCropVariant + findExistingVisionCrop', () => {
     expect(found).not.toBeNull();
     expect(found!.paramsHash).toBe(paramsHash);
     expect(found!.sha256Output).toBe(sha256Out);
-    expect(found!.visionMetadata).toHaveProperty('model', 'claude-sonnet-4-20250514');
+    expect(found!.visionMetadata).toHaveProperty('model', ANTHROPIC_MODEL);
     expect(found!.visionMetadata).toHaveProperty('confidence', 0.92);
   });
 

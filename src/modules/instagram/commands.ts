@@ -28,7 +28,7 @@ import type { Submission, ContentVariant, VisionAnalysis } from '../../../instag
 import {
   preFlightInstagram, formatPreFlightFailure,
 } from '../../../system-health.js';
-import { fetchWithTimeout, readAnthropicKey, readOpenAIKey } from '../../shared/utils/index.js';
+import { fetchWithTimeout, readAnthropicKey, readOpenAIKey, ANTHROPIC_MODEL } from '../../shared/utils/index.js';
 import { parseCallbackEvent } from '../../shared/telegram-callback/index.js';
 import * as audit from '../../shared/audit/index.js';
 import type {
@@ -477,7 +477,7 @@ export function registerInstagramCommands(api: any): void {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: ANTHROPIC_MODEL,
             max_tokens: 1024,
             messages: [{ role: 'user', content: prompt }],
           }),
@@ -526,7 +526,7 @@ export function registerInstagramCommands(api: any): void {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: ANTHROPIC_MODEL,
             max_tokens: 2048,
             messages: [{ role: 'user', content: prompt }],
           }),
@@ -608,7 +608,7 @@ export function registerInstagramCommands(api: any): void {
               'anthropic-version': '2023-06-01',
             },
             body: JSON.stringify({
-              model: 'claude-sonnet-4-20250514',
+              model: ANTHROPIC_MODEL,
               max_tokens: 512,
               messages: [{ role: 'user', content: prompt }],
             }),
@@ -2524,7 +2524,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: ANTHROPIC_MODEL,
         max_tokens: 2048,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -2920,7 +2920,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: ANTHROPIC_MODEL,
         max_tokens: 2048,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -3146,7 +3146,7 @@ Antworte NUR mit dem JSON-Objekt, kein Markdown, kein Text drumherum.`;
                   srcClient.release();
                 }
 
-                const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-sonnet-4-20250514';
+                const model = process.env.ANTHROPIC_VISION_MODEL || ANTHROPIC_MODEL;
                 await recordVisionCropVariant({
                   sessionId, mediaIndex,
                   sourcePath: `${sessionId}/original/${sourceFile}`,

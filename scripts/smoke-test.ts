@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import pg from 'pg';
+import { ANTHROPIC_MODEL } from '../src/shared/utils/index.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -225,7 +226,7 @@ async function checkAnthropicApi() {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: ANTHROPIC_MODEL,
         max_tokens: 1,
         messages: [{ role: 'user', content: 'ping' }],
       }),

@@ -79,6 +79,9 @@ export function readAnthropicKey(): string {
   return readEnvKey('ANTHROPIC_API_KEY');
 }
 
+/** Canonical Anthropic model ID — single source of truth for all API calls. */
+export const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+
 export function readOpenAIKey(): string {
   return readEnvKey('OPENAI_API_KEY');
 }

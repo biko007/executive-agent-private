@@ -1,7 +1,7 @@
 /**
  * travel/enrichment — AI-powered trip enrichment, free-text parsing, booking analysis.
  */
-import { fetchWithTimeout, readAnthropicKey } from '../../shared/utils/index.js';
+import { fetchWithTimeout, readAnthropicKey, ANTHROPIC_MODEL } from '../../shared/utils/index.js';
 import type { TripEnrichment, TripParseResult, ParsedBooking, BookingType } from './types.js';
 import { BOOKING_EMOJI } from './types.js';
 
@@ -40,7 +40,7 @@ export async function enrichTripWithOpenAI(name: string): Promise<TripEnrichment
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: ANTHROPIC_MODEL,
         max_tokens: 1024,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -134,7 +134,7 @@ export async function parseTripFreeText(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: ANTHROPIC_MODEL,
         max_tokens: 256,
         messages: [{ role: 'user', content: prompt }],
       }),

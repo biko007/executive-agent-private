@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { readAnthropicKey } from "./src/shared/utils/index.js";
+import { readAnthropicKey, ANTHROPIC_MODEL } from "./src/shared/utils/index.js";
 
 // ── Instagram token dependency injection (breaks K1 cross-domain) ─────
 
@@ -171,7 +171,7 @@ export async function preFlightInstagram(submissionId?: string): Promise<PreFlig
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: ANTHROPIC_MODEL,
           max_tokens: 1,
           messages: [{ role: 'user', content: 'ping' }],
         }),
@@ -278,7 +278,7 @@ export async function runStartupChecks(): Promise<HealthReport> {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: ANTHROPIC_MODEL,
           max_tokens: 1,
           messages: [{ role: 'user', content: 'ping' }],
         }),
@@ -504,7 +504,7 @@ export async function runDailyHealthCheck(): Promise<HealthReport> {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: ANTHROPIC_MODEL,
           max_tokens: 1,
           messages: [{ role: 'user', content: 'ping' }],
         }),
