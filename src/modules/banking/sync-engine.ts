@@ -1,6 +1,6 @@
 /**
- * banking/sync-engine — Daily-sync orchestration + anomaly detection.
- * Sprint 7b Etappe e/f. Lock pattern from health/withings.ts (lock 42 → 43).
+ * banking/sync-engine — Weekly-sync orchestration + anomaly detection.
+ * Sprint 7b Etappe e/f + E3 (Weekly-Rework). Lock pattern from health/withings.ts (lock 42 → 43).
  *
  * Etappe f: Decrypts session credentials, passes to sidecar with state blobs.
  */
@@ -20,13 +20,10 @@ import {
   insertSyncRun,
   updateSyncRun,
   getInstitutionSyncPauseStatus,
-  hasTodayBankContact,
-  getLastCompletedSyncRunBeforeToday,
   getLastBookingDate,
   setInstitutionSyncPaused,
   countRecentScaEvents,
   getSyncRunById,
-  hasEventResyncToday,
 } from './store.js';
 import type { Session, InstitutionRow } from './types.js';
 
@@ -150,9 +147,9 @@ function determineStatus(
   return 'IMPORT_FAILED';
 }
 
-// ── Daily sync ────────────────────────────────────────────────────────────────
+// ── Weekly sync (E3: ex-dailySync, machinery unchanged) ──────────────────────
 
-export async function dailySync(options?: {
+export async function startWeeklySync(options?: {
   runPhase?: 'scheduled' | 'manual';
   triggerSource?: string;
   triggerId?: string;
@@ -164,7 +161,6 @@ export async function dailySync(options?: {
   let globalStop: 'tan_required' | 'timeout' | false = false;
   let scaRequired = false;
   let anyPaused = false;
-  let tagesGuardSkipped = 0;
 
   // Advisory lock (non-blocking)
   const { rows: lockRows } = await dbQuery<{ pg_try_advisory_lock: boolean }>(
@@ -214,14 +210,6 @@ export async function dailySync(options?: {
       // Skip already-processed institutions (multiple sessions for same institution)
       if (processedInstitutions.has(session.institutionId)) continue;
 
-      // Tages-Guard: max 1 regulaerer Sync/Tag (event_resync ausgenommen)
-      const alreadyContactedToday = await hasTodayBankContact(session.institutionId);
-      if (alreadyContactedToday) {
-        processedInstitutions.add(session.institutionId);
-        tagesGuardSkipped++;
-        continue;
-      }
-
       // §3.2 Global stop: first 3955/timeout stops the ENTIRE run — all remaining institutions
       if (globalStop) {
         processedInstitutions.add(session.institutionId);
@@ -269,14 +257,6 @@ export async function dailySync(options?: {
       const productId = sessDbRows[0].product_id;
 
       processedInstitutions.add(institution.id);
-
-      // Lazy CB-SET: if last completed run (from a PREVIOUS day) was TAN_REQUIRED → set pause.
-      // Date authority: CURRENT_DATE in SQL (DB UTC), no JS date comparison.
-      const lastRun = await getLastCompletedSyncRunBeforeToday(institution.id);
-      if (lastRun && lastRun.status === 'TAN_REQUIRED') {
-        await setInstitutionSyncPaused(institution.id, 'AUTO_PAUSED_PENDING_TAN');
-        // Existing guard below catches the new pause status
-      }
 
       // §3.3 Circuit-breaker guard
       const pauseStatus = await getInstitutionSyncPauseStatus(institution.id);
@@ -463,11 +443,6 @@ export async function dailySync(options?: {
     // Determine final status
     let finalStatus = determineStatus(accountResults, globalStop, sidecarUp, anyPaused);
 
-    // Tages-Guard override: all institutions were skipped by guard
-    if (tagesGuardSkipped > 0 && accountResults.length === 0 && !globalStop && sidecarUp && !anyPaused) {
-      finalStatus = 'SKIPPED_ALREADY_SYNCED';
-    }
-
     // CB-Clear: on SUCCESS_FULL, clear any paused status
     if (finalStatus === 'SUCCESS_FULL') {
       for (const [instId] of syncRunIds) {
@@ -499,7 +474,7 @@ export async function dailySync(options?: {
       }
       if (!alertDelivered) {
         await audit.log({
-          module: 'banking', action: 'daily_sync.alert_delivery_failed',
+          module: 'banking', action: 'weekly_sync.alert_delivery_failed',
           entityType: 'banking_sync', entityId: runId,
           after: { chatId: _deps.telegramChatId() ? 'set' : 'missing', anomaly_count: anomalies.length },
         });
@@ -519,7 +494,7 @@ export async function dailySync(options?: {
 
     // Audit log
     await audit.log({
-      module: 'banking', action: 'daily_sync.completed',
+      module: 'banking', action: 'weekly_sync.completed',
       entityType: 'banking_sync', entityId: runId,
       after: {
         run_id: runId,
@@ -566,8 +541,8 @@ export async function dailySync(options?: {
 
 /**
  * Controlled re-sync for a single institution after user confirmed TAN.
- * Key differences vs dailySync: no Tages-Guard, run_phase='event_resync',
- * processes only the one institution, no button in alert.
+ * Key differences vs startWeeklySync: run_phase='event_resync',
+ * processes only the one institution, budget-limited button chain (E3).
  */
 export async function eventResync(
   institutionId: number,
@@ -803,16 +778,41 @@ export async function eventResync(
       await setInstitutionSyncPaused(institutionId, null);
     }
 
-    // No button in alert (prevent recursive button chains)
+    // E3: Budget-limited button chain — on TAN_REQUIRED, send new bsync_ button
+    // (unless SCA budget exhausted). Non-TAN anomalies get plain-text alert.
     let alertDelivered = false;
-    if (anomalies.length > 0 && _deps) {
+    if (finalStatus === 'TAN_REQUIRED' && _deps && dbRunId) {
+      const chatId = _deps.telegramChatId();
+      if (chatId) {
+        const scaCount = await countRecentScaEvents(institutionId, 30);
+        if (scaCount >= SCA_BUDGET_30D) {
+          // SCA budget exhausted → stop message, NO button
+          try {
+            alertDelivered = await _deps.sendTelegram(chatId,
+              `⛔ SCA-Budget erschoepft (${scaCount}/${SCA_BUDGET_30D} in 30d) — kein weiterer Versuch.`);
+          } catch { alertDelivered = false; }
+        } else if (_deps.sendTelegramWithKeyboard) {
+          // New button with THIS run's ID (chain linkage, Spec §2.8e)
+          const message = formatAnomalyReport(anomalies);
+          const keyboard = [[{
+            text: '\u2705 TAN bestaetigt \u2192 jetzt syncen',
+            callback_data: `bsync_${dbRunId}`,
+          }]];
+          try {
+            alertDelivered = await _deps.sendTelegramWithKeyboard(chatId, message, keyboard);
+          } catch { alertDelivered = false; }
+        } else {
+          try {
+            alertDelivered = await _deps.sendTelegram(chatId, formatAnomalyReport(anomalies));
+          } catch { alertDelivered = false; }
+        }
+      }
+    } else if (anomalies.length > 0 && _deps) {
       const chatId = _deps.telegramChatId();
       if (chatId) {
         try {
           alertDelivered = await _deps.sendTelegram(chatId, formatAnomalyReport(anomalies));
-        } catch {
-          alertDelivered = false;
-        }
+        } catch { alertDelivered = false; }
       }
     }
 
@@ -882,9 +882,6 @@ export async function validateResyncRequest(dbRunId: number): Promise<
     return { ok: false, reason: `Run hat Status "${run.status}" — Re-Sync nicht moeglich.` };
   if (!run.alert_delivered)
     return { ok: false, reason: 'Alert wurde nicht zugestellt — Re-Sync nicht moeglich.' };
-  const alreadyResynced = await hasEventResyncToday(run.institution_id);
-  if (alreadyResynced)
-    return { ok: false, reason: 'Heute wurde bereits ein Re-Sync durchgefuehrt.' };
   return { ok: true, institutionId: run.institution_id };
 }
 

@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
  * boundary "] " followed by the callback prefix.
  */
 
-const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_'];
+const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_', 'bweekly_'];
 
 function isCallbackContent(prompt: string): boolean {
   return CALLBACK_PREFIXES.some(p => prompt.includes('] ' + p));

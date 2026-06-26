@@ -8,7 +8,7 @@
  */
 import { query as dbQuery } from '../../shared/db/index.js';
 import { listInstitutions, listAccounts, setInstitutionSyncPaused, getInstitutionSyncPauseStatus } from './store.js';
-import { dailySync, getSyncStatus } from './sync-engine.js';
+import { startWeeklySync, getSyncStatus } from './sync-engine.js';
 import { completeTan } from './tan-bridge.js';
 import type { SessionRow } from './types.js';
 
@@ -121,9 +121,9 @@ async function handleTanCode(code: string): Promise<{ text: string }> {
   return { text: `❌ Fehler: ${result.error || 'Unbekannter Fehler'}` };
 }
 
-/** /banking sync — Trigger manual daily sync. */
+/** /banking sync — Trigger manual weekly sync. */
 async function handleBankingSync(): Promise<{ text: string }> {
-  const result = await dailySync({ runPhase: 'manual' });
+  const result = await startWeeklySync({ runPhase: 'manual' });
 
   if (result.status === 'SKIPPED_ALREADY_SYNCED') {
     const syncStatus = await getSyncStatus();

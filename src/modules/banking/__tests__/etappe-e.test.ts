@@ -141,11 +141,11 @@ describe('checkExpiryReminders', () => {
   });
 });
 
-// ── Sync engine: dailySync ───────────────────────────────────────────────────
+// ── Sync engine: startWeeklySync ───────────────────────────────────────────────────
 
-describe('dailySync', () => {
+describe('startWeeklySync', () => {
   test('5. handles sidecar down → IMPORT_FAILED', async () => {
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -153,7 +153,7 @@ describe('dailySync', () => {
       _sidecarHealth: async () => { throw new Error('Connection refused'); },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
     expect(result.status).toBe('IMPORT_FAILED');
     // Contract fields present
     expect(result).toHaveProperty('run_id');
@@ -176,7 +176,7 @@ describe('dailySync', () => {
     // Ensure session is active
     await clearPendingChallenge(session.id);
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -185,7 +185,7 @@ describe('dailySync', () => {
       _sidecarSync: async () => { throw new SidecarError('Not implemented', 501, 'stub'); },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
     // 501 stub treated as success
     expect(result.status).toBe('SUCCESS_FULL');
     // Account result should be success (not import_failed)
@@ -195,7 +195,7 @@ describe('dailySync', () => {
 
   test('7. advisory lock prevents concurrent sync', async () => {
     const { getClient } = await import('../../../shared/db/index.js');
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -208,7 +208,7 @@ describe('dailySync', () => {
     await lockClient.query('SELECT pg_advisory_lock(43)');
 
     try {
-      const result = await dailySync();
+      const result = await startWeeklySync();
       expect(result.status).toBe('SKIPPED_ALREADY_RUNNING');
       expect(result.accounts).toEqual([]);
     } finally {
@@ -260,7 +260,7 @@ describe('sync-engine status filter', () => {
     expect(ibans).not.toContain('DE89370400440532019002');
   });
 
-  test('10. dailySync calls sidecar only for active accounts', async () => {
+  test('10. startWeeklySync calls sidecar only for active accounts', async () => {
     const { upsertInstitution, createSession, upsertAccount, archiveAccount } =
       await import('../store.js');
     const { query } = await import('../../../shared/db/index.js');
@@ -283,7 +283,7 @@ describe('sync-engine status filter', () => {
     // Track sidecar sync calls
     const syncedIbans: string[] = [];
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -295,7 +295,7 @@ describe('sync-engine status filter', () => {
       },
     });
 
-    await dailySync();
+    await startWeeklySync();
 
     // Only the active account should have been synced
     expect(syncedIbans).toContain('DE89370400440532010001');
@@ -409,7 +409,7 @@ describe('needs_tan guard', () => {
 
     await upsertAccount(inst.id, 'DE89370400440532014001', 'TAN Guard Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -424,7 +424,7 @@ describe('needs_tan guard', () => {
       }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Contract: status TAN_REQUIRED, sca_required true
     expect(result.status).toBe('TAN_REQUIRED');
@@ -452,7 +452,7 @@ describe('needs_tan guard', () => {
 
     await upsertAccount(inst.id, 'DE89370400440532015001', 'Empty OK Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -465,7 +465,7 @@ describe('needs_tan guard', () => {
       }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Empty account without needs_tan → SUCCESS_FULL
     expect(result.status).toBe('SUCCESS_FULL');
@@ -490,7 +490,7 @@ describe('needs_tan guard', () => {
 
     await upsertAccount(inst.id, 'DE89370400440532016001', 'Normal Sync Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -515,7 +515,7 @@ describe('needs_tan guard', () => {
       }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Normal sync → SUCCESS_FULL
     expect(result.status).toBe('SUCCESS_FULL');

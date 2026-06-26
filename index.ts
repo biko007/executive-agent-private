@@ -407,7 +407,7 @@ export default function (api: any) {
     // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
     // Framework wraps prompts in "[Telegram sender timestamp] body" envelope.
     // We match the envelope boundary "] " followed by the callback prefix.
-    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_'];
+    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_', 'bweekly_'];
     if (CALLBACK_PREFIXES.some(p => prompt.includes('] ' + p))) {
       api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
       return {
@@ -1659,6 +1659,28 @@ export default function (api: any) {
         return;
       }
 
+      // ── bweekly_ callbacks (Banking weekly sync start, E3) ──
+      const bweeklyCb = parseCallbackEvent(event, 'bweekly');
+      if (bweeklyCb) {
+        const chatId = bweeklyCb.senderId;
+        if (bweeklyCb.payload === 'start') {
+          await sendTelegram(chatId, '\uD83D\uDD04 Umsatzabruf wird gestartet...');
+          const { startWeeklySync } = await import('./src/modules/banking/sync-engine.js');
+          const result = await startWeeklySync({ runPhase: 'manual' });
+
+          if (result.status === 'SUCCESS_FULL') {
+            const totalTx = result.accounts.reduce((s: number, a: any) => s + a.transactions_inserted, 0);
+            await sendTelegram(chatId, `\u2705 Sync erfolgreich! ${totalTx} neue Umsaetze.`);
+          } else if (result.status === 'TAN_REQUIRED') {
+            // Alert with bsync_ button was already sent by startWeeklySync
+            await sendTelegram(chatId, '\u23F3 Bank verlangt TAN. Bitte Button oben nutzen.');
+          } else {
+            await sendTelegram(chatId, `\u2139\uFE0F Sync-Status: ${result.status}`);
+          }
+        }
+        return;
+      }
+
       // ── bsync_ callbacks (Banking re-sync after TAN confirmation) ──
       const bsyncCb = parseCallbackEvent(event, 'bsync');
       if (bsyncCb) {
@@ -1670,12 +1692,17 @@ export default function (api: any) {
         }
 
         const { validateResyncRequest, eventResync } = await import('./src/modules/banking/sync-engine.js');
+        const { updateSyncRun } = await import('./src/modules/banking/store.js');
 
         const validation = await validateResyncRequest(dbRunId);
         if (!validation.ok) {
           await sendTelegram(chatId, `\u274C ${validation.reason}`);
           return;
         }
+
+        // Idempotency: mark original run as consumed before starting resync.
+        // Second tap on same button finds status != TAN_REQUIRED → rejected.
+        await updateSyncRun(dbRunId, { status: 'RESYNC_TRIGGERED' });
 
         await sendTelegram(chatId, '\uD83D\uDD04 Re-Sync wird gestartet...');
         const result = await eventResync(validation.institutionId, 'telegram_button', String(dbRunId));
@@ -1684,7 +1711,7 @@ export default function (api: any) {
           const totalTx = result.accounts.reduce((s: number, a: any) => s + a.transactions_inserted, 0);
           await sendTelegram(chatId, `\u2705 Re-Sync erfolgreich! ${totalTx} neue Umsaetze.`);
         } else if (result.status === 'TAN_REQUIRED') {
-          await sendTelegram(chatId, '\u26A0\uFE0F Bank verlangt erneut TAN. Sync pausiert.');
+          // Alert with new bsync_ button was already sent by eventResync (E3 §2.8a).
         } else {
           await sendTelegram(chatId, `\u26A0\uFE0F Re-Sync Status: ${result.status}`);
         }
@@ -1820,6 +1847,36 @@ export default function (api: any) {
       }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Daily Health Check Fehler: ${e.message}`);
+    }
+  }, 60_000);
+
+  // ── Banking Reminder (Mo 12:00 Berlin, E3 — NO bank contact) ──────────────
+
+  let lastBankingReminderDate = '';
+
+  setInterval(async () => {
+    try {
+      const s = loadSettings();
+      if (!s.telegramChatId) return;
+
+      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+      const hh = String(inBerlin.getHours()).padStart(2, '0');
+      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+      const nowHHMM = `${hh}:${mm}`;
+      const today = berlinDate(0);
+
+      // Montag = getDay() === 1
+      if (nowHHMM === '12:00' && inBerlin.getDay() === 1 && lastBankingReminderDate !== today) {
+        lastBankingReminderDate = today;
+
+        await sendTelegramWithKeyboard(
+          s.telegramChatId,
+          '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.',
+          [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]],
+        );
+      }
+    } catch (e: any) {
+      api.logger.error(`[banking-reminder] ${e.message}`);
     }
   }, 60_000);
 

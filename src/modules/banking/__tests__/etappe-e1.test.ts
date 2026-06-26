@@ -42,7 +42,7 @@ describe('global 3955-stop (inner loop)', () => {
     const acct2 = await upsertAccount(inst.id, 'DE89370400440532060002', 'E1 Konto B');
 
     let syncCallCount = 0;
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -55,7 +55,7 @@ describe('global 3955-stop (inner loop)', () => {
       },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Only 1 sidecar call (first account), second never contacted
     expect(syncCallCount).toBe(1);
@@ -102,7 +102,7 @@ describe('global 3955-stop (outer loop)', () => {
     );
     const acctBeta = await upsertAccount(inst2.id, 'DE89370400440532060022', 'Beta Konto 1');
 
-    // Disable all prior sessions so dailySync only sees the two institutions we care about
+    // Disable all prior sessions so startWeeklySync only sees the two institutions we care about
     await query(
       `UPDATE banking_sessions SET pending_challenge_type = 'test_disabled' WHERE id NOT IN ($1, $2)`,
       [sess1.id, sess2.id],
@@ -111,7 +111,7 @@ describe('global 3955-stop (outer loop)', () => {
     // Track which IBANs get sidecar calls
     const syncedIbans: string[] = [];
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -124,7 +124,7 @@ describe('global 3955-stop (outer loop)', () => {
       },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Re-enable sessions for other tests
     await query(
@@ -161,7 +161,7 @@ describe('alert tracking', () => {
 
     let sendTelegramCalled = false;
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => { sendTelegramCalled = true; return true; },
@@ -170,7 +170,7 @@ describe('alert tracking', () => {
       _sidecarSync: async () => ({ needs_tan: true, tan_type: 'pushTAN', transactions: [] }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     expect(sendTelegramCalled).toBe(true);
     expect(result.alert_delivered).toBe(true);
@@ -191,7 +191,7 @@ describe('alert tracking', () => {
     );
     await upsertAccount(inst.id, 'DE89370400440532060041', 'Alert Fail Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => { throw new Error('Telegram API error'); },
@@ -200,7 +200,7 @@ describe('alert tracking', () => {
       _sidecarSync: async () => ({ needs_tan: true, tan_type: 'pushTAN', transactions: [] }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     expect(result.alert_delivered).toBe(false);
     // Status still TAN_REQUIRED (alert failure doesn't change sync outcome)
@@ -224,7 +224,7 @@ describe('alert tracking', () => {
 
     let sendTelegramCalled = false;
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => { sendTelegramCalled = true; return true; },
@@ -233,7 +233,7 @@ describe('alert tracking', () => {
       _sidecarSync: async () => ({ needs_tan: true, tan_type: 'pushTAN', transactions: [] }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     expect(sendTelegramCalled).toBe(false); // sendTelegram never called
     expect(result.alert_delivered).toBe(false);
@@ -257,7 +257,7 @@ describe('safe_to_schedule_resync', () => {
     );
     await upsertAccount(instA.id, 'DE89370400440532060061', 'Resync A Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true, // delivery succeeds
@@ -266,7 +266,7 @@ describe('safe_to_schedule_resync', () => {
       _sidecarSync: async () => ({ needs_tan: true, tan_type: 'pushTAN', transactions: [] }),
     });
 
-    const resultA = await dailySync();
+    const resultA = await startWeeklySync();
     expect(resultA.status).toBe('TAN_REQUIRED');
     expect(resultA.alert_delivered).toBe(true);
     expect(resultA.safe_to_schedule_resync).toBe(true);
@@ -287,7 +287,7 @@ describe('safe_to_schedule_resync', () => {
       _sidecarSync: async () => ({ needs_tan: true, tan_type: 'pushTAN', transactions: [] }),
     });
 
-    const resultB = await dailySync();
+    const resultB = await startWeeklySync();
     expect(resultB.status).toBe('TAN_REQUIRED');
     expect(resultB.alert_delivered).toBe(false);
     expect(resultB.safe_to_schedule_resync).toBe(false);
@@ -310,7 +310,7 @@ describe('contract response', () => {
     );
     await upsertAccount(inst.id, 'DE89370400440532060071', 'Contract Konto');
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -319,7 +319,7 @@ describe('contract response', () => {
       _sidecarSync: async () => ({ transactions: [], balance: 100.00 }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Top-level contract fields
     expect(typeof result.run_id).toBe('string');
@@ -353,7 +353,7 @@ describe('contract response', () => {
 // ── E1-8: Sync-Run record in DB ────────────────────────────────────────────
 
 describe('sync-run DB record', () => {
-  test('E1-8. banking_sync_runs row written after dailySync()', async () => {
+  test('E1-8. banking_sync_runs row written after startWeeklySync()', async () => {
     const { upsertInstitution, createSession, upsertAccount } =
       await import('../store.js');
     const { query } = await import('../../../shared/db/index.js');
@@ -369,7 +369,7 @@ describe('sync-run DB record', () => {
     // Clear prior sync_runs for this institution
     await query(`DELETE FROM banking_sync_runs WHERE institution_id = $1`, [inst.id]);
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -384,7 +384,7 @@ describe('sync-run DB record', () => {
       }),
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
     expect(result.status).toBe('SUCCESS_FULL');
 
     // Verify sync_run record exists in DB
@@ -428,7 +428,7 @@ describe('timeout handling', () => {
     const acct1 = await upsertAccount(inst.id, 'DE89370400440532060091', 'Timeout Konto A');
     const acct2 = await upsertAccount(inst.id, 'DE89370400440532060092', 'Timeout Konto B');
 
-    // Disable all prior sessions so dailySync only sees this institution
+    // Disable all prior sessions so startWeeklySync only sees this institution
     await query(
       `UPDATE banking_sessions SET pending_challenge_type = 'test_disabled' WHERE id != $1`,
       [session.id],
@@ -436,7 +436,7 @@ describe('timeout handling', () => {
 
     let syncCallCount = 0;
 
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -449,7 +449,7 @@ describe('timeout handling', () => {
       },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Re-enable sessions for other tests
     await query(
@@ -494,14 +494,14 @@ describe('partial failure', () => {
     const acct1 = await upsertAccount(inst.id, 'DE89370400440532060101', 'Partial OK Konto');
     const acct2 = await upsertAccount(inst.id, 'DE89370400440532060102', 'Partial Fail Konto');
 
-    // Disable all prior sessions so dailySync only sees this institution
+    // Disable all prior sessions so startWeeklySync only sees this institution
     await query(
       `UPDATE banking_sessions SET pending_challenge_type = 'test_disabled' WHERE id != $1`,
       [session.id],
     );
 
     // Track calls per IBAN to control which account succeeds/fails
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -517,7 +517,7 @@ describe('partial failure', () => {
       },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Re-enable sessions for other tests
     await query(

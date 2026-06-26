@@ -61,54 +61,19 @@ async function restoreSessions() {
   );
 }
 
-// ── E2-1: Tages-Guard — 2. Sync → SKIPPED ────────────────────────────────────
+// E2-1 removed (E3: Tages-Guard no longer exists)
 
-describe('Tages-Guard', () => {
-  test('E2-1. second sync same day → SKIPPED_ALREADY_SYNCED', async () => {
-    const { inst, session, accounts } = await setupInstitution(
-      '70000201', 'E2 Guard Bank', ['DE89370400440532070201'],
-    );
-    await isolateSessions([session.id]);
+// ── E2-2: eventResync after startWeeklySync ─────────────────────────────────
 
-    let syncCallCount = 0;
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
-
-    initSyncEngine({
-      sendTelegram: async () => true,
-      telegramChatId: () => 'test-chat-e2-1',
-      _sidecarHealth: async () => ({ status: 'ok' }),
-      _sidecarSync: async () => {
-        syncCallCount++;
-        return { transactions: [], balance: 100.00 };
-      },
-    });
-
-    // First sync: should succeed
-    const result1 = await dailySync();
-    expect(result1.status).toBe('SUCCESS_FULL');
-    expect(syncCallCount).toBe(1);
-
-    // Second sync: Tages-Guard should skip
-    const result2 = await dailySync();
-    expect(result2.status).toBe('SKIPPED_ALREADY_SYNCED');
-    // Sidecar NOT called again
-    expect(syncCallCount).toBe(1);
-
-    await restoreSessions();
-  });
-});
-
-// ── E2-2: eventResync umgeht Guard ────────────────────────────────────────────
-
-describe('eventResync bypasses guard', () => {
-  test('E2-2. eventResync runs despite prior dailySync today', async () => {
+describe('eventResync after startWeeklySync', () => {
+  test('E2-2. eventResync runs after prior startWeeklySync same day', async () => {
     const { inst, session } = await setupInstitution(
       '70000202', 'E2 Resync Bank', ['DE89370400440532070202'],
     );
     await isolateSessions([session.id]);
 
     let syncCallCount = 0;
-    const { dailySync, eventResync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, eventResync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -120,8 +85,8 @@ describe('eventResync bypasses guard', () => {
       },
     });
 
-    // First: dailySync
-    await dailySync();
+    // First: startWeeklySync
+    await startWeeklySync();
     expect(syncCallCount).toBe(1);
 
     // eventResync: sidecar WILL be called despite prior run
@@ -168,54 +133,7 @@ describe('CB-SET after eventResync TAN', () => {
   });
 });
 
-// ── E2-4: Lazy CB-SET bei naechstem dailySync ─────────────────────────────────
-
-describe('Lazy CB-SET', () => {
-  test('E2-4. previous day TAN_REQUIRED → lazy CB-SET on next dailySync', async () => {
-    const { inst, session } = await setupInstitution(
-      '70000204', 'E2 Lazy CB Bank', ['DE89370400440532070204'],
-    );
-    await isolateSessions([session.id]);
-
-    const { query } = await import('../../../shared/db/index.js');
-
-    // Simulate a completed sync run from yesterday with TAN_REQUIRED status
-    await query(
-      `INSERT INTO banking_sync_runs (institution_id, sync_date, run_phase, status, finished_at)
-       VALUES ($1, CURRENT_DATE - INTERVAL '1 day', 'scheduled', 'TAN_REQUIRED', now() - INTERVAL '1 day')`,
-      [inst.id],
-    );
-
-    let syncCallCount = 0;
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
-
-    initSyncEngine({
-      sendTelegram: async () => true,
-      telegramChatId: () => 'test-chat-e2-4',
-      _sidecarHealth: async () => ({ status: 'ok' }),
-      _sidecarSync: async () => {
-        syncCallCount++;
-        return { transactions: [], balance: 100.00 };
-      },
-    });
-
-    const result = await dailySync();
-
-    // Institution should be paused (lazy CB-SET triggered), sidecar NOT called
-    expect(syncCallCount).toBe(0);
-
-    // Verify pause in DB
-    const { rows } = await query<{ sync_paused_status: string | null }>(
-      'SELECT sync_paused_status FROM banking_institutions WHERE id = $1',
-      [inst.id],
-    );
-    expect(rows[0].sync_paused_status).toBe('AUTO_PAUSED_PENDING_TAN');
-
-    // Clean up
-    await query('UPDATE banking_institutions SET sync_paused_status = NULL WHERE id = $1', [inst.id]);
-    await restoreSessions();
-  });
-});
+// E2-4 removed (E3: Lazy CB-SET no longer exists)
 
 // ── E2-5: CB-CLEAR bei SUCCESS_FULL ───────────────────────────────────────────
 
@@ -278,7 +196,7 @@ describe('SCA-Budget', () => {
     }
 
     let syncCallCount = 0;
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -290,7 +208,7 @@ describe('SCA-Budget', () => {
       },
     });
 
-    const result = await dailySync();
+    const result = await startWeeklySync();
 
     // Sidecar should NOT have been called (budget exceeded → skipped)
     expect(syncCallCount).toBe(0);
@@ -370,7 +288,7 @@ describe('Lookback cursor', () => {
 
     // Capture from_date passed to sidecar
     let capturedFromDate: string | undefined;
-    const { dailySync, initSyncEngine } = await import('../sync-engine.js');
+    const { startWeeklySync, initSyncEngine } = await import('../sync-engine.js');
 
     initSyncEngine({
       sendTelegram: async () => true,
@@ -382,7 +300,7 @@ describe('Lookback cursor', () => {
       },
     });
 
-    await dailySync();
+    await startWeeklySync();
 
     // Expected: 2026-06-20 - 14 days = 2026-06-06
     expect(capturedFromDate).toBe('2026-06-06');
@@ -391,40 +309,7 @@ describe('Lookback cursor', () => {
   });
 });
 
-// ── E2-9: Button-Duplikat abgelehnt ──────────────────────────────────────────
-
-describe('Button duplicate rejection', () => {
-  test('E2-9. second button press → "bereits Re-Sync" rejection', async () => {
-    const { inst } = await setupInstitution(
-      '70000210', 'E2 Dup Button Bank', ['DE89370400440532070210'],
-    );
-
-    const { query } = await import('../../../shared/db/index.js');
-    const { validateResyncRequest } = await import('../sync-engine.js');
-
-    // Create a sync run with TAN_REQUIRED and alert_delivered
-    const { rows } = await query<{ id: string }>(
-      `INSERT INTO banking_sync_runs (institution_id, run_phase, status, alert_delivered, finished_at)
-       VALUES ($1, 'scheduled', 'TAN_REQUIRED', true, now())
-       RETURNING id`,
-      [inst.id],
-    );
-    const runId = parseInt(rows[0].id, 10);
-
-    // Also create an existing event_resync for today (simulates first button press)
-    await query(
-      `INSERT INTO banking_sync_runs (institution_id, run_phase, status, finished_at)
-       VALUES ($1, 'event_resync', 'SUCCESS_FULL', now())`,
-      [inst.id],
-    );
-
-    const validation = await validateResyncRequest(runId);
-    expect(validation.ok).toBe(false);
-    if (!validation.ok) {
-      expect(validation.reason).toContain('bereits');
-    }
-  });
-});
+// E2-9 removed (E3: hasEventResyncToday no longer exists; replaced by E3-5 RESYNC_TRIGGERED idempotency)
 
 // ── E2-10: Button bei nicht-TAN Run abgelehnt ────────────────────────────────
 

@@ -18,7 +18,7 @@ import {
 } from './store.js';
 import { getClient } from '../../shared/db/index.js';
 import { initiateConnect, completeTan } from './tan-bridge.js';
-import { dailySync, getSyncStatus } from './sync-engine.js';
+import { getSyncStatus } from './sync-engine.js';
 import * as sidecar from './sidecar-client.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -354,17 +354,6 @@ export function registerBankingHttpRoutes(api: any) {
         const rest = pathname.replace(/^\/api\/internal\/banking\/?/, '');
         const segments = rest.split('/').filter(Boolean);
         const resource = segments[0] || '';
-
-        // POST /api/internal/banking/daily-sync
-        if (resource === 'daily-sync' && req.method === 'POST') {
-          await withContext({ requestId, actor: 'system', source: 'n8n' }, async () => {
-            try {
-              const result = await dailySync();
-              json(res, 200, result);
-            } catch (e: any) { err(res, 500, e.message); }
-          });
-          return true;
-        }
 
         // GET /api/internal/banking/sync-status
         if (resource === 'sync-status' && req.method === 'GET') {

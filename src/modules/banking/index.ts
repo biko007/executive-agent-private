@@ -23,8 +23,8 @@ export {
   setPendingChallenge, getPendingChallenge, clearPendingChallenge, expireOldPendingChallenges,
   listActiveSessions, updateAccountBalance,
   hasReminderBeenSent, markReminderSent, clearReminders,
-  hasTodayBankContact, getSyncRunById, getLastCompletedSyncRunBeforeToday,
-  getLastBookingDate, hasEventResyncToday,
+  getSyncRunById,
+  getLastBookingDate,
 } from './store.js';
 export type { SyncRunRow } from './store.js';
 
@@ -45,7 +45,7 @@ export { initTanBridge, initiateConnect, completeTan, cleanupExpiredChallenges }
 export { initBankingCommands, registerBankingCommands } from './commands.js';
 
 // Sync Engine (Etappe e + E1 + E2)
-export { initSyncEngine, dailySync, getSyncStatus, eventResync, validateResyncRequest } from './sync-engine.js';
+export { initSyncEngine, startWeeklySync, getSyncStatus, eventResync, validateResyncRequest } from './sync-engine.js';
 export type { DailySyncResult, AccountSyncResult, ContractStatus, SyncStatus, SyncEngineDeps } from './sync-engine.js';
 
 // HTTP routes

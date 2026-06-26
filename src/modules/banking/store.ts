@@ -966,17 +966,6 @@ export async function countRecentScaEvents(
 
 // ── E2 Query Functions ───────────────────────────────────────────────────────
 
-/** Tages-Guard: did this institution already have a real bank contact today? */
-export async function hasTodayBankContact(institutionId: number): Promise<boolean> {
-  const { rows } = await dbQuery<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM banking_sync_runs
-     WHERE institution_id = $1 AND sync_date = CURRENT_DATE
-       AND run_phase IN ('scheduled', 'manual')
-       AND status NOT IN ('RUNNING','SKIPPED_ALREADY_SYNCED','SKIPPED_ALREADY_RUNNING','AUTO_PAUSED_PENDING_TAN')`,
-    [institutionId],
-  );
-  return parseInt(rows[0].count, 10) > 0;
-}
 
 /** Row type for banking_sync_runs. */
 export interface SyncRunRow {
@@ -1024,36 +1013,6 @@ export async function getSyncRunById(id: number): Promise<SyncRunRow | null> {
   };
 }
 
-/** Last completed sync run from a PREVIOUS day. DB-side date authority (CURRENT_DATE). */
-export async function getLastCompletedSyncRunBeforeToday(institutionId: number): Promise<SyncRunRow | null> {
-  const { rows } = await dbQuery<any>(
-    `SELECT * FROM banking_sync_runs
-     WHERE institution_id = $1 AND finished_at IS NOT NULL
-       AND sync_date < CURRENT_DATE
-     ORDER BY finished_at DESC LIMIT 1`,
-    [institutionId],
-  );
-  if (rows.length === 0) return null;
-  const r = rows[0];
-  return {
-    id: num(r.id),
-    institution_id: num(r.institution_id),
-    sync_date: r.sync_date,
-    run_phase: r.run_phase,
-    status: r.status,
-    trigger_source: r.trigger_source,
-    trigger_id: r.trigger_id,
-    sca_required: r.sca_required,
-    alert_delivered: r.alert_delivered,
-    accounts_synced: r.accounts_synced != null ? Number(r.accounts_synced) : null,
-    transactions_new: r.transactions_new != null ? Number(r.transactions_new) : null,
-    error_message: r.error_message,
-    started_at: r.started_at,
-    finished_at: r.finished_at,
-    created_at: r.created_at,
-  };
-}
-
 /** Lookback-Cursor: MAX(booking_date) for an account. Returns ISO date or null. */
 export async function getLastBookingDate(accountId: number): Promise<string | null> {
   const { rows } = await dbQuery<{ max_date: string | null }>(
@@ -1063,12 +1022,3 @@ export async function getLastBookingDate(accountId: number): Promise<string | nu
   return rows[0]?.max_date ?? null;
 }
 
-/** Duplikat-Schutz: was there already an event_resync today for this institution? */
-export async function hasEventResyncToday(institutionId: number): Promise<boolean> {
-  const { rows } = await dbQuery<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM banking_sync_runs
-     WHERE institution_id = $1 AND sync_date = CURRENT_DATE AND run_phase = 'event_resync'`,
-    [institutionId],
-  );
-  return parseInt(rows[0].count, 10) > 0;
-}
