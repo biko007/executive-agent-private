@@ -585,3 +585,16 @@ Niemals: Hashes, UUIDs, Timestamps allein, Telegram-interne Dateinamen
 - Paper Trading Account: DUP514636 — kein echtes Geld
 - Live Trading nur nach expliziter schriftlicher Freigabe durch Operator
 - Kill-Switch (/tradekill) hat immer höchste Priorität
+
+## Doku-Disziplin (stehende Regel, ab 2026-06-26)
+
+Die Architektur-Doku ist Markdown-Master im Repo und wird **in jedem Etappen-Commit
+mitgepflegt** — Doku im selben Commit wie der Code, nicht nachgelagert.
+
+- `docs/ARCHITECTURE.md` — OpenClaw/bikosoc.
+- `docs/SHARED_PLATFORM.md` — geteilte Infra (VPS, Postgres-Instanz, nginx, MinIO, ffmpeg,
+  Ports). **Autoritativ**; Änderungen an geteilter Infra gehören hierher, nicht in ARCHITECTURE.md.
+- Eine Feature-Etappe editiert `ARCHITECTURE.md`; eine Infra-Änderung `SHARED_PLATFORM.md`.
+- Status-Marker je Abschnitt: ✅ verifiziert (Datum + Quelle) / ⏳ zu verifizieren. Nur
+  empirisch auf dem VPS Verifiziertes als ✅ markieren — kein Abschreiben aus Specs/Memory.
+- PDF ist abgeleitet (nur bei Bedarf generiert), die `.md` ist kanonisch.
