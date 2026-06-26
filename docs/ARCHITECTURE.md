@@ -59,8 +59,9 @@ OpenClaw-eigene Services (Host/nginx/Postgres-Instanz: `SHARED_PLATFORM.md`):
 Backup-Services (`openclaw-backup-{daily,weekly,monthly}`) existieren als systemd-Units,
 getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`.
 
-> banking-fints hat (Stand 2026-06-26) **keinen `/health`-Endpoint** (HTTP 404), läuft aber
-> aktiv und lauscht auf `127.0.0.1:18794`. ⏳ optionaler `/health` als kleiner Tail.
+> banking-fints hat seit 2026-06-26 einen unauthentifizierten **`/health`-Endpoint** (HTTP 200,
+> `{"status":"ok","service":"banking-fints"}`). Reine Prozess-Liveness — **kein** Bank-Kontakt,
+> kein DB-Zugriff, kein Auth. Authentifizierter Health-Check unter `/fints/health` (Bearer).
 
 ---
 
@@ -234,7 +235,11 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
 Schema-Versionierung · Modul-Migrationsstand · Banking-Commits · Modell-Fix-Push · n8n-Status ·
 Insta-Token-Ablauf · Travel/Mail-Datenhaltung · OS/Host/TLS.
 
+**Erledigt (Hygiene-Batch 2026-06-26):**
+- ✅ banking-fints `/health`-Endpoint nachgerüstet (HTTP 200, kein Bank-Kontakt) — §3
+- ✅ `8443/tcp` UFW-Regel entfernt — `SHARED_PLATFORM.md §1`
+- ✅ 9 `openclaw_test_*` Cruft-DBs gedroppt — `SHARED_PLATFORM.md §4`
+- ✅ Tailscale-Mesh + MinIO-Buckets dokumentiert — `SHARED_PLATFORM.md §1/§6`
+
 **Offene Tails (nicht doku-blockierend, niedrige Prio):**
-- banking-fints `/health`-Endpoint nachrüsten (heute HTTP 404) — §3
 - Travel + Mail → Postgres migrieren — §4
-- `8443/tcp` verwaiste UFW-Regel prüfen/entfernen — `SHARED_PLATFORM.md`

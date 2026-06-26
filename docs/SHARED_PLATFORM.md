@@ -23,10 +23,13 @@
 - OS **Ubuntu 24.04.4 LTS**, Kernel 6.8.0-110-generic. User `biko`. Domain `app.bikobickel.de`.
 - Edge: nginx (HTTPS 443 auf `46.62.153.181`), Let's Encrypt — Zertifikat gültig bis
   **2026-07-29** (Auto-Renew). Firewall UFW + Fail2ban. SSH-Key only, Root-Login deaktiviert.
-- **Tailscale-Mesh aktiv** (`tailscaled`, `100.121.45.4` / `fd7a:115c:…`) — serviert intern
-  u. a. `:443`. *(In v32 nicht dokumentiert.)* ⏳ Zweck/Scope der Tailscale-Routen festhalten.
-- UFW erlaubt zusätzlich `60000:61000/udp` (Mosh über Mobilfunk) und `8443/tcp` (verwaiste
-  Regel — kein Dienst lauscht dort, prüfen/entfernen).
+- **Tailscale-Mesh aktiv** (`tailscaled`, `100.121.45.4` / `fd7a:115c:…`). Reiner Peer-Mesh
+  für Remote-Zugriff (SSH, Dashboard, Debug) — **keine advertised/accepted Routes, kein
+  Exit-Node, kein Subnet-Routing**. Nodes (3): VPS `hetzner-vps` (100.121.45.4, online),
+  MacBook Pro (100.67.173.54, offline >112d), iMac Pro (100.120.176.58).
+  ✅ verifiziert 2026-06-26 (`tailscale status --json`).
+- UFW erlaubt zusätzlich `60000:61000/udp` (Mosh über Mobilfunk).
+  `8443/tcp`-Regel entfernt 2026-06-26 (nichts lauschte, keine Referenz).
 
 ---
 
@@ -53,9 +56,9 @@
 
 ## 4. Datenbanken und Rollen
 
-**Status:** ✅ verifiziert 2026-06-26 (`\l`, `\du`) — ⏳ Test-DB-Cruft-Entscheidung offen
+**Status:** ✅ verifiziert 2026-06-26 (`\l`, `\du`) — Cruft bereinigt 2026-06-26
 
-**Produktive DBs:**
+**Produktive DBs (7 total, inkl. System-DBs):**
 
 | DB | Owner | App-Rolle | Inhalt |
 |---|---|---|---|
@@ -63,15 +66,18 @@
 | `openclaw_core` | openclaw | `openclaw` | OpenClaw-Anwendungsdaten (53 Tabellen) |
 | `hdcc_core` | hdcc_owner | `hdcc_app` (DML) | HDCC-Produktivdaten |
 | `hdcc_test` | hdcc_owner | `hdcc_app` | HDCC-Test-DB |
+| `postgres` | n8n | — | System-DB (Maintenance) |
+| `template0` | n8n | — | System-Template |
+| `template1` | n8n | — | System-Template |
 
 **Rollen:** `n8n` (Bootstrap-Superuser: Superuser/CreateRole/CreateDB/Replication/BypassRLS —
 nur pg_dump) · `postgres` (Notfall-Superuser) · `openclaw` (CreateDB) · `n8n_app`, `hdcc_app`,
 `hdcc_owner` (App/Owner, ohne Sonderrechte). Per-Table-GRANTs statt blanket
 `ALTER DEFAULT PRIVILEGES`.
 
-> ⚠️ **Cruft:** Zusätzlich existieren **9 verwaiste `openclaw_test_*` / `openclaw_test_nk_*`
-> Test-Datenbanken** (Owner `openclaw`, der CreateDB hat). Aufräum-Kandidat — vor Drop
-> sicherstellen, dass keine CI darauf zeigt. ⏳ Owner-Entscheidung.
+> **Cruft bereinigt 2026-06-26:** 9 verwaiste `openclaw_test_*` / `openclaw_test_nk_*`
+> Test-Datenbanken gedroppt (0 Referenzen in Code/Config/n8n, pg_dump-Sicherung in
+> `~/bikosoc-spec/cruft-dumps-20260626-2007/`). Keine `openclaw_test_*`-DBs mehr vorhanden.
 
 ---
 
@@ -108,15 +114,22 @@ Catch-All. Interne Endpunkte (`/api/internal/*`) via IP-Whitelist (127.0.0.1).
 
 ## 6. MinIO
 
-**Status:** ✅ verifiziert 2026-06-26 — extern dicht — ⏳ nur Buckets/Nutzung offen
+**Status:** ✅ verifiziert 2026-06-26 — extern dicht, Buckets dokumentiert
 
 - Container `hdcc-minio-1` (minio:latest), S3-kompatibel. Uploads via
   `@aws-sdk/lib-storage` (Streaming).
 - Ports 9000/9001 binden an `0.0.0.0`, sind aber **extern nicht erreichbar**: UFW ist
   aktiv (default-deny incoming) und gibt 9000/9001 **nicht** frei (verifiziert 2026-06-26).
   Kein Exposure-Problem.
-- Im bikosoc-Code keine `MINIO_ENDPOINT/BUCKET`-Referenzen außerhalb der env → MinIO
-  **HDCC-primär**; OpenClaw-Nutzung ⏳ klären (Config in `~/.config/openclaw/env`).
+
+**Buckets (verifiziert 2026-06-26):**
+
+| Bucket | System | Inhalt |
+|---|---|---|
+| `hdcc-dev` | HDCC | HDCC-Mediendaten (einziger Bucket) |
+
+OpenClaw/bikosoc nutzt MinIO **nicht** — kein `MINIO_ENDPOINT/BUCKET` in bikosoc-Code
+oder `~/.config/openclaw/env`. MinIO ist **ausschließlich HDCC**.
 
 ---
 
@@ -161,11 +174,15 @@ Catch-All. Interne Endpunkte (`/api/internal/*`) via IP-Whitelist (127.0.0.1).
 ## 10. Verifikationsstatus / offene Fakten
 
 **Verifiziert 2026-06-26:** Host/OS/TLS · Docker · Postgres-Instanz · DBs/Rollen · Ports ·
-nginx-Routen · UFW (MinIO dicht) · Backup-Timer · Secrets-Perms.
+nginx-Routen · UFW (MinIO dicht, 8443 entfernt) · Backup-Timer · Secrets-Perms ·
+Tailscale-Mesh · MinIO-Buckets · Cruft-DBs bereinigt.
+
+**Erledigt (Hygiene-Batch 2026-06-26):**
+- ✅ `openclaw_test_*` Cruft-DBs (9 Stück) gedroppt, pg_dump-Sicherung vorhanden — §4
+- ✅ MinIO-Buckets dokumentiert (1× `hdcc-dev`, HDCC-only) — §6
+- ✅ Tailscale-Mesh dokumentiert (Peer-Mesh, keine Routen) — §1
+- ✅ `8443/tcp` UFW-Regel entfernt (nichts lauschte, keine Referenz) — §1
+- ✅ banking-fints `/health` Liveness-Endpoint hinzugefügt (kein Bank-Kontakt) — siehe ARCHITECTURE.md §3
 
 **Offene Tails (nicht doku-blockierend):**
-- `openclaw_test_*` Cruft-DBs (9 Stück): Drop-Entscheidung — §4
-- MinIO-Buckets je System dokumentieren — §6
-- Tailscale-Routen-Zweck festhalten — §1
-- `8443/tcp` verwaiste UFW-Regel — §1
 - letzter Restore-Drill (operativ) — §9
