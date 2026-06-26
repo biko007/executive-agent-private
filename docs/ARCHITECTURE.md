@@ -197,6 +197,18 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
 - Diagnose-First: cc-Selbstreport unbewiesen bis Artefakt.
 - Plan Mode Pflicht ab 3+ Dateien. `git add -A` je Etappe, working tree clean vor Push.
 
+### Health-Monitor (Querschnitt)
+
+`src/modules/executive/health-monitor.ts` — pollt alle 5 min, Alerts via Telegram.
+
+- **Service-Health:** HTTP-Checks für Core/Dashboard/Trading/n8n. State-Transition (up↔down)
+  löst Alert aus, `shouldAlert()` throttled auf 30 min pro Key.
+- **Token-Expiry:** Täglich 08:00 Berlin, prüft Instagram-Token (`insta_tokens.expires_at`).
+- **Location-Staleness:** Prüft `location_events.recorded_at` gegen
+  `LOCATION_STALE_THRESHOLD_MS` (Default 12h). Ein WARN bei Überschreitung, eine Entwarnung
+  bei frischen Daten. Wiedervorlage alle `LOCATION_STALE_RENAG_MS` (24h) solange stale.
+  Leere Tabelle → kein Alert, kein Crash.
+
 ---
 
 ## 10. Roadmap / Sprint-Plan

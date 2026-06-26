@@ -5,6 +5,7 @@
  * Polling: every 5 minutes, 10s timeout per check
  * Alerts: throttled to max 1 per service+event per 30 minutes
  * Token checks: daily at 08:00 Europe/Berlin
+ * Location staleness: proactive alert when latest location_events.recorded_at > 12h
  */
 import { query } from '../../shared/db/index.js';
 
@@ -40,6 +41,12 @@ const THROTTLE_WINDOW_MS = 30 * 60 * 1000;     // 30 minutes
 const TOKEN_WARNING_DAYS = 7;
 const TOKEN_CHECK_HOUR = 8; // 08:00 Europe/Berlin
 
+/** Location staleness alert threshold (default 12h ≈ 4 missed 3h iPhone cycles) */
+export const LOCATION_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+
+/** Re-alert interval while location remains stale (24h) */
+export const LOCATION_STALE_RENAG_MS = 24 * 60 * 60 * 1000;
+
 const SERVICES: ServiceEntry[] = [
   { name: 'Core', url: 'http://127.0.0.1:18789/health' },
   { name: 'Dashboard', url: 'http://127.0.0.1:18800/health' },
@@ -69,6 +76,42 @@ export function shouldAlert(
   }
   throttleMap.set(key, now);
   return true;
+}
+
+// ── Location Staleness Evaluation ─────────────────────────────────────────
+
+export interface LocationStalenessResult {
+  stale: boolean;
+  ageHours: number;
+  label: string | null;
+  noData: boolean;
+  updatedAt: string | null;
+}
+
+/**
+ * Pure function: evaluates whether the latest location event is stale.
+ * Returns noData=true when no event exists or updatedAt is invalid — no alert warranted.
+ */
+export function evaluateLocationStaleness(
+  latest: { label: string; updatedAt: string } | null,
+  thresholdMs: number = LOCATION_STALE_THRESHOLD_MS,
+  now: number = Date.now(),
+): LocationStalenessResult {
+  if (!latest || !latest.updatedAt) {
+    return { stale: false, ageHours: Infinity, label: null, noData: true, updatedAt: null };
+  }
+  const updatedAtMs = Date.parse(latest.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) {
+    return { stale: false, ageHours: Infinity, label: latest.label, noData: true, updatedAt: null };
+  }
+  const ageMs = now - updatedAtMs;
+  return {
+    stale: ageMs > thresholdMs,
+    ageHours: Math.round(ageMs / 3600_000),
+    label: latest.label,
+    noData: false,
+    updatedAt: latest.updatedAt,
+  };
 }
 
 // ── DB Persistence ─────────────────────────────────────────────────────────
@@ -185,6 +228,8 @@ export class HealthMonitor {
   private sendTelegram: SendTelegramFn;
   private getChatId: GetChatIdFn;
   private logger: LoggerFn;
+  private locationStale: boolean | null = null;
+  private lastStaleAlertAt: number | null = null;
 
   constructor(opts: {
     sendTelegram: SendTelegramFn;
@@ -269,6 +314,9 @@ export class HealthMonitor {
         await this.sendAlert(svc.name, newStatus, prev?.downtimeStart ?? null);
       }
     }
+
+    // Location staleness check (runs every poll cycle)
+    await this.checkLocationStaleness();
   }
 
   private async sendAlert(
@@ -330,6 +378,78 @@ export class HealthMonitor {
           }
         }
       }
+    }
+  }
+
+  // ── Location Staleness Check ───────────────────────────────────────────
+
+  private async checkLocationStaleness(): Promise<void> {
+    let latest: { label: string; updatedAt: string } | null = null;
+    try {
+      const { getLatestLocation } = await import('../../modules/location/store.js');
+      latest = await getLatestLocation();
+    } catch (err: any) {
+      this.logger.error(`[health-monitor] Location query failed: ${err.message}`);
+      return;
+    }
+
+    const result = evaluateLocationStaleness(latest);
+
+    if (result.noData) {
+      this.locationStale = null;
+      this.logger.info('[health-monitor] No location events found — skipping staleness check');
+      return;
+    }
+
+    const now = Date.now();
+
+    if (result.stale && this.locationStale !== true) {
+      // Transition fresh → stale: send WARN
+      this.locationStale = true;
+      this.lastStaleAlertAt = now;
+      const chatId = this.getChatId();
+      if (chatId && shouldAlert('Location', 'stale')) {
+        const time = new Date(result.updatedAt!).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
+        const text = `⚠️ Standort seit ${result.ageHours}h nicht aktualisiert (letzter: ${result.label}, ${time})`;
+        try {
+          await this.sendTelegram(chatId, text);
+          this.logger.info(`[health-monitor] Alert sent: ${text}`);
+        } catch (err: any) {
+          this.logger.error(`[health-monitor] Location stale alert failed: ${err.message}`);
+        }
+      }
+    } else if (result.stale && this.locationStale === true) {
+      // Still stale: check for 24h reminder
+      if (this.lastStaleAlertAt !== null && now - this.lastStaleAlertAt > LOCATION_STALE_RENAG_MS) {
+        const chatId = this.getChatId();
+        if (chatId && shouldAlert('Location', 'stale_reminder')) {
+          const text = `⚠️ Standort weiterhin seit ${result.ageHours}h nicht aktualisiert (letzter: ${result.label})`;
+          try {
+            await this.sendTelegram(chatId, text);
+            this.logger.info(`[health-monitor] Alert sent: ${text}`);
+          } catch (err: any) {
+            this.logger.error(`[health-monitor] Location stale reminder failed: ${err.message}`);
+          }
+          this.lastStaleAlertAt = now;
+        }
+      }
+    } else if (!result.stale && this.locationStale === true) {
+      // Transition stale → fresh: send recovery
+      this.locationStale = false;
+      this.lastStaleAlertAt = null;
+      const chatId = this.getChatId();
+      if (chatId && shouldAlert('Location', 'stale_resolved')) {
+        const text = `✅ Standort aktualisiert (${result.label})`;
+        try {
+          await this.sendTelegram(chatId, text);
+          this.logger.info(`[health-monitor] Alert sent: ${text}`);
+        } catch (err: any) {
+          this.logger.error(`[health-monitor] Location recovery alert failed: ${err.message}`);
+        }
+      }
+    } else {
+      // Fresh, was not stale before
+      this.locationStale = false;
     }
   }
 

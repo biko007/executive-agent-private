@@ -75,7 +75,7 @@ import {
   runDailyHealthCheck,
 } from "./system-health.js";
 import type { HealthReport, Escalation } from "./system-health.js";
-import { HealthMonitor } from "./src/modules/executive/index.js";
+import { HealthMonitor, LOCATION_STALE_THRESHOLD_MS } from "./src/modules/executive/index.js";
 import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
@@ -810,7 +810,7 @@ export default function (api: any) {
       return { loc, isStale: true };
     }
     const ageMs = now.getTime() - updatedAtMs;
-    const maxAgeMs = 12 * 60 * 60 * 1000;
+    const maxAgeMs = LOCATION_STALE_THRESHOLD_MS;
     return { loc, isStale: ageMs > maxAgeMs };
   }
 

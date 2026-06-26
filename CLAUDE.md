@@ -475,6 +475,17 @@ Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index i
 Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 
+### Location-Staleness-Alert (2026-06-26)
+
+Health-Monitor (`src/modules/executive/health-monitor.ts`) prüft im 5-min-Polling-Zyklus den
+jüngsten `location_events.recorded_at`. Schwellwert: `LOCATION_STALE_THRESHOLD_MS` (12h, exportiert).
+- fresh→stale: ein WARN (`⚠️ Standort seit Xh nicht aktualisiert`)
+- Wiedervorlage alle `LOCATION_STALE_RENAG_MS` (24h) solange stale
+- stale→fresh: eine Entwarnung (`✅ Standort aktualisiert`)
+- Leere Tabelle: kein Alert, kein Crash
+- `evaluateLocationStaleness()` als reine Funktion, getestet in `__tests__/stale-location.test.ts`
+- Briefing `getBestEffortLocationForBriefing()` nutzt dieselbe Konstante (kein Drift).
+
 ## Role
 
 You are the engineering partner for the OpenClaw Executive System.
