@@ -210,6 +210,23 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
   bei frischen Daten. Wiedervorlage alle `LOCATION_STALE_RENAG_MS` (24h) solange stale.
   Leere Tabelle → kein Alert, kein Crash.
 
+### Withings-Sync (konsolidiert 2026-06-26)
+
+`src/modules/health/commands.ts` — eine Routine `runWithingsSync()` holt alle 4 Typen
+(Measures, Sleep, Activity, Workouts) mit Dedup (`hasEntryForDate`). Alle Pfade routen
+durch `executeWithingsSync()` (Advisory Lock 42 + Retry-on-401):
+
+- **Briefing-Pre-Sync:** 48h-Fenster, autark (kein n8n nötig). Fehler werden geloggt
+  (`console.error`) und in `last_sync_error` persistiert (nicht lautlos verschluckt).
+- **`/healthsync N`:** Ehrt N Tage wörtlich (`sinceMs = now - N*24h`). Kein `last_sync`-Zweig.
+- **`triggerWithingsSync`:** n8n-Endpoint, 48h-Fenster.
+
+`last_sync` wird genau einmal am Ende von `executeWithingsSync` gesetzt (via `updateSyncStatus`),
+innerhalb des Advisory Lock — wahrhaftig, weil alle 4 Typen geholt wurden.
+
+n8n-Workflow `health-withings-sync-daily` (`uSGEPq973pNTxXtj`) deaktiviert (`active=false`) —
+war nie funktionsfähig (nginx `/api/` Catch-All → Dashboard 18800 statt Gateway 18789).
+
 ---
 
 ## 10. Roadmap / Sprint-Plan

@@ -486,6 +486,14 @@ jüngsten `location_events.recorded_at`. Schwellwert: `LOCATION_STALE_THRESHOLD_
 - `evaluateLocationStaleness()` als reine Funktion, getestet in `__tests__/stale-location.test.ts`
 - Briefing `getBestEffortLocationForBriefing()` nutzt dieselbe Konstante (kein Drift).
 
+### Withings Sync-Konsolidierung (2026-06-26)
+
+Root Cause: Cursor-Poisoning (`syncWithingsForBriefing()` setzte `last_sync = NOW` obwohl nur
+Weight/Sleep geholt) + n8n 404 (fehlende nginx-Location). Fix: eine `runWithingsSync()` Routine
+für alle Pfade, alle 3 Caller routen durch `executeWithingsSync` (Lock 42 + Retry-on-401),
+`/healthsync N` ehrt N wörtlich (toter `last_sync`-Zweig entfernt), n8n-Workflow deaktiviert.
+Briefing-Fehler werden geloggt + in `last_sync_error` persistiert (nicht mehr lautlos verschluckt).
+
 ## Role
 
 You are the engineering partner for the OpenClaw Executive System.

@@ -48,34 +48,131 @@ let withingsCallbackServer: http.Server | null = null;
 export async function syncWithingsForBriefing(): Promise<void> {
   if (!withingsClientId || !withingsClientSecret || !(await isAuthorized())) return;
   try {
-    const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
-    const sinceMs = Date.now() - 36 * 60 * 60 * 1000; // last 36h to catch morning updates
+    const sinceMs = Date.now() - 48 * 3600_000; // 48h window — overlap against missed days
+    await executeWithingsSync(
+      withingsClientId, withingsClientSecret, sinceMs,
+      async (token, since) => {
+        const r = await runWithingsSync(token, since);
+        return { total: r.measures + r.sleep + r.activity + r.workouts, newCount: r.totalNew };
+      },
+    );
+  } catch (e: any) {
+    // Don't crash briefing, but make the error visible
+    console.error(`[withings] Briefing sync failed: ${e.message}`);
+  }
+}
 
-    const measures = await fetchMeasures(tokens.access_token, sinceMs).catch(() => [] as any[]);
+// ── Consolidated sync routine (all 4 types) ──────────────────────────────
+
+export interface SyncResult {
+  measures: number;   measuresNew: number;
+  sleep: number;      sleepNew: number;   sleepUpdated: number;
+  activity: number;   activityNew: number;
+  workouts: number;   workoutsNew: number;
+  totalNew: number;
+}
+
+/**
+ * Fetch + persist all 4 Withings data types with dedup.
+ * Pure data function — no token management, no locking, no last_sync write.
+ * Those concerns are handled by executeWithingsSync (the Lock+Retry wrapper).
+ */
+export async function runWithingsSync(
+  accessToken: string,
+  sinceMs: number,
+  fetchers?: {
+    fetchMeasures?: typeof fetchMeasures;
+    fetchSleep?: typeof fetchSleep;
+    fetchActivity?: typeof fetchActivity;
+    fetchWorkouts?: typeof fetchWorkouts;
+  },
+): Promise<SyncResult> {
+  const _fetchMeasures = fetchers?.fetchMeasures ?? fetchMeasures;
+  const _fetchSleep = fetchers?.fetchSleep ?? fetchSleep;
+  const _fetchActivity = fetchers?.fetchActivity ?? fetchActivity;
+  const _fetchWorkouts = fetchers?.fetchWorkouts ?? fetchWorkouts;
+
+  const result: SyncResult = {
+    measures: 0, measuresNew: 0,
+    sleep: 0, sleepNew: 0, sleepUpdated: 0,
+    activity: 0, activityNew: 0,
+    workouts: 0, workoutsNew: 0,
+    totalNew: 0,
+  };
+
+  // ── Measures (weight, body fat, HR) ──
+  try {
+    const measures = await _fetchMeasures(accessToken, sinceMs);
+    result.measures = measures.length;
     for (const m of measures) {
       const dateStr = m.date.toISOString().slice(0, 10);
-      if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr)))
+      if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr))) {
         await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-      if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr)))
+        result.measuresNew++;
+      }
+      if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
         await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
-      if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr)))
+      }
+      if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
         await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
+      }
     }
+  } catch { /* individual type failure — continue with remaining types */ }
 
-    const sleeps = await fetchSleep(tokens.access_token, sinceMs).catch(() => [] as any[]);
+  // ── Sleep (aggregated per night, dedup) ──
+  try {
+    const sleeps = await _fetchSleep(accessToken, sinceMs);
+    result.sleep = sleeps.length;
     for (const s of sleeps) {
       const ts = new Date(`${s.date}T03:00:00.000Z`);
-      await upsertEntryForDate(s.date, ts, {
+      const r = await upsertEntryForDate(s.date, ts, {
         type: 'sleep', value: s.total_h, unit: 'h',
         deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
         quality: s.score, source: 'withings',
       });
+      if (r === 'inserted') result.sleepNew++;
+      else if (r === 'updated') result.sleepUpdated++;
     }
+  } catch { /* individual type failure — continue with remaining types */ }
 
-    await saveTokens({ ...tokens, last_sync: Date.now() });
-  } catch (e: any) {
-    // Logged by caller if needed — don't crash briefing
-  }
+  // ── Activity (steps, HR) ──
+  try {
+    const activities = await _fetchActivity(accessToken, sinceMs);
+    result.activity = activities.length;
+    for (const a of activities) {
+      const ts = new Date(`${a.date}T12:00:00.000Z`);
+      if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
+        await appendEntryWithTimestamp(ts, {
+          type: 'steps', steps: a.steps, distance_m: a.distance_m,
+          calories: a.calories, source: 'withings',
+        });
+        result.activityNew++;
+      }
+      if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
+        await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+      }
+    }
+  } catch { /* individual type failure — continue with remaining types */ }
+
+  // ── Workouts ──
+  try {
+    const workouts = await _fetchWorkouts(accessToken, sinceMs);
+    result.workouts = workouts.length;
+    for (const w of workouts) {
+      if (await hasEntryForDate('activity', w.date)) continue;
+      const ts = new Date(`${w.date}T12:00:00.000Z`);
+      await appendEntryWithTimestamp(ts, {
+        type: 'activity', activity_type: w.activity_type,
+        duration_min: w.duration_min, steps: w.steps,
+        distance_m: w.distance_m, calories: w.calories,
+        hr_avg: w.hr_avg, source: 'withings',
+      });
+      result.workoutsNew++;
+    }
+  } catch { /* individual type failure — continue with remaining types */ }
+
+  result.totalNew = result.measuresNew + result.sleepNew + result.activityNew + result.workoutsNew;
+  return result;
 }
 
 // ── Withings sync for n8n endpoint ─────────────────────────────────────────
@@ -87,77 +184,13 @@ export async function triggerWithingsSync(): Promise<WithingsSyncResult> {
 
   const settings = loadSettings();
   const chatId = settings.telegramChatId;
+  const sinceMs = Date.now() - 48 * 3600_000; // 48h window
 
   return executeWithingsSync(
-    withingsClientId,
-    withingsClientSecret,
-    async (token, sinceMs) => {
-      let total = 0;
-      let newCount = 0;
-
-      // Measures
-      const measures = await fetchMeasures(token, sinceMs).catch(() => []);
-      for (const m of measures) {
-        total++;
-        const dateStr = m.date.toISOString().slice(0, 10);
-        if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr))) {
-          await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-          newCount++;
-        }
-        if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
-          await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
-        }
-        if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
-          await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
-        }
-      }
-
-      // Sleep
-      const sleeps = await fetchSleep(token, sinceMs).catch(() => []);
-      for (const s of sleeps) {
-        total++;
-        const ts = new Date(`${s.date}T03:00:00.000Z`);
-        const result = await upsertEntryForDate(s.date, ts, {
-          type: 'sleep', value: s.total_h, unit: 'h',
-          deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
-          quality: s.score, source: 'withings',
-        });
-        if (result === 'inserted') newCount++;
-      }
-
-      // Activity
-      const activities = await fetchActivity(token, sinceMs).catch(() => []);
-      for (const a of activities) {
-        total++;
-        const ts = new Date(`${a.date}T12:00:00.000Z`);
-        if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
-          await appendEntryWithTimestamp(ts, {
-            type: 'steps', steps: a.steps, distance_m: a.distance_m,
-            calories: a.calories, source: 'withings',
-          });
-          newCount++;
-        }
-        if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
-          await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
-        }
-      }
-
-      // Workouts
-      const workouts = await fetchWorkouts(token, sinceMs).catch(() => []);
-      for (const w of workouts) {
-        total++;
-        if (await hasEntryForDate('activity', w.date)) continue;
-        const ts = new Date(`${w.date}T12:00:00.000Z`);
-        await appendEntryWithTimestamp(ts, {
-          type: 'activity', activity_type: w.activity_type,
-          duration_min: w.duration_min, steps: w.steps,
-          distance_m: w.distance_m, calories: w.calories,
-          hr_avg: w.hr_avg, source: 'withings',
-        });
-        newCount++;
-      }
-
-      return { total, newCount };
+    withingsClientId, withingsClientSecret, sinceMs,
+    async (token, since) => {
+      const r = await runWithingsSync(token, since);
+      return { total: r.measures + r.sleep + r.activity + r.workouts, newCount: r.totalNew };
     },
     _deps?.sendTelegram,
     chatId,
@@ -511,103 +544,37 @@ export function registerHealthCommands(api: any): void {
         if (!withingsClientId || !withingsClientSecret) {
           return { text: '❌ WITHINGS_CLIENT_ID / WITHINGS_CLIENT_SECRET nicht gesetzt.' };
         }
-        const tokens = await ensureFreshToken(withingsClientId, withingsClientSecret);
         const daysArg = parseInt(String(ctx.args || '').trim()) || 30;
         const days = Math.max(1, Math.min(365, daysArg));
-        const sinceMs = tokens.last_sync
-          ? tokens.last_sync - 24 * 60 * 60 * 1000  // 1 Tag Überlappung
-          : Date.now() - days * 24 * 60 * 60 * 1000;
+        const sinceMs = Date.now() - days * 24 * 3600_000;
+        // ↑ N wird wörtlich verwendet. Kein last_sync-Zweig mehr.
 
-        const parts: string[] = [`🔄 Withings Sync (seit ${new Date(sinceMs).toISOString().slice(0, 10)})...\n`];
-        let totalNew = 0;
+        let syncResult: SyncResult | undefined;
+        const settings = loadSettings();
+        await executeWithingsSync(
+          withingsClientId, withingsClientSecret, sinceMs,
+          async (token, since) => {
+            syncResult = await runWithingsSync(token, since);
+            return {
+              total: syncResult.measures + syncResult.sleep + syncResult.activity + syncResult.workouts,
+              newCount: syncResult.totalNew,
+            };
+          },
+          _deps?.sendTelegram,
+          settings.telegramChatId,
+        );
 
-        // ── Measures (Gewicht, Körperfett, HR) ──
-        try {
-          const measures = await fetchMeasures(tokens.access_token, sinceMs);
-          let mNew = 0;
-          for (const m of measures) {
-            const dateStr = m.date.toISOString().slice(0, 10);
-            if (m.weight_kg != null && !(await hasEntryForDate('weight', dateStr))) {
-              await appendEntryWithTimestamp(m.date, { type: 'weight', value: m.weight_kg, unit: 'kg', source: 'withings' });
-              mNew++;
-            }
-            if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
-              await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
-            }
-            if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
-              await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
-            }
-          }
-          parts.push(`⚖️ Messungen: ${measures.length} (${mNew} neu)`);
-          totalNew += mNew;
-        } catch (e: any) { parts.push(`⚖️ Messungen: ❌ ${e.message}`); }
-
-        // ── Schlaf (aggregiert pro Nacht, dedup) ──
-        try {
-          const sleeps = await fetchSleep(tokens.access_token, sinceMs);
-          let sleepNew = 0, sleepUpdated = 0;
-          for (const s of sleeps) {
-            const ts = new Date(`${s.date}T03:00:00.000Z`);
-            const result = await upsertEntryForDate(s.date, ts, {
-              type: 'sleep', value: s.total_h, unit: 'h',
-              deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
-              quality: s.score, source: 'withings',
-            });
-            if (result === 'inserted') sleepNew++;
-            else if (result === 'updated') sleepUpdated++;
-          }
-          const sleepParts = [`${sleeps.length} Nächte`];
-          if (sleepNew) sleepParts.push(`${sleepNew} neu`);
-          if (sleepUpdated) sleepParts.push(`${sleepUpdated} aktualisiert`);
-          parts.push(`😴 Schlaf: ${sleepParts.join(', ')}`);
-          totalNew += sleepNew;
-        } catch (e: any) { parts.push(`😴 Schlaf: ❌ ${e.message}`); }
-
-        // ── Aktivität (Schritte) ──
-        try {
-          const activities = await fetchActivity(tokens.access_token, sinceMs);
-          let actNew = 0;
-          for (const a of activities) {
-            const ts = new Date(`${a.date}T12:00:00.000Z`);
-            if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
-              await appendEntryWithTimestamp(ts, {
-                type: 'steps', steps: a.steps, distance_m: a.distance_m,
-                calories: a.calories, source: 'withings',
-              });
-              actNew++;
-            }
-            if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
-              await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
-            }
-          }
-          const totalSteps = activities.reduce((s, a) => s + a.steps, 0);
-          parts.push(`👟 Aktivität: ${activities.length} Tage (${actNew} neu), ${totalSteps.toLocaleString('de')} Schritte gesamt`);
-          totalNew += actNew;
-        } catch (e: any) { parts.push(`👟 Aktivität: ❌ ${e.message}`); }
-
-        // ── Workouts ──
-        try {
-          const workouts = await fetchWorkouts(tokens.access_token, sinceMs);
-          let wNew = 0;
-          for (const w of workouts) {
-            if (await hasEntryForDate('activity', w.date)) continue;
-            const ts = new Date(`${w.date}T12:00:00.000Z`);
-            await appendEntryWithTimestamp(ts, {
-              type: 'activity', activity_type: w.activity_type,
-              duration_min: w.duration_min, steps: w.steps,
-              distance_m: w.distance_m, calories: w.calories,
-              hr_avg: w.hr_avg, source: 'withings',
-            });
-            wNew++;
-          }
-          parts.push(`🏃 Workouts: ${workouts.length} (${wNew} neu)`);
-          totalNew += wNew;
-        } catch (e: any) { parts.push(`🏃 Workouts: ❌ ${e.message}`); }
-
-        // Update last_sync
-        await saveTokens({ ...tokens, last_sync: Date.now() });
-
-        parts.push(`\n✅ ${totalNew} Einträge importiert.`);
+        const r = syncResult!;
+        const parts: string[] = [
+          `🔄 Withings Sync (${days} Tage, seit ${new Date(sinceMs).toISOString().slice(0, 10)})`,
+          '',
+          `⚖️ Messungen: ${r.measures} (${r.measuresNew} neu)`,
+          `😴 Schlaf: ${r.sleep} Nächte (${r.sleepNew} neu${r.sleepUpdated ? `, ${r.sleepUpdated} aktualisiert` : ''})`,
+          `👟 Aktivität: ${r.activity} Tage (${r.activityNew} neu)`,
+          `🏃 Workouts: ${r.workouts} (${r.workoutsNew} neu)`,
+          '',
+          `✅ ${r.totalNew} Einträge importiert.`,
+        ];
         return { text: parts.join('\n') };
       } catch (e: any) {
         return { text: `❌ /healthsync fehlgeschlagen: ${e.message}` };

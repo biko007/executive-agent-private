@@ -193,6 +193,7 @@ export interface WithingsSyncResult {
 export async function executeWithingsSync(
   clientId: string,
   clientSecret: string,
+  sinceMs: number,
   syncFn: (token: string, sinceMs: number) => Promise<{ total: number; newCount: number }>,
   sendTelegram?: (chatId: string, text: string) => Promise<any>,
   telegramChatId?: string,
@@ -209,10 +210,6 @@ export async function executeWithingsSync(
     if (tokens.expires_at - Date.now() <= 10 * 60 * 1000) {
       tokens = await refreshToken(clientId, clientSecret, tokens);
     }
-
-    const sinceMs = tokens.last_sync
-      ? tokens.last_sync - 24 * 60 * 60 * 1000  // 1 day overlap
-      : Date.now() - 30 * 24 * 60 * 60 * 1000;
 
     let result: { total: number; newCount: number };
     try {
