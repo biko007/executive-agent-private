@@ -17,6 +17,12 @@ import {
 } from './withings.js';
 import type { WithingsSyncResult, WithingsSyncStatus } from './withings.js';
 import {
+  buildOuraAuthUrl, isOuraAuthorized, exchangeOuraCode,
+  executeOuraSync, getOuraSyncStatus,
+  fetchOuraSleep, fetchOuraReadiness, fetchOuraActivity,
+} from './oura.js';
+import type { OuraSyncResult } from './types.js';
+import {
   loadSettings, saveSettings, setSetting,
 } from '../../shared/settings/index.js';
 import { berlinDate } from '../../shared/utils/index.js';
@@ -43,6 +49,15 @@ const withingsCallbackPort = 8080;
 
 let withingsCallbackServer: http.Server | null = null;
 
+// ── Oura config (from env) ──────────────────────────────────────────────────
+
+const ouraClientId     = process.env.OURA_CLIENT_ID || '';
+const ouraClientSecret = process.env.OURA_CLIENT_SECRET || '';
+const ouraRedirectUri  = process.env.OURA_REDIRECT_URI || 'https://app.bikobickel.de/oura/callback';
+const ouraCallbackPort = 8081;
+
+let ouraCallbackServer: http.Server | null = null;
+
 // ── Briefing pre-sync (exported for briefing use) ──────────────────────────
 
 export async function syncWithingsForBriefing(): Promise<void> {
@@ -62,6 +77,22 @@ export async function syncWithingsForBriefing(): Promise<void> {
   }
 }
 
+export async function syncOuraForBriefing(): Promise<void> {
+  if (!ouraClientId || !ouraClientSecret || !(await isOuraAuthorized())) return;
+  try {
+    const sinceMs = Date.now() - 48 * 3600_000; // 48h window
+    await executeOuraSync(
+      ouraClientId, ouraClientSecret, sinceMs,
+      async (token, since) => {
+        const r = await runOuraSync(token, since);
+        return { total: r.total, newCount: r.newCount };
+      },
+    );
+  } catch (e: any) {
+    console.error(`[oura] Briefing sync failed: ${e.message}`);
+  }
+}
+
 // ── Consolidated sync routine (all 4 types) ──────────────────────────────
 
 export interface SyncResult {
@@ -73,7 +104,8 @@ export interface SyncResult {
 }
 
 /**
- * Fetch + persist all 4 Withings data types with dedup.
+ * Fetch + persist Withings data (weight + body_fat only).
+ * Sleep, activity, workouts, and HR are now handled by Oura.
  * Pure data function — no token management, no locking, no last_sync write.
  * Those concerns are handled by executeWithingsSync (the Lock+Retry wrapper).
  */
@@ -88,9 +120,6 @@ export async function runWithingsSync(
   },
 ): Promise<SyncResult> {
   const _fetchMeasures = fetchers?.fetchMeasures ?? fetchMeasures;
-  const _fetchSleep = fetchers?.fetchSleep ?? fetchSleep;
-  const _fetchActivity = fetchers?.fetchActivity ?? fetchActivity;
-  const _fetchWorkouts = fetchers?.fetchWorkouts ?? fetchWorkouts;
 
   const result: SyncResult = {
     measures: 0, measuresNew: 0,
@@ -100,7 +129,7 @@ export async function runWithingsSync(
     totalNew: 0,
   };
 
-  // ── Measures (weight, body fat, HR) ──
+  // ── Measures (weight, body fat) — HR now from Oura ──
   try {
     const measures = await _fetchMeasures(accessToken, sinceMs);
     result.measures = measures.length;
@@ -113,65 +142,130 @@ export async function runWithingsSync(
       if (m.fat_ratio_pct != null && !(await hasEntryForDate('body_fat', dateStr))) {
         await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
       }
-      if (m.hr_bpm != null && !(await hasEntryForDate('heartrate', dateStr))) {
-        await appendEntryWithTimestamp(m.date, { type: 'heartrate', hr_avg: m.hr_bpm, source: 'withings' });
-      }
     }
-  } catch { /* individual type failure — continue with remaining types */ }
+  } catch { /* individual type failure */ }
 
-  // ── Sleep (aggregated per night, dedup) ──
+  result.totalNew = result.measuresNew;
+  return result;
+}
+
+// ── Oura consolidated sync routine ──────────────────────────────────────────
+
+export interface OuraSyncDetail {
+  total: number;        newCount: number;
+  sleep: number;        sleepNew: number;   sleepUpdated: number;
+  hrv: number;          hrvNew: number;
+  heartrate: number;    heartrateNew: number;
+  readiness: number;    readinessNew: number;
+  temperature: number;  temperatureNew: number;
+  steps: number;        stepsNew: number;
+}
+
+/**
+ * Fetch + persist all Oura data types with dedup.
+ * Sleep response also yields HRV, resting HR, and temperature deviation.
+ */
+export async function runOuraSync(
+  accessToken: string,
+  sinceMs: number,
+): Promise<OuraSyncDetail> {
+  const result: OuraSyncDetail = {
+    total: 0, newCount: 0,
+    sleep: 0, sleepNew: 0, sleepUpdated: 0,
+    hrv: 0, hrvNew: 0,
+    heartrate: 0, heartrateNew: 0,
+    readiness: 0, readinessNew: 0,
+    temperature: 0, temperatureNew: 0,
+    steps: 0, stepsNew: 0,
+  };
+
+  // ── Sleep (includes HRV, resting HR, temperature) ──
   try {
-    const sleeps = await _fetchSleep(accessToken, sinceMs);
+    const sleeps = await fetchOuraSleep(accessToken, sinceMs);
     result.sleep = sleeps.length;
     for (const s of sleeps) {
-      const ts = new Date(`${s.date}T03:00:00.000Z`);
-      const r = await upsertEntryForDate(s.date, ts, {
-        type: 'sleep', value: s.total_h, unit: 'h',
-        deep_sleep_h: s.deep_h, rem_sleep_h: s.rem_h, light_sleep_h: s.light_h,
-        quality: s.score, source: 'withings',
-      });
-      if (r === 'inserted') result.sleepNew++;
-      else if (r === 'updated') result.sleepUpdated++;
-    }
-  } catch { /* individual type failure — continue with remaining types */ }
+      const ts = new Date(`${s.day}T03:00:00.000Z`);
+      const totalH = +(s.total_sleep_duration / 3600).toFixed(2);
+      const deepH  = +(s.deep_sleep_duration / 3600).toFixed(2);
+      const remH   = +(s.rem_sleep_duration / 3600).toFixed(2);
+      const lightH = +(s.light_sleep_duration / 3600).toFixed(2);
 
-  // ── Activity (steps, HR) ──
+      const upsertResult = await upsertEntryForDate(s.day, ts, {
+        type: 'sleep', value: totalH, unit: 'h',
+        deep_sleep_h: deepH, rem_sleep_h: remH, light_sleep_h: lightH,
+        quality: s.score, source: 'oura',
+      });
+      if (upsertResult === 'inserted') result.sleepNew++;
+      else if (upsertResult === 'updated') result.sleepUpdated++;
+
+      // HRV (dedup per day)
+      if (s.average_hrv != null) {
+        result.hrv++;
+        if (!(await hasEntryForDate('hrv', s.day))) {
+          await appendEntryWithTimestamp(ts, { type: 'hrv', hrv_ms: s.average_hrv, source: 'oura' });
+          result.hrvNew++;
+        }
+      }
+
+      // Resting heart rate (dedup per day, D3: Oura pulls resting HR)
+      if (s.lowest_heart_rate != null) {
+        result.heartrate++;
+        if (!(await hasEntryForDate('heartrate', s.day))) {
+          await appendEntryWithTimestamp(ts, {
+            type: 'heartrate', hr_avg: s.lowest_heart_rate,
+            hr_min: s.lowest_heart_rate, source: 'oura',
+          });
+          result.heartrateNew++;
+        }
+      }
+
+      // Temperature deviation (dedup per day)
+      if (s.temperature_deviation != null) {
+        result.temperature++;
+        if (!(await hasEntryForDate('temperature', s.day))) {
+          await appendEntryWithTimestamp(ts, { type: 'temperature', temp_deviation: s.temperature_deviation, source: 'oura' });
+          result.temperatureNew++;
+        }
+      }
+    }
+  } catch { /* individual type failure — continue */ }
+
+  // ── Readiness ──
   try {
-    const activities = await _fetchActivity(accessToken, sinceMs);
-    result.activity = activities.length;
-    for (const a of activities) {
-      const ts = new Date(`${a.date}T12:00:00.000Z`);
-      if (a.steps > 0 && !(await hasEntryForDate('steps', a.date))) {
+    const readinessData = await fetchOuraReadiness(accessToken, sinceMs);
+    result.readiness = readinessData.length;
+    for (const rd of readinessData) {
+      if (rd.score == null) continue;
+      if (!(await hasEntryForDate('readiness', rd.day))) {
+        const ts = new Date(`${rd.day}T06:00:00.000Z`);
         await appendEntryWithTimestamp(ts, {
-          type: 'steps', steps: a.steps, distance_m: a.distance_m,
-          calories: a.calories, source: 'withings',
+          type: 'readiness', readiness_score: rd.score,
+          readiness_contributors: rd.contributors, source: 'oura',
         });
-        result.activityNew++;
-      }
-      if (a.hr_avg && !(await hasEntryForDate('heartrate', a.date))) {
-        await appendEntryWithTimestamp(ts, { type: 'heartrate', hr_avg: a.hr_avg, hr_min: a.hr_min, hr_max: a.hr_max, source: 'withings' });
+        result.readinessNew++;
       }
     }
-  } catch { /* individual type failure — continue with remaining types */ }
+  } catch { /* individual type failure — continue */ }
 
-  // ── Workouts ──
+  // ── Activity (steps) ──
   try {
-    const workouts = await _fetchWorkouts(accessToken, sinceMs);
-    result.workouts = workouts.length;
-    for (const w of workouts) {
-      if (await hasEntryForDate('activity', w.date)) continue;
-      const ts = new Date(`${w.date}T12:00:00.000Z`);
-      await appendEntryWithTimestamp(ts, {
-        type: 'activity', activity_type: w.activity_type,
-        duration_min: w.duration_min, steps: w.steps,
-        distance_m: w.distance_m, calories: w.calories,
-        hr_avg: w.hr_avg, source: 'withings',
-      });
-      result.workoutsNew++;
+    const activities = await fetchOuraActivity(accessToken, sinceMs);
+    result.steps = activities.length;
+    for (const a of activities) {
+      if (a.steps <= 0) continue;
+      if (!(await hasEntryForDate('steps', a.day))) {
+        const ts = new Date(`${a.day}T12:00:00.000Z`);
+        await appendEntryWithTimestamp(ts, {
+          type: 'steps', steps: a.steps, distance_m: a.equivalent_walking_distance,
+          calories: a.active_calories, source: 'oura',
+        });
+        result.stepsNew++;
+      }
     }
-  } catch { /* individual type failure — continue with remaining types */ }
+  } catch { /* individual type failure — continue */ }
 
-  result.totalNew = result.measuresNew + result.sleepNew + result.activityNew + result.workoutsNew;
+  result.total = result.sleep + result.hrv + result.heartrate + result.readiness + result.temperature + result.steps;
+  result.newCount = result.sleepNew + result.hrvNew + result.heartrateNew + result.readinessNew + result.temperatureNew + result.stepsNew;
   return result;
 }
 
@@ -198,6 +292,30 @@ export async function triggerWithingsSync(): Promise<WithingsSyncResult> {
 }
 
 export { getSyncStatus };
+
+// ── Oura sync for HTTP endpoint ─────────────────────────────────────────────
+
+export async function triggerOuraSync(): Promise<OuraSyncResult> {
+  if (!ouraClientId || !ouraClientSecret) {
+    throw new Error('OURA_CLIENT_ID or OURA_CLIENT_SECRET not set');
+  }
+
+  const settings = loadSettings();
+  const chatId = settings.telegramChatId;
+  const sinceMs = Date.now() - 48 * 3600_000; // 48h window
+
+  return executeOuraSync(
+    ouraClientId, ouraClientSecret, sinceMs,
+    async (token, since) => {
+      const r = await runOuraSync(token, since);
+      return { total: r.total, newCount: r.newCount };
+    },
+    _deps?.sendTelegram,
+    chatId,
+  );
+}
+
+export { getOuraSyncStatus };
 
 // ── Weekly Health Report ───────────────────────────────────────────────────
 
@@ -569,15 +687,148 @@ export function registerHealthCommands(api: any): void {
           `🔄 Withings Sync (${days} Tage, seit ${new Date(sinceMs).toISOString().slice(0, 10)})`,
           '',
           `⚖️ Messungen: ${r.measures} (${r.measuresNew} neu)`,
-          `😴 Schlaf: ${r.sleep} Nächte (${r.sleepNew} neu${r.sleepUpdated ? `, ${r.sleepUpdated} aktualisiert` : ''})`,
-          `👟 Aktivität: ${r.activity} Tage (${r.activityNew} neu)`,
-          `🏃 Workouts: ${r.workouts} (${r.workoutsNew} neu)`,
           '',
           `✅ ${r.totalNew} Einträge importiert.`,
+          `ℹ️ Schlaf/HRV/Aktivität jetzt via Oura (/ourasync).`,
         ];
         return { text: parts.join('\n') };
       } catch (e: any) {
         return { text: `❌ /healthsync fehlgeschlagen: ${e.message}` };
+      }
+    },
+  });
+
+  // ── ouraauth ─────────────────────────────────────────────────────────
+  api.registerCommand({
+    name: 'ouraauth',
+    description: 'Oura Ring OAuth2 starten (temporärer Callback-Server): /ouraauth',
+    handler: async () => {
+      if (!ouraClientId || !ouraClientSecret) {
+        return { text: '❌ OURA_CLIENT_ID / OURA_CLIENT_SECRET nicht gesetzt.' };
+      }
+
+      if (ouraCallbackServer) {
+        try { ouraCallbackServer.close(); } catch {}
+        ouraCallbackServer = null;
+      }
+
+      const state = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      const authUrl = buildOuraAuthUrl(ouraClientId, ouraRedirectUri, state);
+
+      const server = http.createServer(async (req: any, res: any) => {
+        try {
+          const reqUrl = new URL(req.url || '/', `http://localhost:${ouraCallbackPort}`);
+          if (reqUrl.pathname !== '/oura/callback') {
+            res.writeHead(404); res.end('Not found'); return;
+          }
+
+          const code  = reqUrl.searchParams.get('code')  || '';
+          const err   = reqUrl.searchParams.get('error') || '';
+
+          if (err) {
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`<html><body><h2>❌ Oura Fehler: ${err}</h2></body></html>`);
+            server.close(); ouraCallbackServer = null;
+            return;
+          }
+          if (!code) {
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<html><body><h2>❌ Kein Code empfangen.</h2></body></html>');
+            return;
+          }
+
+          await exchangeOuraCode(ouraClientId, ouraClientSecret, code, ouraRedirectUri);
+          api.logger.info('[oura] OAuth erfolgreich');
+
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(`<html><body style="font-family:sans-serif;padding:2em;text-align:center">
+            <h2>✅ Oura Ring erfolgreich verbunden!</h2>
+            <p>Du kannst dieses Fenster schließen und in Telegram <strong>/ourasync</strong> ausführen.</p>
+          </body></html>`);
+
+          server.close(); ouraCallbackServer = null;
+        } catch (e: any) {
+          res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(`<html><body><h2>❌ Fehler: ${e.message}</h2></body></html>`);
+          server.close(); ouraCallbackServer = null;
+        }
+      });
+
+      server.on('error', (e: any) => {
+        api.logger.error(`[oura] Callback-Server Fehler: ${e.message}`);
+        ouraCallbackServer = null;
+      });
+
+      server.listen(ouraCallbackPort, '127.0.0.1', () => {
+        api.logger.info(`[oura] Callback-Server gestartet auf Port ${ouraCallbackPort}`);
+      });
+
+      ouraCallbackServer = server;
+
+      const timer = setTimeout(() => {
+        if (ouraCallbackServer === server) {
+          server.close();
+          ouraCallbackServer = null;
+          api.logger.info('[oura] Callback-Server nach 60s automatisch gestoppt');
+        }
+      }, 60_000);
+      server.on('close', () => clearTimeout(timer));
+
+      const already = (await isOuraAuthorized()) ? ' (bereits verbunden — neu autorisieren)' : '';
+      return {
+        text:
+          `🔐 Oura OAuth2${already}\n\n` +
+          `1. Öffne diesen Link im Browser:\n${authUrl}\n\n` +
+          `2. Bei Oura anmelden und Zugriff bestätigen.\n\n` +
+          `3. Der Browser wird automatisch zu diesem Server weitergeleitet.\n` +
+          `   ✅ Seite zeigt Erfolg → direkt /ourasync ausführen.\n\n` +
+          `⏱ Callback-Server läuft 60 Sekunden auf Port ${ouraCallbackPort}.`,
+      };
+    },
+  });
+
+  // ── ourasync ────────────────────────────────────────────────────────────
+  api.registerCommand({
+    name: 'ourasync',
+    description: 'Oura-Daten importieren: /ourasync [tage]',
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
+      try {
+        if (!ouraClientId || !ouraClientSecret) {
+          return { text: '❌ OURA_CLIENT_ID / OURA_CLIENT_SECRET nicht gesetzt.' };
+        }
+        const daysArg = parseInt(String(ctx.args || '').trim()) || 30;
+        const days = Math.max(1, Math.min(365, daysArg));
+        const sinceMs = Date.now() - days * 24 * 3600_000;
+
+        let detail: OuraSyncDetail | undefined;
+        const settings = loadSettings();
+        await executeOuraSync(
+          ouraClientId, ouraClientSecret, sinceMs,
+          async (token, since) => {
+            detail = await runOuraSync(token, since);
+            return { total: detail.total, newCount: detail.newCount };
+          },
+          _deps?.sendTelegram,
+          settings.telegramChatId,
+        );
+
+        const d = detail!;
+        const parts: string[] = [
+          `🔄 Oura Sync (${days} Tage, seit ${new Date(sinceMs).toISOString().slice(0, 10)})`,
+          '',
+          `😴 Schlaf: ${d.sleep} Nächte (${d.sleepNew} neu${d.sleepUpdated ? `, ${d.sleepUpdated} aktualisiert` : ''})`,
+          `💓 HRV: ${d.hrv} (${d.hrvNew} neu)`,
+          `❤️ Ruhe-HR: ${d.heartrate} (${d.heartrateNew} neu)`,
+          `🎯 Readiness: ${d.readiness} (${d.readinessNew} neu)`,
+          `🌡️ Temperatur: ${d.temperature} (${d.temperatureNew} neu)`,
+          `👟 Schritte: ${d.steps} Tage (${d.stepsNew} neu)`,
+          '',
+          `✅ ${d.newCount} Einträge importiert.`,
+        ];
+        return { text: parts.join('\n') };
+      } catch (e: any) {
+        return { text: `❌ /ourasync fehlgeschlagen: ${e.message}` };
       }
     },
   });

@@ -49,9 +49,14 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
       applied_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (module, version)
     )
   `);
-  const migrationPath = join(import.meta.dir, '../migrations/V021__health_tables.sql');
-  const migrationSql = readFileSync(migrationPath, 'utf-8');
-  await testPool.query(migrationSql);
+  const v021Path = join(import.meta.dir, '../migrations/V021__health_tables.sql');
+  const v021Sql = readFileSync(v021Path, 'utf-8');
+  await testPool.query(v021Sql);
+
+  const v040Path = join(import.meta.dir, '../migrations/V040__health_oura.sql');
+  const v040Sql = readFileSync(v040Path, 'utf-8');
+  await testPool.query(v040Sql);
+
   await testPool.end();
 
   // 3. Point POSTGRES_URL to test database

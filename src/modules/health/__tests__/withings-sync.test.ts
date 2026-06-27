@@ -102,30 +102,25 @@ async function insertTestToken(lastSync?: number) {
 
 describe('Withings Sync Consolidation', () => {
 
-  test('T1 — runWithingsSync fetches + persists all 4 types', async () => {
+  test('T1 — runWithingsSync fetches + persists weight/body_fat only (Oura handles rest)', async () => {
     const { fetchers } = makeFixtureFetchers();
     const r = await runWithingsSync('fake-token', Date.now() - 7 * 24 * 3600_000, fetchers);
 
-    // Counts
+    // Counts — only measures (weight + body_fat), sleep/activity/workouts now via Oura
     expect(r.measures).toBe(3);
     expect(r.measuresNew).toBeGreaterThanOrEqual(3); // 3 weight entries
-    expect(r.sleep).toBe(3);
-    expect(r.sleepNew).toBe(3);
-    expect(r.activity).toBe(3);
-    expect(r.activityNew).toBeGreaterThanOrEqual(2); // 2 with steps > 0 (all 3 actually)
-    expect(r.workouts).toBe(1);
-    expect(r.workoutsNew).toBe(1);
+    expect(r.sleep).toBe(0);
+    expect(r.sleepNew).toBe(0);
+    expect(r.activity).toBe(0);
+    expect(r.activityNew).toBe(0);
+    expect(r.workouts).toBe(0);
+    expect(r.workoutsNew).toBe(0);
     expect(r.totalNew).toBeGreaterThan(0);
 
-    // Verify DB entries exist
+    // Verify DB entries exist (weight only)
     expect(await hasEntryForDate('weight', '2026-06-01')).toBe(true);
     expect(await hasEntryForDate('weight', '2026-06-02')).toBe(true);
     expect(await hasEntryForDate('weight', '2026-06-03')).toBe(true);
-    expect(await hasEntryForDate('sleep', '2026-06-01')).toBe(true);
-    expect(await hasEntryForDate('sleep', '2026-06-03')).toBe(true);
-    expect(await hasEntryForDate('steps', '2026-06-01')).toBe(true);
-    expect(await hasEntryForDate('steps', '2026-06-03')).toBe(true);
-    expect(await hasEntryForDate('activity', '2026-06-02')).toBe(true); // workout
   });
 
   test('T2 — /healthsync 30 uses days argument, not last_sync', async () => {
@@ -157,7 +152,7 @@ describe('Withings Sync Consolidation', () => {
     expect(now - capturedSinceMs!).toBeGreaterThan(oldBugWindow * 10);
   });
 
-  test('T3 — Briefing uses 48h window and invokes all 4 fetchers', async () => {
+  test('T3 — Briefing uses 48h window, only measures fetcher invoked (Oura handles rest)', async () => {
     await insertTestToken();
 
     const { calls, fetchers } = makeFixtureFetchers();
@@ -169,15 +164,15 @@ describe('Withings Sync Consolidation', () => {
       'fake-id', 'fake-secret', sinceMs,
       async (token, since) => {
         const r = await runWithingsSync(token, since, fetchers);
-        return { total: r.measures + r.sleep + r.activity + r.workouts, newCount: r.totalNew };
+        return { total: r.measures, newCount: r.totalNew };
       },
     );
 
-    // All 4 fetchers were invoked
+    // Only measures fetcher invoked (sleep/activity/workouts now via Oura)
     expect(calls.measures.length).toBe(1);
-    expect(calls.sleep.length).toBe(1);
-    expect(calls.activity.length).toBe(1);
-    expect(calls.workouts.length).toBe(1);
+    expect(calls.sleep.length).toBe(0);
+    expect(calls.activity.length).toBe(0);
+    expect(calls.workouts.length).toBe(0);
 
     // sinceMs passed to fetchers ≈ now - 48h
     const now = Date.now();
@@ -218,10 +213,6 @@ describe('Withings Sync Consolidation', () => {
 
     // Second run: all entries already exist → dedup → 0 new
     expect(r2.measuresNew).toBe(0);
-    expect(r2.sleepNew).toBe(0);
-    // sleepUpdated may be > 0 (upsert with same value → skipped, not updated)
-    expect(r2.activityNew).toBe(0);
-    expect(r2.workoutsNew).toBe(0);
     expect(r2.totalNew).toBe(0);
   });
 });

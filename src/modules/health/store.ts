@@ -6,18 +6,19 @@
 import { query as dbQuery } from '../../shared/db/index.js';
 import type {
   HealthEntryType, HealthEntry, HealthSummary,
-  WeightTrend, SleepTrend, HeartrateTrend, TrendDirection, HealthAlert,
+  WeightTrend, SleepTrend, HeartrateTrend, HrvTrend, TrendDirection, HealthAlert,
 } from './types.js';
 
-// ── Valid types (must match CHECK constraint in V021) ────────────────────────
+// ── Valid types (must match CHECK constraint in V040) ────────────────────────
 
 const VALID_TYPES = new Set<string>([
   'weight', 'sleep', 'heartrate', 'steps', 'body_fat', 'activity', 'symptom', 'log',
+  'hrv', 'readiness', 'temperature',
 ]);
 
 // ── Entry → DB row mapping ──────────────────────────────────────────────────
 
-function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: string, withings_id: string | null) {
+function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: string, external_id: string | null) {
   let value_numeric: number | null = null;
   let unit: string | null = null;
   const metadata: Record<string, unknown> = {};
@@ -59,6 +60,19 @@ function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: s
       if (entry.distance_m != null) metadata.distance_m = entry.distance_m;
       if (entry.calories != null) metadata.calories = entry.calories;
       break;
+    case 'hrv':
+      value_numeric = entry.hrv_ms ?? null;
+      unit = 'ms';
+      break;
+    case 'readiness':
+      value_numeric = entry.readiness_score ?? null;
+      unit = 'score';
+      if (entry.readiness_contributors != null) metadata.contributors = entry.readiness_contributors;
+      break;
+    case 'temperature':
+      value_numeric = entry.temp_deviation ?? null;
+      unit = '°C';
+      break;
     case 'symptom':
     case 'log':
       if (entry.text) metadata.text = entry.text;
@@ -72,7 +86,7 @@ function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: s
     source: entry.source || 'manual',
     metadata: JSON.stringify(metadata),
     recorded_at,
-    withings_id,
+    external_id,
   };
 }
 
@@ -81,7 +95,7 @@ function entryToRow(entry: Omit<HealthEntry, 'id' | 'timestamp'>, recorded_at: s
 function rowToEntry(row: any): HealthEntry {
   const m = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
   const entry: HealthEntry = {
-    id: row.withings_id || String(row.id),
+    id: row.external_id || String(row.id),
     type: row.type,
     timestamp: row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at),
     source: row.source,
@@ -120,6 +134,16 @@ function rowToEntry(row: any): HealthEntry {
       if (m.steps != null) entry.steps = m.steps;
       if (m.distance_m != null) entry.distance_m = m.distance_m;
       if (m.calories != null) entry.calories = m.calories;
+      break;
+    case 'hrv':
+      entry.hrv_ms = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      break;
+    case 'readiness':
+      entry.readiness_score = row.value_numeric != null ? Number(row.value_numeric) : undefined;
+      if (m.contributors != null) entry.readiness_contributors = m.contributors;
+      break;
+    case 'temperature':
+      entry.temp_deviation = row.value_numeric != null ? Number(row.value_numeric) : undefined;
       break;
     case 'symptom':
     case 'log':
@@ -173,9 +197,9 @@ export async function upsertEntryForDate(
 
   if (existing.rows.length === 0) {
     await dbQuery(
-      `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+      `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, external_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+      [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.external_id],
     );
     return 'inserted';
   }
@@ -189,9 +213,9 @@ export async function upsertEntryForDate(
 
   // Update the existing row with higher value
   await dbQuery(
-    `UPDATE health_logs SET value_numeric = $1, unit = $2, metadata = $3, withings_id = $4
+    `UPDATE health_logs SET value_numeric = $1, unit = $2, metadata = $3, external_id = $4
      WHERE id = $5`,
-    [row.value_numeric, row.unit, row.metadata, row.withings_id, existing.rows[0].id],
+    [row.value_numeric, row.unit, row.metadata, row.external_id, existing.rows[0].id],
   );
   return 'updated';
 }
@@ -201,17 +225,17 @@ export async function upsertEntryForDate(
 export async function appendEntry(entry: Omit<HealthEntry, 'id' | 'timestamp'>): Promise<HealthEntry> {
   validateEntry(entry);
   const now = new Date();
-  const withings_id = `${now.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
-  const row = entryToRow(entry, now.toISOString(), withings_id);
+  const external_id = `${now.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
+  const row = entryToRow(entry, now.toISOString(), external_id);
 
   await dbQuery(
-    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, external_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source, type, withings_id) WHERE withings_id IS NOT NULL DO NOTHING`,
-    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+     ON CONFLICT (source, type, external_id) WHERE external_id IS NOT NULL DO NOTHING`,
+    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.external_id],
   );
 
-  return { id: withings_id, timestamp: now.toISOString(), ...entry };
+  return { id: external_id, timestamp: now.toISOString(), ...entry };
 }
 
 export async function appendEntryWithTimestamp(
@@ -219,17 +243,17 @@ export async function appendEntryWithTimestamp(
   entry: Omit<HealthEntry, 'id' | 'timestamp'>
 ): Promise<HealthEntry> {
   validateEntry(entry);
-  const withings_id = `${ts.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
-  const row = entryToRow(entry, ts.toISOString(), withings_id);
+  const external_id = `${ts.getTime()}-${Math.random().toString(36).slice(2, 6)}`;
+  const row = entryToRow(entry, ts.toISOString(), external_id);
 
   await dbQuery(
-    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+    `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, external_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source, type, withings_id) WHERE withings_id IS NOT NULL DO NOTHING`,
-    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.withings_id],
+     ON CONFLICT (source, type, external_id) WHERE external_id IS NOT NULL DO NOTHING`,
+    [row.type, row.value_numeric, row.unit, row.source, row.metadata, row.recorded_at, row.external_id],
   );
 
-  return { id: withings_id, timestamp: ts.toISOString(), ...entry };
+  return { id: external_id, timestamp: ts.toISOString(), ...entry };
 }
 
 // ── Read ────────────────────────────────────────────────────────────────────
@@ -471,6 +495,33 @@ export async function getHeartrateTrend(days: 7 | 30 | 90): Promise<HeartrateTre
     current,
     avg: +numAvg(restingValues).toFixed(0),
     dataPoints: restingValues.length,
+  };
+}
+
+export async function getHrvTrend(days: 7 | 30 | 90): Promise<HrvTrend | null> {
+  const { rows } = await dbQuery<{ value_numeric: string }>(
+    `SELECT value_numeric FROM health_logs
+     WHERE type = 'hrv' AND value_numeric IS NOT NULL
+       AND recorded_at > now() - $1::interval
+     ORDER BY recorded_at ASC`,
+    [`${days} days`],
+  );
+  if (!rows.length) return null;
+
+  const values = rows.map(r => Number(r.value_numeric));
+  const current = values[values.length - 1];
+  const first = values[0];
+  const change = +(current - first).toFixed(1);
+  const direction: TrendDirection = Math.abs(change) < 3 ? 'stable' : change > 0 ? 'up' : 'down';
+
+  return {
+    current: +current.toFixed(0),
+    min: +Math.min(...values).toFixed(0),
+    max: +Math.max(...values).toFixed(0),
+    avg: +numAvg(values).toFixed(0),
+    change: +change.toFixed(0),
+    direction,
+    dataPoints: values.length,
   };
 }
 

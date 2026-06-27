@@ -83,7 +83,7 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlo
 | calendar | src/modules/calendar/ | 4 | M365 |
 | executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
 | fleet | src/modules/fleet/ | 10 | Links |
-| health | src/modules/health/ | 12 | sendTelegram, Postgres |
+| health | src/modules/health/ | 14 | sendTelegram, Postgres, Oura API, Withings API |
 | instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
 | links | src/modules/links/ | — | Postgres |
 | location | src/modules/location/ | — | Postgres |
@@ -120,15 +120,30 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 
 `draft` | `review` | `approved` | `published` | `archived`
 
-### Withings Sync (Sprint 4)
+### Withings Sync (Sprint 4, auf weight-only reduziert 2026-06-27)
 
-- n8n-Workflow `health-withings-sync-daily` (Cron daily 07:00 UTC)
+- Withings holt nur noch Gewicht + Körperfett (Sleep/Activity/Workouts/HR → Oura)
+- n8n-Workflow `health-withings-sync-daily` deaktiviert (active=false)
 - Core-Endpoints: `POST /api/health/withings-sync`, `GET /api/health/sync-status`
 - Auth: Bearer `CORE_SERVICE_TOKEN`
-- nginx-Routing: `/api/health/(withings-sync|sync-status)` → Core (18789)
 - Sync-Lock: `pg_advisory_lock(42)` / `pg_advisory_unlock(42)` — verhindert parallele Syncs
 - Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
 - Token-Rotation: Transaction (UPDATE active=false, INSERT new active=true)
+
+### Oura Sync (2026-06-27)
+
+- Oura Ring = primäre Quelle für Schlaf, HRV, Readiness, Temperatur, Ruhe-HR, Schritte
+- DB-Tabelle: `health_oura_tokens` (V040, ohne userid). `health_logs.external_id` (provider-neutral)
+- Neue Typen in `health_logs`: `hrv`, `readiness`, `temperature` (V040 CHECK-Erweiterung)
+- Sync-Lock: `pg_advisory_lock(47)` / `pg_advisory_unlock(47)`
+- Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
+- Core-Endpoints: `POST /api/health/oura-sync`, `GET /api/health/oura-sync-status`
+- Telegram-Commands: `/ouraauth` (OAuth2 temp-server Port 8081), `/ourasync N`
+- nginx: `/oura/callback` → 127.0.0.1:8081 (direkt zum temp-server, nicht Gateway)
+- Briefing: HRV, Readiness, Temperatur werden angezeigt (D2: display only, keine neuen Alerts)
+- Dashboard: HRV Summary-Card + Chart, Readiness Summary-Card
+- Advisory-Lock-Registry: 42=Withings, 44=SharePoint, 46=Banking, **47=Oura**
+- Env-Vars: `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, `OURA_REDIRECT_URI`
 
 ### SharePoint Sync (Sprint 10)
 
@@ -199,6 +214,7 @@ Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das 
 |--------|-------|----------|
 | `scripts/migrate-sprint3-instagram.ts` | instagram | 020_insta_tables.sql |
 | `scripts/migrate-sprint4-health.ts` | health | V021 |
+| (manual, psql) | health | V040 (Oura integration) |
 | `scripts/migrate-sprint5-assets.ts` | assets | V022, V023, V024 |
 | `src/modules/fleet/migrate-v025.ts` | fleet | V025 |
 | (manual) | fleet | V026__fleet_tire_sets.sql |
@@ -337,8 +353,9 @@ src/modules/sharepoint/routes.ts   SP HTTP-API für Dashboard-Proxy (Sprint 10)
 src/modules/sharepoint/key.ts      buildSpItemKey() — canonical key builder
 link-store.ts       Entity-Dokument-Verknüpfungen
 src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
-src/modules/health/store.ts     Gewicht, Schlaf, Trends, Alerts (Postgres-backed)
-src/modules/health/withings.ts  Withings OAuth2 + API, Tokens (Postgres-backed)
+src/modules/health/store.ts     Gewicht, Schlaf, HRV, Readiness, Trends, Alerts (Postgres-backed)
+src/modules/health/withings.ts  Withings OAuth2 + API, Tokens (Postgres-backed) — weight-only
+src/modules/health/oura.ts      Oura Ring OAuth2 + API v2, Tokens (Postgres-backed) — primary health source
 src/modules/nk/engine.ts       NK-Berechnung: computeNk(), Personentage, Pro-Rata, HeizKV (Postgres-backed)
 src/modules/nk/heating.ts      HeizKV §7/§8/§9, Method A/B, Verbrauchsberechnung
 src/modules/nk/snapshot.ts     Snapshot Build + Read/Write (gzip, SHA-256)
@@ -509,6 +526,16 @@ Abschluss (2026-06-27): Status-Widget Withings-Ablauf-Zähler entfernt (`index.t
 fehlendem Token (`withings.ts`). nginx-Doku auf belegte Realität korrigiert (Catch-All `/api/` →
 Dashboard 18800, Double-Hop zu Core 18789). Telegram-Ablauf-Alert war belegt-tot
 (`getTokenExpirations()` schliesst Withings explizit aus).
+
+### Oura Ring Integration (2026-06-27)
+
+Oura Ring als primäre Quelle für Schlaf, HRV, Readiness, Temperatur, Ruhe-HR. Withings auf
+Gewicht+Körperfett reduziert. 10 Etappen (V040 Migration, types, store, oura.ts, commands,
+exports, briefing+routes, dashboard, nginx, tests). Advisory-Lock 47 (nächster freier nach
+42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session).
+Schema: `health_logs.withings_id` → `external_id` (provider-neutral), neue CHECK-Werte
+(hrv, readiness, temperature, oura). 12 Tests (3 Oura-Sync + 3 neue HRV/Readiness/Temp
+Roundtrips + 6 bestehende). Withings-Tests auf weight-only angepasst.
 
 ## Role
 

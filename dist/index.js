@@ -4,7 +4,7 @@ import SunCalc from "suncalc";
 import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
-import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, } from "./src/modules/health/index.js";
+import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, getHrvTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, syncOuraForBriefing, triggerWithingsSync, triggerOuraSync, getSyncStatus, getOuraSyncStatus, } from "./src/modules/health/index.js";
 import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
@@ -905,6 +905,27 @@ export default function (api) {
             else {
                 healthLines.push('- Schlaf:   Keine Schlafdaten (letzte Nacht)');
             }
+            // HRV (D2: display only, no new alerts)
+            const hrvTrend = await getHrvTrend(7).catch(() => null);
+            const lastHrv = await lastEntry('hrv').catch(() => null);
+            if (lastHrv && lastHrv.hrv_ms != null) {
+                let hrvLine = `- HRV:      ${lastHrv.hrv_ms} ms`;
+                if (hrvTrend && hrvTrend.dataPoints >= 2) {
+                    hrvLine += `  (Ø 7 Tage: ${hrvTrend.avg} ms)`;
+                }
+                healthLines.push(hrvLine);
+            }
+            // Readiness (D2: display only, no new alerts)
+            const lastReadiness = await lastEntry('readiness').catch(() => null);
+            if (lastReadiness && lastReadiness.readiness_score != null) {
+                healthLines.push(`- Readiness: ${lastReadiness.readiness_score}/100`);
+            }
+            // Temperature deviation
+            const lastTemp = await lastEntry('temperature').catch(() => null);
+            if (lastTemp && lastTemp.temp_deviation != null) {
+                const sign = lastTemp.temp_deviation > 0 ? '+' : '';
+                healthLines.push(`- Temperatur: ${sign}${lastTemp.temp_deviation.toFixed(1)} °C`);
+            }
             // Alerts
             const alerts = await checkHealthAlerts();
             const activeAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'warning');
@@ -958,10 +979,15 @@ export default function (api) {
             try {
                 const BRIEFING_TIMEOUT_MS = 45000;
                 const briefingWork = async () => {
-                    // Withings-Sync ZUERST, damit aktuelle Schlafdaten vorhanden sind
-                    await syncWithingsForBriefing().catch((e) => {
-                        api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
-                    });
+                    // Sync both providers before generating briefing (may fail independently)
+                    await Promise.allSettled([
+                        syncWithingsForBriefing().catch((e) => {
+                            api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler: ${e.message}`);
+                        }),
+                        syncOuraForBriefing().catch((e) => {
+                            api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler: ${e.message}`);
+                        }),
+                    ]);
                     return await generateBriefingText();
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
@@ -1611,10 +1637,15 @@ export default function (api) {
                 // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
                 const BRIEFING_TIMEOUT_MS = 45000;
                 const briefingWork = async () => {
-                    // Withings-Sync ZUERST abwarten, damit aktuelle Schlafdaten vorhanden sind
-                    await syncWithingsForBriefing().catch((syncErr) => {
-                        api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
-                    });
+                    // Sync both providers before generating briefing (may fail independently)
+                    await Promise.allSettled([
+                        syncWithingsForBriefing().catch((syncErr) => {
+                            api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+                        }),
+                        syncOuraForBriefing().catch((syncErr) => {
+                            api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler (ignoriert): ${syncErr.message}`);
+                        }),
+                    ]);
                     return await generateBriefingText();
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
@@ -1933,6 +1964,58 @@ export default function (api) {
             }
         },
     });
+    // ── Health: Oura Sync ──────────────────────────────────────────────────────
+    api.registerHttpRoute({
+        path: '/api/health/oura-sync',
+        handler: async (req, res) => {
+            if (req.method !== 'POST') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const result = await triggerOuraSync();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, ...result }));
+            }
+            catch (err) {
+                api.logger.error(`[health] oura-sync failed: ${err.message}`);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+        },
+    });
+    api.registerHttpRoute({
+        path: '/api/health/oura-sync-status',
+        handler: async (req, res) => {
+            if (req.method !== 'GET') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            const auth = req.headers?.authorization || '';
+            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const status = await getOuraSyncStatus();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(status));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        },
+    });
     // ── Health Dashboard Endpoints (Postgres-backed, used by Dashboard proxy) ──
     api.registerHttpRoute({
         path: '/api/health/entries',
@@ -2004,6 +2087,18 @@ export default function (api) {
                     if (e.type === 'sleep') {
                         e.value = Math.round((e.value || 0) * 10) / 10;
                     }
+                    if (e.type === 'hrv') {
+                        e.value = e.hrv_ms ?? 0;
+                        e.unit = 'ms';
+                    }
+                    if (e.type === 'readiness') {
+                        e.value = e.readiness_score ?? 0;
+                        e.unit = 'score';
+                    }
+                    if (e.type === 'temperature') {
+                        e.value = e.temp_deviation ?? 0;
+                        e.unit = '°C';
+                    }
                     return e;
                 }).filter((e) => {
                     if (e.type !== 'activity')
@@ -2038,13 +2133,14 @@ export default function (api) {
                 const daysRaw = Math.min(Math.max(1, Number(url.searchParams.get('days')) || 30), 365);
                 // Snap to valid trend period
                 const days = daysRaw <= 7 ? 7 : daysRaw <= 30 ? 30 : 90;
-                const [weight, sleep, heartrate] = await Promise.all([
+                const [weight, sleep, heartrate, hrv] = await Promise.all([
                     getWeightTrend(days),
                     getSleepTrend(days),
                     getHeartrateTrend(days),
+                    getHrvTrend(days),
                 ]);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ weight, sleep, heartrate }));
+                res.end(JSON.stringify({ weight, sleep, heartrate, hrv }));
             }
             catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -2125,9 +2221,17 @@ export default function (api) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify(data));
                 }
+                else if (type === 'hrv') {
+                    const data = entries
+                        .filter(e => e.type === 'hrv' && e.hrv_ms != null)
+                        .map(e => ({ date: e.timestamp.slice(0, 10), value: e.hrv_ms }))
+                        .sort((a, b) => a.date.localeCompare(b.date));
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(data));
+                }
                 else {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'type must be weight or sleep' }));
+                    res.end(JSON.stringify({ error: 'type must be weight, sleep, or hrv' }));
                 }
             }
             catch (err) {

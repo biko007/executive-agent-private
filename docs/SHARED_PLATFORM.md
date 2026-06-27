@@ -89,7 +89,8 @@ server_names: `bikobickel.de`, `app.bikobickel.de`. Spezifische Routen vor gener
 Catch-All. Interne Endpunkte (`/api/internal/*`) via IP-Whitelist (127.0.0.1).
 
 **Routen (Auszug):** `/api/internal/`→18789 · `/withings/callback`→18789 ·
-`/location`→18790 · `/api/instagram/(token-health|token-refresh)`→18789 · `/api/`→18800 ·
+`/oura/callback`→8081 (temp-server) · `/location`→18790 ·
+`/api/instagram/(token-health|token-refresh)`→18789 · `/api/`→18800 ·
 `/dashboard`→18800 · `/n8n/`→5678 · `/static/instagram/` (OpenClaw) · **`/static/hdcc/`
 (HDCC-Medien über geteilte nginx)**.
 
@@ -102,6 +103,7 @@ Catch-All. Interne Endpunkte (`/api/internal/*`) via IP-Whitelist (127.0.0.1).
 | 18792 | gateway-intern | 127.0.0.1 | OpenClaw |
 | 18793 | openclaw-trading | 127.0.0.1 | OpenClaw |
 | 18794 | banking-fints (python) | 127.0.0.1 | OpenClaw |
+| 8081 | oura-oauth-callback (temp) | 127.0.0.1 | OpenClaw |
 | 18800 | openclaw-dashboard | 127.0.0.1 | OpenClaw |
 | 37777 | openclaw-pdf-worker (bun) | 127.0.0.1 | OpenClaw |
 | 7497 | ibgateway (java) | `*` | OpenClaw |

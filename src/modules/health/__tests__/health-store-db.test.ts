@@ -134,6 +134,49 @@ describe('Health Store DB Roundtrip (Sprint 4 §5)', () => {
     expect(loaded!.hr_max).toBe(120);
   });
 
+  test('hrv entry roundtrip', async () => {
+    const ts = new Date('2026-02-04T03:00:00.000Z');
+    await appendEntryWithTimestamp(ts, {
+      type: 'hrv', hrv_ms: 42, source: 'oura',
+    });
+
+    const loaded = await lastEntry('hrv');
+    expect(loaded).not.toBeNull();
+    expect(loaded!.type).toBe('hrv');
+    expect(loaded!.hrv_ms).toBe(42);
+    expect(loaded!.source).toBe('oura');
+  });
+
+  test('readiness entry roundtrip', async () => {
+    const ts = new Date('2026-02-05T06:00:00.000Z');
+    await appendEntryWithTimestamp(ts, {
+      type: 'readiness', readiness_score: 87,
+      readiness_contributors: { sleep: 90, activity: 85, body_temperature: 80 },
+      source: 'oura',
+    });
+
+    const loaded = await lastEntry('readiness');
+    expect(loaded).not.toBeNull();
+    expect(loaded!.type).toBe('readiness');
+    expect(loaded!.readiness_score).toBe(87);
+    expect(loaded!.readiness_contributors).toBeTruthy();
+    expect(loaded!.readiness_contributors!.sleep).toBe(90);
+    expect(loaded!.source).toBe('oura');
+  });
+
+  test('temperature entry roundtrip', async () => {
+    const ts = new Date('2026-02-06T03:00:00.000Z');
+    await appendEntryWithTimestamp(ts, {
+      type: 'temperature', temp_deviation: -0.3, source: 'oura',
+    });
+
+    const loaded = await lastEntry('temperature');
+    expect(loaded).not.toBeNull();
+    expect(loaded!.type).toBe('temperature');
+    expect(loaded!.temp_deviation).toBe(-0.3);
+    expect(loaded!.source).toBe('oura');
+  });
+
   test('checkHealthAlerts returns array', async () => {
     const alerts = await checkHealthAlerts();
     expect(Array.isArray(alerts)).toBe(true);

@@ -72,8 +72,8 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 - DB `openclaw_core` (App-User `openclaw`), **53 Tabellen**. Instanz → `SHARED_PLATFORM.md §3/§4`.
 - **Schema-Versionierung: pro Modul.** Tabelle `schema_version` = `(module, version,
   applied_at)`. Es gibt **keinen globalen Linearstand**. Höchste Versionen je Modul:
-  banking **39** (appliziert 2026-06-25), settings **35**, fleet 37, instagram 37, assets 36,
-  sharepoint 34, links 33, location 32, health 21, executive/shared 1. **Das frühere
+  health **40** (appliziert 2026-06-27), banking **39** (appliziert 2026-06-25), settings **35**,
+  fleet 37, instagram 37, assets 36, sharepoint 34, links 33, location 32, executive/shared 1. **Das frühere
   „V035 vs V039" ist definitiv kein Konflikt** — `settings@35` vs `banking@39`.
 
 **Modul-Migrationsstand (verifiziert über Tabellenbestand):**
@@ -81,7 +81,7 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 | Modul | Datenhaltung | ggü. v32 |
 |---|---|---|
 | Instagram | Postgres (`insta_*`) | ✓ |
-| Health | Postgres (`health_logs`, `health_withings_tokens`) | ✓ |
+| Health | Postgres (`health_logs`, `health_withings_tokens`, `health_oura_tokens`) | ✓ |
 | Assets/NK | Postgres (`properties`, `units`, `leases`, `tenants`, `nk_*`, `meters`, `expense_bookings`, `cost_categories` …) | ✓ |
 | Banking | Postgres (`banking_*`, 6 Tabellen) | **neu** |
 | Fleet | Postgres (`vehicles`, `vehicle_*`, `fleet_documents`) | **migriert** (v32: JSON) |
@@ -210,22 +210,44 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
   bei frischen Daten. Wiedervorlage alle `LOCATION_STALE_RENAG_MS` (24h) solange stale.
   Leere Tabelle → kein Alert, kein Crash.
 
-### Withings-Sync (konsolidiert 2026-06-26)
+### Withings-Sync (konsolidiert 2026-06-26, auf weight-only reduziert 2026-06-27)
 
-`src/modules/health/commands.ts` — eine Routine `runWithingsSync()` holt alle 4 Typen
-(Measures, Sleep, Activity, Workouts) mit Dedup (`hasEntryForDate`). Alle Pfade routen
-durch `executeWithingsSync()` (Advisory Lock 42 + Retry-on-401):
+`src/modules/health/commands.ts` — `runWithingsSync()` holt nur noch Measures (Gewicht +
+Körperfett). Sleep, Activity, Workouts und HR werden seit 2026-06-27 von Oura gezogen.
+Alle Pfade routen durch `executeWithingsSync()` (Advisory Lock 42 + Retry-on-401):
 
 - **Briefing-Pre-Sync:** 48h-Fenster, autark (kein n8n nötig). Fehler werden geloggt
   (`console.error`) und in `last_sync_error` persistiert (nicht lautlos verschluckt).
 - **`/healthsync N`:** Ehrt N Tage wörtlich (`sinceMs = now - N*24h`). Kein `last_sync`-Zweig.
 - **`triggerWithingsSync`:** n8n-Endpoint, 48h-Fenster.
 
-`last_sync` wird genau einmal am Ende von `executeWithingsSync` gesetzt (via `updateSyncStatus`),
-innerhalb des Advisory Lock — wahrhaftig, weil alle 4 Typen geholt wurden.
-
 n8n-Workflow `health-withings-sync-daily` (`uSGEPq973pNTxXtj`) deaktiviert (`active=false`) —
 war nie funktionsfähig (nginx `/api/` Catch-All → Dashboard 18800 statt Gateway 18789).
+
+### Oura-Sync (2026-06-27)
+
+`src/modules/health/oura.ts` — Oura Ring API v2 Integration (OAuth2, Sleep, HRV, Readiness,
+Activity). Oura ist primäre Quelle für Schlaf, HRV, Readiness, Temperatur und Ruhe-HR.
+
+`src/modules/health/commands.ts` — `runOuraSync()` holt alle Oura-Datentypen:
+- **Sleep** → type `sleep` (upsert per day, seconds → hours)
+- **HRV** → type `hrv` (aus Sleep-Response, `average_hrv`)
+- **Resting HR** → type `heartrate` (aus Sleep-Response, `lowest_heart_rate`)
+- **Readiness** → type `readiness` (Score + Contributors)
+- **Temperature** → type `temperature` (Deviation from baseline)
+- **Steps/Activity** → type `steps` (aus Daily Activity)
+
+Alle Pfade routen durch `executeOuraSync()` (Advisory Lock **47** + Retry-on-401):
+
+- **Briefing-Pre-Sync:** 48h-Fenster, parallel zu Withings (`Promise.allSettled`).
+- **`/ourasync N`:** Ehrt N Tage wörtlich.
+- **`triggerOuraSync`:** HTTP-Endpoint `POST /api/health/oura-sync`.
+- **`/ouraauth`:** Temp-Server auf Port 8081, Pfad `/oura/callback`.
+
+DB: `health_oura_tokens` (V040, ohne `userid`). Dedup: `hasEntryForDate` für alle Typen
+außer Sleep (upsert). `health_logs.external_id` (vormals `withings_id`) ist provider-neutral.
+
+**Advisory-Lock-Registry:** 42=Withings, 44=SharePoint, 46=Banking, **47=Oura**.
 
 ---
 
