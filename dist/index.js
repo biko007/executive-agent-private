@@ -4,7 +4,7 @@ import SunCalc from "suncalc";
 import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
-import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, loadTokens as loadWithingsTokens, } from "./src/modules/health/index.js";
+import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, triggerWithingsSync, getSyncStatus, } from "./src/modules/health/index.js";
 import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
@@ -1776,12 +1776,9 @@ export default function (api) {
                     }
                 }
                 catch { }
-                try {
-                    const wt = await loadWithingsTokens();
-                    if (wt?.expires_at)
-                        tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
-                }
-                catch { }
+                // Withings: NOT included. expires_at tracks the 3h access token (auto-rotated
+                // by syncWithingsForBriefing), not the refresh token. days_remaining always ~0.
+                // Real auth signal: retry-on-401 + "Auth verloren" Telegram in withings.ts.
                 // 3. Workflows pending
                 let workflowsPending = 0;
                 let workflowTypes = [];

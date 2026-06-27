@@ -15,7 +15,6 @@ import {
   readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, checkHealthAlerts,
   registerHealthCommands, initHealthCommands, syncWithingsForBriefing,
   triggerWithingsSync, getSyncStatus,
-  loadTokens as loadWithingsTokens,
 } from "./src/modules/health/index.js";
 import type { HealthAlert } from "./src/modules/health/index.js";
 import {
@@ -1959,10 +1958,9 @@ export default function (api: any) {
             tokens.push({ name: 'Meta', days_remaining: Math.floor((expiresAt - Date.now()) / 86_400_000) });
           }
         } catch {}
-        try {
-          const wt = await loadWithingsTokens();
-          if (wt?.expires_at) tokens.push({ name: 'Withings', days_remaining: Math.floor((wt.expires_at - Date.now()) / 86_400_000) });
-        } catch {}
+        // Withings: NOT included. expires_at tracks the 3h access token (auto-rotated
+        // by syncWithingsForBriefing), not the refresh token. days_remaining always ~0.
+        // Real auth signal: retry-on-401 + "Auth verloren" Telegram in withings.ts.
 
         // 3. Workflows pending
         let workflowsPending = 0;

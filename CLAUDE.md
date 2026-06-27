@@ -379,13 +379,24 @@ NK-PDFs:      artifacts/personal/nk-statements/<PROP_CODE>/<YEAR>/run-<RUN_ID>/<
 Alle externen Endpoints laufen über nginx + Let's Encrypt SSL (app.bikobickel.de:443).
 Kein Service bindet extern — alles auf 127.0.0.1, nginx proxied:
 
+  /api/internal/*                       → 127.0.0.1:18789  (Gateway, localhost-only deny all)
+  /api/instagram/(token-health|token-refresh)  → 127.0.0.1:18789  (Regex, Token Guardian)
+  /api/                                 → 127.0.0.1:18800  (Dashboard, Catch-All)
   /dashboard/*                          → 127.0.0.1:18800  (Dashboard)
   /location                             → 127.0.0.1:18790  (Location-API, POST)
-  /withings/*                           → 127.0.0.1:18789  (Withings Callback, via Legacy-Config)
-  /api/instagram/token-health           → 127.0.0.1:18789  (Token Guardian, Sprint 3)
-  /api/instagram/token-refresh          → 127.0.0.1:18789  (Token Guardian, Sprint 3)
-  /api/health/withings-sync             → 127.0.0.1:18789  (Withings Sync, Sprint 4)
-  /api/health/sync-status               → 127.0.0.1:18789  (Sync Status, Sprint 4)
+  /withings/callback                    → 127.0.0.1:18789  (Withings OAuth)
+  /n8n/                                 → 127.0.0.1:5678   (n8n Web-UI)
+
+Reihenfolge: spezifischere Locations (internal, instagram-token) VOR dem /api/ Catch-All.
+Dashboard proxied Modul-Routen (/api/health/*, /api/assets/*, etc.) intern an Core 18789
+weiter (Double-Hop mit Bearer CORE_SERVICE_TOKEN).
+
+Tote Routen via nginx (Dashboard hat keinen Handler, nur direkt auf 18789 erreichbar):
+  POST /api/health/withings-sync       — n8n-Caller deaktiviert (6782fd2)
+  GET  /api/health/sync-status         — kein externer Caller
+
+Backlog: Single-Hop-Optimierung (nginx → Gateway direkt) optional,
+funktioniert aktuell korrekt via Double-Hop.
 
 nginx-Config:   /etc/nginx/sites-enabled/openclaw.conf (konsolidiert)
 Cert:           Let's Encrypt (auto-renew via certbot)
@@ -493,6 +504,11 @@ Weight/Sleep geholt) + n8n 404 (fehlende nginx-Location). Fix: eine `runWithings
 für alle Pfade, alle 3 Caller routen durch `executeWithingsSync` (Lock 42 + Retry-on-401),
 `/healthsync N` ehrt N wörtlich (toter `last_sync`-Zweig entfernt), n8n-Workflow deaktiviert.
 Briefing-Fehler werden geloggt + in `last_sync_error` persistiert (nicht mehr lautlos verschluckt).
+Abschluss (2026-06-27): Status-Widget Withings-Ablauf-Zähler entfernt (`index.ts` — Access Token
+3h auto-rotiert, `days_remaining` immer ~0, nicht aktionierbar). Pre-Condition `audit.log()` bei
+fehlendem Token (`withings.ts`). nginx-Doku auf belegte Realität korrigiert (Catch-All `/api/` →
+Dashboard 18800, Double-Hop zu Core 18789). Telegram-Ablauf-Alert war belegt-tot
+(`getTokenExpirations()` schliesst Withings explizit aus).
 
 ## Role
 

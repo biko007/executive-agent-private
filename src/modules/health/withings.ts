@@ -204,7 +204,13 @@ export async function executeWithingsSync(
   try {
     // Step 2: Load active token
     let tokens = await loadTokens();
-    if (!tokens) throw new Error('No active Withings token');
+    if (!tokens) {
+      audit.log({
+        module: 'health', action: 'health.withings_sync_precondition_failed',
+        entityType: 'sync', after: { reason: 'no_active_token' },
+      }).catch(() => {});
+      throw new Error('No active Withings token');
+    }
 
     // Step 3: Pre-emptive refresh if expiring within 10 minutes
     if (tokens.expires_at - Date.now() <= 10 * 60 * 1000) {
