@@ -61,7 +61,7 @@ interface HealthLogRow {
   source: string;
   metadata: Record<string, unknown>;
   recorded_at: string;    // ISO 8601
-  withings_id: string;
+  external_id: string;
 }
 
 interface WithingsTokenRow {
@@ -159,7 +159,7 @@ function mapLine(lineNum: number, raw: Record<string, unknown>): { row: HealthLo
       source: (raw.source as string) || 'withings',
       metadata,
       recorded_at: raw.timestamp as string,
-      withings_id: raw.id as string,
+      external_id: raw.id as string,
     },
     errors,
   };
@@ -336,11 +336,11 @@ async function main() {
     let insertedCount = 0;
     for (const r of rows) {
       const result = await client.query(
-        `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, withings_id)
+        `INSERT INTO health_logs (type, value_numeric, unit, source, metadata, recorded_at, external_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (source, type, withings_id) WHERE withings_id IS NOT NULL
+         ON CONFLICT (source, type, external_id) WHERE external_id IS NOT NULL
          DO NOTHING`,
-        [r.type, r.value_numeric, r.unit, r.source, JSON.stringify(r.metadata), r.recorded_at, r.withings_id],
+        [r.type, r.value_numeric, r.unit, r.source, JSON.stringify(r.metadata), r.recorded_at, r.external_id],
       );
       if (result.rowCount && result.rowCount > 0) insertedCount++;
     }
