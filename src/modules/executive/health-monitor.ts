@@ -199,15 +199,7 @@ function formatDowntime(ms: number): string {
 async function getTokenExpirations(): Promise<TokenInfo[]> {
   const results: TokenInfo[] = [];
 
-  // Instagram (Meta) token — Postgres-backed (Sprint 5.7a)
-  try {
-    const { rows } = await query<{ expires_at: Date }>(
-      `SELECT expires_at FROM insta_tokens WHERE active = true LIMIT 1`
-    );
-    if (rows.length && rows[0].expires_at) {
-      results.push({ name: 'Meta (Instagram)', expiresAt: new Date(rows[0].expires_at).getTime() });
-    }
-  } catch { /* ignore */ }
+  // Instagram (Meta) token monitoring removed 2026-06-28 — Instagram moved to HDCC.
 
   // Withings: NOT monitored here. The DB field `expires_at` tracks the
   // access token (~3h validity), not the refresh token. The access token is

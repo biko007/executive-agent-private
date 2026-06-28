@@ -109,12 +109,13 @@ EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
 
 Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
 
-### Token Guardian (Sprint 3)
+### Token Guardian (Sprint 3) — Instagram-Monitoring entfernt 2026-06-28
 
-- n8n-Workflow `instagram-token-health-daily` (Cron daily 08:00 UTC)
-- Core-Endpoints: `GET /api/instagram/token-health`, `POST /api/instagram/token-refresh`
-- Auth: Bearer `CORE_SERVICE_TOKEN` (in `~/.config/openclaw/env`)
-- nginx-Routing: `/api/instagram/(token-health|token-refresh)` → Core (18789)
+Instagram ist nach HDCC umgezogen. Meta-Token-Überwachung (`getTokenExpirations()` in
+`health-monitor.ts`) und Briefing-Ablauf-Hinweis (`commands.ts`) entfernt.
+n8n-Workflow `instagram-token-health-daily` und Core-Endpoints (`token-health`,
+`token-refresh`) sind veraltet — können bei Bedarf entfernt werden.
+nginx-Routing `/api/instagram/(token-health|token-refresh)` → Core (18789) noch vorhanden.
 
 ### Instagram Status-Enum (Sprint 3)
 

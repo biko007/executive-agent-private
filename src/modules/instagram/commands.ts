@@ -3403,9 +3403,7 @@ export async function getInstagramBriefingLines(metaAppId: string, metaAppSecret
               const retryInsights = await fetchInsights(refreshed.access_token, refreshed.ig_business_id, true);
               instaLines.push(`- Follower: ${retryInsights.followers_count.toLocaleString('de')} | Engagement: ${retryInsights.engagement_rate}%`);
               instaLines.push(`✅ Token automatisch erneuert`);
-            } catch {
-              instaLines.push(`❌ Token abgelaufen — neuer Token aus Meta Developer Portal nötig`);
-            }
+            } catch { /* token refresh failed — monitoring moved to HDCC */ }
           } else {
             instaLines.push(`❌ API-Fehler: ${errMsg.slice(0, 120)}`);
           }
