@@ -769,9 +769,9 @@ export function registerHealthCommands(api: any): void {
         if (ouraCallbackServer === server) {
           server.close();
           ouraCallbackServer = null;
-          api.logger.info('[oura] Callback-Server nach 60s automatisch gestoppt');
+          api.logger.info('[oura] Callback-Server nach 5min automatisch gestoppt');
         }
-      }, 60_000);
+      }, 300_000);
       server.on('close', () => clearTimeout(timer));
 
       const already = (await isOuraAuthorized()) ? ' (bereits verbunden — neu autorisieren)' : '';
@@ -782,7 +782,7 @@ export function registerHealthCommands(api: any): void {
           `2. Bei Oura anmelden und Zugriff bestätigen.\n\n` +
           `3. Der Browser wird automatisch zu diesem Server weitergeleitet.\n` +
           `   ✅ Seite zeigt Erfolg → direkt /ourasync ausführen.\n\n` +
-          `⏱ Callback-Server läuft 60 Sekunden auf Port ${ouraCallbackPort}.`,
+          `⏱ Callback-Server läuft 5 Minuten auf Port ${ouraCallbackPort}.`,
       };
     },
   });
