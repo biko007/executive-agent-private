@@ -188,6 +188,20 @@ nginx-Routing `/api/instagram/(token-health|token-refresh)` → Core (18789) noc
   - `GET /api/banking/accounts/:id/transactions` — Umsätze
   - `DELETE /api/banking/session/:id` — Sidecar-Session cancel (fire-and-forget)
 
+### Banking Telegram-Trigger (kein zeitgesteuerter Auto-Sync)
+
+Banking-Sync startet ausschliesslich manuell ueber Telegram — KEIN zeitgesteuerter
+Auto-Trigger. n8n `banking-sync-daily` ist inaktiv/archiviert.
+
+Callback-Prefixes (registriert in `CALLBACK_PREFIXES`, index.ts:412):
+- `bweekly_start` — startet woechentlichen Banking-Sync (Keyboard-Button, index.ts:1911).
+  Handler: index.ts:1693-1697.
+- `bsync_<runId>` — Re-Sync nach TAN-Bestaetigung; Ketten-Button bei erneuter TAN-Aufforderung
+  (Button generiert in sync-engine.ts:465 + 799). Handler: index.ts:1715-1718.
+
+Beide laufen ueber `parseCallbackEvent`. Bei neuen Banking-Buttons immer Prefix in
+CALLBACK_PREFIXES eintragen, sonst greift die Callback-Suppression.
+
 ### Settings (Sprint 11)
 
 - DB-Tabelle: `system_settings` (key TEXT PK, value JSONB)
