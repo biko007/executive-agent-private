@@ -21,8 +21,6 @@ export {
   generateRawSessionId, sessionDir,
   // Voice / audio helpers used by command-guard in index.ts
   findRecentAudioFile, transcribeVoice,
-  // Briefing helper
-  getInstagramBriefingLines,
 } from './commands.js';
 
 export type { InstagramDeps } from './commands.js';

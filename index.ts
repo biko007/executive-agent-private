@@ -59,8 +59,6 @@ import {
   registerInboxHttpRoute,
   // Edit Queue (E4a)
   registerEditQueueRoutes, recoverStaleJobs,
-  // Briefing
-  getInstagramBriefingLines,
   // Store re-exports for system-health DI
   tokenDaysRemaining,
   loadInstaTokens, ensureInstaToken,
@@ -954,18 +952,6 @@ export default function (api: any) {
         }
       }
     } catch { /* drafts optional */ }
-
-    // ── INSTAGRAM → src/modules/instagram/commands.ts ──
-    {
-      const instaLines = await getInstagramBriefingLines(metaAppId, metaAppSecret);
-      if (instaLines.length > 0) {
-        parts.push('');
-        parts.push(SEP);
-        parts.push('📸 *INSTAGRAM*');
-        parts.push(SEP);
-        parts.push(...instaLines);
-      }
-    }
 
     // ── HEALTH ──
     {
