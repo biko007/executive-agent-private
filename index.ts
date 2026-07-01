@@ -214,6 +214,31 @@ export default function (api: any) {
     }
   } catch { /* ignore */ }
 
+  // ── Owner-Profil (statisches Fakten-File, mtime-cached) ──
+  const ownerTelegramId = process.env.OWNER_TELEGRAM_ID || '';
+  const OWNER_PROFILE_PATH = path.join(process.env.HOME || '/root', '.openclaw/owner-facts.md');
+  let ownerProfileCache: { content: string; mtimeMs: number } | null = null;
+
+  function loadOwnerProfile(): string | null {
+    try {
+      const stat = fs.statSync(OWNER_PROFILE_PATH);
+      if (ownerProfileCache && ownerProfileCache.mtimeMs === stat.mtimeMs) {
+        return ownerProfileCache.content;
+      }
+      const content = fs.readFileSync(OWNER_PROFILE_PATH, 'utf-8').trim();
+      if (!content) return null;
+      ownerProfileCache = { content, mtimeMs: stat.mtimeMs };
+      api.logger.info(`[executive-agent] owner-profile: geladen (${content.length} Bytes, mtime=${new Date(stat.mtimeMs).toISOString()})`);
+      return content;
+    } catch {
+      if (ownerProfileCache) {
+        api.logger.warn(`[executive-agent] owner-profile: ${OWNER_PROFILE_PATH} nicht mehr lesbar — Cache gelöscht`);
+        ownerProfileCache = null;
+      }
+      return null;
+    }
+  }
+
   /**
    * Send a Telegram message with fallback: plugin API → direct Bot API.
    * Retries up to 3 times with exponential backoff on network failures.
@@ -601,6 +626,23 @@ export default function (api: any) {
         }
       }
       // If not bare media (has caption text), let AI respond normally
+    }
+
+    // ========== BRANCH 6: Owner-Profil-Injektion ==========
+    // Inject owner facts for owner DM sessions (free-text messages only).
+    // Commands/callbacks/voice/media are handled by branches 1-5 above.
+    if (ownerTelegramId) {
+      const ownerMatch = prompt.match(/id:(\d{5,})/);
+      if (ownerMatch && ownerMatch[1] === ownerTelegramId) {
+        const profile = loadOwnerProfile();
+        if (profile) {
+          api.logger.debug(`[executive-agent] owner-profile: injiziert für senderId=${ownerMatch[1]}`);
+          return {
+            prependContext:
+              'Verbindliches Owner-Profil (Stand siehe Datei):\n' + profile,
+          };
+        }
+      }
     }
   }, { priority: 100 });
 
