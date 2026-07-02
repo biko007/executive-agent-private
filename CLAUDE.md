@@ -88,6 +88,7 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlo
 | links | src/modules/links/ | — | Postgres |
 | location | src/modules/location/ | — | Postgres |
 | mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
+| memory | src/modules/memory/ | — | Postgres |
 | nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
 | pe | src/modules/pe/ | 5 | self-contained |
 | sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
@@ -252,6 +253,7 @@ CALLBACK_PREFIXES eintragen, sonst greift die Callback-Suppression.
 | `src/modules/location/migrations` | location | 032 |
 | `src/modules/links/migrations` | links | 033 |
 | `src/modules/sharepoint/migrations` | sharepoint | 034 |
+| `src/modules/memory/migrations` | memory | 041 |
 
 **DR-Pfad:** `pg_dump --format=custom` als Wahrheits-Quelle, unabhaengig vom Migration-Runner.
 Borg-Backup sichert den Dump taeglich.
@@ -551,6 +553,21 @@ exports, briefing+routes, dashboard, nginx, tests). Advisory-Lock 47 (nächster 
 Schema: `health_logs.withings_id` → `external_id` (provider-neutral), neue CHECK-Werte
 (hrv, readiness, temperature, oura). 12 Tests (3 Oura-Sync + 3 neue HRV/Readiness/Temp
 Roundtrips + 6 bestehende). Withings-Tests auf weight-only angepasst.
+
+### Message-Sink / Conversation Log (2026-07-02)
+
+Baustein 1 fuer dynamisches Gedaechtnis. `agent_end`-Hook persistiert jeden
+erfolgreichen Owner-Telegram-Turn (User-Text + Agent-Antwort) in `conversation_log`.
+Fire-and-forget: Schreibfehler loggen WARN, blockieren nie den Agenten.
+
+- DB-Tabelle: `conversation_log` (Migration 041, Modul `memory`, Boot-Time-DDL)
+- Hook: `agent_end` in index.ts (feuert NACH Antwortversand)
+- Scope: Owner-only (senderId `133260792`). Nicht-Owner-Turns werden uebergangen.
+- Voice: Transkript via Stash aus `before_agent_start` erfasst (`metadata.voice = true`)
+- Filter: NO_REPLY, bare media, fehlgeschlagene Runs werden uebergangen
+- Store: `src/modules/memory/store.ts` (`insertConversationTurn()`)
+- KEIN Retrieval, KEINE Injektion — reiner Recorder
+- Retention: `created_at` fuer spaeteres Pruning, aber KEIN Auto-Pruning in diesem Schritt
 
 ## Role
 

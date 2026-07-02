@@ -43,6 +43,7 @@ const MIGRATION_DIRS: Array<{ dir: string; module: string }> = [
   { dir: 'src/modules/location/migrations',    module: 'location' },
   { dir: 'src/modules/links/migrations',       module: 'links' },
   { dir: 'src/modules/sharepoint/migrations',  module: 'sharepoint' },
+  { dir: 'src/modules/memory/migrations',      module: 'memory' },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ tokenDaysRemaining, loadInstaTokens, ensureInstaToken,
 getTokenHealth, } from "./src/modules/instagram/index.js";
 import { closeBrowser } from "./browser-agent.js";
 import { initSystemHealth, runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, runDailyHealthCheck, } from "./system-health.js";
+import { insertConversationTurn } from './src/modules/memory/store.js';
 import { HealthMonitor, LOCATION_STALE_THRESHOLD_MS } from "./src/modules/executive/index.js";
 import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
@@ -348,6 +349,10 @@ export default function (api) {
         'tradetop', 'tradeuniverse', 'tradeunwatch', 'tradewatch', 'tradewatchlist',
         'briefing', 'briefingtime',
     ]);
+    /** Stash for voice transcript — set in before_agent_start, consumed in agent_end */
+    let lastVoiceTranscript = null;
+    /** Stash for message sink — set in message_received, consumed in agent_end */
+    let sinkStash = null;
     // before_agent_start: fires before every AI agent turn.
     // - For registered commands: instructs AI to stay silent (NO_REPLY) so plugin handler responds.
     // - For voice messages: transcribes audio via Whisper and injects transcript as context.
@@ -410,6 +415,7 @@ export default function (api) {
                 }
                 if (audioPath && fs.existsSync(audioPath)) {
                     const transcript = await transcribeVoice(audioPath);
+                    lastVoiceTranscript = transcript; // Stash for message sink (agent_end)
                     api.logger.info(`[executive-agent] command-guard: Transkription erfolgreich (${transcript.length} Zeichen)`);
                     return {
                         prependContext: `VOICE MESSAGE TRANSCRIPTION — The user sent a voice message. ` +
@@ -1384,6 +1390,85 @@ export default function (api) {
     registerAssetsCommands(api);
     // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
     // formatBookingMessage → src/modules/travel/enrichment.ts
+    // ── Message Sink: persist conversation turns to Postgres ──────────────────
+    // Baustein 1 fuer dynamisches Gedaechtnis. Fire-and-forget — Schreibfehler
+    // blockieren den Agenten nie. Scope: Owner-only (senderId 133260792).
+    const OWNER_SENDER_ID = '133260792';
+    api.on('agent_end', async (event, ctx) => {
+        try {
+            if (!event.success || !event.messages || event.messages.length === 0)
+                return;
+            // Consume stash (set by message_received)
+            const stash = sinkStash;
+            sinkStash = null;
+            if (!stash)
+                return;
+            const senderId = stash.senderId;
+            // Scope filter: Owner-only
+            if (senderId !== OWNER_SENDER_ID)
+                return;
+            // Voice stash takes precedence (transcript instead of raw audio reference)
+            const isVoice = lastVoiceTranscript !== null;
+            let userText = isVoice ? lastVoiceTranscript : stash.content;
+            lastVoiceTranscript = null;
+            if (!userText || !userText.trim())
+                return;
+            // Bare media without text/transcript — skip
+            if (/^\[media attached:/i.test(userText.trim()) && !isVoice)
+                return;
+            if (/^<media:(image|video)>/i.test(userText.trim()) && !isVoice)
+                return;
+            // Extract last assistant message
+            let agentText = null;
+            for (let i = event.messages.length - 1; i >= 0; i--) {
+                const msg = event.messages[i];
+                if (!msg || typeof msg !== 'object')
+                    continue;
+                const m = msg;
+                if (m.role !== 'assistant')
+                    continue;
+                const content = m.content;
+                if (typeof content === 'string') {
+                    agentText = content;
+                }
+                else if (Array.isArray(content)) {
+                    const textBlock = content.find((b) => b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string');
+                    if (textBlock)
+                        agentText = textBlock.text;
+                }
+                break;
+            }
+            // Skip suppressed turns (NO_REPLY from callback/command guard)
+            if (!agentText || agentText.trim() === 'NO_REPLY')
+                return;
+            await insertConversationTurn({
+                senderId,
+                userText,
+                agentText,
+                sessionKey: ctx.sessionKey ?? null,
+                channel: 'telegram',
+                metadata: isVoice ? { voice: true } : null,
+            });
+            api.logger.debug(`[message-sink] Turn persisted (sender=${senderId})`);
+        }
+        catch (err) {
+            // NEVER block the agent — log warning only
+            api.logger.warn(`[message-sink] Write failed: ${err.message}`);
+            sinkStash = null;
+            lastVoiceTranscript = null;
+        }
+    });
+    // ── Message Sink: stash incoming message for agent_end ────────────────────
+    api.on('message_received', (event) => {
+        try {
+            const senderId = String(event?.metadata?.senderId || '').trim();
+            const content = String(event?.content ?? '').trim();
+            if (senderId && content) {
+                sinkStash = { senderId, content };
+            }
+        }
+        catch { /* fire-and-forget */ }
+    });
     // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
     api.on('message_received', (event) => {
         try {
@@ -2590,6 +2675,16 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[sharepoint] Migration failed: ${e.message}`);
+        }
+        // ── Memory Migrations (Message-Sink) ──────────────────────────────────
+        try {
+            const memoryMigrationsDir = path.join(__dirname, 'src/modules/memory/migrations');
+            const memoryApplied = await runMigrations(memoryMigrationsDir, 'memory');
+            if (memoryApplied > 0)
+                api.logger.info(`[memory] Applied ${memoryApplied} migration(s)`);
+        }
+        catch (e) {
+            api.logger.error(`[memory] Migration failed: ${e.message}`);
         }
         // ── Instagram Edit Queue Recovery (E4a) ────────────────────────────────
         try {
