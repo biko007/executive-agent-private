@@ -69,8 +69,8 @@ import type { RawSession } from "./src/modules/instagram/index.js";
 import { openPage, extractText, screenshot, closeBrowser } from "./browser-agent.js";
 import {
   initSystemHealth,
-  runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken,
-  evaluateTokenAlert, safeTelegramSend, formatEscalation,
+  runStartupChecks, formatHealthReport,
+  safeTelegramSend, formatEscalation,
   preFlightInstagram, preFlightTrading, formatPreFlightFailure,
   runDailyHealthCheck,
 } from "./system-health.js";
@@ -1952,20 +1952,6 @@ export default function (api: any) {
           api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
         }
 
-        // Token Guardian: tägliche Prüfung + proaktiver Refresh
-        try {
-          if (metaAppId && metaAppSecret) {
-            const health = await checkAndRefreshInstagramToken(metaAppId, metaAppSecret);
-            api.logger.info(`[executive-agent] Token Guardian (daily): ${health.status}, ${health.days_remaining} Tage`);
-            const esc = evaluateTokenAlert(health, !!health.last_refresh);
-            if (esc) {
-              const msg = formatEscalation(esc);
-              if (msg) await sendTelegram(s.telegramChatId, msg);
-            }
-          }
-        } catch (e: any) {
-          api.logger.warn(`[executive-agent] Token Guardian Fehler: ${e.message}`);
-        }
       }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
@@ -2851,19 +2837,6 @@ export default function (api: any) {
         }
       }
 
-      // Token Guardian at startup
-      if (metaAppId && metaAppSecret) {
-        const health = await checkAndRefreshInstagramToken(metaAppId, metaAppSecret);
-        api.logger.info(`[executive-agent] Token Guardian: ${health.status}, ${health.days_remaining} Tage verbleibend`);
-        const esc = evaluateTokenAlert(health, !!health.last_refresh);
-        if (esc) {
-          const msg = formatEscalation(esc);
-          if (msg) {
-            const s = loadSettings();
-            if (s.telegramChatId) await sendTelegram(s.telegramChatId, msg);
-          }
-        }
-      }
     } catch (e: any) {
       api.logger.error(`[executive-agent] Startup Self-Test Fehler: ${e.message}`);
     }

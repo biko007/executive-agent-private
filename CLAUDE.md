@@ -110,10 +110,13 @@ EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
 
 Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
 
-### Token Guardian (Sprint 3) — Instagram-Monitoring entfernt 2026-06-28
+### Token Guardian (Sprint 3) — vollständig entfernt 2026-07-03
 
-Instagram ist nach HDCC umgezogen. Meta-Token-Überwachung (`getTokenExpirations()` in
-`health-monitor.ts`) und Briefing-Ablauf-Hinweis (`commands.ts`) entfernt.
+Instagram ist nach HDCC umgezogen. Alle Token-Guardian-Logik entfernt:
+- `evaluateTokenAlert()` und `checkAndRefreshInstagramToken()` aus system-health.ts gelöscht
+- Briefing-Scheduler Token Guardian (index.ts) gelöscht
+- Startup Token Guardian (index.ts) gelöscht
+- Meta-Token-Überwachung (`getTokenExpirations()`) und Briefing-Ablauf-Hinweis bereits 2026-06-28 entfernt
 n8n-Workflow `instagram-token-health-daily` und Core-Endpoints (`token-health`,
 `token-refresh`) sind veraltet — können bei Bedarf entfernt werden.
 nginx-Routing `/api/instagram/(token-health|token-refresh)` → Core (18789) noch vorhanden.

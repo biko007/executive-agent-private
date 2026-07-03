@@ -114,12 +114,6 @@ async function validateTokenLive(accessToken: string): Promise<{ valid: boolean;
 
 // ── Token Health Persistence ───────────────────────────────────────────
 
-function saveTokenHealth(h: TokenHealth): void {
-  const dir = path.dirname(TOKEN_HEALTH_FILE);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(TOKEN_HEALTH_FILE, JSON.stringify(h, null, 2), 'utf-8');
-}
-
 export function loadTokenHealth(): TokenHealth | null {
   try {
     if (!fs.existsSync(TOKEN_HEALTH_FILE)) return null;
@@ -349,121 +343,7 @@ export function formatHealthReport(report: HealthReport, title?: string): string
   return lines.join('\n');
 }
 
-// ── 4. TOKEN GUARDIAN ──────────────────────────────────────────────────
-
-export async function checkAndRefreshInstagramToken(
-  appId: string,
-  appSecret: string,
-): Promise<TokenHealth> {
-  const now = new Date();
-
-  const tokens = loadInstaTokens();
-  if (!tokens) {
-    const health: TokenHealth = {
-      last_checked: now.toISOString(),
-      expires_at: 0,
-      days_remaining: 0,
-      last_refresh: null,
-      status: 'missing',
-    };
-    saveTokenHealth(health);
-    return health;
-  }
-
-  const daysRemaining = tokenDaysRemaining();
-  let isExpired = daysRemaining <= 0;
-
-  // Live validation: stored expiry can be wrong (Meta can revoke/expire early)
-  if (!isExpired && tokens.access_token) {
-    const live = await validateTokenLive(tokens.access_token);
-    if (!live.valid) {
-      console.log(`[token-guardian] Live-Check: Token auf Meta-Seite abgelaufen trotz ${daysRemaining}d gespeichert`);
-      isExpired = true;
-    }
-  }
-
-  const isCritical = daysRemaining < 3 || isExpired;
-  const isProactive = daysRemaining < 14;
-  let refreshed = false;
-  let refreshError = '';
-
-  if (isExpired || isProactive) {
-    try {
-      const force = isExpired || isCritical;
-      await ensureFreshToken(appId, appSecret, force);
-      refreshed = true;
-    } catch (e: any) {
-      refreshError = e?.message || 'Unbekannter Fehler';
-      console.error(`[token-guardian] Refresh fehlgeschlagen: ${refreshError}`);
-    }
-  }
-
-  const currentTokens = loadInstaTokens();
-  const currentDays = tokenDaysRemaining();
-
-  let status: TokenHealth['status'];
-  if (!currentTokens) {
-    status = 'missing';
-  } else if (isExpired && !refreshed) {
-    status = 'expired';
-  } else if (currentDays <= 0) {
-    status = isExpired && !refreshed ? 'refresh_failed' : 'expired';
-  } else if (isProactive && !refreshed) {
-    status = 'refresh_failed';
-  } else if (currentDays < 14) {
-    status = 'expiring';
-  } else {
-    // After successful refresh, verify live again
-    status = 'ok';
-  }
-
-  const health: TokenHealth = {
-    last_checked: now.toISOString(),
-    expires_at: currentTokens?.expires_at ?? 0,
-    days_remaining: currentDays,
-    last_refresh: refreshed ? now.toISOString() : null,
-    ...(refreshError ? { refresh_error: refreshError } : {}),
-    status,
-  };
-  saveTokenHealth(health);
-
-  return health;
-}
-
-export function evaluateTokenAlert(
-  health: TokenHealth,
-  refreshed: boolean,
-): Escalation | null {
-  if (health.status === 'missing') {
-    return escalate('Token Guardian', 'ACTION_REQUIRED',
-      'Kein Instagram-Token vorhanden.',
-      'Token im Meta Developer Portal generieren und via /instasync einrichten.');
-  }
-  if (health.status === 'refresh_failed') {
-    const errDetail = health.refresh_error ? `\nFehler: ${health.refresh_error}` : '';
-    return escalate('Token Guardian', 'ACTION_REQUIRED',
-      `Token-Refresh fehlgeschlagen! Verbleibend: ${health.days_remaining} Tage.${errDetail}`,
-      '1. Meta Developer Portal öffnen\n2. Neuen Long-Lived Token generieren\n3. Token in ~/.config/openclaw/env eintragen\n4. /instasync ausführen');
-  }
-  if (health.status === 'expired') {
-    const errDetail = health.refresh_error ? `\nFehler: ${health.refresh_error}` : '';
-    return escalate('Token Guardian', 'ACTION_REQUIRED',
-      `Token abgelaufen${refreshed ? ' (Refresh-Versuch gescheitert)' : ''}!${errDetail}`,
-      'Neuen Token im Meta Developer Portal generieren.');
-  }
-  if (health.days_remaining < 3) {
-    return escalate('Token Guardian', 'ACTION_REQUIRED',
-      `Token läuft in ${health.days_remaining} Tagen ab!${refreshed ? ' Wurde soeben erneuert.' : ''}`,
-      'Bitte zeitnah prüfen.');
-  }
-  if (refreshed) {
-    return escalate('Token Guardian', 'AUTO_RESOLVE',
-      `Token erfolgreich erneuert, ${health.days_remaining} Tage verbleibend.`);
-  }
-  return null;
-}
-
-// ── 5. DAILY HEALTH CHECK (08:00 UTC) ──────────────────────────────────
+// ── 4. DAILY HEALTH CHECK (08:00 UTC) ──────────────────────────────────
 
 export async function runDailyHealthCheck(): Promise<HealthReport> {
   const checks: HealthCheck[] = [];
