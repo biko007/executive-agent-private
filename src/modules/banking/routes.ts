@@ -66,14 +66,13 @@ export function registerBankingHttpRoutes(api: any) {
     return true;
   }
 
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+  const bankingHandler = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
 
     // Handle both /api/banking and /api/internal/banking
     const isBankingRoute = pathname.startsWith('/api/banking');
     const isInternalRoute = pathname.startsWith('/api/internal/banking');
-    if (!isBankingRoute && !isInternalRoute) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -374,7 +373,10 @@ export function registerBankingHttpRoutes(api: any) {
       err(res, 500, e.message);
       return true;
     }
-  });
+  };
+
+  api.registerHttpRoute({ path: '/api/banking', auth: 'plugin', match: 'prefix', handler: bankingHandler });
+  api.registerHttpRoute({ path: '/api/internal/banking', auth: 'plugin', match: 'prefix', handler: bankingHandler });
 
   api.logger.info('[banking] HTTP routes registered');
 }

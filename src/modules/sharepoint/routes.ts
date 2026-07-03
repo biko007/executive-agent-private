@@ -1,6 +1,6 @@
 /**
  * sharepoint/routes — HTTP API endpoints for SharePoint module (Sprint 10).
- * Registered via api.registerHttpHandler(). Auth: Bearer CORE_SERVICE_TOKEN.
+ * Registered via api.registerHttpRoute(). Auth: Bearer CORE_SERVICE_TOKEN.
  * Dashboard proxies to these routes via proxyToCore().
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -116,12 +116,13 @@ export function registerSharePointHttpRoutes(api: any) {
     return true;
   }
 
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+  api.registerHttpRoute({
+    path: '/api/sharepoint',
+    auth: 'plugin',
+    match: 'prefix',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
-
-    // Only handle /api/sharepoint paths
-    if (!pathname.startsWith('/api/sharepoint')) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -369,7 +370,7 @@ export function registerSharePointHttpRoutes(api: any) {
     }
 
     return true;
-  });
+  }});
 
   api.logger.info('[sharepoint] HTTP routes registered (Sprint 10)');
 }

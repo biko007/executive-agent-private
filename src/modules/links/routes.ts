@@ -1,6 +1,6 @@
 /**
  * links/routes — HTTP API endpoints for Links module (Sprint 9 Etappe 9.3).
- * All endpoints registered via api.registerHttpHandler().
+ * All endpoints registered via api.registerHttpRoute().
  * Auth: Bearer CORE_SERVICE_TOKEN.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -37,12 +37,13 @@ export function registerLinksHttpRoutes(api: any) {
     return true;
   }
 
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+  api.registerHttpRoute({
+    path: '/api/links',
+    auth: 'plugin',
+    match: 'prefix',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
-
-    // Only handle /api/links paths
-    if (!pathname.startsWith('/api/links')) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -135,7 +136,7 @@ export function registerLinksHttpRoutes(api: any) {
     }
 
     return true;
-  });
+  }});
 
   api.logger.info('[links] HTTP routes registered');
 }

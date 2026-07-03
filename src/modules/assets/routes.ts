@@ -74,17 +74,14 @@ export function registerAssetsHttpRoutes(api: any) {
   }
 
   // ── Catch-all handler for /api/assets/ paths ──────────────────────────────
-  // The gateway uses exact path matching for registerHttpRoute. For dynamic
-  // segments (e.g., /api/assets/properties/:id) we use registerHttpHandler
-  // which allows custom prefix-based dispatch.
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+  // registerHttpRoute with prefix match handles dynamic segments
+  // (e.g., /api/assets/properties/:id).
+  const assetsHandler = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
 
-    // Handle /api/assets paths and /api/internal/nk-trigger (localhost-only via nginx)
-    const isAssetsRoute = pathname.startsWith('/api/assets');
+    // Handler is registered for both /api/assets and /api/internal/nk-trigger
     const isInternalNkTrigger = pathname.startsWith('/api/internal/nk-trigger');
-    if (!isAssetsRoute && !isInternalNkTrigger) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -723,7 +720,10 @@ export function registerAssetsHttpRoutes(api: any) {
       err(res, 500, e.message);
       return true;
     }
-  });
+  };
+
+  api.registerHttpRoute({ path: '/api/assets', auth: 'plugin', match: 'prefix', handler: assetsHandler });
+  api.registerHttpRoute({ path: '/api/internal/nk-trigger', auth: 'plugin', match: 'prefix', handler: assetsHandler });
 
   api.logger.info('[assets] HTTP routes registered');
 }

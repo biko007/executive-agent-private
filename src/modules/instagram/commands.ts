@@ -4,7 +4,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
+
+// ESM polyfill: plugin root (4 levels up from dist/src/modules/instagram/)
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 import {
   loadTokens as loadInstaTokens, saveTokensToDb as saveInstaTokensToDb,
   isAuthorized as instaAuthorized, ensureFreshToken as ensureInstaToken,
@@ -264,7 +268,7 @@ function readGroqKey(): string {
 export async function transcribeVoice(audioPath: string): Promise<string> {
   // 1. Try local faster-whisper (preferred — no API key, fast, private)
   try {
-    const scriptPath = path.join(__dirname, '..', 'scripts', 'transcribe.py');
+    const scriptPath = path.join(PLUGIN_ROOT, 'scripts', 'transcribe.py');
     if (fs.existsSync(scriptPath)) {
       const result = execSync(
         `python3 "${scriptPath}" "${audioPath}" de`,
@@ -1373,14 +1377,14 @@ export function registerInstagramCommands(api: any): void {
       const senderId = String(ctx.senderId || ctx.from || '').replace(/^telegram:/, '');
       const chatId = senderId;
 
-      const scriptPath = path.join(__dirname, '..', 'scripts', 'instagram-spike-forensic.ts');
+      const scriptPath = path.join(PLUGIN_ROOT, 'scripts', 'instagram-spike-forensic.ts');
       if (!fs.existsSync(scriptPath)) {
         return { text: '❌ Script nicht gefunden: scripts/instagram-spike-forensic.ts' };
       }
 
       // Run script async — it sends the report via Telegram itself
       const child = spawn('bun', ['run', scriptPath], {
-        cwd: path.join(__dirname, '..'),
+        cwd: PLUGIN_ROOT,
         stdio: 'ignore',
         detached: true,
         env: { ...process.env },

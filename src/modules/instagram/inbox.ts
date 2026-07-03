@@ -528,11 +528,12 @@ function cleanupTmpDir(dir: string): void {
 // ── Route Registration ───────────────────────────────────────────────────────
 
 export function registerInboxHttpRoute(api: any): void {
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== '/api/instagram/inbox') return false;
-
+  api.registerHttpRoute({
+    path: '/api/instagram/inbox',
+    auth: 'plugin',
+    match: 'exact',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     await handleInbox(req, res);
     return true;
-  });
+  }});
 }

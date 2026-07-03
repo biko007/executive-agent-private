@@ -29,7 +29,7 @@ tokenDaysRemaining, loadInstaTokens, ensureInstaToken,
 // Token Guardian (Sprint 3 §5.2)
 getTokenHealth, } from "./src/modules/instagram/index.js";
 import { closeBrowser } from "./browser-agent.js";
-import { initSystemHealth, runStartupChecks, formatHealthReport, checkAndRefreshInstagramToken, evaluateTokenAlert, formatEscalation, runDailyHealthCheck, } from "./system-health.js";
+import { initSystemHealth, runStartupChecks, formatHealthReport, runDailyHealthCheck, } from "./system-health.js";
 import { insertConversationTurn } from './src/modules/memory/store.js';
 import { HealthMonitor, LOCATION_STALE_THRESHOLD_MS } from "./src/modules/executive/index.js";
 import * as audit from "./src/shared/audit/index.js";
@@ -40,7 +40,11 @@ import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refres
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import http from "node:http";
+// ESM polyfill: __dirname = plugin root (one level up from dist/)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.resolve(path.dirname(__filename), '..');
 function getAstroData(date, location = DEFAULT_LOCATION) {
     const tz = 'Europe/Berlin';
     const fmt = (d) => new Intl.DateTimeFormat('de-DE', {
@@ -1773,22 +1777,6 @@ export default function (api) {
                     lastBriefingDate = today; // Prevent re-generating, retry the existing text
                     api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
                 }
-                // Token Guardian: tägliche Prüfung + proaktiver Refresh
-                try {
-                    if (metaAppId && metaAppSecret) {
-                        const health = await checkAndRefreshInstagramToken(metaAppId, metaAppSecret);
-                        api.logger.info(`[executive-agent] Token Guardian (daily): ${health.status}, ${health.days_remaining} Tage`);
-                        const esc = evaluateTokenAlert(health, !!health.last_refresh);
-                        if (esc) {
-                            const msg = formatEscalation(esc);
-                            if (msg)
-                                await sendTelegram(s.telegramChatId, msg);
-                        }
-                    }
-                }
-                catch (e) {
-                    api.logger.warn(`[executive-agent] Token Guardian Fehler: ${e.message}`);
-                }
             }
         }
         catch (e) {
@@ -1853,6 +1841,7 @@ export default function (api) {
     const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
     const coreServiceToken = process.env.CORE_SERVICE_TOKEN || '';
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/health',
         handler: (_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1860,6 +1849,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/ready',
         handler: (_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1867,6 +1857,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/version',
         handler: (_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1875,6 +1866,7 @@ export default function (api) {
     });
     // ── System Status (aggregated data for Dashboard Status Widget) ───────────
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/system-status',
         handler: async (_req, res) => {
             try {
@@ -1967,6 +1959,7 @@ export default function (api) {
     });
     // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/instagram/token-health',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -1993,6 +1986,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/instagram/token-refresh',
         handler: async (req, res) => {
             if (req.method !== 'POST') {
@@ -2026,6 +2020,7 @@ export default function (api) {
     });
     // ── Health: Withings Sync (Sprint 4 §4) ──────────────────────────────────────
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/withings-sync',
         handler: async (req, res) => {
             if (req.method !== 'POST') {
@@ -2052,6 +2047,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/sync-status',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2078,6 +2074,7 @@ export default function (api) {
     });
     // ── Health: Oura Sync ──────────────────────────────────────────────────────
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/oura-sync',
         handler: async (req, res) => {
             if (req.method !== 'POST') {
@@ -2104,6 +2101,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/oura-sync-status',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2130,6 +2128,7 @@ export default function (api) {
     });
     // ── Health Dashboard Endpoints (Postgres-backed, used by Dashboard proxy) ──
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/entries',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2227,6 +2226,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/trends',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2261,6 +2261,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/alerts',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2286,6 +2287,7 @@ export default function (api) {
         },
     });
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/health/chart-data',
         handler: async (req, res) => {
             if (req.method !== 'GET') {
@@ -2354,6 +2356,7 @@ export default function (api) {
     });
     // ── Internal Notify (localhost only — nginx allow 127.0.0.1; deny all) ─────
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/api/internal/notify',
         handler: async (req, res) => {
             if (req.method !== 'POST') {
@@ -2440,6 +2443,7 @@ export default function (api) {
         return label;
     }
     api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
         path: '/location',
         handler: async (req, res) => {
             // CORS preflight
@@ -2613,20 +2617,6 @@ export default function (api) {
                 const s = loadSettings();
                 if (s.telegramChatId) {
                     await sendTelegram(s.telegramChatId, formatHealthReport(report));
-                }
-            }
-            // Token Guardian at startup
-            if (metaAppId && metaAppSecret) {
-                const health = await checkAndRefreshInstagramToken(metaAppId, metaAppSecret);
-                api.logger.info(`[executive-agent] Token Guardian: ${health.status}, ${health.days_remaining} Tage verbleibend`);
-                const esc = evaluateTokenAlert(health, !!health.last_refresh);
-                if (esc) {
-                    const msg = formatEscalation(esc);
-                    if (msg) {
-                        const s = loadSettings();
-                        if (s.telegramChatId)
-                            await sendTelegram(s.telegramChatId, msg);
-                    }
                 }
             }
         }

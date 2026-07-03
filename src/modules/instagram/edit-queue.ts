@@ -226,10 +226,11 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 export function registerEditQueueRoutes(api: any): void {
   const coreServiceToken = process.env.CORE_SERVICE_TOKEN || '';
 
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== '/api/instagram/queue/health') return false;
-
+  api.registerHttpRoute({
+    path: '/api/instagram/queue/health',
+    auth: 'plugin',
+    match: 'exact',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     // Auth check
     const authHeader = req.headers.authorization ?? '';
     if (!coreServiceToken || authHeader !== `Bearer ${coreServiceToken}`) {
@@ -250,5 +251,5 @@ export function registerEditQueueRoutes(api: any): void {
       json(res, 500, { ok: false, error: msg });
     }
     return true;
-  });
+  }});
 }

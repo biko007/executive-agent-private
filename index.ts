@@ -94,8 +94,13 @@ import {
 } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import http from "node:http";
+
+// ESM polyfill: __dirname = plugin root (one level up from dist/)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.resolve(path.dirname(__filename), '..');
 
 /* ---------------- Settings + Helpers ---------------- */
 // Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
@@ -2029,6 +2034,7 @@ export default function (api: any) {
   const coreServiceToken = process.env.CORE_SERVICE_TOKEN || '';
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/health',
     handler: (_req: any, res: any) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2037,6 +2043,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/ready',
     handler: (_req: any, res: any) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2045,6 +2052,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/version',
     handler: (_req: any, res: any) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2054,6 +2062,7 @@ export default function (api: any) {
 
   // ── System Status (aggregated data for Dashboard Status Widget) ───────────
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/system-status',
     handler: async (_req: any, res: any) => {
       try {
@@ -2152,6 +2161,7 @@ export default function (api: any) {
 
   // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/instagram/token-health',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2178,6 +2188,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/instagram/token-refresh',
     handler: async (req: any, res: any) => {
       if (req.method !== 'POST') {
@@ -2211,6 +2222,7 @@ export default function (api: any) {
 
   // ── Health: Withings Sync (Sprint 4 §4) ──────────────────────────────────────
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/withings-sync',
     handler: async (req: any, res: any) => {
       if (req.method !== 'POST') {
@@ -2237,6 +2249,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/sync-status',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2263,6 +2276,7 @@ export default function (api: any) {
 
   // ── Health: Oura Sync ──────────────────────────────────────────────────────
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/oura-sync',
     handler: async (req: any, res: any) => {
       if (req.method !== 'POST') {
@@ -2289,6 +2303,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/oura-sync-status',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2316,6 +2331,7 @@ export default function (api: any) {
   // ── Health Dashboard Endpoints (Postgres-backed, used by Dashboard proxy) ──
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/entries',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2408,6 +2424,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/trends',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2442,6 +2459,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/alerts',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2467,6 +2485,7 @@ export default function (api: any) {
   });
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/health/chart-data',
     handler: async (req: any, res: any) => {
       if (req.method !== 'GET') {
@@ -2530,6 +2549,7 @@ export default function (api: any) {
 
   // ── Internal Notify (localhost only — nginx allow 127.0.0.1; deny all) ─────
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/api/internal/notify',
     handler: async (req: any, res: any) => {
       if (req.method !== 'POST') {
@@ -2631,6 +2651,7 @@ export default function (api: any) {
   }
 
   api.registerHttpRoute({
+    auth: 'plugin', match: 'exact',
     path: '/location',
     handler: async (req: any, res: any) => {
       // CORS preflight

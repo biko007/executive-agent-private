@@ -69,11 +69,13 @@ export function registerFleetHttpRoutes(api: any) {
     return true;
   }
 
-  api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+  api.registerHttpRoute({
+    path: '/api/fleet',
+    auth: 'plugin',
+    match: 'prefix',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
-
-    if (!pathname.startsWith('/api/fleet')) return false;
 
     if (!authCheck(req, res)) return true;
     const actor = (req.headers['x-actor'] as string) || 'system';
@@ -437,7 +439,7 @@ export function registerFleetHttpRoutes(api: any) {
       err(res, 500, e.message);
       return true;
     }
-  });
+  }});
 
   api.logger.info('[fleet] HTTP routes registered');
 }
