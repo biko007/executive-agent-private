@@ -434,8 +434,10 @@ export default function (api: any) {
   // - For registered commands: instructs AI to stay silent (NO_REPLY) so plugin handler responds.
   // - For voice messages: sets voice flag (framework transcribes natively via tools.media.audio).
   // - For bare media (image/video): saves to raw session and suppresses AI commentary.
-  api.on('before_agent_start', async (event: any) => {
+  api.on('before_agent_start', async (event: any, ctx: any) => {
     const prompt: string = event?.prompt ?? '';
+    // Sender ID from structured ctx (v2026.6.11: plaintext envelope removed from prompt)
+    const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
 
     // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
     // Framework wraps prompts in "[Telegram sender timestamp] body" envelope.
@@ -453,13 +455,11 @@ export default function (api: any) {
     // Suppress AI when user is in active craft dialog (any step, TTL-guarded).
     // Step-agnostic because message_received handler mutates step synchronously
     // before before_agent_start fires (~575ms race window).
-    const senderIdMatch = prompt.match(/id:(\d{5,})/);
-    if (senderIdMatch) {
-      const senderId = senderIdMatch[1];
-      const craftState = activeCraftDialogs.get(senderId);
-      api.logger.debug(`[E4b] dialog-check senderId=${senderId} dialog=${!!craftState} step=${craftState?.step} expiresAt=${craftState?.expiresAt}`);
+    if (ctxSenderId) {
+      const craftState = activeCraftDialogs.get(ctxSenderId);
+      api.logger.debug(`[E4b] dialog-check senderId=${ctxSenderId} dialog=${!!craftState} step=${craftState?.step} expiresAt=${craftState?.expiresAt}`);
       if (craftState && Date.now() <= craftState.expiresAt) {
-        api.logger.debug(`[E4b] suppress LLM for active craft dialog (senderId=${senderId}, step=${craftState.step})`);
+        api.logger.debug(`[E4b] suppress LLM for active craft dialog (senderId=${ctxSenderId}, step=${craftState.step})`);
         return {
           prependContext:
             'SYSTEM: This message is direction input for an active Instagram craft dialog, already handled by a plugin hook. ' +
@@ -608,17 +608,15 @@ export default function (api: any) {
     // ========== BRANCH 6: Owner-Profil-Injektion ==========
     // Inject owner facts for owner DM sessions (free-text messages only).
     // Commands/callbacks/media are handled by branches 1-5 above; voice falls through (framework transcribes natively).
-    if (ownerTelegramId) {
-      const ownerMatch = prompt.match(/id:(\d{5,})/);
-      if (ownerMatch && ownerMatch[1] === ownerTelegramId) {
-        const profile = loadOwnerProfile();
-        if (profile) {
-          api.logger.debug(`[executive-agent] owner-profile: injiziert für senderId=${ownerMatch[1]}`);
-          return {
-            prependContext:
-              'Verbindliches Owner-Profil (Stand siehe Datei):\n' + profile,
-          };
-        }
+    // v2026.6.11: sender ID from ctx (plaintext envelope removed from prompt).
+    if (ownerTelegramId && ctxSenderId === ownerTelegramId) {
+      const profile = loadOwnerProfile();
+      if (profile) {
+        api.logger.debug(`[executive-agent] owner-profile: injiziert für senderId=${ctxSenderId}`);
+        return {
+          prependContext:
+            'Verbindliches Owner-Profil (Stand siehe Datei):\n' + profile,
+        };
       }
     }
   }, { priority: 100 });
