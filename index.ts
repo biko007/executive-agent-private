@@ -52,7 +52,6 @@ import {
   // Helpers for command-guard
   detectMediaType, formatFileSize, loadRawSession, saveRawSession, createRawSession,
   generateRawSessionId, sessionDir,
-  findRecentAudioFile, transcribeVoice,
   // Session + naming helpers (E2a)
   getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, computeFileSha256,
   // Inbox HTTP endpoint (E2b)
@@ -428,14 +427,12 @@ export default function (api: any) {
     'briefing', 'briefingtime',
   ]);
 
-  /** Stash for voice transcript — set in before_agent_start, consumed in agent_end */
-  let lastVoiceTranscript: string | null = null;
-  /** Stash for message sink — set in message_received, consumed in agent_end */
-  let sinkStash: { senderId: string; content: string } | null = null;
+  /** Set of runIds already persisted — guards against multi-load duplicate writes */
+  const persistedRuns = new Set<string>();
 
   // before_agent_start: fires before every AI agent turn.
   // - For registered commands: instructs AI to stay silent (NO_REPLY) so plugin handler responds.
-  // - For voice messages: transcribes audio via Whisper and injects transcript as context.
+  // - For voice messages: sets voice flag (framework transcribes natively via tools.media.audio).
   // - For bare media (image/video): saves to raw session and suppresses AI commentary.
   api.on('before_agent_start', async (event: any) => {
     const prompt: string = event?.prompt ?? '';
@@ -486,40 +483,8 @@ export default function (api: any) {
       }
     }
 
-    // Voice message: transcribe and inject transcript so AI can respond naturally
-    const hasAudio = prompt.includes('<media:audio>') || /\[media attached:.*?audio\/ogg/i.test(prompt);
-    if (hasAudio) {
-      api.logger.info(`[executive-agent] command-guard: Audio erkannt — starte Whisper-Transkription`);
-      try {
-        const pathMatch = prompt.match(/\[media attached:\s*([^\s(|]+\.(?:ogg|oga|opus|mp3|wav|m4a))/i);
-        let audioPath: string | null = null;
-
-        if (pathMatch) {
-          audioPath = pathMatch[1];
-        } else {
-          const recent = findRecentAudioFile();
-          audioPath = recent?.path ?? null;
-        }
-
-        if (audioPath && fs.existsSync(audioPath)) {
-          const transcript = await transcribeVoice(audioPath);
-          lastVoiceTranscript = transcript;  // Stash for message sink (agent_end)
-          api.logger.info(`[executive-agent] command-guard: Transkription erfolgreich (${transcript.length} Zeichen)`);
-          return {
-            prependContext:
-              `VOICE MESSAGE TRANSCRIPTION — The user sent a voice message. ` +
-              `The following is the transcription of the audio:\n\n` +
-              `"${transcript}"\n\n` +
-              `Respond to the voice message content naturally. Do NOT say you cannot listen to audio — ` +
-              `the transcription above IS the user's message.`,
-          };
-        } else {
-          api.logger.warn(`[executive-agent] command-guard: Audio-Datei nicht gefunden`);
-        }
-      } catch (e: any) {
-        api.logger.error(`[executive-agent] command-guard: Whisper-Transkription fehlgeschlagen: ${e?.message}`);
-      }
-    }
+    // Voice messages: no branch needed — framework transcribes natively via tools.media.audio,
+    // voice falls through to owner-profile injection (Branch 6). Detection happens in agent_end via stash.content.
 
     // Bare media (image/video): save to raw session and suppress AI commentary.
     // The prompt contains [media attached: /path/to/file.jpg (image/jpeg) | ...] after media understanding.
@@ -642,7 +607,7 @@ export default function (api: any) {
 
     // ========== BRANCH 6: Owner-Profil-Injektion ==========
     // Inject owner facts for owner DM sessions (free-text messages only).
-    // Commands/callbacks/voice/media are handled by branches 1-5 above.
+    // Commands/callbacks/media are handled by branches 1-5 above; voice falls through (framework transcribes natively).
     if (ownerTelegramId) {
       const ownerMatch = prompt.match(/id:(\d{5,})/);
       if (ownerMatch && ownerMatch[1] === ownerTelegramId) {
@@ -1541,45 +1506,69 @@ export default function (api: any) {
     try {
       if (!event.success || !event.messages || event.messages.length === 0) return;
 
-      // Consume stash (set by message_received)
-      const stash = sinkStash;
-      sinkStash = null;
-      if (!stash) return;
+      // Dedup guard: runId-based, survives multi-load (Set is per-module, shared across loads)
+      const runId = String(event.runId || ctx?.runId || '');
+      if (!runId || persistedRuns.has(runId)) return;
+      persistedRuns.add(runId);
+      // Evict old entries to prevent unbounded growth
+      if (persistedRuns.size > 100) {
+        const first = persistedRuns.values().next().value;
+        if (first) persistedRuns.delete(first);
+      }
 
-      const senderId = stash.senderId;
-
-      // Scope filter: Owner-only
+      // Extract senderId from first user message (self-contained, no cross-event stash)
+      const firstUser = event.messages.find((m: any) => m?.role === 'user');
+      if (!firstUser) return;
+      const senderId = String(firstUser.senderId || ctx?.channelId || '').trim();
       if (senderId !== OWNER_SENDER_ID) return;
 
-      // Voice stash takes precedence (transcript instead of raw audio reference)
-      const isVoice = lastVoiceTranscript !== null;
-      let userText = isVoice ? lastVoiceTranscript! : stash.content;
-      lastVoiceTranscript = null;
+      // User content and voice detection
+      const rawContent = typeof firstUser.content === 'string' ? firstUser.content : '';
+      const mediaPath = String(firstUser.MediaPath || firstUser.mediaPath || '');
+      const isVoice = /\.(?:ogg|oga|opus)$/i.test(mediaPath);
+      let userText = rawContent;
+
+      // Voice: user content is "[User sent media without caption]" — use marker
+      if (isVoice) {
+        userText = '[Voice message]';
+      }
 
       if (!userText || !userText.trim()) return;
 
-      // Bare media without text/transcript — skip
+      // Bare media without text — skip (images/video without caption)
+      if (/^\[User sent media/i.test(userText.trim()) && !isVoice) return;
       if (/^\[media attached:/i.test(userText.trim()) && !isVoice) return;
-      if (/^<media:(image|video)>/i.test(userText.trim()) && !isVoice) return;
+      if (/^<media:(image|video|audio)>/i.test(userText.trim()) && !isVoice) return;
 
-      // Extract last assistant message
+      // Extract agent response from last assistant message toolCall or text block
       let agentText: string | null = null;
       for (let i = event.messages.length - 1; i >= 0; i--) {
         const msg = event.messages[i];
-        if (!msg || typeof msg !== 'object') continue;
-        const m = msg as Record<string, unknown>;
-        if (m.role !== 'assistant') continue;
+        if (!msg || msg.role !== 'assistant') continue;
 
-        const content = m.content;
+        const content = msg.content;
         if (typeof content === 'string') {
           agentText = content;
-        } else if (Array.isArray(content)) {
-          const textBlock = content.find(
-            (b: any) => b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string',
-          );
-          if (textBlock) agentText = (textBlock as any).text;
+          break;
         }
-        break;
+        if (Array.isArray(content)) {
+          // Prefer message toolCall (framework sends responses via message tool)
+          const msgCall = content.find(
+            (b: any) => b?.type === 'toolCall' && b?.name === 'message',
+          );
+          if (msgCall) {
+            agentText = msgCall.arguments?.message || msgCall.input?.message || null;
+            break;
+          }
+          // Fallback: plain text block
+          const textBlock = content.find(
+            (b: any) => b?.type === 'text' && typeof b?.text === 'string',
+          );
+          if (textBlock) {
+            agentText = (textBlock as any).text;
+            break;
+          }
+        }
       }
 
       // Skip suppressed turns (NO_REPLY from callback/command guard)
@@ -1594,24 +1583,11 @@ export default function (api: any) {
         metadata: isVoice ? { voice: true } : null,
       });
 
-      api.logger.debug(`[message-sink] Turn persisted (sender=${senderId})`);
+      api.logger.debug(`[message-sink] Turn persisted (sender=${senderId} voice=${isVoice})`);
     } catch (err: any) {
       // NEVER block the agent — log warning only
       api.logger.warn(`[message-sink] Write failed: ${err.message}`);
-      sinkStash = null;
-      lastVoiceTranscript = null;
     }
-  });
-
-  // ── Message Sink: stash incoming message for agent_end ────────────────────
-  api.on('message_received', (event: any) => {
-    try {
-      const senderId = String(event?.metadata?.senderId || '').trim();
-      const content = String(event?.content ?? '').trim();
-      if (senderId && content) {
-        sinkStash = { senderId, content };
-      }
-    } catch { /* fire-and-forget */ }
   });
 
   // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
