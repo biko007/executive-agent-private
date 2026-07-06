@@ -1,10 +1,10 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-05-20**
+**Stand: 2026-07-06**
 
-## Stand 2026-05-20
+## Stand 2026-07-06
 
-Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A vollständig abgeschlossen.
+Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
 
 - **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
   Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
@@ -282,7 +282,8 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
-  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `bsync_`. Bei neuem Callback-Prefix hier UND in
+  Pattern matcht `callback_data: <prefix>` (aktuelles Framework-Format) UND `] <prefix>` (Legacy).
+  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `bsync_`, `bweekly_`, `memdrop_`. Bei neuem Callback-Prefix hier UND in
   `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
 - ~~**TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.~~ Erledigt 2026-06-25: `biko007/openclaw-banking-fints-private.git`, 5 Commits gepusht.
 
@@ -299,6 +300,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 | 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
 | 11 | Closure + Housekeeping (7 Etappen, V035) | abgeschlossen |
 | 2.10-A | Banking Session Reuse (5 Etappen, 71 Tests, E2E KSK) | abgeschlossen |
+| Phase 3 | Owner-Memory (Extraktion, Recall, /memory, V042) | abgeschlossen |
 | 6 | Fleet auf Postgres | offen |
 | 7a | Banking-CSV | offen |
 
@@ -517,9 +519,10 @@ Dynamisch: `settings.json` → `location` (via Telegram Location Message oder PO
 <!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
 Reconnect den Kontext findet -->
 
-Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 + 2.10-A vollständig abgeschlossen (2026-05-20). Details siehe "Stand" oben.
+Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
 Banking Tests: 71/71 PASS (Agent 35 + Sidecar 36). E2E: KSK Tuttlingen HAPPY PATH (Tag `2.10-a-e2e-passed`).
 Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index in `archive/`.
+Owner-Memory Phase 3 (2026-07-06): Fakten-Extraktion, Recall-Injektion, /memory Pflege live.
 Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 
@@ -566,11 +569,39 @@ Fire-and-forget: Schreibfehler loggen WARN, blockieren nie den Agenten.
 - DB-Tabelle: `conversation_log` (Migration 041, Modul `memory`, Boot-Time-DDL)
 - Hook: `agent_end` in index.ts (feuert NACH Antwortversand)
 - Scope: Owner-only (senderId `133260792`). Nicht-Owner-Turns werden uebergangen.
-- Voice: Transkript via Stash aus `before_agent_start` erfasst (`metadata.voice = true`)
+- Voice: Transkript via `resolveTranscript()` in `agent_end` — parst `[Audio transcript ...]: "..."` aus `firstUser.content` (source: `audio_block`, primaer). `inbound_claim` Stash als Fallback (sekundaer). `metadata.voice = true`, `metadata.transcript_source`.
 - Filter: NO_REPLY, bare media, fehlgeschlagene Runs werden uebergangen
 - Store: `src/modules/memory/store.ts` (`insertConversationTurn()`)
-- KEIN Retrieval, KEINE Injektion — reiner Recorder
 - Retention: `created_at` fuer spaeteres Pruning, aber KEIN Auto-Pruning in diesem Schritt
+
+### Owner-Memory Phase 3 (2026-07-06)
+
+Dynamisches Gedaechtnis: EA lernt aus Owner-Konversationen. Voice-Transkripte im Klartext
+persistieren, Fakten extrahieren, bei kuenftigen Nachrichten injizieren, Pflege via /memory.
+
+- DB-Tabellen: `conversation_log` (erweitert um `memory_extract_status/attempts/error/extracted_at`),
+  `owner_memory` (Migration 042, Modul `memory`, Boot-Time-DDL)
+- Advisory-Lock: `pg_advisory_lock(48)` fuer Sweep-Serialisierung
+- Advisory-Lock-Registry: 42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session, 47=Oura, **48=Memory-Sweep**
+- Voice: `resolveTranscript()` in `agent_end` parst `[Audio transcript (machine-generated, untrusted)]: "..."`
+  aus `firstUser.content` (rawContent). Source: `audio_block`. Framework transkribiert via
+  `tools.media.audio` (openai/gpt-4o-mini-transcribe) VOR Agent-Start und setzt das Ergebnis
+  als Content-Block. `inbound_claim`-Stash bleibt als sekundaerer Fallback erhalten.
+- Extraktion: `shouldExtractMemory()` Guard (Kommando, Kurztext, Platzhalter → 'skipped'),
+  `extractFacts()` LLM-gestuetzt (via `api.runtime.llm.complete()`, Modell/Provider
+  durch Gateway-Config aufgeloest), max 5 Fakten/Turn, 200 Zeichen/Fakt, temperature 0.2.
+  Dedup: Unique Index + LLM-gestuetzter Abgleich. Supersede statt Loeschen.
+- Sweep: `runExtractSweep()` alle 60s (einmal via `globalThis.__ea_memorySweepRegistered`),
+  `pg_advisory_lock(48)`, max 3 Versuche, Telegram-Hinweis bei 3x failed.
+- Recall: Branch 7 in `before_agent_start` (nach Branch 6 Owner-Profil, nur Owner),
+  max 50 Fakten / 4 KB, Framing "Ergaenzendes Gedaechtnis (nachrangig)".
+  Cache: `globalThis.__ea_memoryRecallCache` (TTL 60s, invalidiert bei Writes + owner-facts.md mtime).
+  `sensitive` nur bei Keyword-Match, `never_inject` nie.
+- Pflege: `/memory list` (nummerierte aktive Fakten), `/memory drop <id>` (Bestaetigungs-Button,
+  `memdrop_` Callback-Prefix). Owner-only, Non-Owner abgelehnt.
+- Log-Disziplin: Journal loggt nur IDs, Counts, Fehlerklassen — keine Fakten-Klartexte.
+- Dateien: `src/modules/memory/extract.ts` (NEU), `src/modules/memory/store.ts` (erweitert),
+  `src/modules/memory/migrations/042_owner_memory.sql` (NEU), `index.ts` (erweitert)
 
 ## Role
 
