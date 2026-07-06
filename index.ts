@@ -426,7 +426,10 @@ export default function (api: any) {
     'screenshot', 'browse',
     'costs', 'lease', 'leaseset', 'nebenkostenabrechnung',
     'properties', 'property', 'propertyrent',
-    'healthalerts', 'healthreportday', 'healthsync', 'healthtrend',
+    'healthalerts', 'healthcheck', 'healthlog', 'healthmonth', 'healthreportday',
+    'healthsync', 'healthtrend', 'healthweek',
+    'ouraauth', 'ourasync',
+    'sleep', 'symptom', 'weight',
     'withingsauth', 'withingstoken',
     'sharepoint', 'spdocs', 'sprecent', 'spsync',
     'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
@@ -1595,6 +1598,16 @@ export default function (api: any) {
 
   // ── healthreportday → src/modules/health/commands.ts ──────────────────────
 
+  // ── /healthcheck — manueller System-Health-Check ─────────────────────────
+  api.registerCommand({
+    name: 'healthcheck',
+    description: 'System-Health-Check manuell auslösen: /healthcheck',
+    handler: async () => {
+      const report = await runDailyHealthCheck();
+      return { text: formatHealthReport(report, 'Health Check') };
+    },
+  });
+
   // ── Assets: Immobilienverwaltung → src/modules/assets/commands.ts ────────
   registerAssetsCommands(api);
 
@@ -2149,36 +2162,38 @@ export default function (api: any) {
     }
   }, 60_000);
 
-  // ── Daily Health Check (08:00 Berlin) ─────────────────────────────────────
+  // ── Daily Health Check (08:00 Berlin, once per process) ──────────────────
+  if (!g.__ea_dailyHealthRegistered) {
+    g.__ea_dailyHealthRegistered = true;
+    let lastDailyHealthDate = '';
 
-  let lastDailyHealthDate = '';
+    setInterval(async () => {
+      try {
+        const s = loadSettings();
+        if (!s.telegramChatId) return;
 
-  setInterval(async () => {
-    try {
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        const hh = String(inBerlin.getHours()).padStart(2, '0');
+        const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+        const nowHHMM = `${hh}:${mm}`;
+        const today = berlinDate(0);
 
-      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      const hh = String(inBerlin.getHours()).padStart(2, '0');
-      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
-      const nowHHMM = `${hh}:${mm}`;
-      const today = berlinDate(0);
+        if (nowHHMM === '08:00' && lastDailyHealthDate !== today) {
+          lastDailyHealthDate = today;
+          const report = await runDailyHealthCheck();
+          api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
 
-      if (nowHHMM === '08:00' && lastDailyHealthDate !== today) {
-        lastDailyHealthDate = today;
-        const report = await runDailyHealthCheck();
-        api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
-
-        if (report.status === 'green') {
-          await sendTelegram(s.telegramChatId, '🟢 Daily Health Check — alle Systeme OK');
-        } else {
-          await sendTelegram(s.telegramChatId, formatHealthReport(report, 'Daily Health Check'));
+          if (report.status === 'green') {
+            await sendTelegram(s.telegramChatId, '🟢 Daily Health Check — alle Systeme OK');
+          } else {
+            await sendTelegram(s.telegramChatId, formatHealthReport(report, 'Daily Health Check'));
+          }
         }
+      } catch (e: any) {
+        api.logger.error(`[executive-agent] Daily Health Check Fehler: ${e.message}`);
       }
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] Daily Health Check Fehler: ${e.message}`);
-    }
-  }, 60_000);
+    }, 60_000);
+  }
 
   // ── Banking Reminder (Mo 12:00 Berlin, E3 — NO bank contact) ──────────────
 

@@ -235,28 +235,7 @@ export function formatPreFlightFailure(failures: string[]): string {
 export async function runStartupChecks(): Promise<HealthReport> {
   const checks: HealthCheck[] = [];
 
-  // a) Instagram Token (live validation against Meta API)
-  try {
-    const tokens = loadInstaTokens();
-    if (!tokens) {
-      checks.push({ name: 'Instagram Token', status: 'warn', detail: 'Kein Token vorhanden' });
-    } else {
-      const days = tokenDaysRemaining();
-      // Live check: stored expiry can lie (Meta may revoke/expire early)
-      const live = await validateTokenLive(tokens.access_token);
-      if (!live.valid) {
-        checks.push({ name: 'Instagram Token', status: 'error', detail: `Auf Meta-Seite abgelaufen (gespeichert: ${days}d)` });
-      } else if (days <= 0) {
-        checks.push({ name: 'Instagram Token', status: 'error', detail: 'Token abgelaufen' });
-      } else if (days < 7) {
-        checks.push({ name: 'Instagram Token', status: 'warn', detail: `Läuft in ${days} Tagen ab` });
-      } else {
-        checks.push({ name: 'Instagram Token', status: 'ok', detail: `${days} Tage verbleibend` });
-      }
-    }
-  } catch (e: any) {
-    checks.push({ name: 'Instagram Token', status: 'error', detail: e.message });
-  }
+  // Instagram Token check removed 2026-07-06 — Instagram moved to HDCC, no local token.
 
   // b) Anthropic API Ping
   try {
@@ -348,27 +327,7 @@ export function formatHealthReport(report: HealthReport, title?: string): string
 export async function runDailyHealthCheck(): Promise<HealthReport> {
   const checks: HealthCheck[] = [];
 
-  // Instagram Token (live validation)
-  try {
-    const tokens = loadInstaTokens();
-    if (!tokens) {
-      checks.push({ name: 'Instagram Token', status: 'warn', detail: 'Nicht vorhanden' });
-    } else {
-      const days = tokenDaysRemaining();
-      const live = await validateTokenLive(tokens.access_token);
-      if (!live.valid) {
-        checks.push({ name: 'Instagram Token', status: 'error', detail: `Meta-seitig abgelaufen (gespeichert: ${days}d)` });
-      } else if (days <= 0) {
-        checks.push({ name: 'Instagram Token', status: 'error', detail: 'Abgelaufen' });
-      } else if (days < 7) {
-        checks.push({ name: 'Instagram Token', status: 'warn', detail: `${days} Tage` });
-      } else {
-        checks.push({ name: 'Instagram Token', status: 'ok', detail: `${days} Tage` });
-      }
-    }
-  } catch (e: any) {
-    checks.push({ name: 'Instagram Token', status: 'error', detail: e.message });
-  }
+  // Instagram Token check removed 2026-07-06 — Instagram moved to HDCC, no local token.
 
   // Anthropic API
   try {
