@@ -58,16 +58,10 @@ import {
   registerInboxHttpRoute,
   // Edit Queue (E4a)
   registerEditQueueRoutes, recoverStaleJobs,
-  // Store re-exports for system-health DI
-  tokenDaysRemaining,
-  loadInstaTokens, ensureInstaToken,
-  // Token Guardian (Sprint 3 §5.2)
-  getTokenHealth,
 } from "./src/modules/instagram/index.js";
 import type { RawSession } from "./src/modules/instagram/index.js";
 import { openPage, extractText, screenshot, closeBrowser } from "./browser-agent.js";
 import {
-  initSystemHealth,
   runStartupChecks, formatHealthReport,
   safeTelegramSend, formatEscalation,
   preFlightInstagram, preFlightTrading, formatPreFlightFailure,
@@ -226,14 +220,18 @@ export default function (api: any) {
   const sigYahoo = String(signatures.yahoo || "Mit freundlichem Gruß\n\nKI-Agent Hans Dampf\nim Auftrag von\nJürgen Bickel").replace(/\\n/g, "\n");
 
   // ---- Telegram Bot Token (for direct API fallback)
-  let telegramBotToken = '';
-  try {
-    const ocCfgPath = path.join(process.env.HOME || '/root', '.openclaw/openclaw.json');
-    if (fs.existsSync(ocCfgPath)) {
-      const ocCfg = JSON.parse(fs.readFileSync(ocCfgPath, 'utf-8'));
-      telegramBotToken = ocCfg?.channels?.telegram?.botToken || '';
-    }
-  } catch { /* ignore */ }
+  let telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
+  if (!telegramBotToken) {
+    try {
+      const ocCfgPath = path.join(process.env.HOME || '/root', '.openclaw/openclaw.json');
+      if (fs.existsSync(ocCfgPath)) {
+        const ocCfg = JSON.parse(fs.readFileSync(ocCfgPath, 'utf-8'));
+        const raw = ocCfg?.channels?.telegram?.botToken;
+        if (typeof raw === 'string') telegramBotToken = raw;
+        else if (raw?.source === 'env' && raw?.id) telegramBotToken = process.env[raw.id] || '';
+      }
+    } catch { /* ignore */ }
+  }
 
   // ── Owner-Profil (statisches Fakten-File, mtime-cached) ──
   const ownerTelegramId = process.env.OWNER_TELEGRAM_ID || '';
@@ -2379,66 +2377,8 @@ export default function (api: any) {
     },
   });
 
-  // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
-  api.registerHttpRoute({
-    auth: 'plugin', match: 'exact',
-    path: '/api/instagram/token-health',
-    handler: async (req: any, res: any) => {
-      if (req.method !== 'GET') {
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
-        return;
-      }
-      // Bearer token auth
-      const auth = req.headers?.authorization || '';
-      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-        return;
-      }
-      try {
-        const health = await getTokenHealth();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(health));
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    },
-  });
-
-  api.registerHttpRoute({
-    auth: 'plugin', match: 'exact',
-    path: '/api/instagram/token-refresh',
-    handler: async (req: any, res: any) => {
-      if (req.method !== 'POST') {
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
-        return;
-      }
-      // Bearer token auth
-      const auth = req.headers?.authorization || '';
-      if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-        return;
-      }
-      try {
-        if (!metaAppId || !metaAppSecret) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: 'META_APP_ID/META_APP_SECRET not configured' }));
-          return;
-        }
-        const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
-        audit.log({ module: 'instagram', action: 'instagram.token_refreshed', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString(), source: 'api' } }).catch(() => {});
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, expires_at: new Date(refreshed.expires_at).toISOString() }));
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-    },
-  });
+  // Token Guardian endpoints (token-health, token-refresh) removed 2026-07-07 —
+  // Instagram moved to HDCC, no local token. n8n-Workflow deaktiviert.
 
   // ── Health: Withings Sync (Sprint 4 §4) ──────────────────────────────────────
   api.registerHttpRoute({
@@ -3054,13 +2994,6 @@ export default function (api: any) {
   // ── Browser Cleanup ──────────────────────────────────────────────────────
   process.on("beforeExit", () => { closeBrowser().catch(() => {}); });
   process.on("SIGTERM", () => { closeBrowser().catch(() => {}); });
-
-  // ── Inject Instagram token adapter into system-health (K1 fix) ──────────
-  initSystemHealth({
-    loadTokens: loadInstaTokens,
-    tokenDaysRemaining,
-    ensureFreshToken: ensureInstaToken,
-  });
 
   api.logger.info("[executive-agent] loaded v33 (craft engine)");
 

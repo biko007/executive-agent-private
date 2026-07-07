@@ -110,16 +110,19 @@ EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
 
 Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
 
-### Token Guardian (Sprint 3) — vollständig entfernt 2026-07-03
+### Token Guardian (Sprint 3) — vollständig entfernt
 
 Instagram ist nach HDCC umgezogen. Alle Token-Guardian-Logik entfernt:
 - `evaluateTokenAlert()` und `checkAndRefreshInstagramToken()` aus system-health.ts gelöscht
 - Briefing-Scheduler Token Guardian (index.ts) gelöscht
 - Startup Token Guardian (index.ts) gelöscht
 - Meta-Token-Überwachung (`getTokenExpirations()`) und Briefing-Ablauf-Hinweis bereits 2026-06-28 entfernt
-n8n-Workflow `instagram-token-health-daily` und Core-Endpoints (`token-health`,
-`token-refresh`) sind veraltet — können bei Bedarf entfernt werden.
-nginx-Routing `/api/instagram/(token-health|token-refresh)` → Core (18789) noch vorhanden.
+- Core-Endpoints `/api/instagram/token-health` + `/api/instagram/token-refresh` entfernt (2026-07-07)
+- nginx-Routing für token-health/token-refresh entfernt (2026-07-07)
+- `token-health.json` gelöscht, `getTokenHealth()` aus store.ts entfernt (2026-07-07)
+- `initSystemHealth()` DI-Adapter + `InstaTokenAdapter` Interface entfernt (2026-07-07)
+- IG-Token-Check aus `preFlightInstagram()` entfernt (2026-07-07)
+- n8n-Workflow `instagram-token-health-daily` war bereits `active=false` in Live-DB
 
 ### Instagram Status-Enum (Sprint 3)
 
@@ -419,14 +422,13 @@ Alle externen Endpoints laufen über nginx + Let's Encrypt SSL (app.bikobickel.d
 Kein Service bindet extern — alles auf 127.0.0.1, nginx proxied:
 
   /api/internal/*                       → 127.0.0.1:18789  (Gateway, localhost-only deny all)
-  /api/instagram/(token-health|token-refresh)  → 127.0.0.1:18789  (Regex, Token Guardian)
   /api/                                 → 127.0.0.1:18800  (Dashboard, Catch-All)
   /dashboard/*                          → 127.0.0.1:18800  (Dashboard)
   /location                             → 127.0.0.1:18790  (Location-API, POST)
   /withings/callback                    → 127.0.0.1:18789  (Withings OAuth)
   /n8n/                                 → 127.0.0.1:5678   (n8n Web-UI)
 
-Reihenfolge: spezifischere Locations (internal, instagram-token) VOR dem /api/ Catch-All.
+Reihenfolge: spezifischere Locations (internal) VOR dem /api/ Catch-All.
 Dashboard proxied Modul-Routen (/api/health/*, /api/assets/*, etc.) intern an Core 18789
 weiter (Double-Hop mit Bearer CORE_SERVICE_TOKEN).
 

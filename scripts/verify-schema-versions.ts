@@ -64,10 +64,15 @@ function readEnvVar(key: string): string {
 }
 
 function loadTelegramBotToken(): string {
+  const fromEnv = readEnvVar('TELEGRAM_BOT_TOKEN');
+  if (fromEnv) return fromEnv;
   try {
     const cfgPath = path.join(HOME, '.openclaw/openclaw.json');
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    return cfg?.channels?.telegram?.botToken || '';
+    const raw = cfg?.channels?.telegram?.botToken;
+    if (typeof raw === 'string') return raw;
+    if (raw?.source === 'env' && raw?.id) return readEnvVar(raw.id);
+    return '';
   } catch { return ''; }
 }
 

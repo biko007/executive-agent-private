@@ -23,13 +23,9 @@ getOrCreateActiveSession, nextMediaIndex, buildMediaName, recordMediaUpload, com
 // Inbox HTTP endpoint (E2b)
 registerInboxHttpRoute, 
 // Edit Queue (E4a)
-registerEditQueueRoutes, recoverStaleJobs, 
-// Store re-exports for system-health DI
-tokenDaysRemaining, loadInstaTokens, ensureInstaToken, 
-// Token Guardian (Sprint 3 §5.2)
-getTokenHealth, } from "./src/modules/instagram/index.js";
+registerEditQueueRoutes, recoverStaleJobs, } from "./src/modules/instagram/index.js";
 import { closeBrowser } from "./browser-agent.js";
-import { initSystemHealth, runStartupChecks, formatHealthReport, runDailyHealthCheck, } from "./system-health.js";
+import { runStartupChecks, formatHealthReport, runDailyHealthCheck, } from "./system-health.js";
 import { insertConversationTurn, getLastConversationLogId, updateExtractStatus, getActiveOwnerFacts, rejectFact, listActiveFacts, getFactById, } from './src/modules/memory/store.js';
 import { resolveTranscript, shouldExtractMemory, runExtractSweep, invalidateRecallCache, } from './src/modules/memory/extract.js';
 import { HealthMonitor, LOCATION_STALE_THRESHOLD_MS } from "./src/modules/executive/index.js";
@@ -159,15 +155,21 @@ export default function (api) {
     const sigM365 = String(signatures.m365 || "Mit freundlichem Gruß\n\nKI-Agent Hans Dampf\nim Auftrag von\nJürgen Bickel").replace(/\\n/g, "\n");
     const sigYahoo = String(signatures.yahoo || "Mit freundlichem Gruß\n\nKI-Agent Hans Dampf\nim Auftrag von\nJürgen Bickel").replace(/\\n/g, "\n");
     // ---- Telegram Bot Token (for direct API fallback)
-    let telegramBotToken = '';
-    try {
-        const ocCfgPath = path.join(process.env.HOME || '/root', '.openclaw/openclaw.json');
-        if (fs.existsSync(ocCfgPath)) {
-            const ocCfg = JSON.parse(fs.readFileSync(ocCfgPath, 'utf-8'));
-            telegramBotToken = ocCfg?.channels?.telegram?.botToken || '';
+    let telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
+    if (!telegramBotToken) {
+        try {
+            const ocCfgPath = path.join(process.env.HOME || '/root', '.openclaw/openclaw.json');
+            if (fs.existsSync(ocCfgPath)) {
+                const ocCfg = JSON.parse(fs.readFileSync(ocCfgPath, 'utf-8'));
+                const raw = ocCfg?.channels?.telegram?.botToken;
+                if (typeof raw === 'string')
+                    telegramBotToken = raw;
+                else if (raw?.source === 'env' && raw?.id)
+                    telegramBotToken = process.env[raw.id] || '';
+            }
         }
+        catch { /* ignore */ }
     }
-    catch { /* ignore */ }
     // ── Owner-Profil (statisches Fakten-File, mtime-cached) ──
     const ownerTelegramId = process.env.OWNER_TELEGRAM_ID || '';
     const OWNER_PROFILE_PATH = path.join(process.env.HOME || '/root', '.openclaw/owner-facts.md');
@@ -344,7 +346,10 @@ export default function (api) {
         'screenshot', 'browse',
         'costs', 'lease', 'leaseset', 'nebenkostenabrechnung',
         'properties', 'property', 'propertyrent',
-        'healthalerts', 'healthreportday', 'healthsync', 'healthtrend',
+        'healthalerts', 'healthcheck', 'healthlog', 'healthmonth', 'healthreportday',
+        'healthsync', 'healthtrend', 'healthweek',
+        'ouraauth', 'ourasync',
+        'sleep', 'symptom', 'weight',
         'withingsauth', 'withingstoken',
         'sharepoint', 'spdocs', 'sprecent', 'spsync',
         'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
@@ -1449,6 +1454,15 @@ export default function (api) {
         },
     });
     // ── healthreportday → src/modules/health/commands.ts ──────────────────────
+    // ── /healthcheck — manueller System-Health-Check ─────────────────────────
+    api.registerCommand({
+        name: 'healthcheck',
+        description: 'System-Health-Check manuell auslösen: /healthcheck',
+        handler: async () => {
+            const report = await runDailyHealthCheck();
+            return { text: formatHealthReport(report, 'Health Check') };
+        },
+    });
     // ── Assets: Immobilienverwaltung → src/modules/assets/commands.ts ────────
     registerAssetsCommands(api);
     // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
@@ -1946,34 +1960,37 @@ export default function (api) {
             api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
         }
     }, 60_000);
-    // ── Daily Health Check (08:00 Berlin) ─────────────────────────────────────
-    let lastDailyHealthDate = '';
-    setInterval(async () => {
-        try {
-            const s = loadSettings();
-            if (!s.telegramChatId)
-                return;
-            const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-            const hh = String(inBerlin.getHours()).padStart(2, '0');
-            const mm = String(inBerlin.getMinutes()).padStart(2, '0');
-            const nowHHMM = `${hh}:${mm}`;
-            const today = berlinDate(0);
-            if (nowHHMM === '08:00' && lastDailyHealthDate !== today) {
-                lastDailyHealthDate = today;
-                const report = await runDailyHealthCheck();
-                api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
-                if (report.status === 'green') {
-                    await sendTelegram(s.telegramChatId, '🟢 Daily Health Check — alle Systeme OK');
-                }
-                else {
-                    await sendTelegram(s.telegramChatId, formatHealthReport(report, 'Daily Health Check'));
+    // ── Daily Health Check (08:00 Berlin, once per process) ──────────────────
+    if (!g.__ea_dailyHealthRegistered) {
+        g.__ea_dailyHealthRegistered = true;
+        let lastDailyHealthDate = '';
+        setInterval(async () => {
+            try {
+                const s = loadSettings();
+                if (!s.telegramChatId)
+                    return;
+                const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+                const hh = String(inBerlin.getHours()).padStart(2, '0');
+                const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+                const nowHHMM = `${hh}:${mm}`;
+                const today = berlinDate(0);
+                if (nowHHMM === '08:00' && lastDailyHealthDate !== today) {
+                    lastDailyHealthDate = today;
+                    const report = await runDailyHealthCheck();
+                    api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
+                    if (report.status === 'green') {
+                        await sendTelegram(s.telegramChatId, '🟢 Daily Health Check — alle Systeme OK');
+                    }
+                    else {
+                        await sendTelegram(s.telegramChatId, formatHealthReport(report, 'Daily Health Check'));
+                    }
                 }
             }
-        }
-        catch (e) {
-            api.logger.error(`[executive-agent] Daily Health Check Fehler: ${e.message}`);
-        }
-    }, 60_000);
+            catch (e) {
+                api.logger.error(`[executive-agent] Daily Health Check Fehler: ${e.message}`);
+            }
+        }, 60_000);
+    }
     // ── Banking Reminder (Mo 12:00 Berlin, E3 — NO bank contact) ──────────────
     let lastBankingReminderDate = '';
     setInterval(async () => {
@@ -2134,67 +2151,8 @@ export default function (api) {
             }
         },
     });
-    // ── Token Guardian (Sprint 3 §5.2) ─────────────────────────────────────────
-    api.registerHttpRoute({
-        auth: 'plugin', match: 'exact',
-        path: '/api/instagram/token-health',
-        handler: async (req, res) => {
-            if (req.method !== 'GET') {
-                res.writeHead(405, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
-                return;
-            }
-            // Bearer token auth
-            const auth = req.headers?.authorization || '';
-            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
-                res.writeHead(401, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-                return;
-            }
-            try {
-                const health = await getTokenHealth();
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify(health));
-            }
-            catch (err) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: err.message }));
-            }
-        },
-    });
-    api.registerHttpRoute({
-        auth: 'plugin', match: 'exact',
-        path: '/api/instagram/token-refresh',
-        handler: async (req, res) => {
-            if (req.method !== 'POST') {
-                res.writeHead(405, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
-                return;
-            }
-            // Bearer token auth
-            const auth = req.headers?.authorization || '';
-            if (!coreServiceToken || auth !== `Bearer ${coreServiceToken}`) {
-                res.writeHead(401, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
-                return;
-            }
-            try {
-                if (!metaAppId || !metaAppSecret) {
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: 'META_APP_ID/META_APP_SECRET not configured' }));
-                    return;
-                }
-                const refreshed = await ensureInstaToken(metaAppId, metaAppSecret, true);
-                audit.log({ module: 'instagram', action: 'instagram.token_refreshed', entityType: 'token', entityId: 'meta_instagram', after: { expires_at: new Date(refreshed.expires_at).toISOString(), source: 'api' } }).catch(() => { });
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: true, expires_at: new Date(refreshed.expires_at).toISOString() }));
-            }
-            catch (err) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, error: err.message }));
-            }
-        },
-    });
+    // Token Guardian endpoints (token-health, token-refresh) removed 2026-07-07 —
+    // Instagram moved to HDCC, no local token. n8n-Workflow deaktiviert.
     // ── Health: Withings Sync (Sprint 4 §4) ──────────────────────────────────────
     api.registerHttpRoute({
         auth: 'plugin', match: 'exact',
@@ -2777,12 +2735,6 @@ export default function (api) {
     // ── Browser Cleanup ──────────────────────────────────────────────────────
     process.on("beforeExit", () => { closeBrowser().catch(() => { }); });
     process.on("SIGTERM", () => { closeBrowser().catch(() => { }); });
-    // ── Inject Instagram token adapter into system-health (K1 fix) ──────────
-    initSystemHealth({
-        loadTokens: loadInstaTokens,
-        tokenDaysRemaining,
-        ensureFreshToken: ensureInstaToken,
-    });
     api.logger.info("[executive-agent] loaded v33 (craft engine)");
     // ── Startup Self-Test (async, non-blocking) ────────────────────────────
     (async () => {

@@ -3,32 +3,10 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { readAnthropicKey, ANTHROPIC_MODEL } from "./src/shared/utils/index.js";
 
-// ── Instagram token dependency injection (breaks K1 cross-domain) ─────
-
-export interface InstaTokenAdapter {
-  loadTokens: () => { access_token: string; expires_at: number; refreshed_at?: number } | null;
-  tokenDaysRemaining: () => number;
-  ensureFreshToken: (appId: string, appSecret: string, force?: boolean) => Promise<any>;
-}
-
-let _insta: InstaTokenAdapter | null = null;
-
-export function initSystemHealth(adapter: InstaTokenAdapter): void {
-  _insta = adapter;
-}
-
-function loadInstaTokens() { return _insta?.loadTokens() ?? null; }
-function tokenDaysRemaining() { return _insta?.tokenDaysRemaining() ?? 0; }
-async function ensureFreshToken(appId: string, appSecret: string, force = false) {
-  if (!_insta) throw new Error('system-health: InstaTokenAdapter not initialised');
-  return _insta.ensureFreshToken(appId, appSecret, force);
-}
-
 // ── Paths ──────────────────────────────────────────────────────────────────
 
 const HOME = process.env.HOME || '/root';
 const ARTIFACTS_DIR = path.join(HOME, '.openclaw/workspace/artifacts/personal');
-const TOKEN_HEALTH_FILE = path.join(ARTIFACTS_DIR, 'instagram/token-health.json');
 const TRADING_URL = 'http://127.0.0.1:18793';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -43,15 +21,6 @@ export interface HealthReport {
   timestamp: string;
   status: 'green' | 'yellow' | 'red';
   checks: HealthCheck[];
-}
-
-export interface TokenHealth {
-  last_checked: string;
-  expires_at: number;
-  days_remaining: number;
-  last_refresh: string | null;
-  refresh_error?: string;
-  status: 'ok' | 'expiring' | 'expired' | 'missing' | 'refresh_failed';
 }
 
 // ── 1. ESCALATION MANAGER ──────────────────────────────────────────────
@@ -89,38 +58,6 @@ export function formatEscalation(e: Escalation): string | null {
 
 // readAnthropicKey → src/shared/utils
 
-// ── Live Token Validation ─────────────────────────────────────────────
-
-const GRAPH_BASE = 'https://graph.facebook.com/v21.0';
-
-/** Lightweight live check: GET /me?fields=id — confirms token is accepted by Meta */
-async function validateTokenLive(accessToken: string): Promise<{ valid: boolean; error?: string }> {
-  try {
-    const res = await fetch(`${GRAPH_BASE}/me?fields=id&access_token=${encodeURIComponent(accessToken)}`, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (res.ok) return { valid: true };
-    const body = await res.text().catch(() => '');
-    if (body.includes('"code":190') || body.includes('"code": 190') ||
-        body.includes('expired') || body.includes('Session has expired')) {
-      return { valid: false, error: 'Token auf Meta-Seite abgelaufen (Code 190)' };
-    }
-    return { valid: false, error: `Meta API ${res.status}: ${body.slice(0, 120)}` };
-  } catch (e: any) {
-    // Network error — don't declare token dead, just warn
-    return { valid: true, error: `Meta API nicht erreichbar: ${e.message}` };
-  }
-}
-
-// ── Token Health Persistence ───────────────────────────────────────────
-
-export function loadTokenHealth(): TokenHealth | null {
-  try {
-    if (!fs.existsSync(TOKEN_HEALTH_FILE)) return null;
-    return JSON.parse(fs.readFileSync(TOKEN_HEALTH_FILE, 'utf-8'));
-  } catch { return null; }
-}
-
 // ── 2. PRE-FLIGHT CHECKS ──────────────────────────────────────────────
 
 export interface PreFlightResult {
@@ -128,28 +65,10 @@ export interface PreFlightResult {
   failures: string[];
 }
 
-/** Check Instagram pre-flight: token valid, Anthropic reachable, optional submission exists */
+/** Check Instagram pre-flight: Anthropic reachable, optional submission exists.
+ *  Instagram Token check removed 2026-07-07 — Instagram moved to HDCC, no local token. */
 export async function preFlightInstagram(submissionId?: string): Promise<PreFlightResult> {
   const failures: string[] = [];
-
-  // Token valid? (from cached token-health.json, max 1h old)
-  const th = loadTokenHealth();
-  const oneHourAgo = Date.now() - 3600_000;
-  if (th && new Date(th.last_checked).getTime() > oneHourAgo) {
-    if (th.status === 'expired' || th.status === 'missing') {
-      failures.push(`Instagram-Token: ${th.status === 'expired' ? 'abgelaufen' : 'nicht vorhanden'}`);
-    } else if (th.status === 'refresh_failed') {
-      failures.push('Instagram-Token: Refresh fehlgeschlagen');
-    }
-  } else {
-    // Fallback: direct check
-    const tokens = loadInstaTokens();
-    if (!tokens) {
-      failures.push('Instagram-Token: nicht vorhanden');
-    } else if (tokenDaysRemaining() <= 0) {
-      failures.push('Instagram-Token: abgelaufen');
-    }
-  }
 
   // Anthropic API reachable?
   try {

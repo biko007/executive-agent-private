@@ -70,6 +70,4 @@ export {
   fetchInsights,
   // Approval-Hard-Rule (spec §17.2) — testable publish validation
   createDraft, publish, validateDraftApproval,
-  // Token Guardian (Sprint 3 §5.2)
-  getTokenHealth,
 } from './store.js';

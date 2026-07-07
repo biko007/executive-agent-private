@@ -96,10 +96,16 @@ function loadTokens(): MetaTokens | null {
 }
 
 function loadTelegramBotToken(): string {
+  if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN;
+  const env = loadEnv();
+  if (env.TELEGRAM_BOT_TOKEN) return env.TELEGRAM_BOT_TOKEN;
   try {
     const cfgPath = path.join(HOME, '.openclaw/openclaw.json');
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    return cfg?.channels?.telegram?.botToken || '';
+    const raw = cfg?.channels?.telegram?.botToken;
+    if (typeof raw === 'string') return raw;
+    if (raw?.source === 'env' && raw?.id) return env[raw.id] || '';
+    return '';
   } catch { return ''; }
 }
 

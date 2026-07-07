@@ -470,25 +470,7 @@ export async function ensureFreshToken(appId: string, appSecret: string, force =
   return refreshed;
 }
 
-// ── Token Health (for endpoints) ──────────────────────────────────────────
-
-export async function getTokenHealth(): Promise<{
-  expires_at: string;
-  days_remaining: number;
-  status: 'ok' | 'warn' | 'critical';
-}> {
-  const tokens = await loadTokensAsync() || loadTokens();
-  if (!tokens) return { expires_at: '', days_remaining: 0, status: 'critical' };
-  const daysRemaining = Math.max(0, Math.round((tokens.expires_at - Date.now()) / 86_400_000));
-  let status: 'ok' | 'warn' | 'critical' = 'ok';
-  if (daysRemaining <= 0) status = 'critical';
-  else if (daysRemaining <= 7) status = 'warn';
-  return {
-    expires_at: new Date(tokens.expires_at).toISOString(),
-    days_remaining: daysRemaining,
-    status,
-  };
-}
+// getTokenHealth() removed 2026-07-07 — Instagram moved to HDCC, endpoint removed.
 
 // ── Insights (cached, 24h TTL, FILE-BASED) ──────────────────────────────────
 
