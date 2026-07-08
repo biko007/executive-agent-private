@@ -197,6 +197,7 @@ export async function executeWithingsSync(
   syncFn: (token: string, sinceMs: number) => Promise<{ total: number; newCount: number }>,
   sendTelegram?: (chatId: string, text: string) => Promise<any>,
   telegramChatId?: string,
+  logger?: { error: (m: string) => void },
 ): Promise<WithingsSyncResult> {
   // Step 1: Acquire advisory lock
   await dbQuery('SELECT pg_advisory_lock(42)');
@@ -234,7 +235,8 @@ export async function executeWithingsSync(
             module: 'health', action: 'health.withings_sync_failed',
             entityType: 'sync', after: { reason: refreshErr.message },
           }).catch(() => {});
-          // Telegram notify
+          // Journal + Telegram notify
+          logger?.error(`[withings] Auth lost — refresh failed: ${refreshErr.message}`);
           if (sendTelegram && telegramChatId) {
             sendTelegram(telegramChatId, '⚠️ Withings Auth verloren. /withingsauth aufrufen.').catch(() => {});
           }

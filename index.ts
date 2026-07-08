@@ -186,6 +186,10 @@ export default function (api: any) {
     g.__ea_voiceTranscriptStash;
   g.__ea_memoryRecallCache ??= { facts: null as any[] | null, ts: 0, ownerFactsMtimeMs: 0 };
   g.__ea_memorySweepRegistered ??= false;
+  g.__ea_healthSyncTimerRegistered ??= false;
+  g.__ea_briefingSchedulerRegistered ??= false;
+  g.__ea_mailScannerRegistered ??= false;
+  g.__ea_bankingReminderRegistered ??= false;
 
   // pluginConfig maps to: plugins.entries.executive-agent.config
   const pcfg = api.pluginConfig || {};
@@ -2074,91 +2078,97 @@ export default function (api: any) {
 
   // ── Mail-Scanner Hintergrund-Task (alle 30 Minuten) ───────────────────────
 
-  setInterval(async () => {
-    try {
-      if (!m365Enabled && !yahooEnabled) return;
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
+  if (!g.__ea_mailScannerRegistered) {
+    g.__ea_mailScannerRegistered = true;
+    setInterval(async () => {
+      try {
+        if (!m365Enabled && !yahooEnabled) return;
+        const s = loadSettings();
+        if (!s.telegramChatId) return;
 
-      const { found } = await scanMailsForBookings(s.telegramChatId);
-      if (found > 0) {
-        api.logger.info(`[executive-agent] Mail-Scanner: ${found} Buchung(en) erkannt`);
+        const { found } = await scanMailsForBookings(s.telegramChatId);
+        if (found > 0) {
+          api.logger.info(`[executive-agent] Mail-Scanner: ${found} Buchung(en) erkannt`);
+        }
+      } catch (e: any) {
+        api.logger.error(`[executive-agent] Mail-Scanner Fehler: ${e.message}`);
       }
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] Mail-Scanner Fehler: ${e.message}`);
-    }
-  }, 30 * 60_000);
+    }, 30 * 60_000);
+  }
 
   // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
 
-  let lastBriefingDate = '';
-  let pendingBriefingRetry: { text: string; chatId: string; attempts: number } | null = null;
+  if (!g.__ea_briefingSchedulerRegistered) {
+    g.__ea_briefingSchedulerRegistered = true;
+    let lastBriefingDate = '';
+    let pendingBriefingRetry: { text: string; chatId: string; attempts: number } | null = null;
 
-  setInterval(async () => {
-    try {
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
+    setInterval(async () => {
+      try {
+        const s = loadSettings();
+        if (!s.telegramChatId) return;
 
-      // ── Briefing-Retry: zuvor fehlgeschlagene Zustellung nochmal versuchen ──
-      if (pendingBriefingRetry && pendingBriefingRetry.attempts < 5) {
-        const retry = pendingBriefingRetry;
-        const backoffMs = Math.min(1000 * Math.pow(2, retry.attempts), 60000);
-        retry.attempts++;
-        api.logger.info(`[executive-agent] Briefing-Retry Versuch ${retry.attempts} (Backoff ${backoffMs}ms)`);
-        await sleep(backoffMs);
-        const sent = await sendTelegram(retry.chatId, retry.text);
-        if (sent) {
-          api.logger.info(`[executive-agent] Briefing-Retry erfolgreich (Versuch ${retry.attempts})`);
+        // ── Briefing-Retry: zuvor fehlgeschlagene Zustellung nochmal versuchen ──
+        if (pendingBriefingRetry && pendingBriefingRetry.attempts < 5) {
+          const retry = pendingBriefingRetry;
+          const backoffMs = Math.min(1000 * Math.pow(2, retry.attempts), 60000);
+          retry.attempts++;
+          api.logger.info(`[executive-agent] Briefing-Retry Versuch ${retry.attempts} (Backoff ${backoffMs}ms)`);
+          await sleep(backoffMs);
+          const sent = await sendTelegram(retry.chatId, retry.text);
+          if (sent) {
+            api.logger.info(`[executive-agent] Briefing-Retry erfolgreich (Versuch ${retry.attempts})`);
+            pendingBriefingRetry = null;
+          }
+          return; // Don't run normal briefing logic during retry
+        } else if (pendingBriefingRetry && pendingBriefingRetry.attempts >= 5) {
+          api.logger.error(`[executive-agent] Briefing-Retry aufgegeben nach 5 Versuchen`);
           pendingBriefingRetry = null;
         }
-        return; // Don't run normal briefing logic during retry
-      } else if (pendingBriefingRetry && pendingBriefingRetry.attempts >= 5) {
-        api.logger.error(`[executive-agent] Briefing-Retry aufgegeben nach 5 Versuchen`);
-        pendingBriefingRetry = null;
-      }
 
-      // Aktuelle Berliner Zeit als HH:MM
-      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      const hh = String(inBerlin.getHours()).padStart(2, '0');
-      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
-      const nowHHMM = `${hh}:${mm}`;
-      const today   = berlinDate(0);
+        // Aktuelle Berliner Zeit als HH:MM
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        const hh = String(inBerlin.getHours()).padStart(2, '0');
+        const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+        const nowHHMM = `${hh}:${mm}`;
+        const today   = berlinDate(0);
 
-      if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
-        // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
-        const BRIEFING_TIMEOUT_MS = 45000;
-        const briefingWork = async () => {
-          // Sync both providers before generating briefing (may fail independently)
-          await Promise.allSettled([
-            syncWithingsForBriefing().catch((syncErr: any) => {
-              api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
-            }),
-            syncOuraForBriefing().catch((syncErr: any) => {
-              api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler (ignoriert): ${syncErr.message}`);
-            }),
-          ]);
-          return await generateBriefingText();
-        };
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
-        );
-        const text = await Promise.race([briefingWork(), timeoutPromise]);
-        const sent = await sendTelegram(s.telegramChatId, text);
-        if (sent) {
-          lastBriefingDate = today;
-          api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
-        } else {
-          // Zustellung fehlgeschlagen → Retry-Queue
-          pendingBriefingRetry = { text, chatId: s.telegramChatId, attempts: 0 };
-          lastBriefingDate = today; // Prevent re-generating, retry the existing text
-          api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
+        if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
+          // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
+          const BRIEFING_TIMEOUT_MS = 45000;
+          const briefingWork = async () => {
+            // Sync both providers before generating briefing (may fail independently)
+            await Promise.allSettled([
+              syncWithingsForBriefing().catch((syncErr: any) => {
+                api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+              }),
+              syncOuraForBriefing().catch((syncErr: any) => {
+                api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler (ignoriert): ${syncErr.message}`);
+              }),
+            ]);
+            return await generateBriefingText();
+          };
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)
+          );
+          const text = await Promise.race([briefingWork(), timeoutPromise]);
+          const sent = await sendTelegram(s.telegramChatId, text);
+          if (sent) {
+            lastBriefingDate = today;
+            api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+          } else {
+            // Zustellung fehlgeschlagen → Retry-Queue
+            pendingBriefingRetry = { text, chatId: s.telegramChatId, attempts: 0 };
+            lastBriefingDate = today; // Prevent re-generating, retry the existing text
+            api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
+          }
+
         }
-
+      } catch (e: any) {
+        api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
       }
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] Briefing-Scheduler Fehler: ${e.message}`);
-    }
-  }, 60_000);
+    }, 60_000);
+  }
 
   // ── Daily Health Check (08:00 Berlin, once per process) ──────────────────
   if (!g.__ea_dailyHealthRegistered) {
@@ -2195,33 +2205,36 @@ export default function (api: any) {
 
   // ── Banking Reminder (Mo 12:00 Berlin, E3 — NO bank contact) ──────────────
 
-  let lastBankingReminderDate = '';
+  if (!g.__ea_bankingReminderRegistered) {
+    g.__ea_bankingReminderRegistered = true;
+    let lastBankingReminderDate = '';
 
-  setInterval(async () => {
-    try {
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
+    setInterval(async () => {
+      try {
+        const s = loadSettings();
+        if (!s.telegramChatId) return;
 
-      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      const hh = String(inBerlin.getHours()).padStart(2, '0');
-      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
-      const nowHHMM = `${hh}:${mm}`;
-      const today = berlinDate(0);
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        const hh = String(inBerlin.getHours()).padStart(2, '0');
+        const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+        const nowHHMM = `${hh}:${mm}`;
+        const today = berlinDate(0);
 
-      // Montag = getDay() === 1
-      if (nowHHMM === '12:00' && inBerlin.getDay() === 1 && lastBankingReminderDate !== today) {
-        lastBankingReminderDate = today;
+        // Montag = getDay() === 1
+        if (nowHHMM === '12:00' && inBerlin.getDay() === 1 && lastBankingReminderDate !== today) {
+          lastBankingReminderDate = today;
 
-        await sendTelegramWithKeyboard(
-          s.telegramChatId,
-          '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.',
-          [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]],
-        );
+          await sendTelegramWithKeyboard(
+            s.telegramChatId,
+            '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.',
+            [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]],
+          );
+        }
+      } catch (e: any) {
+        api.logger.error(`[banking-reminder] ${e.message}`);
       }
-    } catch (e: any) {
-      api.logger.error(`[banking-reminder] ${e.message}`);
-    }
-  }, 60_000);
+    }, 60_000);
+  }
 
   // ── Wöchentlicher Health-Report → src/modules/health/commands.ts (Timer) ──
 
@@ -2242,6 +2255,41 @@ export default function (api: any) {
       }
     }, 60_000);
     api.logger.info('[memory-sweep] Extraction sweep registered (60s interval)');
+  }
+
+  // ── Standalone Health Sync Timer (01:00, 13:00, 19:00 Berlin) ──────────
+  if (!g.__ea_healthSyncTimerRegistered) {
+    g.__ea_healthSyncTimerRegistered = true;
+    let lastHealthSyncKey = '';
+
+    setInterval(async () => {
+      try {
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        const hh = inBerlin.getHours();
+        const mm = inBerlin.getMinutes();
+
+        // Fire at 01:00, 13:00, 19:00 Berlin (briefing covers 07:00)
+        if (mm !== 0 || (hh !== 1 && hh !== 13 && hh !== 19)) return;
+
+        const dedupKey = `${berlinDate(0)}-${hh}`;
+        if (dedupKey === lastHealthSyncKey) return;
+        lastHealthSyncKey = dedupKey;
+
+        api.logger.info(`[health-sync] Standalone sync starting (${String(hh).padStart(2, '0')}:00 Berlin)`);
+        await Promise.allSettled([
+          syncWithingsForBriefing().catch((e: any) => {
+            api.logger.warn(`[health-sync] Withings sync failed: ${e?.message}`);
+          }),
+          syncOuraForBriefing().catch((e: any) => {
+            api.logger.warn(`[health-sync] Oura sync failed: ${e?.message}`);
+          }),
+        ]);
+        api.logger.info('[health-sync] Standalone sync completed');
+      } catch (e: any) {
+        api.logger.error(`[health-sync] Timer error: ${e?.message}`);
+      }
+    }, 60_000);
+    api.logger.info('[health-sync] Standalone sync timer registered (01:00, 13:00, 19:00 Berlin)');
   }
 
   // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────

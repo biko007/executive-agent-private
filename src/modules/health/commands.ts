@@ -35,6 +35,7 @@ export interface HealthDeps {
 }
 
 let _deps: HealthDeps | null = null;
+let _logger: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void } | null = null;
 
 export function initHealthCommands(deps: HealthDeps): void {
   _deps = deps;
@@ -70,10 +71,11 @@ export async function syncWithingsForBriefing(): Promise<void> {
         const r = await runWithingsSync(token, since);
         return { total: r.measures + r.sleep + r.activity + r.workouts, newCount: r.totalNew };
       },
+      undefined, undefined, _logger ?? undefined,
     );
   } catch (e: any) {
     // Don't crash briefing, but make the error visible
-    console.error(`[withings] Briefing sync failed: ${e.message}`);
+    (_logger?.warn ?? console.error)(`[withings] Briefing sync failed: ${e.message}`);
   }
 }
 
@@ -87,9 +89,10 @@ export async function syncOuraForBriefing(): Promise<void> {
         const r = await runOuraSync(token, since);
         return { total: r.total, newCount: r.newCount };
       },
+      undefined, undefined, _logger ?? undefined,
     );
   } catch (e: any) {
-    console.error(`[oura] Briefing sync failed: ${e.message}`);
+    (_logger?.warn ?? console.error)(`[oura] Briefing sync failed: ${e.message}`);
   }
 }
 
@@ -143,7 +146,7 @@ export async function runWithingsSync(
         await appendEntryWithTimestamp(m.date, { type: 'body_fat', value: m.fat_ratio_pct, unit: '%', source: 'withings' });
       }
     }
-  } catch { /* individual type failure */ }
+  } catch (e: any) { _logger?.error(`[withings] Measures sync failed: ${e?.message}`); }
 
   result.totalNew = result.measuresNew;
   return result;
@@ -228,7 +231,7 @@ export async function runOuraSync(
         }
       }
     }
-  } catch { /* individual type failure — continue */ }
+  } catch (e: any) { _logger?.error(`[oura] Sleep/HRV sync failed: ${e?.message}`); }
 
   // ── Readiness ──
   try {
@@ -245,7 +248,7 @@ export async function runOuraSync(
         result.readinessNew++;
       }
     }
-  } catch { /* individual type failure — continue */ }
+  } catch (e: any) { _logger?.error(`[oura] Readiness sync failed: ${e?.message}`); }
 
   // ── Activity (steps) ──
   try {
@@ -262,7 +265,7 @@ export async function runOuraSync(
         result.stepsNew++;
       }
     }
-  } catch { /* individual type failure — continue */ }
+  } catch (e: any) { _logger?.error(`[oura] Activity/steps sync failed: ${e?.message}`); }
 
   result.total = result.sleep + result.hrv + result.heartrate + result.readiness + result.temperature + result.steps;
   result.newCount = result.sleepNew + result.hrvNew + result.heartrateNew + result.readinessNew + result.temperatureNew + result.stepsNew;
@@ -288,6 +291,7 @@ export async function triggerWithingsSync(): Promise<WithingsSyncResult> {
     },
     _deps?.sendTelegram,
     chatId,
+    _logger ?? undefined,
   );
 }
 
@@ -312,6 +316,7 @@ export async function triggerOuraSync(): Promise<OuraSyncResult> {
     },
     _deps?.sendTelegram,
     chatId,
+    _logger ?? undefined,
   );
 }
 
@@ -375,6 +380,7 @@ async function generateWeeklyHealthReport(): Promise<string> {
 // ── Command registration ───────────────────────────────────────────────────
 
 export function registerHealthCommands(api: any): void {
+  _logger = api.logger;
 
   // ── weight ─────────────────────────────────────────────────────────────
   api.registerCommand({
@@ -850,29 +856,33 @@ export function registerHealthCommands(api: any): void {
   });
 
   // ── Weekly Health Report Timer ─────────────────────────────────────────
-  let lastWeeklyReportDate = '';
+  const g = globalThis as any;
+  if (!g.__ea_weeklyHealthReportRegistered) {
+    g.__ea_weeklyHealthReportRegistered = true;
+    let lastWeeklyReportDate = '';
 
-  setInterval(async () => {
-    try {
-      if (!_deps) return;
-      const s = loadSettings();
-      if (!s.telegramChatId) return;
+    setInterval(async () => {
+      try {
+        if (!_deps) return;
+        const s = loadSettings();
+        if (!s.telegramChatId) return;
 
-      const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      const hh = String(inBerlin.getHours()).padStart(2, '0');
-      const mm = String(inBerlin.getMinutes()).padStart(2, '0');
-      const nowHHMM = `${hh}:${mm}`;
-      const today = berlinDate(0);
-      const reportDay = s.healthReportDay ?? 1; // Default: Montag
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        const hh = String(inBerlin.getHours()).padStart(2, '0');
+        const mm = String(inBerlin.getMinutes()).padStart(2, '0');
+        const nowHHMM = `${hh}:${mm}`;
+        const today = berlinDate(0);
+        const reportDay = s.healthReportDay ?? 1; // Default: Montag
 
-      if (inBerlin.getDay() === reportDay && nowHHMM === s.briefingTime && lastWeeklyReportDate !== today) {
-        const text = await generateWeeklyHealthReport();
-        await _deps.sendTelegram(s.telegramChatId, text);
-        lastWeeklyReportDate = today;
-        api.logger.info(`[executive-agent] Wöchentlicher Health-Report gesendet (${today})`);
+        if (inBerlin.getDay() === reportDay && nowHHMM === s.briefingTime && lastWeeklyReportDate !== today) {
+          const text = await generateWeeklyHealthReport();
+          await _deps.sendTelegram(s.telegramChatId, text);
+          lastWeeklyReportDate = today;
+          api.logger.info(`[executive-agent] Wöchentlicher Health-Report gesendet (${today})`);
+        }
+      } catch (e: any) {
+        api.logger.error(`[executive-agent] Weekly Health-Report Fehler: ${e.message}`);
       }
-    } catch (e: any) {
-      api.logger.error(`[executive-agent] Weekly Health-Report Fehler: ${e.message}`);
-    }
-  }, 60_000);
+    }, 60_000);
+  }
 }

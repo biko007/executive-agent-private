@@ -200,6 +200,7 @@ export async function executeOuraSync(
   syncFn: (token: string, sinceMs: number) => Promise<{ total: number; newCount: number }>,
   sendTelegram?: (chatId: string, text: string) => Promise<any>,
   telegramChatId?: string,
+  logger?: { error: (m: string) => void },
 ): Promise<OuraSyncResult> {
   await dbQuery('SELECT pg_advisory_lock(47)');
 
@@ -231,6 +232,7 @@ export async function executeOuraSync(
             module: 'health', action: 'health.oura_sync_failed',
             entityType: 'sync', after: { reason: refreshErr.message },
           }).catch(() => {});
+          logger?.error(`[oura] Auth lost — refresh failed: ${refreshErr.message}`);
           if (sendTelegram && telegramChatId) {
             sendTelegram(telegramChatId, '⚠️ Oura Auth verloren. /ouraauth aufrufen.').catch(() => {});
           }
