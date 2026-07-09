@@ -737,3 +737,19 @@ mitgepflegt** — Doku im selben Commit wie der Code, nicht nachgelagert.
 - Status-Marker je Abschnitt: ✅ verifiziert (Datum + Quelle) / ⏳ zu verifizieren. Nur
   empirisch auf dem VPS Verifiziertes als ✅ markieren — kein Abschreiben aus Specs/Memory.
 - PDF ist abgeleitet (nur bei Bedarf generiert), die `.md` ist kanonisch.
+
+## Evidence-Bundle-Pflicht (stehende Regel, ab 2026-07-09)
+
+Am Ende jedes groesseren Arbeitspakets wird ein Evidence-Bundle unter
+`docs/workpackages/YYYY-MM-DD-<name>.md` erstellt. Inhalt:
+- Commits (Hashes + Messages)
+- Betroffene Regeln (GOV-xxx / BIK-xxx)
+- Gate-Outputs (build, verify:commands, verify-schema, smoke-test)
+- Owner-Approval (Checkbox)
+- Doku-Aenderung (welche Dateien)
+- Offene Risiken
+
+## Regelquelle (stehende Regel, ab 2026-07-09)
+
+`governance/AUDIT-CHECKLIST.md` ist die autoritative Regel-Registry.
+Chat-Beschluesse gelten erst nach Ueberfuehrung in die Checkliste.
