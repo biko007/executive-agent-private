@@ -342,6 +342,7 @@ Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen 
 9. **Sensitive Daten klassifiziert.** Nie in Logs, callback_data oder n8n-Logs.
 10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst.
 11. **Human-Reviewability (Hard Rule).** All code must be traceable by a human reviewer: descriptive names instead of cryptic identifiers; comments explain the *why* for non-obvious logic (triggers, guards, security paths); no clever one-liners where a readable form exists; one commit per etappe, never bundled. No code goes to `origin` unreviewed.
+12. **Sprechende IDs (verbindlich).** Alle neuen Entitäten, Assets, Tabellen-Einträge und Dateinamen nutzen sprechende, menschenlesbare Bezeichner. Muster: `subject-location-DDMM` bzw. modulüblich (`img-NNNN-NN`, `YYMMDD-kontext`). Kryptische Hex-Strings, UUIDs oder reine Timestamps als owner-sichtbare IDs sind verboten. Interne DB-Surrogatkeys (SERIAL/BIGINT) davon unberührt.
 
 ## Projekt
 
@@ -448,6 +449,7 @@ Reload:         sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 npm run build
+npm run verify:commands
 systemctl --user restart openclaw-gateway.service
 systemctl --user restart openclaw-pdf-worker.service
 systemctl --user status openclaw-gateway.service --no-pager
@@ -457,14 +459,21 @@ bun run scripts/smoke-test.ts
 ```
 
 Nach jedem Build + Restart IMMER `bun run scripts/smoke-test.ts` ausführen.
+`npm run verify:commands` ist Pflichtteil des Build-Gates — Exit 1 blockiert den Commit.
 Bei Exit-Code 1: Deployment als fehlgeschlagen betrachten,
 Fehler beheben bevor "Erledigt" gemeldet wird.
 
 ## CI-Tests — MUSS GRÜN BLEIBEN
 
 ```bash
-npm test   # bun test — 345 test blocks über 34 Dateien
+npm test              # bun test — 345 test blocks über 34 Dateien
+npm run verify:commands  # Command-Registration-Guard (bidirektional)
 ```
+
+**Command-Guard:** `npm run verify:commands` (`scripts/verify-commands.ts`) prüft bidirektional:
+- Direction A: `api.registerCommand({ name })` ohne Eintrag in `REGISTERED_COMMANDS` → AI antwortet statt Handler
+- Direction B: `REGISTERED_COMMANDS`-Eintrag ohne Handler → User bekommt NO_REPLY ohne Antwort
+Exit 0 = clean. Pflicht vor jedem Commit — wie `verify-schema`.
 
 **Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
 `POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 345 Tests
