@@ -93,11 +93,12 @@ Zusätzliche Regeln spezifisch für bikosoc (nicht in allgemeiner Registry):
 
 ---
 
-## Offene Fragen (Owner-Entscheidung)
+## Geschlossene Fragen
 
-Diese Punkte wurden bewusst NICHT als Regel eingetragen — sie erfordern
-eine Owner-Entscheidung, ob sie audit-fähig sind:
+Entscheidung 2026-07-09: Alle drei Punkte sind allgemeine Guidance, keine
+prüfbaren Audit-Regeln. Sie bleiben als Best-Practice in CLAUDE.md, werden
+aber nicht in die Regel-Registry aufgenommen.
 
-1. Ist "Git Snapshot VOR jeder Änderung" eine prüfbare Regel oder nur Workflow-Empfehlung?
-2. Sind die Engineering Principles (minimale Änderungen, production-grade) Audit-Regeln oder allgemeine Guidance?
-3. Ist "Debugging: Hypothesen nach Wahrscheinlichkeit" audit-fähig?
+1. "Git Snapshot VOR jeder Änderung" — **Guidance** (Workflow-Empfehlung, nicht automatisch prüfbar)
+2. Engineering Principles (minimale Änderungen, production-grade) — **Guidance** (allgemeine Qualitätsstandards)
+3. "Debugging: Hypothesen nach Wahrscheinlichkeit" — **Guidance** (Methodik, nicht audit-fähig)
