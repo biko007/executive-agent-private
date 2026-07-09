@@ -422,10 +422,10 @@ export default function (api: any) {
   // All registered plugin commands. When user sends one of these,
   // the AI agent must NOT respond — the command handler handles it.
   const REGISTERED_COMMANDS = new Set([
+    'brief', 'briefing', 'briefingtime',
     'calendar', 'meet', 'meetf', 'free',
     'inbox', 'yinbox', 'yverify', 'mailstatus', 'scanmail',
     'draftcreate', 'draftedit', 'draftlist', 'draftshow', 'draftapprove', 'draftsend', 'ytest',
-    'screenshot', 'browse',
     'costs', 'lease', 'leaseset', 'nebenkostenabrechnung',
     'properties', 'property', 'propertyrent',
     'healthalerts', 'healthcheck', 'healthlog', 'healthmonth', 'healthreportday',
@@ -436,7 +436,7 @@ export default function (api: any) {
     'sharepoint', 'spdocs', 'sprecent', 'spsync',
     'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
     'fleetinsurance', 'fleetlink', 'fleetservice', 'fleetshow', 'fleettuev',
-    'tuev', 'versicherung',
+    'tuev', 'versicherung', 'reifen',
     'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
     'pe', 'peedit', 'penew', 'peshow', 'pevalue',
     'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
@@ -445,7 +445,8 @@ export default function (api: any) {
     'trade', 'tradedebug', 'tradeindex', 'trademode', 'tradeorders',
     'tradepaper', 'tradeperf', 'tradepos', 'tradescan', 'tradescanstatus',
     'tradetop', 'tradeuniverse', 'tradeunwatch', 'tradewatch', 'tradewatchlist',
-    'briefing', 'briefingtime',
+    'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
+    'banking', 'tan',
     'memory',
   ]);
 
