@@ -190,6 +190,7 @@ export default function (api: any) {
   g.__ea_briefingSchedulerRegistered ??= false;
   g.__ea_mailScannerRegistered ??= false;
   g.__ea_bankingReminderRegistered ??= false;
+  g.__ea_auditReminderRegistered ??= false;
 
   // pluginConfig maps to: plugins.entries.executive-agent.config
   const pcfg = api.pluginConfig || {};
@@ -2291,6 +2292,41 @@ export default function (api: any) {
       }
     }, 60_000);
     api.logger.info('[health-sync] Standalone sync timer registered (01:00, 13:00, 19:00 Berlin)');
+  }
+
+  // ── Monthly Audit Reminder (1st of month, 09:00 Berlin) ──────────────────
+  if (!g.__ea_auditReminderRegistered) {
+    g.__ea_auditReminderRegistered = true;
+    let lastAuditReminderMonth = '';
+
+    setInterval(async () => {
+      try {
+        const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+        if (inBerlin.getDate() !== 1 || inBerlin.getHours() !== 9 || inBerlin.getMinutes() !== 0) return;
+
+        const monthKey = `${inBerlin.getFullYear()}-${String(inBerlin.getMonth() + 1).padStart(2, '0')}`;
+        if (monthKey === lastAuditReminderMonth) return;
+        lastAuditReminderMonth = monthKey;
+
+        // Read last audit date from governance/AUDIT-FINDINGS.md
+        let lastRun = 'noch keiner';
+        try {
+          const findingsPath = path.join(__dirname, 'governance/AUDIT-FINDINGS.md');
+          const content = fs.readFileSync(findingsPath, 'utf-8');
+          const dates = [...content.matchAll(/\d{4}-\d{2}-\d{2}/g)].map(m => m[0]);
+          if (dates.length > 0) lastRun = dates.sort().pop()!;
+        } catch { /* file missing → 'noch keiner' */ }
+
+        await sendTelegram(
+          '133260792',
+          `\uD83D\uDCCB Monats-Audit f\u00e4llig \u2014 letzter Lauf: ${lastRun}`,
+        );
+        api.logger.info(`[audit-reminder] Monthly reminder sent (last run: ${lastRun})`);
+      } catch (e: any) {
+        api.logger.error(`[audit-reminder] ${e.message}`);
+      }
+    }, 60_000);
+    api.logger.info('[audit-reminder] Monthly audit reminder registered (1st of month, 09:00 Berlin)');
   }
 
   // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────
