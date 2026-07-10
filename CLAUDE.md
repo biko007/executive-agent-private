@@ -286,7 +286,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
   Pattern matcht `callback_data: <prefix>` (aktuelles Framework-Format) UND `] <prefix>` (Legacy).
-  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `bsync_`, `bweekly_`, `memdrop_`. Bei neuem Callback-Prefix hier UND in
+  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `meeting_`, `bsync_`, `bweekly_`, `memdrop_`. Bei neuem Callback-Prefix hier UND in
   `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
 - ~~**TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.~~ Erledigt 2026-06-25: `biko007/openclaw-banking-fints-private.git`, 5 Commits gepusht.
 

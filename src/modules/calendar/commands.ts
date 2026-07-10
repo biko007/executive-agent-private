@@ -223,6 +223,91 @@ async function handleMeet(ctx: any, force: boolean) {
   };
 }
 
+// ── Direct Calendar Event Creation (for mail-scanner meeting flow) ────────
+
+export async function createCalendarEventDirect(
+  title: string,
+  startDate: Date,
+  endDate: Date,
+  meetingLink?: string | null,
+): Promise<{ created: boolean; text: string }> {
+  ensureM365();
+
+  const startIso = startDate.toISOString();
+  const endIso = endDate.toISOString();
+
+  // Conflict check (robust): scan wider window and compute overlaps locally
+  const scanStartIso = new Date(startDate.getTime() - 12 * 60 * 60 * 1000).toISOString();
+  const scanEndIso   = new Date(endDate.getTime()   + 12 * 60 * 60 * 1000).toISOString();
+  const candidates = await listConflicts(scanStartIso, scanEndIso);
+
+  const startMs = startDate.getTime();
+  const endMs = endDate.getTime();
+
+  const conflicts = candidates.filter((ev: any) => {
+    const s = new Date(ev?.start?.dateTime).getTime();
+    const e = new Date(ev?.end?.dateTime).getTime();
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+    return s < endMs && e > startMs;
+  });
+
+  const tz = 'Europe/Berlin';
+  const fmtTime = new Intl.DateTimeFormat('de-DE', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const fmtDate = new Intl.DateTimeFormat('de-DE', {
+    timeZone: tz, weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+
+  if (conflicts.length) {
+    const bucket = new Map<string, string[]>();
+    for (const ev of conflicts) {
+      const s = new Date(ev.start.dateTime);
+      const e = new Date(ev.end.dateTime);
+      const key = `${fmtTime.format(s)}\u2013${fmtTime.format(e)}`;
+      const arr = bucket.get(key) || [];
+      arr.push(ev.subject || '(ohne Titel)');
+      bucket.set(key, arr);
+    }
+
+    const lines: string[] = [];
+    for (const [range, subs] of Array.from(bucket.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      lines.push(`\u2022 ${range}`);
+      for (const subj of subs) lines.push(`  - ${subj}`);
+    }
+
+    return {
+      created: false,
+      text:
+        '\u26a0\ufe0f Zeitraum ist belegt. Termin NICHT erstellt.\n\n' +
+        lines.join('\n') +
+        `\n\nManuell erzwingen:\n/meetf ${fmtDate.format(startDate).split(',')[0]?.trim() || ''} ` +
+        `${fmtTime.format(startDate)} ${Math.round((endMs - startMs) / 60000)} ${title}`,
+    };
+  }
+
+  // Create event
+  const payload: any = {
+    subject: title,
+    start: { dateTime: startIso, timeZone: 'Europe/Berlin' },
+    end: { dateTime: endIso, timeZone: 'Europe/Berlin' },
+  };
+  if (meetingLink) {
+    payload.body = { contentType: 'Text', content: `Meeting-Link: ${meetingLink}` };
+  }
+
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(deps.m365User)}/events`;
+  const created = await graphPost(deps.tenantId, deps.clientId, deps.m365Secret, url, payload);
+
+  return {
+    created: true,
+    text:
+      `\ud83d\udcc5 Termin erstellt:\n\n` +
+      `${fmtDate.format(startDate)}\n` +
+      `${title}\n\n` +
+      (created?.webLink ? created.webLink : ''),
+  };
+}
+
 // ── Command Registration ──────────────────────────────────────────────────
 
 export function registerCalendarCommands(api: any): void {

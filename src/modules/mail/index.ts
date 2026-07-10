@@ -15,8 +15,8 @@ export { m365Unread, yahooUnread, m365Recent, yahooRecent } from './commands.js'
 // Mail Scanner (for background task in index.ts)
 export { scanMailsForBookings } from './commands.js';
 
-// State (for booking callback handler in index.ts)
-export { pendingBookings, pendingTripSelections } from './commands.js';
+// State (for booking + meeting callback handlers in index.ts)
+export { pendingBookings, pendingTripSelections, pendingMeetings } from './commands.js';
 
 // Commands (Telegram registration)
 export { registerMailCommands, initMailCommands } from './commands.js';

@@ -47,9 +47,11 @@ export interface MailDeps {
   // Telegram
   sendTelegram: (chatId: string, text: string) => Promise<any>;
   sendTelegramWithKeyboard: (chatId: string, text: string, keyboard: any[][]) => Promise<any>;
-  // Travel integration (booking scanner)
+  // Travel integration (booking + meeting scanner)
   analyzeMailForBooking: (subject: string, from: string, body: string) => Promise<any>;
   formatBookingMessage: (booking: any) => string;
+  formatMeetingMessage: (meeting: any) => string;
+  isMeeting: (result: any) => boolean;
   // Logger
   logger: { info(m: string): void; warn(m: string): void; error(m: string): void };
 }
@@ -75,6 +77,16 @@ export const pendingTripSelections = new Map<string, {
   trips: { id: string; name: string }[];
   expiresAt: number;
 }>();
+
+// ── Pending Meetings (globalThis for Multi-Load resilience) ───────────────
+
+const PENDING_MEETINGS_KEY = '__ea_pendingMeetings';
+export const pendingMeetings: Map<string, {
+  meeting: any;
+  source: Account;
+  mailId: string;
+  expiresAt: number;
+}> = ((globalThis as any)[PENDING_MEETINGS_KEY] ??= new Map());
 
 // ── Configuration Validation ──────────────────────────────────────────────
 
@@ -385,18 +397,22 @@ export async function scanMailsForBookings(reportChatId?: string): Promise<{ sca
         bodyText = await yahooFetchBody(mail.id);
       }
 
-      const booking = await deps.analyzeMailForBooking(mail.subject, mail.from, bodyText);
+      const result = await deps.analyzeMailForBooking(mail.subject, mail.from, bodyText);
       markProcessed(mail.source, mail.id);
 
-      if (booking) {
-        found++;
-        const msg = deps.formatBookingMessage(booking);
+      if (!result) continue;
+
+      found++;
+
+      // ── MEETING path ──
+      if (deps.isMeeting(result)) {
+        const msg = deps.formatMeetingMessage(result);
         details.push(msg);
 
         if (reportChatId) {
-          const bookingKey = `booking_${crypto.randomBytes(6).toString('hex')}`;
-          pendingBookings.set(bookingKey, {
-            booking,
+          const meetingKey = `meeting_${crypto.randomBytes(6).toString('hex')}`;
+          pendingMeetings.set(meetingKey, {
+            meeting: result,
             source: mail.source,
             mailId: mail.id,
             expiresAt: Date.now() + 30 * 60_000,
@@ -404,20 +420,50 @@ export async function scanMailsForBookings(reportChatId?: string): Promise<{ sca
 
           const keyboard = [
             [
-              { text: '\ud83c\udd95 Neue Reise', callback_data: `${bookingKey}::new` },
-              { text: '\ud83d\udccb Zu bestehender Reise', callback_data: `${bookingKey}::existing` },
+              { text: '\ud83d\udcc5 In Kalender eintragen', callback_data: `${meetingKey}::calendar` },
             ],
             [
-              { text: '\u274c Ignorieren', callback_data: `${bookingKey}::ignore` },
+              { text: '\u274c Ignorieren', callback_data: `${meetingKey}::ignore` },
             ],
           ];
 
           await deps.sendTelegramWithKeyboard(
             reportChatId,
-            `${msg}\n\nZu Reise hinzuf\u00fcgen?`,
+            `${msg}\n\nIn Kalender eintragen?`,
             keyboard,
           );
         }
+        continue;
+      }
+
+      // ── BOOKING path (unchanged) ──
+      const msg = deps.formatBookingMessage(result);
+      details.push(msg);
+
+      if (reportChatId) {
+        const bookingKey = `booking_${crypto.randomBytes(6).toString('hex')}`;
+        pendingBookings.set(bookingKey, {
+          booking: result,
+          source: mail.source,
+          mailId: mail.id,
+          expiresAt: Date.now() + 30 * 60_000,
+        });
+
+        const keyboard = [
+          [
+            { text: '\ud83c\udd95 Neue Reise', callback_data: `${bookingKey}::new` },
+            { text: '\ud83d\udccb Zu bestehender Reise', callback_data: `${bookingKey}::existing` },
+          ],
+          [
+            { text: '\u274c Ignorieren', callback_data: `${bookingKey}::ignore` },
+          ],
+        ];
+
+        await deps.sendTelegramWithKeyboard(
+          reportChatId,
+          `${msg}\n\nZu Reise hinzuf\u00fcgen?`,
+          keyboard,
+        );
       }
     } catch (e: any) {
       deps.logger.warn(`[executive-agent] mail-scanner Fehler bei ${mail.source}:${mail.id}: ${e.message}`);
@@ -791,7 +837,7 @@ export function registerMailCommands(api: any): void {
   // /scanmail
   api.registerCommand({
     name: 'scanmail',
-    description: 'Manueller Mail-Scan auf Buchungsbest\u00e4tigungen',
+    description: 'Manueller Mail-Scan auf Buchungen und Termine',
     handler: async (ctx: any) => {
       if (!deps.m365Enabled && !deps.yahooEnabled) {
         return { text: '\u274c Kein Mail-Account aktiviert (m365/yahoo).' };

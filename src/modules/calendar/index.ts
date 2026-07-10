@@ -4,5 +4,5 @@
  */
 
 // Commands (Telegram registration)
-export { registerCalendarCommands, initCalendarCommands } from './commands.js';
+export { registerCalendarCommands, initCalendarCommands, createCalendarEventDirect } from './commands.js';
 export type { CalendarDeps } from './commands.js';

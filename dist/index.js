@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import SunCalc from "suncalc";
-import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
+import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, getHrvTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, syncOuraForBriefing, triggerWithingsSync, triggerOuraSync, getSyncStatus, getOuraSyncStatus, } from "./src/modules/health/index.js";
@@ -10,8 +10,8 @@ import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
-import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
-import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, } from "./src/modules/mail/index.js";
+import { registerCalendarCommands, initCalendarCommands, createCalendarEventDirect } from "./src/modules/calendar/index.js";
+import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, pendingMeetings, } from "./src/modules/mail/index.js";
 import { registerSharePointCommands, initSharePointCommands, getLinksForEntity, formatLinksForTelegram, } from "./src/modules/sharepoint/index.js";
 import { registerInstagramCommands, initInstagramCommands, bootstrapInstagramToken, 
 // State exports for command-guard
@@ -131,6 +131,7 @@ export default function (api) {
     g.__ea_briefingSchedulerRegistered ??= false;
     g.__ea_mailScannerRegistered ??= false;
     g.__ea_bankingReminderRegistered ??= false;
+    g.__ea_auditReminderRegistered ??= false;
     // pluginConfig maps to: plugins.entries.executive-agent.config
     const pcfg = api.pluginConfig || {};
     const mailCfg = pcfg.mail || {};
@@ -344,10 +345,10 @@ export default function (api) {
     // All registered plugin commands. When user sends one of these,
     // the AI agent must NOT respond — the command handler handles it.
     const REGISTERED_COMMANDS = new Set([
+        'brief', 'briefing', 'briefingtime',
         'calendar', 'meet', 'meetf', 'free',
         'inbox', 'yinbox', 'yverify', 'mailstatus', 'scanmail',
         'draftcreate', 'draftedit', 'draftlist', 'draftshow', 'draftapprove', 'draftsend', 'ytest',
-        'screenshot', 'browse',
         'costs', 'lease', 'leaseset', 'nebenkostenabrechnung',
         'properties', 'property', 'propertyrent',
         'healthalerts', 'healthcheck', 'healthlog', 'healthmonth', 'healthreportday',
@@ -358,7 +359,7 @@ export default function (api) {
         'sharepoint', 'spdocs', 'sprecent', 'spsync',
         'fleet', 'fleetadd', 'fleetdel', 'fleetdocs', 'fleetedit',
         'fleetinsurance', 'fleetlink', 'fleetservice', 'fleetshow', 'fleettuev',
-        'tuev', 'versicherung',
+        'tuev', 'versicherung', 'reifen',
         'link', 'linkadd', 'linkdel', 'triplink', 'fleetlink',
         'pe', 'peedit', 'penew', 'peshow', 'pevalue',
         'insta', 'instaapprove', 'instadraft', 'instadrafts', 'instaedit',
@@ -367,7 +368,8 @@ export default function (api) {
         'trade', 'tradedebug', 'tradeindex', 'trademode', 'tradeorders',
         'tradepaper', 'tradeperf', 'tradepos', 'tradescan', 'tradescanstatus',
         'tradetop', 'tradeuniverse', 'tradeunwatch', 'tradewatch', 'tradewatchlist',
-        'briefing', 'briefingtime',
+        'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
+        'banking', 'tan',
         'memory',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
@@ -404,7 +406,7 @@ export default function (api) {
         // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
         // Framework wraps prompts in "[Telegram sender timestamp] callback_data: <prefix>_<payload>"
         // envelope. Match both "callback_data: <prefix>" (current format) and "] <prefix>" (legacy).
-        const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_', 'bweekly_', 'memdrop_'];
+        const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'meeting_', 'bsync_', 'bweekly_', 'memdrop_'];
         if (CALLBACK_PREFIXES.some(p => prompt.includes('callback_data: ' + p) || prompt.includes('] ' + p))) {
             api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
             return {
@@ -780,7 +782,7 @@ export default function (api) {
         yahooImapHost, yahooImapPort, yahooSmtpHost, yahooSmtpPort, yahooSmtpSecure,
         sigM365, sigYahoo, requireApproval, workspace,
         sendTelegram, sendTelegramWithKeyboard,
-        analyzeMailForBooking, formatBookingMessage,
+        analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting,
         logger: api.logger,
     });
     registerMailCommands(api);
@@ -1742,6 +1744,46 @@ export default function (api) {
             return;
         }
     }
+    // ── Meeting Callback Handler (Telegram Inline Buttons) ──────────────────────
+    async function handleMeetingCallback(chatId, meetingKey, action) {
+        const pending = pendingMeetings.get(meetingKey);
+        if (!pending || Date.now() > pending.expiresAt) {
+            pendingMeetings.delete(meetingKey);
+            await sendTelegram(chatId, '⏰ Termin-Erkennung abgelaufen.');
+            return;
+        }
+        const { meeting } = pending;
+        if (action === 'ignore') {
+            pendingMeetings.delete(meetingKey);
+            await sendTelegram(chatId, `📅 ${meeting.title} — ignoriert.`);
+            return;
+        }
+        if (action === 'calendar') {
+            pendingMeetings.delete(meetingKey);
+            try {
+                const start = new Date(meeting.startDate);
+                if (isNaN(start.getTime())) {
+                    await sendTelegram(chatId, '❌ Ungültiges Datum im erkannten Termin.');
+                    return;
+                }
+                let end;
+                if (meeting.endDate) {
+                    end = new Date(meeting.endDate);
+                    if (isNaN(end.getTime()))
+                        end = new Date(start.getTime() + (meeting.durationMin || 60) * 60000);
+                }
+                else {
+                    end = new Date(start.getTime() + (meeting.durationMin || 60) * 60000);
+                }
+                const result = await createCalendarEventDirect(meeting.title, start, end, meeting.link);
+                await sendTelegram(chatId, result.text);
+            }
+            catch (e) {
+                await sendTelegram(chatId, `❌ Kalender-Eintrag fehlgeschlagen: ${e.message}`);
+            }
+            return;
+        }
+    }
     // Hook to handle numeric replies for trip selection (text message after inline button)
     api.on('message_received', async (event) => {
         try {
@@ -1796,6 +1838,17 @@ export default function (api) {
                 const bookingKey = `booking_${bookingCb.args[0]}`;
                 const action = bookingCb.args[1];
                 await handleBookingCallback(chatId, bookingKey, action);
+                return;
+            }
+            // ── meeting_ callbacks (Mail meeting → calendar event) ──
+            const meetingCb = parseCallbackEvent(event, 'meeting');
+            if (meetingCb) {
+                const chatId = meetingCb.senderId;
+                if (meetingCb.args.length < 2)
+                    return;
+                const meetingKey = `meeting_${meetingCb.args[0]}`;
+                const action = meetingCb.args[1];
+                await handleMeetingCallback(chatId, meetingKey, action);
                 return;
             }
             // ── bweekly_ callbacks (Banking weekly sync start, E3) ──
@@ -2073,6 +2126,38 @@ export default function (api) {
             }
         }, 60_000);
         api.logger.info('[health-sync] Standalone sync timer registered (01:00, 13:00, 19:00 Berlin)');
+    }
+    // ── Monthly Audit Reminder (1st of month, 09:00 Berlin) ──────────────────
+    if (!g.__ea_auditReminderRegistered) {
+        g.__ea_auditReminderRegistered = true;
+        let lastAuditReminderMonth = '';
+        setInterval(async () => {
+            try {
+                const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+                if (inBerlin.getDate() !== 1 || inBerlin.getHours() !== 9 || inBerlin.getMinutes() !== 0)
+                    return;
+                const monthKey = `${inBerlin.getFullYear()}-${String(inBerlin.getMonth() + 1).padStart(2, '0')}`;
+                if (monthKey === lastAuditReminderMonth)
+                    return;
+                lastAuditReminderMonth = monthKey;
+                // Read last audit date from governance/AUDIT-FINDINGS.md
+                let lastRun = 'noch keiner';
+                try {
+                    const findingsPath = path.join(__dirname, 'governance/AUDIT-FINDINGS.md');
+                    const content = fs.readFileSync(findingsPath, 'utf-8');
+                    const dates = [...content.matchAll(/\d{4}-\d{2}-\d{2}/g)].map(m => m[0]);
+                    if (dates.length > 0)
+                        lastRun = dates.sort().pop();
+                }
+                catch { /* file missing → 'noch keiner' */ }
+                await sendTelegram('133260792', `\uD83D\uDCCB Monats-Audit f\u00e4llig \u2014 letzter Lauf: ${lastRun}`);
+                api.logger.info(`[audit-reminder] Monthly reminder sent (last run: ${lastRun})`);
+            }
+            catch (e) {
+                api.logger.error(`[audit-reminder] ${e.message}`);
+            }
+        }, 60_000);
+        api.logger.info('[audit-reminder] Monthly audit reminder registered (1st of month, 09:00 Berlin)');
     }
     // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────
     // Register /health, /ready, /version, /location via api.registerHttpRoute()

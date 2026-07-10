@@ -77,6 +77,18 @@ export const SEGMENT_EMOJI: Record<string, string> = {
   flight: '✈️', hotel: '🏨', transfer: '🚆', activity: '🎫', note: '📝',
 };
 
+// ── Meeting (Mail → Calendar Event) ─────────────────────────────────────────
+
+export interface ParsedMeeting {
+  _kind: 'meeting';
+  title: string;
+  startDate: string;       // ISO8601
+  endDate: string | null;
+  durationMin: number;
+  link: string | null;
+  organizer: string;
+}
+
 // ── Enrichment & Weather ────────────────────────────────────────────────────
 
 export interface TripEnrichment {

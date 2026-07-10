@@ -6,7 +6,7 @@
 // Types
 export type {
   SegmentType, Climate, ActivityType, TripSegment, Trip,
-  BookingType, ParsedBooking,
+  BookingType, ParsedBooking, ParsedMeeting,
   TripEnrichment, WeatherDay, WeatherDayData, WeatherBriefing, TripParseResult,
 } from './types.js';
 
@@ -25,7 +25,7 @@ export { fetchWeatherBriefing, fetchWeatherForecast, wmoToText } from './weather
 // Enrichment & Booking Analysis
 export {
   enrichTripWithOpenAI, parseTripFreeText,
-  analyzeMailForBooking, formatBookingMessage,
+  analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting,
 } from './enrichment.js';
 
 // Commands (Telegram registration)

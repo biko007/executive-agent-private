@@ -4,11 +4,11 @@ import SunCalc from "suncalc";
 import {
   createTrip, getTrip, listTrips,
   fetchWeatherBriefing,
-  analyzeMailForBooking, formatBookingMessage,
+  analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting,
   registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback,
   BOOKING_EMOJI,
 } from "./src/modules/travel/index.js";
-import type { ParsedBooking } from "./src/modules/travel/index.js";
+import type { ParsedBooking, ParsedMeeting } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import {
@@ -33,11 +33,11 @@ import {
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
-import { registerCalendarCommands, initCalendarCommands } from "./src/modules/calendar/index.js";
+import { registerCalendarCommands, initCalendarCommands, createCalendarEventDirect } from "./src/modules/calendar/index.js";
 import {
   registerMailCommands, initMailCommands,
   m365Unread, yahooUnread, listDrafts,
-  scanMailsForBookings, pendingBookings, pendingTripSelections,
+  scanMailsForBookings, pendingBookings, pendingTripSelections, pendingMeetings,
 } from "./src/modules/mail/index.js";
 import type { UnifiedMsg, MailDraft } from "./src/modules/mail/index.js";
 import {
@@ -484,7 +484,7 @@ export default function (api: any) {
     // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
     // Framework wraps prompts in "[Telegram sender timestamp] callback_data: <prefix>_<payload>"
     // envelope. Match both "callback_data: <prefix>" (current format) and "] <prefix>" (legacy).
-    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'bsync_', 'bweekly_', 'memdrop_'];
+    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'meeting_', 'bsync_', 'bweekly_', 'memdrop_'];
     if (CALLBACK_PREFIXES.some(p => prompt.includes('callback_data: ' + p) || prompt.includes('] ' + p))) {
       api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
       return {
@@ -895,7 +895,7 @@ export default function (api: any) {
     yahooImapHost, yahooImapPort, yahooSmtpHost, yahooSmtpPort, yahooSmtpSecure,
     sigM365, sigYahoo, requireApproval, workspace,
     sendTelegram, sendTelegramWithKeyboard,
-    analyzeMailForBooking, formatBookingMessage,
+    analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting,
     logger: api.logger,
   });
   registerMailCommands(api);
@@ -1931,6 +1931,61 @@ export default function (api: any) {
     }
   }
 
+  // ── Meeting Callback Handler (Telegram Inline Buttons) ──────────────────────
+
+  async function handleMeetingCallback(
+    chatId: string,
+    meetingKey: string,
+    action: string,
+  ): Promise<void> {
+    const pending = pendingMeetings.get(meetingKey);
+    if (!pending || Date.now() > pending.expiresAt) {
+      pendingMeetings.delete(meetingKey);
+      await sendTelegram(chatId, '⏰ Termin-Erkennung abgelaufen.');
+      return;
+    }
+
+    const { meeting } = pending;
+
+    if (action === 'ignore') {
+      pendingMeetings.delete(meetingKey);
+      await sendTelegram(chatId, `📅 ${meeting.title} — ignoriert.`);
+      return;
+    }
+
+    if (action === 'calendar') {
+      pendingMeetings.delete(meetingKey);
+
+      try {
+        const start = new Date(meeting.startDate);
+        if (isNaN(start.getTime())) {
+          await sendTelegram(chatId, '❌ Ungültiges Datum im erkannten Termin.');
+          return;
+        }
+
+        let end: Date;
+        if (meeting.endDate) {
+          end = new Date(meeting.endDate);
+          if (isNaN(end.getTime())) end = new Date(start.getTime() + (meeting.durationMin || 60) * 60000);
+        } else {
+          end = new Date(start.getTime() + (meeting.durationMin || 60) * 60000);
+        }
+
+        const result = await createCalendarEventDirect(
+          meeting.title,
+          start,
+          end,
+          meeting.link,
+        );
+
+        await sendTelegram(chatId, result.text);
+      } catch (e: any) {
+        await sendTelegram(chatId, `❌ Kalender-Eintrag fehlgeschlagen: ${e.message}`);
+      }
+      return;
+    }
+  }
+
   // Hook to handle numeric replies for trip selection (text message after inline button)
   api.on('message_received', async (event: any) => {
     try {
@@ -1989,6 +2044,17 @@ export default function (api: any) {
         const bookingKey = `booking_${bookingCb.args[0]}`;
         const action = bookingCb.args[1];
         await handleBookingCallback(chatId, bookingKey, action);
+        return;
+      }
+
+      // ── meeting_ callbacks (Mail meeting → calendar event) ──
+      const meetingCb = parseCallbackEvent(event, 'meeting');
+      if (meetingCb) {
+        const chatId = meetingCb.senderId;
+        if (meetingCb.args.length < 2) return;
+        const meetingKey = `meeting_${meetingCb.args[0]}`;
+        const action = meetingCb.args[1];
+        await handleMeetingCallback(chatId, meetingKey, action);
         return;
       }
 

@@ -2,7 +2,7 @@
  * travel/enrichment — AI-powered trip enrichment, free-text parsing, booking analysis.
  */
 import { fetchWithTimeout, readAnthropicKey, ANTHROPIC_MODEL } from '../../shared/utils/index.js';
-import type { TripEnrichment, TripParseResult, ParsedBooking, BookingType } from './types.js';
+import type { TripEnrichment, TripParseResult, ParsedBooking, BookingType, ParsedMeeting } from './types.js';
 import { BOOKING_EMOJI } from './types.js';
 
 // ── AI Trip Enrichment ─────────────────────────────────────────────────────
@@ -173,17 +173,29 @@ export async function parseTripFreeText(
   };
 }
 
-// ── Mail Booking Analysis (Haiku) ──────────────────────────────────────────
+// ── Mail Booking / Meeting Analysis (Haiku) ─────────────────────────────────
 
-export async function analyzeMailForBooking(subject: string, from: string, bodyText: string): Promise<ParsedBooking | null> {
+export async function analyzeMailForBooking(
+  subject: string, from: string, bodyText: string,
+): Promise<ParsedBooking | ParsedMeeting | null> {
   const apiKey = readAnthropicKey();
   if (!apiKey) return null;
 
   const prompt =
-    `Analysiere die folgende E-Mail. Handelt es sich um eine Reise-Buchungsbestätigung ` +
-    `(Flug, Hotel, Bahn, Mietwagen, Event/Veranstaltung)?\n\n` +
-    `Falls JA, antworte NUR mit einem JSON-Objekt:\n` +
+    `Analysiere die folgende E-Mail und klassifiziere sie in EINE der drei Kategorien:\n\n` +
+    `1) BUCHUNG — eine Reise-Buchungsbestätigung:\n` +
+    `   Flug, Hotel, Bahn, Mietwagen, oder gekauftes Event-Ticket\n` +
+    `   (Konzert, Messe, Konferenz-Teilnahme, Sport-Veranstaltung).\n` +
+    `   NICHT: interne Meetings, Video-Calls, Besprechungseinladungen.\n\n` +
+    `2) MEETING — eine Termin-/Meeting-Einladung:\n` +
+    `   Zoom, Microsoft Teams, Google Meet, WebEx, Telefonkonferenz,\n` +
+    `   Kalender-Einladung (ICS/iCal), Besprechungsanfrage, Terminbestätigung.\n\n` +
+    `3) NICHTS — Newsletter, Werbung, normale Korrespondenz, Benachrichtigungen,\n` +
+    `   Rechnungen ohne Reisebezug, Social-Media-Alerts.\n\n` +
+    `Antworte NUR mit einem JSON-Objekt:\n\n` +
+    `Falls BUCHUNG:\n` +
     `{\n` +
+    `  "category": "BOOKING",\n` +
     `  "type": "FLIGHT" | "HOTEL" | "TRAIN" | "CAR" | "EVENT",\n` +
     `  "title": "<Kurzbezeichnung, z.B. 'LH1234 München → Frankfurt'>",\n` +
     `  "destination": "<Zielort>",\n` +
@@ -192,7 +204,18 @@ export async function analyzeMailForBooking(subject: string, from: string, bodyT
     `  "confirmationNumber": "<Buchungsnummer oder null>",\n` +
     `  "provider": "<Anbieter, z.B. Lufthansa, Booking.com>"\n` +
     `}\n\n` +
-    `Falls NEIN (Newsletter, Werbung, normale Korrespondenz), antworte NUR mit: null\n\n` +
+    `Falls MEETING:\n` +
+    `{\n` +
+    `  "category": "MEETING",\n` +
+    `  "title": "<Titel des Meetings>",\n` +
+    `  "startDate": "<ISO8601 Datum/Zeit>",\n` +
+    `  "endDate": "<ISO8601 Datum/Zeit oder null>",\n` +
+    `  "durationMin": <Dauer in Minuten oder 60 als Default>,\n` +
+    `  "link": "<Meeting-URL (Zoom/Teams/Meet) oder null>",\n` +
+    `  "organizer": "<Name oder E-Mail des Organisators>"\n` +
+    `}\n\n` +
+    `Falls NICHTS:\n` +
+    `null\n\n` +
     `--- E-Mail ---\n` +
     `Von: ${from}\n` +
     `Betreff: ${subject}\n\n` +
@@ -220,14 +243,14 @@ export async function analyzeMailForBooking(subject: string, from: string, bodyT
 
     if (!res.ok) {
       const err = await res.text().catch(() => '');
-      console.warn(`[travel] Haiku booking-analysis HTTP ${res.status}: ${err.slice(0, 200)}`);
+      console.warn(`[travel] Haiku mail-analysis HTTP ${res.status}: ${err.slice(0, 200)}`);
       return null;
     }
 
     const data: any = await res.json();
     const content: string = data?.content?.[0]?.text || '';
 
-    // "null" response means no booking
+    // "null" response means neither booking nor meeting
     if (content.trim() === 'null' || content.trim() === '`null`') return null;
 
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -235,6 +258,22 @@ export async function analyzeMailForBooking(subject: string, from: string, bodyT
 
     const parsed: any = JSON.parse(jsonMatch[0]);
 
+    // ── MEETING path ──
+    if (parsed.category === 'MEETING') {
+      if (!parsed.startDate) return null;
+      const durationMin = Number(parsed.durationMin) || 60;
+      return {
+        _kind: 'meeting',
+        title: String(parsed.title || subject),
+        startDate: String(parsed.startDate),
+        endDate: parsed.endDate ? String(parsed.endDate) : null,
+        durationMin,
+        link: parsed.link ? String(parsed.link) : null,
+        organizer: String(parsed.organizer || from),
+      };
+    }
+
+    // ── BOOKING path ──
     const validTypes: BookingType[] = ['FLIGHT', 'HOTEL', 'TRAIN', 'CAR', 'EVENT'];
     const type = validTypes.includes(parsed.type) ? parsed.type as BookingType : null;
     if (!type) return null;
@@ -286,4 +325,45 @@ export function formatBookingMessage(booking: ParsedBooking): string {
   if (booking.confirmationNumber) lines.push(`Bestätigung: ${booking.confirmationNumber}`);
 
   return lines.join('\n');
+}
+
+// ── Meeting Message Formatting ───────────────────────────────────────────
+
+export function formatMeetingMessage(meeting: ParsedMeeting): string {
+  const lines = [`📅 *Termin erkannt*`];
+  lines.push(meeting.title);
+
+  if (meeting.startDate) {
+    try {
+      const start = new Date(meeting.startDate);
+      const fmtDate = new Intl.DateTimeFormat('de-DE', {
+        weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
+      }).format(start);
+      let dateLine = fmtDate;
+      if (meeting.endDate) {
+        const end = new Date(meeting.endDate);
+        const fmtEnd = new Intl.DateTimeFormat('de-DE', {
+          hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
+        }).format(end);
+        dateLine += ` → ${fmtEnd}`;
+      } else {
+        dateLine += ` (${meeting.durationMin} Min)`;
+      }
+      lines.push(dateLine);
+    } catch {
+      lines.push(meeting.startDate);
+    }
+  }
+
+  if (meeting.organizer) lines.push(`Organisator: ${meeting.organizer}`);
+  if (meeting.link) lines.push(`Link: ${meeting.link}`);
+
+  return lines.join('\n');
+}
+
+// ── Type guard ───────────────────────────────────────────────────────────
+
+export function isMeeting(result: ParsedBooking | ParsedMeeting): result is ParsedMeeting {
+  return '_kind' in result && result._kind === 'meeting';
 }
