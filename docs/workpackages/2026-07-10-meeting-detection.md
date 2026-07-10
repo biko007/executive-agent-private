@@ -7,7 +7,8 @@
 
 | Hash | Message |
 |------|---------|
-| (pending) | fix(mail): meeting detection + calendar path, restrict EVENT to ticketed bookings |
+| daf47a7 | fix(mail): meeting detection + calendar path, restrict EVENT to ticketed bookings |
+| 2ef82c9 | fix(calendar): timezone handling in meeting flow — Berlin-local for M365 |
 
 ## Betroffene Regeln
 
@@ -43,6 +44,9 @@ Zoom-Meeting-Einladungen wurden als EVENT-Buchung klassifiziert, weil:
 1. **Prompt A:** EVENT eingeschraenkt auf gekaufte Tickets (Konzert/Messe/Konferenz/Sport), Meeting-Keywords als Negativ-Beispiele
 2. **Prompt B:** Neue MEETING-Kategorie mit eigener Rueckgabe (title, startDate, endDate, durationMin, link, organizer)
 3. **Calendar-Pfad:** "In Kalender eintragen" Button → `createCalendarEventDirect()` → M365 Graph API mit Konflikterkennung
+4. **Timezone-Fix (2ef82c9):** LLM-Prompt verlangt ISO8601 mit Zeitzone-Offset (+02:00 MESZ / +01:00 MEZ).
+   `toBerlinLocalIso()` Helper formatiert Date-Objekte als Berlin-Lokalzeit fuer M365 Payload.
+   Root-Cause: `toISOString()` liefert UTC, M365 interpretiert `dateTime` aber im angegebenen `timeZone`.
 
 ## Gate-Outputs
 
@@ -65,4 +69,6 @@ Zoom-Meeting-Einladungen wurden als EVENT-Buchung klassifiziert, weil:
 ## Offene Risiken
 
 - LLM-Klassifikation ist probabilistisch — Edge Cases moeglich (z.B. Event-Einladung die wie Meeting aussieht)
-- `createCalendarEventDirect` formatiert `/meetf`-Hint mit deutschem Datumsformat; bei Nicht-DE-Locale-Edge kann das Format abweichen (irrelevant fuer aktuellen Single-User)
+- `handleMeet` (/meet-Befehl) funktioniert korrekt auf UTC-VPS durch Zufall: User gibt Berliner Zeit ein,
+  `new Date(year, month, day, hour, min)` erzeugt UTC mit denselben Zahlen, M365 interpretiert als Berlin.
+  Wuerde brechen bei VPS-Timezone-Wechsel. Tech-Debt, kein akutes Risiko (Single-VPS, UTC).
