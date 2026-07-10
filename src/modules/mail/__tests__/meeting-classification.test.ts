@@ -104,7 +104,7 @@ describe('isMeeting type guard', () => {
 // ── 2. formatMeetingMessage formatting ───────────────────────────────────────
 
 describe('formatMeetingMessage', () => {
-  test('formats meeting with all fields', () => {
+  test('formats meeting with all fields — shows Berlin time 13:00', () => {
     const meeting: ParsedMeeting = {
       _kind: 'meeting',
       title: 'BvCW Mitgliederversammlung',
@@ -117,11 +117,13 @@ describe('formatMeetingMessage', () => {
     const msg = formatMeetingMessage(meeting);
     expect(msg).toContain('Termin erkannt');
     expect(msg).toContain('BvCW Mitgliederversammlung');
+    expect(msg).toContain('13:00'); // Berlin time, NOT 11:00 UTC
+    expect(msg).toContain('14:30'); // Berlin end time
     expect(msg).toContain('info@bvcw.de');
     expect(msg).toContain('https://zoom.us/j/123');
   });
 
-  test('formats meeting without end date (shows duration)', () => {
+  test('formats meeting without end date — shows Berlin time 19:00', () => {
     const meeting: ParsedMeeting = {
       _kind: 'meeting',
       title: 'Quick Sync',
@@ -133,6 +135,7 @@ describe('formatMeetingMessage', () => {
     };
     const msg = formatMeetingMessage(meeting);
     expect(msg).toContain('Termin erkannt');
+    expect(msg).toContain('19:00'); // Berlin time
     expect(msg).toContain('30 Min');
     expect(msg).not.toContain('Link:');
   });
@@ -184,51 +187,73 @@ describe('analyzeMailForBooking prompt structure', () => {
   });
 });
 
-// ── 5. Meeting callback payload (dry-run — no M365 API call) ─────────────────
+// ── 5. Meeting callback payload — timezone-correct (dry-run, no M365 call) ──
 
-describe('meeting → calendar event payload', () => {
-  test('builds correct M365 event payload from parsed meeting', () => {
+/**
+ * Replicate toBerlinLocalIso() from calendar/commands.ts for test assertions.
+ * M365 Graph API interprets dateTime in the specified timeZone, so we must
+ * provide Berlin-local values, NOT UTC via toISOString().
+ */
+function toBerlinLocalIso(d: Date): string {
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => p.find(x => x.type === t)?.value || '00';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}.000`;
+}
+
+describe('meeting → calendar event payload (timezone-correct)', () => {
+  test('builds correct M365 payload from offset-bearing ISO (BvCW 13:00 Berlin)', () => {
+    // LLM returns offset-bearing ISO: "13:00 Uhr" in German mail → +02:00 (MESZ)
     const meeting: ParsedMeeting = {
       _kind: 'meeting',
       title: 'BvCW Mitgliederversammlung',
-      startDate: '2026-08-12T11:00:00.000Z',
+      startDate: '2026-08-12T13:00:00+02:00',
       endDate: null,
       durationMin: 90,
       link: 'https://us06web.zoom.us/j/12345678901?pwd=abc123',
       organizer: 'info@bvcw.de',
     };
 
-    // Simulate what handleMeetingCallback builds
+    // Simulate handleMeetingCallback: new Date() parses offset → UTC internally
     const start = new Date(meeting.startDate);
-    const end = meeting.endDate
-      ? new Date(meeting.endDate)
-      : new Date(start.getTime() + meeting.durationMin * 60000);
+    const end = new Date(start.getTime() + meeting.durationMin * 60000);
 
+    // Internal UTC representation: 13:00+02:00 = 11:00 UTC
     expect(start.toISOString()).toBe('2026-08-12T11:00:00.000Z');
-    expect(end.toISOString()).toBe('2026-08-12T12:30:00.000Z'); // 90 min later
+    expect(end.toISOString()).toBe('2026-08-12T12:30:00.000Z');
+
+    // M365 payload must use Berlin-local, NOT UTC
+    const startLocal = toBerlinLocalIso(start);
+    const endLocal = toBerlinLocalIso(end);
+    expect(startLocal).toBe('2026-08-12T13:00:00.000'); // 13:00 Berlin
+    expect(endLocal).toBe('2026-08-12T14:30:00.000');   // 14:30 Berlin
 
     const payload: any = {
       subject: meeting.title,
-      start: { dateTime: start.toISOString(), timeZone: 'Europe/Berlin' },
-      end: { dateTime: end.toISOString(), timeZone: 'Europe/Berlin' },
+      start: { dateTime: startLocal, timeZone: 'Europe/Berlin' },
+      end: { dateTime: endLocal, timeZone: 'Europe/Berlin' },
     };
     if (meeting.link) {
       payload.body = { contentType: 'Text', content: `Meeting-Link: ${meeting.link}` };
     }
 
     expect(payload.subject).toBe('BvCW Mitgliederversammlung');
-    expect(payload.start.dateTime).toBe('2026-08-12T11:00:00.000Z');
-    expect(payload.end.dateTime).toBe('2026-08-12T12:30:00.000Z');
+    expect(payload.start.dateTime).toBe('2026-08-12T13:00:00.000');
+    expect(payload.end.dateTime).toBe('2026-08-12T14:30:00.000');
     expect(payload.start.timeZone).toBe('Europe/Berlin');
     expect(payload.body.content).toContain('https://us06web.zoom.us/j/12345678901');
   });
 
-  test('handles meeting with explicit endDate', () => {
+  test('handles meeting with explicit endDate (BvCW 19:00 Berlin)', () => {
     const meeting: ParsedMeeting = {
       _kind: 'meeting',
       title: 'AK Digitalisierung',
-      startDate: '2026-07-15T17:00:00.000Z',
-      endDate: '2026-07-15T18:00:00.000Z',
+      startDate: '2026-07-15T19:00:00+02:00',
+      endDate: '2026-07-15T20:00:00+02:00',
       durationMin: 60,
       link: 'https://zoom.us/j/98765432100',
       organizer: 'vorstand@bvcw.de',
@@ -237,7 +262,10 @@ describe('meeting → calendar event payload', () => {
     const start = new Date(meeting.startDate);
     const end = new Date(meeting.endDate!);
 
-    expect(end.getTime() - start.getTime()).toBe(60 * 60 * 1000); // exactly 1 hour
+    expect(end.getTime() - start.getTime()).toBe(60 * 60 * 1000);
+    // Berlin-local must preserve 19:00/20:00
+    expect(toBerlinLocalIso(start)).toBe('2026-07-15T19:00:00.000');
+    expect(toBerlinLocalIso(end)).toBe('2026-07-15T20:00:00.000');
   });
 });
 

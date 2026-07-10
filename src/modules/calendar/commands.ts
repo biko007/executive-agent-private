@@ -26,6 +26,24 @@ function ensureM365() {
   if (!deps.m365Secret) throw new Error('m365_secret_missing');
 }
 
+// ── Timezone Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Format a Date as Berlin-local ISO string WITHOUT timezone suffix.
+ * M365 Graph API interprets dateTime in the specified timeZone field,
+ * so we must provide Berlin-local values — NOT UTC via toISOString().
+ */
+function toBerlinLocalIso(d: Date): string {
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => p.find(x => x.type === t)?.value || '00';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}.000`;
+}
+
 // ── Internal Helpers ──────────────────────────────────────────────────────
 
 async function listConflicts(startIso: string, endIso: string): Promise<any[]> {
@@ -233,10 +251,11 @@ export async function createCalendarEventDirect(
 ): Promise<{ created: boolean; text: string }> {
   ensureM365();
 
-  const startIso = startDate.toISOString();
-  const endIso = endDate.toISOString();
+  // Berlin-local for M365 payload (M365 interprets dateTime in the specified timeZone)
+  const startLocal = toBerlinLocalIso(startDate);
+  const endLocal = toBerlinLocalIso(endDate);
 
-  // Conflict check (robust): scan wider window and compute overlaps locally
+  // UTC for conflict-check scan window (Graph calendarView accepts UTC)
   const scanStartIso = new Date(startDate.getTime() - 12 * 60 * 60 * 1000).toISOString();
   const scanEndIso   = new Date(endDate.getTime()   + 12 * 60 * 60 * 1000).toISOString();
   const candidates = await listConflicts(scanStartIso, scanEndIso);
@@ -275,12 +294,19 @@ export async function createCalendarEventDirect(
       for (const subj of subs) lines.push(`  - ${subj}`);
     }
 
+    // Build DD.MM date string in Berlin timezone for /meetf hint
+    const fmtDayMonth = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, day: '2-digit', month: '2-digit',
+    }).formatToParts(startDate);
+    const dd = fmtDayMonth.find(x => x.type === 'day')?.value || '01';
+    const mm = fmtDayMonth.find(x => x.type === 'month')?.value || '01';
+
     return {
       created: false,
       text:
         '\u26a0\ufe0f Zeitraum ist belegt. Termin NICHT erstellt.\n\n' +
         lines.join('\n') +
-        `\n\nManuell erzwingen:\n/meetf ${fmtDate.format(startDate).split(',')[0]?.trim() || ''} ` +
+        `\n\nManuell erzwingen:\n/meetf ${dd}.${mm} ` +
         `${fmtTime.format(startDate)} ${Math.round((endMs - startMs) / 60000)} ${title}`,
     };
   }
@@ -288,8 +314,8 @@ export async function createCalendarEventDirect(
   // Create event
   const payload: any = {
     subject: title,
-    start: { dateTime: startIso, timeZone: 'Europe/Berlin' },
-    end: { dateTime: endIso, timeZone: 'Europe/Berlin' },
+    start: { dateTime: startLocal, timeZone: 'Europe/Berlin' },
+    end: { dateTime: endLocal, timeZone: 'Europe/Berlin' },
   };
   if (meetingLink) {
     payload.body = { contentType: 'Text', content: `Meeting-Link: ${meetingLink}` };

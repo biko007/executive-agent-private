@@ -192,6 +192,9 @@ export async function analyzeMailForBooking(
     `   Kalender-Einladung (ICS/iCal), Besprechungsanfrage, Terminbestätigung.\n\n` +
     `3) NICHTS — Newsletter, Werbung, normale Korrespondenz, Benachrichtigungen,\n` +
     `   Rechnungen ohne Reisebezug, Social-Media-Alerts.\n\n` +
+    `WICHTIG: Alle Zeitangaben IMMER als ISO8601 MIT Zeitzone-Offset ausgeben.\n` +
+    `Deutsche E-Mails → Europe/Berlin: +02:00 (MESZ, März–Okt) oder +01:00 (MEZ, Okt–März).\n` +
+    `Beispiel: "12.08.2026 um 11:00 Uhr" in einer deutschen Mail → "2026-08-12T11:00:00+02:00"\n\n` +
     `Antworte NUR mit einem JSON-Objekt:\n\n` +
     `Falls BUCHUNG:\n` +
     `{\n` +
@@ -199,8 +202,8 @@ export async function analyzeMailForBooking(
     `  "type": "FLIGHT" | "HOTEL" | "TRAIN" | "CAR" | "EVENT",\n` +
     `  "title": "<Kurzbezeichnung, z.B. 'LH1234 München → Frankfurt'>",\n` +
     `  "destination": "<Zielort>",\n` +
-    `  "startDate": "<ISO8601 Datum/Zeit>",\n` +
-    `  "endDate": "<ISO8601 Datum/Zeit oder null>",\n` +
+    `  "startDate": "<ISO8601 mit Offset, z.B. 2026-08-12T11:00:00+02:00>",\n` +
+    `  "endDate": "<ISO8601 mit Offset oder null>",\n` +
     `  "confirmationNumber": "<Buchungsnummer oder null>",\n` +
     `  "provider": "<Anbieter, z.B. Lufthansa, Booking.com>"\n` +
     `}\n\n` +
@@ -208,8 +211,8 @@ export async function analyzeMailForBooking(
     `{\n` +
     `  "category": "MEETING",\n` +
     `  "title": "<Titel des Meetings>",\n` +
-    `  "startDate": "<ISO8601 Datum/Zeit>",\n` +
-    `  "endDate": "<ISO8601 Datum/Zeit oder null>",\n` +
+    `  "startDate": "<ISO8601 mit Offset, z.B. 2026-07-15T17:00:00+02:00>",\n` +
+    `  "endDate": "<ISO8601 mit Offset oder null>",\n` +
     `  "durationMin": <Dauer in Minuten oder 60 als Default>,\n` +
     `  "link": "<Meeting-URL (Zoom/Teams/Meet) oder null>",\n` +
     `  "organizer": "<Name oder E-Mail des Organisators>"\n` +
