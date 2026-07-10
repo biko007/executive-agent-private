@@ -730,13 +730,15 @@ Niemals: Hashes, UUIDs, Timestamps allein, Telegram-interne Dateinamen
 Die Architektur-Doku ist Markdown-Master im Repo und wird **in jedem Etappen-Commit
 mitgepflegt** — Doku im selben Commit wie der Code, nicht nachgelagert.
 
-- `docs/ARCHITECTURE.md` — OpenClaw/bikosoc.
+- `docs/ARCHITECTURE.md` — **Führende Quelle** für OpenClaw-Architektur (ersetzt PDF-Doku).
 - `docs/SHARED_PLATFORM.md` — geteilte Infra (VPS, Postgres-Instanz, nginx, MinIO, ffmpeg,
   Ports). **Autoritativ**; Änderungen an geteilter Infra gehören hierher, nicht in ARCHITECTURE.md.
 - Eine Feature-Etappe editiert `ARCHITECTURE.md`; eine Infra-Änderung `SHARED_PLATFORM.md`.
 - Status-Marker je Abschnitt: ✅ verifiziert (Datum + Quelle) / ⏳ zu verifizieren. Nur
   empirisch auf dem VPS Verifiziertes als ✅ markieren — kein Abschreiben aus Specs/Memory.
-- PDF ist abgeleitet (nur bei Bedarf generiert), die `.md` ist kanonisch.
+- PDF (`openclawarchitektur_v32.pdf`) ist veraltet und wird nicht mehr gepflegt.
+- **Doc-Cochange-Hook:** `scripts/hooks/pre-commit` warnt wenn `*.ts` ohne `*.md` committet
+  wird (GOV-001). Installation: `git config core.hooksPath scripts/hooks`.
 
 ## Evidence-Bundle-Pflicht (stehende Regel, ab 2026-07-09)
 

@@ -1,6 +1,6 @@
 # Audit-Findings — bikosoc
 
-**Stand: 2026-07-09**
+**Stand: 2026-07-10**
 **Scope: bikosoc (Executive Agent)**
 **Methode: spec-auditor-v2-final.md §2.2**
 
@@ -10,8 +10,8 @@
 
 | ID | Titel | Schwere | Status | Entscheidung | Gefunden | Erledigt |
 |----|-------|---------|--------|--------------|----------|----------|
-| F-001 | Architektur-Doku: PDF-Aktualität prüfen | niedrig | offen | eigenes Paket (niedrige Prio) | 2026-07-09 | — |
-| F-002 | Doku-Cochange-Warnung als Git-Hook | mittel | akzeptiert | Backlog (Hook später) | 2026-07-09 | — |
+| F-001 | Architektur-Doku: PDF-Aktualität prüfen | niedrig | erledigt | ARCHITECTURE.md als führende Quelle konsolidiert | 2026-07-09 | 2026-07-10 |
+| F-002 | Doku-Cochange-Warnung als Git-Hook | mittel | erledigt | pre-commit Hook (Warnung, kein Block) | 2026-07-09 | 2026-07-10 |
 | F-003 | openclaw-workspace-state.json untracked | niedrig | erledigt | .gitignore (Laufzeit-State) | 2026-07-09 | 2026-07-09 |
 | F-004 | Verwaiste openclaw_test_* DBs | niedrig | erledigt | Bereits bereinigt (0 DBs gefunden) | 2026-07-09 | 2026-07-09 |
 | F-005 | Telegram-Commands 112 vs Bot-Limit 100 | mittel | erledigt | Kuratiertes Menü (29 Cmds), alle 112 funktional | 2026-07-09 | 2026-07-09 |
@@ -20,31 +20,35 @@
 
 ## Detailblätter
 
-### F-001: Architektur-Doku: PDF-Aktualität prüfen
+### F-001: Architektur-Doku: PDF-Aktualität prüfen [ERLEDIGT]
 
 **Beschreibung:** Spec beanstandet, dass Architektur-Doku nur als PDF vorliegt.
-Tatsächlich existiert `docs/ARCHITECTURE.md` als Markdown-Master — die PDF ist
-laut CLAUDE.md "abgeleitet (nur bei Bedarf generiert), die .md ist kanonisch".
 
-**Prüfung:** Zu verifizieren ob die PDF aktuell ist und ob der Markdown-Master
-vollständig ist.
+**Lösung:** `docs/ARCHITECTURE.md` als führende Quelle konsolidiert. Header
+"Führende Quelle — ersetzt PDF-Doku" gesetzt. Abgleich gegen reale Struktur:
+Services/Ports via systemd, 56 Tabellen via Postgres, 15 Module via Verzeichnisbaum,
+Schema-Versionen. Fehlende Abschnitte ergänzt: Meeting-Calendar-Path (§10),
+Owner-Memory (§11), Governance-Framework (§12), Command-Guard (§12).
+Veraltetes korrigiert: Gateway-Version, n8n-Workflows, Token-Guardian-Status,
+Advisory-Lock-Registry. CLAUDE.md-Verweis aktualisiert.
 
-**Entscheidung:** Niedrige Priorität, eigenes Paket. .md existiert und ist kanonisch.
-
-**Betroffene Regeln:** GOV-001 (Doku im selben Commit)
+**Erledigt:** 2026-07-10
 
 ---
 
-### F-002: Doku-Cochange-Warnung als Git-Hook
+### F-002: Doku-Cochange-Warnung als Git-Hook [ERLEDIGT]
 
 **Beschreibung:** GOV-001 (Doku im selben Commit wie Code) wird aktuell nur
-durch Disziplin durchgesetzt. Ein pre-commit Hook könnte warnen, wenn Code
-in `src/` geändert wird ohne dass `docs/` im selben Commit enthalten ist.
+durch Disziplin durchgesetzt.
 
-**Entscheidung:** Akzeptiert als Backlog. Hook wird in einem späteren Sprint
-implementiert.
+**Lösung:** Pre-commit Hook in `scripts/hooks/pre-commit`. Warnt gelb wenn
+`*.ts` geändert aber kein `*.md` im Commit. Blockiert NICHT (exit 0).
+Versioniert im Repo, Installation via `git config core.hooksPath scripts/hooks`.
+CLAUDE.md Doku-Disziplin-Abschnitt mit Hook-Referenz aktualisiert.
 
 **Betroffene Regeln:** GOV-001
+
+**Erledigt:** 2026-07-10
 
 ---
 

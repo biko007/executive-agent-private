@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-commit hook: doc-cochange warning (GOV-001)
+#
+# Warns (yellow) if *.ts files are staged but no *.md file is in the commit.
+# Does NOT block the commit — informational only.
+#
+# Install: git config core.hooksPath scripts/hooks
+# Or:      ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+has_ts=false
+has_md=false
+
+while IFS= read -r file; do
+  case "$file" in
+    *.ts)  has_ts=true ;;
+    *.md)  has_md=true ;;
+  esac
+done <<< "$staged"
+
+if $has_ts && ! $has_md; then
+  echo ""
+  echo -e "\033[33m⚠  Doc-Cochange Warning (GOV-001)\033[0m"
+  echo -e "\033[33m   TypeScript files changed but no *.md in this commit.\033[0m"
+  echo -e "\033[33m   Consider updating docs/ARCHITECTURE.md or CLAUDE.md.\033[0m"
+  echo ""
+fi
+
+# Always exit 0 — warning only, never blocks
+exit 0

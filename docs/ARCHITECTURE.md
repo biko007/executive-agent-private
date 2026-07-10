@@ -1,15 +1,20 @@
 # OpenClaw / bikosoc — Architektur
 
-> **Master-Dokument** (Single Source of Truth). Das PDF ist ein abgeleitetes Artefakt
-> und wird hieraus generiert — die `.md` ist der kanonische Stand.
+> **Führende Quelle — ersetzt PDF-Doku.** Dieses Markdown ist das Single Source of Truth
+> für die OpenClaw-Architektur. Das PDF (`openclawarchitektur_v32.pdf`) ist veraltet und
+> wird nicht mehr gepflegt. Alle Architektur-Änderungen landen hier.
+>
 > Geteilte Plattform-Infrastruktur (VPS, Postgres-Instanz, nginx, MinIO, ffmpeg, Ports):
 > autoritativ in **`SHARED_PLATFORM.md`**, hier nur referenziert.
+>
+> Governance-Framework: **`governance/AUDIT-CHECKLIST.md`** (Regel-Registry) +
+> **`governance/AUDIT-FINDINGS.md`** (Findings-Tracker).
 
 **Status-Konvention** — gilt pro Abschnitt, einzelne Zeilen können abweichen:
 - ✅ **Verifiziert** auf VPS am Datum — Quelle benannt
 - ⏳ **Zu verifizieren** — Prüfschritt benannt
 
-**Verifikations-Pässe:** 2026-06-26 · cc-Reports `archdoc-verify-20260626-1717.md` + `archdoc-verify2-20260626-1724.md` (read-only).
+**Verifikations-Pässe:** 2026-06-26 · 2026-07-10 (F-001 Konsolidierung).
 
 ---
 
@@ -19,8 +24,9 @@
 
 OpenClaw („Hans Dampf") ist der persönliche Executive-KI-Agent des Owners: modularer
 Monolith auf einem einzigen Hetzner-VPS, mit Telegram-Bot als primärer Schnittstelle.
-Fachmodule: Trading, Banking, Health, Assets (Immobilien inkl. Nebenkosten-Engine), Fleet,
-Instagram, sowie Querschnitt (Briefing, Audit, Approvals, Health-Monitor).
+Fachmodule (15): Trading, Banking, Health, Assets (Immobilien inkl. Nebenkosten-Engine), Fleet,
+Instagram, Calendar, Mail, Travel, SharePoint, Location, Links, Memory, PE,
+sowie Querschnitt (Briefing, Audit, Approvals, Health-Monitor, Governance).
 
 **Nicht hier:** Plattform-Infrastruktur → `SHARED_PLATFORM.md`. Nachbarsystem HDCC →
 eigenes Repo/Doc, hier nur an den Kontaktpunkten (§8).
@@ -41,13 +47,13 @@ eigenes Repo/Doc, hier nur an den Kontaktpunkten (§8).
 
 ## 3. Services und Laufzeitmodell
 
-**Status:** ✅ verifiziert 2026-06-26 (`systemctl --user`, offene Ports)
+**Status:** ✅ verifiziert 2026-07-10 (`systemctl --user`, `ss -tlnp`)
 
 OpenClaw-eigene Services (Host/nginx/Postgres-Instanz: `SHARED_PLATFORM.md`):
 
 | Service | Port | Laufzeit | Beschreibung |
 |---|---|---|---|
-| openclaw-gateway (Core) | 18789 | node | Executive Agent + Telegram-Bot, Fachmodule (v2026.2.14) |
+| openclaw-gateway (Core) | 18789 | node | Executive Agent + Telegram-Bot, 15 Fachmodule (v2026.6.11) |
 | ↳ Location-Endpoint | 18790 | (gateway) | iOS-Standort-Ingest |
 | ↳ Gateway-intern | 18792 | (gateway) | interner Port |
 | openclaw-dashboard | 18800 | node | Express + Web-UI |
@@ -67,20 +73,19 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 
 ## 4. Daten-Layer (OpenClaw)
 
-**Status:** ✅ vollständig verifiziert 2026-06-26
+**Status:** ✅ verifiziert 2026-07-10 (`pg_tables`, `schema_version`)
 
-- DB `openclaw_core` (App-User `openclaw`), **53 Tabellen**. Instanz → `SHARED_PLATFORM.md §3/§4`.
+- DB `openclaw_core` (App-User `openclaw`), **56 Tabellen**. Instanz → `SHARED_PLATFORM.md §3/§4`.
 - **Schema-Versionierung: pro Modul.** Tabelle `schema_version` = `(module, version,
   applied_at)`. Es gibt **keinen globalen Linearstand**. Höchste Versionen je Modul:
-  health **40** (appliziert 2026-06-27), banking **39** (appliziert 2026-06-25), settings **35**,
-  fleet 37, instagram 37, assets 36, sharepoint 34, links 33, location 32, executive/shared 1. **Das frühere
-  „V035 vs V039" ist definitiv kein Konflikt** — `settings@35` vs `banking@39`.
+  memory **42**, health **40**, banking **39**, fleet 37, instagram 37, assets 36,
+  settings **35**, sharepoint 34, links 33, location 32, executive/shared 1.
 
 **Modul-Migrationsstand (verifiziert über Tabellenbestand):**
 
 | Modul | Datenhaltung | ggü. v32 |
 |---|---|---|
-| Instagram | Postgres (`insta_*`) | ✓ |
+| Instagram | Postgres (`insta_*`, 4 Tabellen) | ✓ |
 | Health | Postgres (`health_logs`, `health_withings_tokens`, `health_oura_tokens`) | ✓ |
 | Assets/NK | Postgres (`properties`, `units`, `leases`, `tenants`, `nk_*`, `meters`, `expense_bookings`, `cost_categories` …) | ✓ |
 | Banking | Postgres (`banking_*`, 6 Tabellen) | **neu** |
@@ -88,13 +93,13 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 | Location | Postgres (`location_events`) | **migriert** |
 | SharePoint | Postgres (`sharepoint_files`, `sharepoint_sync_runs`) | **migriert** |
 | Links | Postgres (`entity_links`) | **migriert** |
+| Memory | Postgres (`conversation_log`, `owner_memory`) | **neu** (2026-07-06) |
 | Calendar | kein lokaler Store (by design) | — |
 | **Travel** | **file-basiert** (`src/modules/travel/store.ts`), keine Tabelle | nicht migriert |
 | **Mail** | **file-basiert** (`src/modules/mail/store.ts`), keine Tabelle | nicht migriert |
 
-> Der alte JSON-Pfad `artifacts/personal/` existiert **nicht mehr**. **Travel** und **Mail**
-> sind die einzigen verbliebenen Nicht-Postgres-Module (eigene `store.ts`, file-basiert) —
-> Postgres-Migration ausstehend, aktuell niedrigste Priorität.
+> **Travel** und **Mail** sind die einzigen verbliebenen Nicht-Postgres-Module (eigene
+> `store.ts`, file-basiert) — Postgres-Migration ausstehend, aktuell niedrigste Priorität.
 
 ---
 
@@ -139,15 +144,18 @@ toter Code-Zweig (bewusst out of scope) · CLAUDE.md-Banking-Abschnitt nachziehe
 
 ## 6. n8n / Automationen
 
-**Status:** ✅ verifiziert 2026-06-26 (`workflow_entity`)
+**Status:** ✅ aktualisiert 2026-07-10
 
 - Rolle: „dumme" Schicht — nur Trigger/Routing, keine Business-Logik, kein direkter
   DB-Zugriff; Endpunkte hinter Bearer-Token + nginx-Whitelist.
-- **Aktive Workflows (2):** `health-withings-sync-daily`, `instagram-token-health-daily`.
-- **Inaktiv:** `banking-sync-daily` (deaktiviert, Ziel-Endpoint seit E3 entfernt → strukturell
-  **kein Banking-n8n** mehr) · `260509-openclaw-health-check`.
-- ⏳ JSON-Artefakt `artifacts/n8n-workflows/banking-sync-daily.json`: belassen/entfernen offen
-  (unkritisch).
+- **Aktive Workflows: 0.** Alle OpenClaw-bezogenen Workflows sind `active=false`:
+  - `instagram-token-health-daily` — Token Guardian aus Code entfernt (2026-07-07),
+    Core-Endpoints `/api/instagram/token-health` + `/token-refresh` gelöscht.
+    Health-Monitor prüft Token-Expiry weiterhin direkt via Postgres.
+  - `health-withings-sync-daily` — war nie funktionsfähig (nginx-Routing-Problem).
+    Briefing-Pre-Sync läuft autark ohne n8n.
+  - `banking-sync-daily` — Ziel-Endpoint seit E3 entfernt.
+  - `260509-openclaw-health-check` — inaktiv.
 
 ---
 
@@ -171,14 +179,12 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
 
 - **@jurgen_bickel Credential-Handover:** OpenClaw hält die Insta-Credential
   (`insta_tokens`, Single-Active-Token-Modell: `access_token`, `expires_at`, `active`,
-  `rotated_at`; Unique-Index `uq_tokens_one_active`). Der aktive Token wird vom n8n-Workflow
-  `instagram-token-health-daily` automatisch erneuert (≤7 Tage Restlaufzeit).
-  > ⚠️ **Deadline-Korrektur:** Aktiver Token `expires_at` = **2026-08-25** (rotiert
-  > 2026-06-26) — **nicht** das in Übergabe/Memory genannte 2026-09-06. Da OpenClaw
-  > auto-refresht, gibt es **kein fixes Handover-Kalenderdatum**. Die echte Schranke: HDCC
-  > hat **keinen** Refresh → nach dem Ingest bleiben HDCC max. ~60 Tage bis zum nächsten
-  > nötigen (manuellen) Token-Tausch. Disconnect-Reihenfolge bleibt: **OpenClaw erst nach
-  > HDCC-Ingest** abschalten (Dual-Bot-Schutz).
+  `rotated_at`; Unique-Index `uq_tokens_one_active`).
+  > **Stand 2026-07-10:** Token Guardian (auto-refresh via n8n) ist **entfernt** (Code +
+  > Endpoints gelöscht 2026-07-07, n8n-Workflow war bereits `active=false`).
+  > Health-Monitor prüft weiterhin `expires_at` und warnt via Telegram bei Ablauf.
+  > Token-Erneuerung ist aktuell **manuell** (HDCC hat nach Ingest ≤60 Tage bis zum
+  > nächsten Tausch). Disconnect-Reihenfolge: **OpenClaw erst nach HDCC-Ingest** abschalten.
 - **Geteilte nginx:** Route `/static/hdcc/` serviert HDCC-Medien über die *gemeinsame* nginx
   (neben `/static/instagram/` für OpenClaw) → `SHARED_PLATFORM.md §5`.
 - **Geteilte Plattform:** eine Postgres-Instanz (getrennte DBs/Rollen), MinIO, ffmpeg-Binary →
@@ -247,32 +253,99 @@ Alle Pfade routen durch `executeOuraSync()` (Advisory Lock **47** + Retry-on-401
 DB: `health_oura_tokens` (V040, ohne `userid`). Dedup: `hasEntryForDate` für alle Typen
 außer Sleep (upsert). `health_logs.external_id` (vormals `withings_id`) ist provider-neutral.
 
-**Advisory-Lock-Registry:** 42=Withings, 44=SharePoint, 46=Banking, **47=Oura**.
+**Advisory-Lock-Registry:** 42=Withings, 43=Banking-Test, 44=SharePoint, 46=Banking-Session,
+**47=Oura**, **48=Memory-Sweep**.
 
 ---
 
-## 10. Roadmap / Sprint-Plan
+## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
-**Status:** ✅ Stand 2026-06-26
+**Status:** ✅ live seit 2026-07-10 (Evidence Bundle `docs/workpackages/2026-07-10-meeting-detection.md`)
+
+Mail-Scanner (`src/modules/mail/commands.ts`) klassifiziert eingehende M365-Mails via
+LLM (Haiku) in drei Kategorien: **BOOKING** (Reise), **MEETING** (Termin), **null** (irrelevant).
+
+- **Prompt:** 3-Wege-Klassifikation in `src/modules/travel/enrichment.ts`. EVENT (Buchung)
+  eingeschränkt auf gekaufte Tickets. Meeting-Keywords (Zoom, Teams, Meet) als Negativ-Beispiele
+  für BOOKING. Zeitangaben als ISO8601 mit Zeitzone-Offset (`+02:00` MESZ / `+01:00` MEZ).
+- **Meeting-Flow:** `isMeeting()` Type-Guard → `formatMeetingMessage()` → Telegram-Buttons
+  ("In Kalender eintragen" / "Ignorieren") → `handleMeetingCallback` → `createCalendarEventDirect()`.
+- **Calendar-Path:** `createCalendarEventDirect()` in `src/modules/calendar/commands.ts`.
+  M365 Graph API `POST .../events`. Konflikterkennung über `calendarView`. Zeitzone-korrekt:
+  `toBerlinLocalIso()` formatiert Date-Objekte als Berlin-Lokalzeit für M365 Payload
+  (M365 interpretiert `dateTime` im angegebenen `timeZone`-Feld).
+- **State:** `pendingMeetings` Map auf `globalThis` (multi-load-resilient).
+- **Callback-Prefix:** `meeting_` in `CALLBACK_PREFIXES` (index.ts).
+- **Type:** `ParsedMeeting` in `src/modules/travel/types.ts`.
+
+---
+
+## 11. Owner-Memory (dynamisches Gedächtnis)
+
+**Status:** ✅ live seit 2026-07-06
+
+Dynamisches Gedächtnis: EA lernt aus Owner-Konversationen (Text + Voice-Transkripte).
+
+- **Conversation-Log:** `agent_end`-Hook persistiert Owner-Turns in `conversation_log`.
+  Voice-Transkripte via `resolveTranscript()`. Fire-and-forget.
+- **Fakten-Extraktion:** `extractFacts()` via LLM, max 5 Fakten/Turn, Dedup via Unique Index +
+  LLM-Abgleich, Supersede statt Löschen.
+- **Sweep:** `runExtractSweep()` alle 60s, Advisory Lock **48**, max 3 Versuche.
+- **Recall:** Branch 7 in `before_agent_start`, max 50 Fakten / 4 KB, Cache TTL 60s.
+- **Pflege:** `/memory list`, `/memory drop <id>` (Bestätigungs-Button, `memdrop_` Callback-Prefix).
+- **DB:** `conversation_log`, `owner_memory` (Migration 041/042, Boot-Time-DDL).
+- **Log-Disziplin:** Journal loggt nur IDs/Counts — keine Fakten-Klartexte (BIK-005).
+
+---
+
+## 12. Governance-Framework
+
+**Status:** ✅ eingeführt 2026-07-09
+
+Audit-Prozess für Regel-Compliance und Architektur-Drift.
+
+- **Regel-Registry:** `governance/AUDIT-CHECKLIST.md` — 22 GOV-Regeln + 5 BIK-Regeln.
+  Teil A (Regel-Registry), Teil B (6 Prüfpunkte), Teil C (bikosoc-Annex).
+- **Findings-Tracker:** `governance/AUDIT-FINDINGS.md` — F-001 bis F-005.
+- **Evidence-Bundles:** `docs/workpackages/YYYY-MM-DD-<name>.md` je Arbeitspaket.
+- **Regelquelle-Verweis:** Chat-Beschlüsse gelten erst nach Überführung in die Checkliste.
+- **Build-Gate (maschinell geprüft):** `npm run build` (GOV-007), `npm run verify:commands`
+  (GOV-005), `bun run scripts/smoke-test.ts` (GOV-008), `npm test` (GOV-009).
+- **Command-Guard:** `scripts/verify-commands.ts` prüft bidirektional:
+  Direction A (`registerCommand` ohne `REGISTERED_COMMANDS` Eintrag) und
+  Direction B (`REGISTERED_COMMANDS` ohne Handler). Aktuell **112/112** konsistent.
+  Exit 0 Pflicht vor jedem Commit.
+
+---
+
+## 13. Roadmap / Sprint-Plan
+
+**Status:** ✅ Stand 2026-07-10
 
 - **Abgeschlossen:** Infra (Sprint 1–2) · Instagram/Health/Assets → Postgres (S3–5) ·
   Fleet/Location/SharePoint/Links → Postgres (über v32 hinaus) · Banking E0–E3 (Weekly-Button) ·
-  Anthropic-Modell-ID-Fix · Security-Tail `nk-trigger`→`/api/internal/` (`eaa7610`).
+  Banking 2.10-A (Session Reuse, 71 Tests, E2E KSK) · Anthropic-Modell-ID-Fix ·
+  Security-Tail `nk-trigger`→`/api/internal/` · Owner-Memory Phase 3 (2026-07-06) ·
+  Mail-Scanner Meeting-Detection + Calendar-Path (2026-07-10, §12) ·
+  Timezone-Fix Meeting-Flow (2026-07-10) · Governance-Framework (2026-07-09, §13) ·
+  Token-Guardian-Entfernung (2026-07-07) · Telegram-Commands kuratiertes Menü (29/112).
 - **Veraltet/überholt:** v32-Roadmap „Banking CSV-Upload / GoCardless" → ersetzt durch
-  FinTS-Sidecar + Weekly-Button-Banking (§5).
-- **Offen/anstehend:** Trading Phase 3 (validierter Engine + Kill-Switch) · Trading-/Telegram-
-  Diagnose + Alert-Lärm-Reduktion · Telegram-Commands < 100 (Bot-Limit) · Security-Tail-Rest
+  FinTS-Sidecar + Weekly-Button-Banking (§5). `openclaw_test_*`-Cruft-DBs → bereinigt.
+- **Offen/anstehend:** Trading Phase 3 (validierter Engine + Kill-Switch) · Security-Tail-Rest
   (Gateway-Token-Rotation, Withings-Redirect-URI + Re-Consent) · Sprint-12-Backlog
-  (Hard-Delete Phase 2, Runbooks ins Repo, Frontend-Polish) · `openclaw_test_*`-Cruft-DBs
-  aufräumen (§11/SHARED §4).
+  (Hard-Delete Phase 2, Runbooks ins Repo, Frontend-Polish) · Travel + Mail → Postgres (§4).
 
 ---
 
-## 11. Verifikationsstatus / offene Fakten
+## 14. Verifikationsstatus / offene Fakten
 
-**Vollständig verifiziert 2026-06-26** über beide cc-Pässe: Services/Ports · DB-/Rollen-Liste ·
+**Verifiziert 2026-06-26** (Basis-Pass): Services/Ports · DB-/Rollen-Liste ·
 Schema-Versionierung · Modul-Migrationsstand · Banking-Commits · Modell-Fix-Push · n8n-Status ·
 Insta-Token-Ablauf · Travel/Mail-Datenhaltung · OS/Host/TLS.
+
+**Aktualisiert 2026-07-10** (F-001 Konsolidierung): Tabellenzahl 53→56 · Gateway-Version ·
+n8n-Workflows (alle inactive) · Token-Guardian-Entfernung · Memory-Modul · Meeting-Calendar-
+Path · Governance-Framework · Command-Guard · Advisory-Lock-Registry komplett.
 
 **Erledigt (Hygiene-Batch 2026-06-26):**
 - ✅ banking-fints `/health`-Endpoint nachgerüstet (HTTP 200, kein Bank-Kontakt) — §3
@@ -282,3 +355,4 @@ Insta-Token-Ablauf · Travel/Mail-Datenhaltung · OS/Host/TLS.
 
 **Offene Tails (nicht doku-blockierend, niedrige Prio):**
 - Travel + Mail → Postgres migrieren — §4
+- ⏳ erster echter 3955-Live-Test (Banking) — §5
