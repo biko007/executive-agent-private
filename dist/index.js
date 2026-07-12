@@ -38,6 +38,7 @@ import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import http from "node:http";
 // ESM polyfill: __dirname = plugin root (one level up from dist/)
 const __filename = fileURLToPath(import.meta.url);
@@ -132,6 +133,8 @@ export default function (api) {
     g.__ea_mailScannerRegistered ??= false;
     g.__ea_bankingReminderRegistered ??= false;
     g.__ea_auditReminderRegistered ??= false;
+    g.__ea_reportWatcherRegistered ??= false;
+    g.__ea_waitNotifierRegistered ??= false;
     // pluginConfig maps to: plugins.entries.executive-agent.config
     const pcfg = api.pluginConfig || {};
     const mailCfg = pcfg.mail || {};
@@ -341,6 +344,36 @@ export default function (api) {
             return false;
         }
     }
+    /**
+     * Send a file as Telegram document with optional caption.
+     */
+    async function sendTelegramDocument(chatId, filePath, caption) {
+        if (!telegramBotToken)
+            return false;
+        try {
+            const fileData = fs.readFileSync(filePath);
+            const fileName = path.basename(filePath);
+            const blob = new Blob([fileData], { type: 'application/octet-stream' });
+            const form = new FormData();
+            form.append('chat_id', chatId);
+            form.append('document', blob, fileName);
+            if (caption)
+                form.append('caption', caption.slice(0, 1024));
+            const res = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendDocument`, {
+                method: 'POST',
+                body: form,
+            });
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                api.logger.warn(`[report-watcher] sendDocument HTTP ${res.status}: ${body}`);
+            }
+            return res.ok;
+        }
+        catch (e) {
+            api.logger.error(`[report-watcher] sendTelegramDocument failed: ${e.message}`);
+            return false;
+        }
+    }
     /* ---------------- Command Guard: suppress AI agent for registered commands ---------------- */
     // All registered plugin commands. When user sends one of these,
     // the AI agent must NOT respond — the command handler handles it.
@@ -371,6 +404,7 @@ export default function (api) {
         'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
         'banking', 'tan',
         'memory',
+        'report', 'ccstop',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
     const persistedRuns = new Set();
@@ -1523,6 +1557,104 @@ export default function (api) {
             return { text: 'Verfuegbar: /memory list | /memory drop <id>' };
         },
     });
+    // ── /report Command: Abruf neuester Reports via Telegram ────────────────────
+    api.registerCommand({
+        name: 'report',
+        description: 'Reports abrufen. /report [n] — n=1 (neuester), 2 (zweitneuester), ...',
+        handler: async (args) => {
+            const n = args.trim() ? parseInt(args.trim(), 10) : 1;
+            if (isNaN(n) || n < 1) {
+                return { text: 'Nutzung: /report [n] — n = 1 (neuester), 2 (zweitneuester), ...' };
+            }
+            const homeDir = process.env.HOME || '/home/biko';
+            const specDir = path.join(homeDir, 'bikosoc-spec');
+            const reportFiles = [];
+            // Scan ~/bikosoc-spec/ for all .md files
+            try {
+                const entries = fs.readdirSync(specDir);
+                for (const name of entries) {
+                    if (!name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    const fp = path.join(specDir, name);
+                    const st = fs.statSync(fp);
+                    if (st.isFile())
+                        reportFiles.push({ name, filePath: fp, mtimeMs: st.mtimeMs });
+                }
+            }
+            catch { /* dir missing */ }
+            // Scan ~ for report-*.md files
+            try {
+                const homeEntries = fs.readdirSync(homeDir);
+                for (const name of homeEntries) {
+                    if (!name.startsWith('report-') || !name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    const fp = path.join(homeDir, name);
+                    const st = fs.statSync(fp);
+                    if (st.isFile())
+                        reportFiles.push({ name, filePath: fp, mtimeMs: st.mtimeMs });
+                }
+            }
+            catch { /* ignore */ }
+            // Sort newest first
+            reportFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+            if (reportFiles.length === 0) {
+                return { text: 'Kein Report vorhanden.' };
+            }
+            if (n > reportFiles.length) {
+                return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfuegbar).` };
+            }
+            const target = reportFiles[n - 1];
+            const chatId = loadSettings().telegramChatId || '133260792';
+            // Send as document
+            await sendTelegramDocument(chatId, target.filePath, `Report #${n}: ${target.name}`);
+            // Send up to 3 text chunks (4000 chars each)
+            try {
+                const content = fs.readFileSync(target.filePath, 'utf-8');
+                const MAX_CHUNK = 4000;
+                const MAX_CHUNKS = 3;
+                for (let i = 0; i < MAX_CHUNKS && i * MAX_CHUNK < content.length; i++) {
+                    const chunk = content.slice(i * MAX_CHUNK, (i + 1) * MAX_CHUNK);
+                    const label = content.length > MAX_CHUNK ? ` [${i + 1}/${Math.min(MAX_CHUNKS, Math.ceil(content.length / MAX_CHUNK))}]` : '';
+                    await sendTelegram(chatId, `${target.name}${label}\n\n${chunk}`);
+                }
+            }
+            catch { /* text preview best-effort */ }
+            return { text: '' };
+        },
+    });
+    // ── /ccstop Command: Kill-Switch fuer laufenden cc in tmux bikosoc ─────────
+    api.registerCommand({
+        name: 'ccstop',
+        description: 'Kill-Switch: laufenden Claude Code in tmux bikosoc beenden. /ccstop',
+        handler: async (_args, ctx) => {
+            const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
+            if (ctxSenderId !== OWNER_SENDER_ID) {
+                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+            }
+            try {
+                // Send SIGINT to the foreground process in tmux bikosoc, then kill remaining claude/cc
+                execSync('tmux send-keys -t bikosoc C-c 2>/dev/null || true', { timeout: 5000 });
+                // Give SIGINT a moment, then force-kill any remaining claude processes in that session
+                execSync('sleep 1 && tmux send-keys -t bikosoc C-c 2>/dev/null || true', { timeout: 8000 });
+                // Also kill any node/claude processes that are children of the tmux pane
+                try {
+                    const panePid = execSync("tmux display-message -t bikosoc -p '#{pane_pid}' 2>/dev/null", { encoding: 'utf-8' }).trim();
+                    if (panePid) {
+                        execSync(`pkill -TERM -P ${panePid} 2>/dev/null || true`, { timeout: 5000 });
+                    }
+                }
+                catch { /* best-effort */ }
+                const chatId = loadSettings().telegramChatId || '133260792';
+                await sendTelegram(chatId, '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
+                api.logger.info('[ccstop] Kill-Switch ausgefuehrt');
+                return { text: 'cc-stop ausgefuehrt.' };
+            }
+            catch (e) {
+                api.logger.error(`[ccstop] Fehler: ${e.message}`);
+                return { text: `cc-stop Fehler: ${e.message}` };
+            }
+        },
+    });
     // ── Message Sink: persist conversation turns + trigger extraction ──────────
     // Fire-and-forget — Schreibfehler blockieren den Agenten nie.
     // Scope: Owner-only (senderId 133260792).
@@ -2158,6 +2290,219 @@ export default function (api) {
             }
         }, 60_000);
         api.logger.info('[audit-reminder] Monthly audit reminder registered (1st of month, 09:00 Berlin)');
+    }
+    // ── Report Watcher (~/bikosoc-spec/ + ~ whitelist report-*.md) ─────────────
+    // Monitors for new/modified report files, delivers via Telegram (document + text chunks).
+    // First-run: seeds existing files into dedupe map WITHOUT sending them.
+    if (!g.__ea_reportWatcherRegistered) {
+        g.__ea_reportWatcherRegistered = true;
+        const REPORT_SPEC_DIR = path.join(process.env.HOME || '/home/biko', 'bikosoc-spec');
+        const REPORT_HOME_DIR = process.env.HOME || '/home/biko';
+        const REPORT_SENT_PATH = path.join(REPORT_SPEC_DIR, '.report-sent.json');
+        const REPORT_RATE_MS = 60_000; // Max 1 file per minute
+        const REPORT_MAX_CHUNKS = 3;
+        const REPORT_CHUNK_SIZE = 4000;
+        let reportLastAutoSendAt = 0;
+        function loadReportSentMap() {
+            try {
+                const raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
+                const obj = JSON.parse(raw);
+                return new Map(Object.entries(obj));
+            }
+            catch {
+                return new Map();
+            }
+        }
+        function saveReportSentMap(m) {
+            try {
+                fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
+                const obj = Object.fromEntries(m);
+                fs.writeFileSync(REPORT_SENT_PATH, JSON.stringify(obj, null, 2));
+            }
+            catch (e) {
+                api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
+            }
+        }
+        // Seed: record all existing files so they won't be sent on first run
+        function seedReportSentMap() {
+            const sentMap = loadReportSentMap();
+            let seeded = 0;
+            // Seed ~/bikosoc-spec/*.md
+            try {
+                for (const name of fs.readdirSync(REPORT_SPEC_DIR)) {
+                    if (!name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    if (!sentMap.has(`spec:${name}`)) {
+                        const st = fs.statSync(path.join(REPORT_SPEC_DIR, name));
+                        sentMap.set(`spec:${name}`, st.mtimeMs);
+                        seeded++;
+                    }
+                }
+            }
+            catch { /* dir missing is OK */ }
+            // Seed ~/report-*.md
+            try {
+                for (const name of fs.readdirSync(REPORT_HOME_DIR)) {
+                    if (!name.startsWith('report-') || !name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    if (!sentMap.has(`home:${name}`)) {
+                        const st = fs.statSync(path.join(REPORT_HOME_DIR, name));
+                        sentMap.set(`home:${name}`, st.mtimeMs);
+                        seeded++;
+                    }
+                }
+            }
+            catch { /* ignore */ }
+            if (seeded > 0) {
+                saveReportSentMap(sentMap);
+                api.logger.info(`[report-watcher] Seeded ${seeded} existing file(s) into dedupe map`);
+            }
+        }
+        async function scanAndDeliverReports() {
+            const chatId = loadSettings().telegramChatId || '133260792';
+            const sentMap = loadReportSentMap();
+            const toSend = [];
+            // Scan ~/bikosoc-spec/ — whitelist: report-*.md
+            try {
+                for (const name of fs.readdirSync(REPORT_SPEC_DIR)) {
+                    if (!name.startsWith('report-') || !name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    const fp = path.join(REPORT_SPEC_DIR, name);
+                    const st = fs.statSync(fp);
+                    const key = `spec:${name}`;
+                    const lastSent = sentMap.get(key);
+                    if (lastSent === undefined || st.mtimeMs > lastSent) {
+                        toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
+                    }
+                }
+            }
+            catch { /* ignore */ }
+            // Scan ~ — whitelist: report-*.md
+            try {
+                for (const name of fs.readdirSync(REPORT_HOME_DIR)) {
+                    if (!name.startsWith('report-') || !name.endsWith('.md') || name.startsWith('.'))
+                        continue;
+                    const fp = path.join(REPORT_HOME_DIR, name);
+                    const st = fs.statSync(fp);
+                    const key = `home:${name}`;
+                    const lastSent = sentMap.get(key);
+                    if (lastSent === undefined || st.mtimeMs > lastSent) {
+                        toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
+                    }
+                }
+            }
+            catch { /* ignore */ }
+            // Sort oldest first (deliver in chronological order)
+            toSend.sort((a, b) => a.mtimeMs - b.mtimeMs);
+            for (const file of toSend) {
+                const now = Date.now();
+                if (now - reportLastAutoSendAt < REPORT_RATE_MS) {
+                    api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`);
+                    break; // Will retry on next scan
+                }
+                // Send document
+                await sendTelegramDocument(chatId, file.filePath, `Auto-Report: ${file.name}`);
+                // Send up to 3 text chunks
+                try {
+                    const content = fs.readFileSync(file.filePath, 'utf-8');
+                    const totalChunks = Math.min(REPORT_MAX_CHUNKS, Math.ceil(content.length / REPORT_CHUNK_SIZE));
+                    for (let i = 0; i < totalChunks; i++) {
+                        const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
+                        const label = totalChunks > 1 ? ` [${i + 1}/${totalChunks}]` : '';
+                        await sendTelegram(chatId, `${file.name}${label}\n\n${chunk}`);
+                    }
+                }
+                catch { /* text preview best-effort */ }
+                sentMap.set(file.key, file.mtimeMs);
+                reportLastAutoSendAt = Date.now();
+                api.logger.info(`[report-watcher] Delivered: ${file.name}`);
+            }
+            saveReportSentMap(sentMap);
+        }
+        // Seed BEFORE starting watchers
+        seedReportSentMap();
+        // fs.watch on ~/bikosoc-spec/ with debounce
+        let reportDebounceSpec = null;
+        try {
+            fs.mkdirSync(REPORT_SPEC_DIR, { recursive: true });
+            fs.watch(REPORT_SPEC_DIR, () => {
+                if (reportDebounceSpec)
+                    clearTimeout(reportDebounceSpec);
+                reportDebounceSpec = setTimeout(() => void scanAndDeliverReports(), 5_000);
+            });
+        }
+        catch (e) {
+            api.logger.warn(`[report-watcher] Cannot watch ${REPORT_SPEC_DIR}: ${e.message}`);
+        }
+        // fs.watch on ~ (for report-*.md files) with debounce
+        let reportDebounceHome = null;
+        try {
+            fs.watch(REPORT_HOME_DIR, (_event, filename) => {
+                if (typeof filename === 'string' && filename.startsWith('report-') && filename.endsWith('.md')) {
+                    if (reportDebounceHome)
+                        clearTimeout(reportDebounceHome);
+                    reportDebounceHome = setTimeout(() => void scanAndDeliverReports(), 5_000);
+                }
+            });
+        }
+        catch (e) {
+            api.logger.warn(`[report-watcher] Cannot watch ${REPORT_HOME_DIR}: ${e.message}`);
+        }
+        api.logger.info('[report-watcher] Report watcher registered (~/bikosoc-spec/ + ~/report-*.md)');
+    }
+    // ── Wait-Notifier: Telegram-Meldung wenn cc in tmux bikosoc auf Eingabe wartet ──
+    if (!g.__ea_waitNotifierRegistered) {
+        g.__ea_waitNotifierRegistered = true;
+        let lastWaitNotifyAt = 0;
+        const WAIT_NOTIFY_COOLDOWN_MS = 5 * 60_000; // Max 1 notification per 5 minutes
+        let lastPaneContentHash = '';
+        setInterval(async () => {
+            try {
+                // Check if tmux bikosoc session exists and has an idle prompt
+                let paneContent;
+                try {
+                    paneContent = execSync("tmux capture-pane -t bikosoc -p -l 5 2>/dev/null", { encoding: 'utf-8', timeout: 5000 }).trim();
+                }
+                catch {
+                    return; // Session doesn't exist or tmux error — skip silently
+                }
+                if (!paneContent)
+                    return;
+                // Detect waiting-for-input patterns:
+                // 1. Claude Code shows a prompt like ">" or "❯" at the bottom
+                // 2. Permission prompts: "Allow", "Yes/No", "(y/n)"
+                // 3. AskUserQuestion prompts with numbered options
+                const lastLines = paneContent.split('\n').slice(-3).join('\n');
+                const isWaiting = /^\s*[❯>]\s*$/m.test(lastLines) ||
+                    /\(y\/n\)/i.test(lastLines) ||
+                    /Allow|Deny|approve/i.test(lastLines) ||
+                    /^\s*\d+\.\s/m.test(lastLines) && /other/i.test(lastLines) ||
+                    /waiting for your/i.test(lastLines) ||
+                    /\? $/m.test(lastLines);
+                if (!isWaiting) {
+                    lastPaneContentHash = '';
+                    return;
+                }
+                // Dedupe: don't re-notify for the same content
+                const contentHash = crypto.createHash('sha256').update(lastLines).digest('hex').slice(0, 16);
+                if (contentHash === lastPaneContentHash)
+                    return;
+                // Rate-limit
+                const now = Date.now();
+                if (now - lastWaitNotifyAt < WAIT_NOTIFY_COOLDOWN_MS)
+                    return;
+                lastPaneContentHash = contentHash;
+                lastWaitNotifyAt = now;
+                const chatId = loadSettings().telegramChatId || '133260792';
+                const preview = lastLines.slice(0, 200);
+                await sendTelegram(chatId, `⏳ cc wartet auf Eingabe (tmux bikosoc):\n\n\`\`\`\n${preview}\n\`\`\``);
+                api.logger.info('[wait-notifier] Notification sent');
+            }
+            catch (e) {
+                api.logger.warn(`[wait-notifier] Error: ${e.message}`);
+            }
+        }, 30_000); // Check every 30 seconds
+        api.logger.info('[wait-notifier] Wait-Notifier registered (30s poll, tmux bikosoc)');
     }
     // ── Plugin HTTP routes on gateway port 18789 ─────────────────────────────
     // Register /health, /ready, /version, /location via api.registerHttpRoute()

@@ -1,8 +1,8 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-07-06**
+**Stand: 2026-07-12**
 
-## Stand 2026-07-06
+## Stand 2026-07-12
 
 Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
 
@@ -536,6 +536,35 @@ Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index i
 Owner-Memory Phase 3 (2026-07-06): Fakten-Extraktion, Recall-Injektion, /memory Pflege live.
 Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
+Betriebsautomatisierung (2026-07-12): Report-Watcher, Wait-Notifier, /ccstop live.
+
+### Betriebsautomatisierung (2026-07-12, Portierung von HDCC)
+
+Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
+
+- **Report-Watcher:** Ueberwacht `~/bikosoc-spec/` und `~` (Whitelist `report-*.md`).
+  Neue/geaenderte Reports automatisch via Telegram zugestellt (Dokument + max 3 Text-Chunks).
+  Rate-Limit 1/min. Dedupe via `~/bikosoc-spec/.report-sent.json`.
+  Erstlauf: bestehende Dateien werden in Dedupe-Map geseeded, NICHT gesendet.
+  fs.watch mit 5s Debounce. globalThis-Guard `__ea_reportWatcherRegistered`.
+- **Wait-Notifier (Warte-Melder):** Prueft alle 30s via `tmux capture-pane -t bikosoc` ob
+  Claude Code auf Eingabe wartet. Telegram-Notification mit Preview (max 1x pro 5min, dedup
+  auf Content-Hash). globalThis-Guard `__ea_waitNotifierRegistered`.
+- **`/report [n]`:** Manueller Abruf von Reports. Listet alle .md in ~/bikosoc-spec/ + ~/report-*.md,
+  sortiert nach mtime (neueste zuerst). Sendet als Dokument + Text-Preview.
+- **`/ccstop`:** Kill-Switch fuer laufenden Claude Code in tmux bikosoc. Sendet C-c via tmux,
+  dann SIGTERM an Kindprozesse. Owner-only (133260792). Bestaetigung via Telegram.
+- **Command-Guard:** `report` und `ccstop` in REGISTERED_COMMANDS. verify:commands gruen.
+
+### Report-Konvention (stehende Regel, ab 2026-07-12)
+
+- **Prefix:** Alle cc/Codex-Reports in `~` muessen mit `report-` beginnen (Muster: `report-<thema>-YYYYMMDD-HHMM.md`).
+  Nur `report-*.md` im Home-Verzeichnis werden vom Watcher erfasst.
+- **Kopfzeile (erste Zeile nach Titel):**
+  - `AUTO` — automatisch generierter Report (cc-Lauf ohne manuelle Intervention)
+  - `REVIEW` — cc-Auftrag mit Review-Erwartung (Owner soll pruefen/abnehmen)
+- **Ablage:** `~/bikosoc-spec/` fuer dauerhafte Spec-Dokumente, `~` fuer Session-Reports.
+- **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` (nur report-Prefix).
 
 ### Location-Staleness-Alert (2026-06-26)
 

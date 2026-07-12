@@ -14,7 +14,7 @@
 - ✅ **Verifiziert** auf VPS am Datum — Quelle benannt
 - ⏳ **Zu verifizieren** — Prüfschritt benannt
 
-**Verifikations-Pässe:** 2026-06-26 · 2026-07-10 (F-001 Konsolidierung).
+**Verifikations-Pässe:** 2026-06-26 · 2026-07-10 (F-001 Konsolidierung) · 2026-07-12 (Betriebsautomatisierung).
 
 ---
 
@@ -313,8 +313,24 @@ Audit-Prozess für Regel-Compliance und Architektur-Drift.
   (GOV-005), `bun run scripts/smoke-test.ts` (GOV-008), `npm test` (GOV-009).
 - **Command-Guard:** `scripts/verify-commands.ts` prüft bidirektional:
   Direction A (`registerCommand` ohne `REGISTERED_COMMANDS` Eintrag) und
-  Direction B (`REGISTERED_COMMANDS` ohne Handler). Aktuell **112/112** konsistent.
+  Direction B (`REGISTERED_COMMANDS` ohne Handler). Aktuell **114/114** konsistent.
   Exit 0 Pflicht vor jedem Commit.
+
+### Betriebsautomatisierung (portiert von HDCC, 2026-07-12)
+
+Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
+
+- **Report-Watcher:** `fs.watch` auf `~/bikosoc-spec/` + `~` (Whitelist `report-*.md`).
+  Automatische Telegram-Zustellung neuer/geänderter Reports (Dokument + max 3 Text-Chunks à 4000 Zeichen).
+  Rate-Limit: 1 Datei/min. Dedupe-State: `~/bikosoc-spec/.report-sent.json`.
+  Erstlauf-Seeding: existierende Dateien werden in Map geseeded, nicht gesendet.
+  globalThis-Guard: `__ea_reportWatcherRegistered`. 5s Debounce.
+- **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
+  (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
+  Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).
+  globalThis-Guard: `__ea_waitNotifierRegistered`.
+- **`/report [n]`:** Manueller Report-Abruf (n=1 neuester). Scannt ~/bikosoc-spec/ + ~/report-*.md.
+- **`/ccstop`:** Kill-Switch für cc in tmux bikosoc (C-c + SIGTERM Kindprozesse). Owner-only.
 
 ---
 
@@ -328,7 +344,8 @@ Audit-Prozess für Regel-Compliance und Architektur-Drift.
   Security-Tail `nk-trigger`→`/api/internal/` · Owner-Memory Phase 3 (2026-07-06) ·
   Mail-Scanner Meeting-Detection + Calendar-Path (2026-07-10, §12) ·
   Timezone-Fix Meeting-Flow (2026-07-10) · Governance-Framework (2026-07-09, §13) ·
-  Token-Guardian-Entfernung (2026-07-07) · Telegram-Commands kuratiertes Menü (29/112).
+  Token-Guardian-Entfernung (2026-07-07) · Telegram-Commands kuratiertes Menü (29/114) ·
+  Betriebsautomatisierung (2026-07-12, Report-Watcher + Wait-Notifier + /ccstop, §9).
 - **Veraltet/überholt:** v32-Roadmap „Banking CSV-Upload / GoCardless" → ersetzt durch
   FinTS-Sidecar + Weekly-Button-Banking (§5). `openclaw_test_*`-Cruft-DBs → bereinigt.
 - **Offen/anstehend:** Trading Phase 3 (validierter Engine + Kill-Switch) · Security-Tail-Rest
