@@ -282,6 +282,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
 - SP Hard-Delete Phase 2: 3 synthetische Tests Pflicht VOR n8n-Workflow auf `dry_run=false` (siehe Runbook)
 - n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
+- Withings OAuth-Callback-Route reparieren (F-009, zurückgestellt ~1 Jahr). nginx `/withings/callback` → Gateway, aber kein Handler. Temp-Server auf Port 8080. Fix: analog Oura-Pattern (Port 8081 direkt) oder Gateway-Route registrieren.
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.

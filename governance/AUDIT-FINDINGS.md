@@ -17,7 +17,8 @@
 | F-005 | Telegram-Commands 112 vs Bot-Limit 100 | mittel | erledigt | Kuratiertes Menü (29 Cmds), alle 112 funktional | 2026-07-09 | 2026-07-09 |
 | F-006 | /report + /ccstop: acceptsArgs fehlte, falsches Handler-Signatur | hoch | erledigt | acceptsArgs: true + ctx-Pattern, E2E offen | 2026-07-12 | 2026-07-12 |
 | F-007 | Report-Watcher Chunk-Duplikat (concurrent scan) | mittel | erledigt | reportScanInProgress Guard | 2026-07-12 | 2026-07-12 |
-| F-008 | Command-Guard deckt acceptsArgs nicht ab | niedrig | akzeptiert | Statisch nicht sinnvoll pruefbar, Risiko dokumentiert | 2026-07-12 | — |
+| F-008 | Command-Guard deckt acceptsArgs nicht ab | niedrig | akzeptiert | Statisch nicht sinnvoll pruefbar, Owner-Akzeptanz 12.07. Mitigation: Claude-E2E-Pflicht nach Command-Aenderungen | 2026-07-12 | 2026-07-12 |
+| F-009 | Withings OAuth-Callback-Route defekt | niedrig | zurückgestellt | Refresh-Token funktional (~1 Jahr gültig). Fix non-trivial, kein akuter Handlungsbedarf. | 2026-07-12 | — |
 
 ---
 
@@ -155,3 +156,28 @@ der heutigen Korrektur (Pattern ist jetzt klar dokumentiert).
 
 **Entscheidung:** AKZEPTIERT — Risiko dokumentiert, Convention in CLAUDE.md verstaerkt.
 Keine Gate-Erweiterung noetig. E2E-Pruefung neuer Commands bleibt Owner-Verantwortung.
+
+**Owner-Akzeptanz:** 2026-07-12, bestaetigt durch Owner.
+**Mitigation:** Claude-E2E-Pflicht nach jeder Command-Aenderung (manueller Telegram-Test).
+
+---
+
+### F-009: Withings OAuth-Callback-Route defekt [ZURÜCKGESTELLT]
+
+**Beschreibung:** Die nginx-Route `/withings/callback` leitet auf Port 18789 (Gateway) weiter,
+aber der Gateway hat keinen Handler fuer diesen Pfad registriert. Der temp-Server fuer
+Withings-OAuth (`/withingsauth`) lauscht auf Port 8080 — nginx kennt diese Route nicht.
+
+**Auswirkung:** Bei Ablauf des Refresh-Tokens (~1 Jahr Gueltigkeit) schlaegt Re-Consent fehl.
+Token ID 142 ist aktiv und rotiert automatisch alle ~6h. Kein akuter Ausfall.
+
+**Loesung (wenn noetig):**
+- (a) Gateway-Route `/withings/callback` registrieren, die auf temp-Server (Port 8080) proxied, ODER
+- (b) `WITHINGS_REDIRECT_URI` auf einen Port aendern, den der temp-Server direkt bedient
+  (analog `/oura/callback` → Port 8081)
+
+**Entscheidung:** ZURÜCKGESTELLT — Refresh-Token funktional, Auto-Rotation aktiv. Fix ist
+nicht dringend (~1 Jahr Fenster). Wird als Backlog-Item gefuehrt.
+
+**Gefunden:** 2026-07-12
+**Betroffene Regeln:** keine (Betriebsrisiko, nicht Compliance)

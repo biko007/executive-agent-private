@@ -306,7 +306,7 @@ Audit-Prozess für Regel-Compliance und Architektur-Drift.
 
 - **Regel-Registry:** `governance/AUDIT-CHECKLIST.md` — 22 GOV-Regeln + 5 BIK-Regeln.
   Teil A (Regel-Registry), Teil B (6 Prüfpunkte), Teil C (bikosoc-Annex).
-- **Findings-Tracker:** `governance/AUDIT-FINDINGS.md` — F-001 bis F-005.
+- **Findings-Tracker:** `governance/AUDIT-FINDINGS.md` — F-001 bis F-009.
 - **Evidence-Bundles:** `docs/workpackages/YYYY-MM-DD-<name>.md` je Arbeitspaket.
 - **Regelquelle-Verweis:** Chat-Beschlüsse gelten erst nach Überführung in die Checkliste.
 - **Build-Gate (maschinell geprüft):** `npm run build` (GOV-007), `npm run verify:commands`
@@ -345,11 +345,12 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   Mail-Scanner Meeting-Detection + Calendar-Path (2026-07-10, §12) ·
   Timezone-Fix Meeting-Flow (2026-07-10) · Governance-Framework (2026-07-09, §13) ·
   Token-Guardian-Entfernung (2026-07-07) · Telegram-Commands kuratiertes Menü (29/114) ·
-  Betriebsautomatisierung (2026-07-12, Report-Watcher + Wait-Notifier + /ccstop, §9).
+  Betriebsautomatisierung (2026-07-12, Report-Watcher + Wait-Notifier + /ccstop, §9) ·
+  Security-Lauf Doctor-Empfehlungen (2026-07-12, F-009, §12).
 - **Veraltet/überholt:** v32-Roadmap „Banking CSV-Upload / GoCardless" → ersetzt durch
   FinTS-Sidecar + Weekly-Button-Banking (§5). `openclaw_test_*`-Cruft-DBs → bereinigt.
 - **Offen/anstehend:** Trading Phase 3 (validierter Engine + Kill-Switch) · Security-Tail-Rest
-  (Gateway-Token-Rotation, Withings-Redirect-URI + Re-Consent) · Sprint-12-Backlog
+  (Gateway-Token-Rotation, Withings-Callback F-009 zurückgestellt) · Sprint-12-Backlog
   (Hard-Delete Phase 2, Runbooks ins Repo, Frontend-Polish) · Travel + Mail → Postgres (§4).
 
 ---
@@ -363,6 +364,11 @@ Insta-Token-Ablauf · Travel/Mail-Datenhaltung · OS/Host/TLS.
 **Aktualisiert 2026-07-10** (F-001 Konsolidierung): Tabellenzahl 53→56 · Gateway-Version ·
 n8n-Workflows (alle inactive) · Token-Guardian-Entfernung · Memory-Modul · Meeting-Calendar-
 Path · Governance-Framework · Command-Guard · Advisory-Lock-Registry komplett.
+
+**Security-Lauf 2026-07-12** (Doctor-Empfehlungen): 3 Empfehlungen verifiziert (alle bereits
+umgesetzt): `ownerAllowFrom` konfiguriert · Secrets als Env-Referenzen · `KillMode=mixed` korrekt.
+Withings-Callback-Route als F-009 zurückgestellt (Refresh-Token ~1 Jahr gültig).
+nk-trigger-Endpoint gesichert, n8n-Workflow als Backlog.
 
 **Erledigt (Hygiene-Batch 2026-06-26):**
 - ✅ banking-fints `/health`-Endpoint nachgerüstet (HTTP 200, kein Bank-Kontakt) — §3
