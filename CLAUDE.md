@@ -475,6 +475,11 @@ npm run verify:commands  # Command-Registration-Guard (bidirektional)
 - Direction B: `REGISTERED_COMMANDS`-Eintrag ohne Handler → User bekommt NO_REPLY ohne Antwort
 Exit 0 = clean. Pflicht vor jedem Commit — wie `verify-schema`.
 
+**acceptsArgs-Konvention (F-008):** Commands mit Argumenten MUESSEN `acceptsArgs: true`
+setzen und Handler-Signatur `(ctx: any)` verwenden. Args via `String(ctx?.args || '').trim()`.
+verify:commands prueft dies NICHT — E2E-Test neuer Arg-Commands ist Owner-Verantwortung.
+Referenz-Pattern: `/healthsync`, `/trademode`, `/report`.
+
 **Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
 `POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 345 Tests
 sind grün wenn sie einzeln/sequenziell laufen.

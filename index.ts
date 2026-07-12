@@ -1714,8 +1714,10 @@ export default function (api: any) {
   api.registerCommand({
     name: 'report',
     description: 'Reports abrufen. /report [n] — n=1 (neuester), 2 (zweitneuester), ...',
-    handler: async (args: string) => {
-      const n = args.trim() ? parseInt(args.trim(), 10) : 1;
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
+      const raw = String(ctx?.args || '').trim();
+      const n = raw ? parseInt(raw, 10) : 1;
       if (isNaN(n) || n < 1) {
         return { text: 'Nutzung: /report [n] — n = 1 (neuester), 2 (zweitneuester), ...' };
       }
@@ -1782,7 +1784,8 @@ export default function (api: any) {
   api.registerCommand({
     name: 'ccstop',
     description: 'Kill-Switch: laufenden Claude Code in tmux bikosoc beenden. /ccstop',
-    handler: async (_args: string, ctx: any) => {
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
       const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
       if (ctxSenderId !== OWNER_SENDER_ID) {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
@@ -2599,7 +2602,11 @@ export default function (api: any) {
       }
     }
 
+    let reportScanInProgress = false;
     async function scanAndDeliverReports(): Promise<void> {
+      if (reportScanInProgress) return; // Prevent concurrent scans (double-event guard)
+      reportScanInProgress = true;
+      try {
       const chatId = loadSettings().telegramChatId || '133260792';
       const sentMap = loadReportSentMap();
       const toSend: { key: string; filePath: string; name: string; mtimeMs: number }[] = [];
@@ -2662,6 +2669,9 @@ export default function (api: any) {
       }
 
       saveReportSentMap(sentMap);
+      } finally {
+        reportScanInProgress = false;
+      }
     }
 
     // Seed BEFORE starting watchers

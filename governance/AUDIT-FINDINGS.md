@@ -1,6 +1,6 @@
 # Audit-Findings — bikosoc
 
-**Stand: 2026-07-10**
+**Stand: 2026-07-12**
 **Scope: bikosoc (Executive Agent)**
 **Methode: spec-auditor-v2-final.md §2.2**
 
@@ -15,6 +15,9 @@
 | F-003 | openclaw-workspace-state.json untracked | niedrig | erledigt | .gitignore (Laufzeit-State) | 2026-07-09 | 2026-07-09 |
 | F-004 | Verwaiste openclaw_test_* DBs | niedrig | erledigt | Bereits bereinigt (0 DBs gefunden) | 2026-07-09 | 2026-07-09 |
 | F-005 | Telegram-Commands 112 vs Bot-Limit 100 | mittel | erledigt | Kuratiertes Menü (29 Cmds), alle 112 funktional | 2026-07-09 | 2026-07-09 |
+| F-006 | /report + /ccstop: acceptsArgs fehlte, falsches Handler-Signatur | hoch | erledigt | acceptsArgs: true + ctx-Pattern, E2E offen | 2026-07-12 | 2026-07-12 |
+| F-007 | Report-Watcher Chunk-Duplikat (concurrent scan) | mittel | erledigt | reportScanInProgress Guard | 2026-07-12 | 2026-07-12 |
+| F-008 | Command-Guard deckt acceptsArgs nicht ab | niedrig | akzeptiert | Statisch nicht sinnvoll pruefbar, Risiko dokumentiert | 2026-07-12 | — |
 
 ---
 
@@ -93,3 +96,62 @@ tradekill, fleet, tuev, trips, tripnew, properties, costs, sharepoint,
 spsync, memory, insta, instadrafts, pe
 
 **Erledigt:** 2026-07-09
+
+---
+
+### F-006: /report + /ccstop: acceptsArgs fehlte, falsches Handler-Signatur [ERLEDIGT]
+
+**Beschreibung:** E2E-Test via Telegram Web ergab:
+- `/report 1` → "Command not found" (gateway routet nicht ohne `acceptsArgs: true`)
+- `/report` → "Command failed" (Handler-Signatur `(args: string)` statt `(ctx: any)`)
+
+**Root Cause:**
+1. Gateway-Framework erfordert `acceptsArgs: true` fuer Commands mit Argumenten. Ohne
+   dieses Flag wird `/report 1` als unbekannter Command behandelt (nur exaktes `/report` matcht).
+2. Handler-Signatur war `(args: string, ctx: any)` — das Framework uebergibt aber ein einziges
+   `ctx`-Objekt. Der erste Parameter war somit das ctx-Objekt, `.trim()` darauf wirft TypeError.
+
+**Lösung:**
+- `acceptsArgs: true` zu beiden Commands hinzugefuegt
+- Handler-Signatur auf `(ctx: any)` geaendert, Args via `String(ctx?.args || '').trim()`
+- Muster von `/healthsync`, `/trademode` und weiteren Arg-Commands uebernommen
+
+**Betroffene Regeln:** GOV-005 (Command-Registration) — Guard prueft NUR Existenz, nicht
+Korrektheit. Ergaenzung: F-008 dokumentiert die Luecke.
+
+**Erledigt:** 2026-07-12
+
+---
+
+### F-007: Report-Watcher Chunk-Duplikat [ERLEDIGT]
+
+**Beschreibung:** Bei der Erstlauf-Zustellung wurde Text-Chunk "2/2" doppelt gesendet.
+Journal zeigt zwei `Delivered:` Zeilen im selben Millisekunden-Fenster.
+
+**Root Cause:** `scanAndDeliverReports()` wurde von beiden fs.watch-Debounce-Timern
+(Home + Spec) quasi-gleichzeitig aufgerufen. Ohne Concurrency-Guard konnte die Funktion
+parallel laufen, wobei beide Instanzen die sentMap VOR dem Persistieren lasen und beide
+die Datei als "ungesendet" sahen.
+
+**Lösung:** `reportScanInProgress`-Flag als Mutex. Zweiter Aufruf wird sofort abgebrochen
+(`if (reportScanInProgress) return`). try/finally stellt Reset sicher.
+
+**Erledigt:** 2026-07-12
+
+---
+
+### F-008: Command-Guard deckt acceptsArgs nicht ab [AKZEPTIERT]
+
+**Beschreibung:** `verify:commands` (GOV-005) prueft bidirektional ob Handler und
+REGISTERED_COMMANDS-Eintrag existieren. Es prueft NICHT:
+- Vorhandensein von `acceptsArgs: true` bei Arg-Commands
+- Korrekte Handler-Signatur (`(ctx: any)` vs `(args: string)`)
+- Laufzeit-Verhalten (ob Handler wirft)
+
+**Analyse:** Eine statische Pruefung waere moeglich (AST-Parse nach `acceptsArgs`), aber
+nicht proportional zum Risiko: es gibt 114 Commands, davon ~80 mit `acceptsArgs`. Jeder
+neue Command wird gegen existierende Muster geprueft. Das E2E-Risiko ist gering nach
+der heutigen Korrektur (Pattern ist jetzt klar dokumentiert).
+
+**Entscheidung:** AKZEPTIERT — Risiko dokumentiert, Convention in CLAUDE.md verstaerkt.
+Keine Gate-Erweiterung noetig. E2E-Pruefung neuer Commands bleibt Owner-Verantwortung.
