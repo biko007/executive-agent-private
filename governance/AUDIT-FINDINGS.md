@@ -1,6 +1,6 @@
 # Audit-Findings — bikosoc
 
-**Stand: 2026-07-12**
+**Stand: 2026-07-13**
 **Scope: bikosoc (Executive Agent)**
 **Methode: spec-auditor-v2-final.md §2.2**
 

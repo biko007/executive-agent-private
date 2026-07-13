@@ -285,6 +285,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - Withings OAuth-Callback-Route reparieren (F-009, zurückgestellt ~1 Jahr). nginx `/withings/callback` → Gateway, aber kein Handler. Temp-Server auf Port 8080. Fix: analog Oura-Pattern (Port 8081 direkt) oder Gateway-Route registrieren.
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
+- cc-pre-backup.sh: In AUTO-Konvention als Pflicht-Erstschritt integrieren (Skript vorhanden, Konvention dokumentiert)
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
   Pattern matcht `callback_data: <prefix>` (aktuelles Framework-Format) UND `] <prefix>` (Legacy).
   Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `meeting_`, `bsync_`, `bweekly_`, `memdrop_`. Bei neuem Callback-Prefix hier UND in
@@ -583,6 +584,34 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   (Lehre 12.07.: B1-B6-Kontext ging bei Context-Wechsel verloren).
 - Plan-Files in `~/.claude/plans/` werden ebenfalls vom Watcher ueberwacht
   und mit Prefix `Plan:` zugestellt.
+
+### Deny-Hook (stehende Regel, ab 2026-07-13)
+
+PreToolUse-Hook (`~/.claude/hooks/deny-destructive.sh`) blockiert destruktive Bash-Commands
+VOR Ausfuehrung. Fail-closed (Exit 2 bei unerwartetem Fehler → Command wird blockiert).
+
+**Blockierte Patterns:**
+- `rm -r` / `rm -rf` / `rm -fr` (rekursives Loeschen)
+- `DROP TABLE`, `DROP DATABASE`, `TRUNCATE` (SQL destruktiv)
+- `DELETE FROM` ohne `WHERE` (SQL Massenlöschung)
+- `git push --force` / `push -f`, `reset --hard`, `clean -f` (Git destruktiv)
+- `git checkout .`, `git restore .` (Arbeitsverlust)
+- `chmod`/`chown` auf `/etc`, `/usr`, `/var`, `/sys`, `/boot` (Systemrechte)
+- `curl|sh`, `wget|sh` (Remote-Exec)
+- `mkfs`, `dd if=`, Fork-Bomb (Systemzerstoerung)
+
+**Notification-Hook** (`~/.claude/hooks/telegram-notify.sh`): Sendet Telegram-Meldung
+bei `permission_prompt` und `idle_prompt` Events. Non-fatal (Exit 0 bei jedem Fehler).
+Konfiguration in `~/.claude/settings.json`.
+
+### pg_dump-vor-AUTO-Konvention (stehende Regel, ab 2026-07-13)
+
+Bei AUTO-Laeufen die Datenbank-Aenderungen beinhalten: `scripts/cc-pre-backup.sh` als
+Pflicht-Erstschritt ausfuehren. Das Skript:
+- Liest `POSTGRES_URL` aus `~/.config/openclaw/env`
+- Custom-Format-Dump (`-Fc`) nach `~/backups/openclaw-YYYYMMDD-HHMMSS.dump`
+- Rotation: behaelt die 10 neuesten Dumps
+- Beleg-Zeile im Report: `Backup: openclaw-YYYYMMDD-HHMMSS.dump`
 
 ### Location-Staleness-Alert (2026-06-26)
 
