@@ -23,7 +23,7 @@ afterAll(async () => {
 });
 
 describe('V027 Banking Schema — Apply', () => {
-  it('should create 5 banking tables', async () => {
+  it('should create all banking tables (V027-V039)', async () => {
     const { rows } = await pool.query<{ table_name: string }>(`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'public' AND table_name LIKE 'banking_%'
@@ -34,6 +34,7 @@ describe('V027 Banking Schema — Apply', () => {
       'banking_institutions',
       'banking_sessions',
       'banking_sync_reminders',
+      'banking_sync_runs',
       'banking_transactions',
     ]);
   });
@@ -188,9 +189,9 @@ describe('V027 Banking Schema — Constraints', () => {
 });
 
 describe('V027 Banking Schema — Rollback + Re-Apply', () => {
-  it('should drop all 5 tables cleanly', async () => {
-    // Drop in FK-safe order
-    const tables = ['banking_sync_reminders', 'banking_sessions', 'banking_transactions', 'banking_accounts', 'banking_institutions'];
+  it('should drop all banking tables cleanly', async () => {
+    // Drop in FK-safe order (includes V039 banking_sync_runs)
+    const tables = ['banking_sync_runs', 'banking_sync_reminders', 'banking_sessions', 'banking_transactions', 'banking_accounts', 'banking_institutions'];
     for (const t of tables) {
       await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
     }

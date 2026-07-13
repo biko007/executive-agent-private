@@ -284,7 +284,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - ~~n8n-Workflow `nk-obligations-alert-daily`~~ — erledigt 2026-07-13 (systemd-Timer statt n8n, siehe NK-Obligations-Alert Abschnitt)
 - Withings OAuth-Callback-Route reparieren (F-009, zurückgestellt ~1 Jahr). nginx `/withings/callback` → Gateway, aber kein Handler. Temp-Server auf Port 8080. Fix: analog Oura-Pattern (Port 8081 direkt) oder Gateway-Route registrieren.
 - Optional: Meta-Token rotieren (User-Entscheidung)
-- Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
+- ~~`bun test` Parallelismus-Problem~~ — erledigt 2026-07-13 (`scripts/run-tests.sh` fuehrt jede Test-Datei in eigenem bun-Prozess aus, verhindert Modul-Cache-Bleeding bei HOME/POSTGRES_URL-Mutation)
 - cc-pre-backup.sh: In AUTO-Konvention als Pflicht-Erstschritt integrieren (Skript vorhanden, Konvention dokumentiert)
 - **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
   Pattern matcht `callback_data: <prefix>` (aktuelles Framework-Format) UND `] <prefix>` (Legacy).

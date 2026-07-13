@@ -44,6 +44,7 @@
     "migrate:sprint9": "bun run scripts/migrate-sprint9-links.ts",
     "verify-schema": "bun run scripts/verify-schema-versions.ts",
     "verify:commands": "bun run scripts/verify-commands.ts",
-    "test": "bun test"
+    "test": "bash scripts/run-tests.sh",
+    "test:all-parallel": "bun test"
   }
 }
