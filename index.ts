@@ -448,6 +448,22 @@ export default function (api: any) {
     }
   }
 
+  function extractReportSummary(content: string): string {
+    const MAX_SUMMARY = 1500;
+    // Try to find ## Zusammenfassung or ## Summary section
+    const match = content.match(/^##\s+(Zusammenfassung|Summary)\s*$/im);
+    if (match) {
+      const start = match.index! + match[0].length;
+      // Extract until next ## header or EOF
+      const rest = content.slice(start);
+      const nextHeader = rest.search(/^## /m);
+      const section = nextHeader > 0 ? rest.slice(0, nextHeader).trim() : rest.trim();
+      return section.slice(0, MAX_SUMMARY);
+    }
+    // Fallback: first 1500 chars
+    return content.slice(0, MAX_SUMMARY);
+  }
+
   /* ---------------- Command Guard: suppress AI agent for registered commands ---------------- */
 
   // All registered plugin commands. When user sends one of these,
@@ -1764,19 +1780,14 @@ export default function (api: any) {
       // Send as document
       await sendTelegramDocument(chatId, target.filePath, `Report #${n}: ${target.name}`);
 
-      // Send up to 3 text chunks (4000 chars each)
+      // Send summary text (Zusammenfassung section or first 1500 chars)
       try {
         const content = fs.readFileSync(target.filePath, 'utf-8');
-        const MAX_CHUNK = 4000;
-        const MAX_CHUNKS = 3;
-        for (let i = 0; i < MAX_CHUNKS && i * MAX_CHUNK < content.length; i++) {
-          const chunk = content.slice(i * MAX_CHUNK, (i + 1) * MAX_CHUNK);
-          const label = content.length > MAX_CHUNK ? ` [${i + 1}/${Math.min(MAX_CHUNKS, Math.ceil(content.length / MAX_CHUNK))}]` : '';
-          await sendTelegram(chatId, `${target.name}${label}\n\n${chunk}`);
-        }
+        const summary = extractReportSummary(content);
+        await sendTelegram(chatId, `${target.name}\n\n${summary}`);
       } catch { /* text preview best-effort */ }
 
-      return { text: '' };
+      return { text: `Report #${n}: ${target.name}` };
     },
   });
 
@@ -2541,6 +2552,7 @@ export default function (api: any) {
 
     const REPORT_SPEC_DIR = path.join(process.env.HOME || '/home/biko', 'bikosoc-spec');
     const REPORT_HOME_DIR = process.env.HOME || '/home/biko';
+    const REPORT_PLANS_DIR = path.join(REPORT_HOME_DIR, '.claude', 'plans');
     const REPORT_SENT_PATH = path.join(REPORT_SPEC_DIR, '.report-sent.json');
     const REPORT_RATE_MS = 60_000; // Max 1 file per minute
     const REPORT_MAX_CHUNKS = 3;
@@ -2596,6 +2608,18 @@ export default function (api: any) {
         }
       } catch { /* ignore */ }
 
+      // Seed ~/.claude/plans/*.md
+      try {
+        for (const name of fs.readdirSync(REPORT_PLANS_DIR)) {
+          if (!name.endsWith('.md') || name.startsWith('.')) continue;
+          if (!sentMap.has(`plan:${name}`)) {
+            const st = fs.statSync(path.join(REPORT_PLANS_DIR, name));
+            sentMap.set(`plan:${name}`, st.mtimeMs);
+            seeded++;
+          }
+        }
+      } catch { /* ignore */ }
+
       if (seeded > 0) {
         saveReportSentMap(sentMap);
         api.logger.info(`[report-watcher] Seeded ${seeded} existing file(s) into dedupe map`);
@@ -2639,6 +2663,20 @@ export default function (api: any) {
         }
       } catch { /* ignore */ }
 
+      // Scan ~/.claude/plans/ — all *.md
+      try {
+        for (const name of fs.readdirSync(REPORT_PLANS_DIR)) {
+          if (!name.endsWith('.md') || name.startsWith('.')) continue;
+          const fp = path.join(REPORT_PLANS_DIR, name);
+          const st = fs.statSync(fp);
+          const key = `plan:${name}`;
+          const lastSent = sentMap.get(key);
+          if (lastSent === undefined || st.mtimeMs > lastSent) {
+            toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
+          }
+        }
+      } catch { /* ignore */ }
+
       // Sort oldest first (deliver in chronological order)
       toSend.sort((a, b) => a.mtimeMs - b.mtimeMs);
 
@@ -2650,17 +2688,14 @@ export default function (api: any) {
         }
 
         // Send document
-        await sendTelegramDocument(chatId, file.filePath, `Auto-Report: ${file.name}`);
+        const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
+        await sendTelegramDocument(chatId, file.filePath, caption);
 
-        // Send up to 3 text chunks
+        // Send summary text (Zusammenfassung section or first 1500 chars)
         try {
           const content = fs.readFileSync(file.filePath, 'utf-8');
-          const totalChunks = Math.min(REPORT_MAX_CHUNKS, Math.ceil(content.length / REPORT_CHUNK_SIZE));
-          for (let i = 0; i < totalChunks; i++) {
-            const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
-            const label = totalChunks > 1 ? ` [${i + 1}/${totalChunks}]` : '';
-            await sendTelegram(chatId, `${file.name}${label}\n\n${chunk}`);
-          }
+          const summary = extractReportSummary(content);
+          await sendTelegram(chatId, `${file.name}\n\n${summary}`);
         } catch { /* text preview best-effort */ }
 
         sentMap.set(file.key, file.mtimeMs);
@@ -2702,7 +2737,21 @@ export default function (api: any) {
       api.logger.warn(`[report-watcher] Cannot watch ${REPORT_HOME_DIR}: ${e.message}`);
     }
 
-    api.logger.info('[report-watcher] Report watcher registered (~/bikosoc-spec/ + ~/report-*.md)');
+    // fs.watch on ~/.claude/plans/ with debounce
+    let reportDebouncePlans: ReturnType<typeof setTimeout> | null = null;
+    try {
+      fs.mkdirSync(REPORT_PLANS_DIR, { recursive: true });
+      fs.watch(REPORT_PLANS_DIR, (_event, filename) => {
+        if (typeof filename === 'string' && filename.endsWith('.md')) {
+          if (reportDebouncePlans) clearTimeout(reportDebouncePlans);
+          reportDebouncePlans = setTimeout(() => void scanAndDeliverReports(), 5_000);
+        }
+      });
+    } catch (e: any) {
+      api.logger.warn(`[report-watcher] Cannot watch ${REPORT_PLANS_DIR}: ${e.message}`);
+    }
+
+    api.logger.info('[report-watcher] Report watcher registered (~/bikosoc-spec/ + ~/report-*.md + ~/.claude/plans/)');
   }
 
   // ── Wait-Notifier: Telegram-Meldung wenn cc in tmux bikosoc auf Eingabe wartet ──
@@ -2729,17 +2778,20 @@ export default function (api: any) {
         if (!paneContent) return;
 
         // Detect waiting-for-input patterns:
-        // 1. Claude Code shows a prompt like ">" or "❯" at the bottom
+        // 1. Claude Code shows a prompt like ">" or "❯" (may be above status-chrome)
         // 2. Permission prompts: "Allow", "Yes/No", "(y/n)"
-        // 3. AskUserQuestion prompts with numbered options
-        const lastLines = paneContent.split('\n').slice(-3).join('\n');
+        // 3. AskUserQuestion / plan-approval prompts with numbered options
+        // 4. Plan-mode status bar visible
+        // Use slice(-8) to look past Claude Code's UI chrome (separator + status bar)
+        const lastLines = paneContent.split('\n').slice(-8).join('\n');
         const isWaiting =
           /^\s*[❯>]\s*$/m.test(lastLines) ||
           /\(y\/n\)/i.test(lastLines) ||
           /Allow|Deny|approve/i.test(lastLines) ||
-          /^\s*\d+\.\s/m.test(lastLines) && /other/i.test(lastLines) ||
+          /^\s*\d+\.\s/m.test(lastLines) ||
           /waiting for your/i.test(lastLines) ||
-          /\? $/m.test(lastLines);
+          /\? $/m.test(lastLines) ||
+          /plan mode/i.test(lastLines);
 
         if (!isWaiting) {
           lastPaneContentHash = '';

@@ -570,7 +570,19 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   - `AUTO` — automatisch generierter Report (cc-Lauf ohne manuelle Intervention)
   - `REVIEW` — cc-Auftrag mit Review-Erwartung (Owner soll pruefen/abnehmen)
 - **Ablage:** `~/bikosoc-spec/` fuer dauerhafte Spec-Dokumente, `~` fuer Session-Reports.
-- **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` (nur report-Prefix).
+- **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` + `~/.claude/plans/*.md`.
+- **Zustellung:** 1 Dokument-Anhang + 1 Zusammenfassungs-Chunk (`## Zusammenfassung`/`## Summary`
+  Abschnitt, max 1500 Zeichen; Fallback: erste 1500 Zeichen). Volltext weiterhin via `/report [n]`.
+
+### Plan-Report-Konvention (stehende Regel, ab 2026-07-12)
+
+- REVIEW-Auftraege schreiben ihren vollstaendigen Plan ZUSAETZLICH als
+  `~/report-plan-<thema>-YYYYMMDD-HHMM.md` (Watcher stellt zu).
+- Alle Plan-Schritte muessen im Plan-File stehen (clear-context-fest).
+- Zweck: Owner sieht alle Schritte unabhaengig von der cc-Session
+  (Lehre 12.07.: B1-B6-Kontext ging bei Context-Wechsel verloren).
+- Plan-Files in `~/.claude/plans/` werden ebenfalls vom Watcher ueberwacht
+  und mit Prefix `Plan:` zugestellt.
 
 ### Location-Staleness-Alert (2026-06-26)
 
