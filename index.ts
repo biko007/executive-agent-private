@@ -1729,13 +1729,15 @@ export default function (api: any) {
   // ── /report Command: Abruf neuester Reports via Telegram ────────────────────
   api.registerCommand({
     name: 'report',
-    description: 'Reports abrufen. /report [n] — n=1 (neuester), 2 (zweitneuester), ...',
+    description: 'Reports abrufen. /report [n] (slim) oder /report full [n] (volltext in Chunks)',
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const raw = String(ctx?.args || '').trim();
-      const n = raw ? parseInt(raw, 10) : 1;
+      const fullMode = /^full\b/i.test(raw);
+      const numPart = fullMode ? raw.replace(/^full\s*/i, '').trim() : raw;
+      const n = numPart ? parseInt(numPart, 10) : 1;
       if (isNaN(n) || n < 1) {
-        return { text: 'Nutzung: /report [n] — n = 1 (neuester), 2 (zweitneuester), ...' };
+        return { text: 'Nutzung: /report [n] (slim) oder /report full [n] (volltext)' };
       }
 
       const homeDir = process.env.HOME || '/home/biko';
@@ -1780,14 +1782,25 @@ export default function (api: any) {
       // Send as document
       await sendTelegramDocument(chatId, target.filePath, `Report #${n}: ${target.name}`);
 
-      // Send summary text (Zusammenfassung section or first 1500 chars)
+      // Send text: full mode = chunked volltext, normal = slim summary
       try {
         const content = fs.readFileSync(target.filePath, 'utf-8');
-        const summary = extractReportSummary(content);
-        await sendTelegram(chatId, `${target.name}\n\n${summary}`);
+        if (fullMode) {
+          const chunkSize = 3500;
+          const totalChunks = Math.ceil(content.length / chunkSize);
+          for (let i = 0; i < totalChunks; i++) {
+            const chunk = content.slice(i * chunkSize, (i + 1) * chunkSize);
+            const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${target.name}\n\n` : `${target.name}\n\n`;
+            await sendTelegram(chatId, header + chunk);
+          }
+        } else {
+          const summary = extractReportSummary(content);
+          await sendTelegram(chatId, `${target.name}\n\n${summary}`);
+        }
       } catch { /* text preview best-effort */ }
 
-      return { text: `Report #${n}: ${target.name}` };
+      const mode = fullMode ? 'full' : 'slim';
+      return { text: `Report #${n} (${mode}): ${target.name}` };
     },
   });
 
@@ -2555,8 +2568,7 @@ export default function (api: any) {
     const REPORT_PLANS_DIR = path.join(REPORT_HOME_DIR, '.claude', 'plans');
     const REPORT_SENT_PATH = path.join(REPORT_SPEC_DIR, '.report-sent.json');
     const REPORT_RATE_MS = 60_000; // Max 1 file per minute
-    const REPORT_MAX_CHUNKS = 3;
-    const REPORT_CHUNK_SIZE = 4000;
+    const REPORT_CHUNK_SIZE = 3500;
     let reportLastAutoSendAt = 0;
 
     function loadReportSentMap(): Map<string, number> {
@@ -2691,11 +2703,21 @@ export default function (api: any) {
         const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
         await sendTelegramDocument(chatId, file.filePath, caption);
 
-        // Send summary text (Zusammenfassung section or first 1500 chars)
+        // Send text: plans get full chunked content, reports get slim summary
         try {
           const content = fs.readFileSync(file.filePath, 'utf-8');
-          const summary = extractReportSummary(content);
-          await sendTelegram(chatId, `${file.name}\n\n${summary}`);
+          if (file.key.startsWith('plan:')) {
+            // Full text in chunks so Claude can read plans in Telegram Web
+            const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
+            for (let i = 0; i < totalChunks; i++) {
+              const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
+              const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
+              await sendTelegram(chatId, header + chunk);
+            }
+          } else {
+            const summary = extractReportSummary(content);
+            await sendTelegram(chatId, `${file.name}\n\n${summary}`);
+          }
         } catch { /* text preview best-effort */ }
 
         sentMap.set(file.key, file.mtimeMs);

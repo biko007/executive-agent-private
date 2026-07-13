@@ -572,8 +572,11 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   - `REVIEW` — cc-Auftrag mit Review-Erwartung (Owner soll pruefen/abnehmen)
 - **Ablage:** `~/bikosoc-spec/` fuer dauerhafte Spec-Dokumente, `~` fuer Session-Reports.
 - **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` + `~/.claude/plans/*.md`.
-- **Zustellung:** 1 Dokument-Anhang + 1 Zusammenfassungs-Chunk (`## Zusammenfassung`/`## Summary`
-  Abschnitt, max 1500 Zeichen; Fallback: erste 1500 Zeichen). Volltext weiterhin via `/report [n]`.
+- **Zustellung Reports:** 1 Dokument-Anhang + 1 Zusammenfassungs-Chunk (`## Zusammenfassung`/`## Summary`
+  Abschnitt, max 1500 Zeichen; Fallback: erste 1500 Zeichen).
+- **Zustellung Plans:** 1 Dokument-Anhang + Volltext in nummerierten Chunks (~3500 Zeichen pro Chunk).
+  Plans werden komplett als Text gesendet, weil Telegram Web .md-Dateien nicht rendert.
+- **Manueller Abruf:** `/report [n]` (slim) oder `/report full [n]` (volltext in Chunks).
 
 ### Plan-Report-Konvention (stehende Regel, ab 2026-07-12)
 
