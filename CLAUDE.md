@@ -281,7 +281,7 @@ Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit
 - ~~Sprint 11 Closure + Housekeeping~~ — erledigt 2026-05-17 (7 Etappen, 28/28 Smoke)
 - Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
 - SP Hard-Delete Phase 2: 3 synthetische Tests Pflicht VOR n8n-Workflow auf `dry_run=false` (siehe Runbook)
-- n8n-Workflow `nk-obligations-alert-daily` anlegen (Cron 07:00 → POST /api/assets/nk-trigger/obligations-alert)
+- ~~n8n-Workflow `nk-obligations-alert-daily`~~ — erledigt 2026-07-13 (systemd-Timer statt n8n, siehe NK-Obligations-Alert Abschnitt)
 - Withings OAuth-Callback-Route reparieren (F-009, zurückgestellt ~1 Jahr). nginx `/withings/callback` → Gateway, aber kein Handler. Temp-Server auf Port 8080. Fix: analog Oura-Pattern (Port 8081 direkt) oder Gateway-Route registrieren.
 - Optional: Meta-Token rotieren (User-Entscheidung)
 - Bekannt: `bun test` Parallelismus-Problem (POSTGRES_URL Konflikte zwischen Test-Dateien) — einzeln grün
@@ -615,6 +615,17 @@ Pflicht-Erstschritt ausfuehren. Das Skript:
 - Custom-Format-Dump (`-Fc`) nach `~/backups/openclaw-YYYYMMDD-HHMMSS.dump`
 - Rotation: behaelt die 10 neuesten Dumps
 - Beleg-Zeile im Report: `Backup: openclaw-YYYYMMDD-HHMMSS.dump`
+
+### NK-Obligations-Alert (systemd-Timer, ab 2026-07-13)
+
+Taeglich 07:00 UTC prueft der systemd-Timer `openclaw-nk-obligations-daily` alle
+NK-Perioden-Verpflichtungen auf ablaufende Fristen und sendet Telegram-Alerts.
+
+- **Timer:** `~/.config/systemd/user/openclaw-nk-obligations-daily.timer` (OnCalendar 07:00, Persistent)
+- **Service:** oneshot-curl auf `POST /api/internal/nk-trigger/obligations-alert` (Bearer CORE_SERVICE_TOKEN, localhost)
+- **Schwellwerte:** 30d (info), 14d (warn), 7d (warn), 1d (error), expired (error)
+- **Idempotenz:** UNIQUE constraint auf `(obligation_id, alert_phase, alert_date)` — kein Duplikat bei Mehrfach-Aufruf
+- **Entscheidung:** systemd-Timer statt n8n-Workflow, weil n8n als Docker-Container fragil ist und der Call trivial
 
 ### Location-Staleness-Alert (2026-06-26)
 

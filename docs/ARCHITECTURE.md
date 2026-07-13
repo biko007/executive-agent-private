@@ -65,6 +65,9 @@ OpenClaw-eigene Services (Host/nginx/Postgres-Instanz: `SHARED_PLATFORM.md`):
 Backup-Services (`openclaw-backup-{daily,weekly,monthly}`) existieren als systemd-Units,
 getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`.
 
+`openclaw-nk-obligations-daily` (Timer 07:00 UTC): oneshot-curl auf
+`POST /api/internal/nk-trigger/obligations-alert` — prueft NK-Fristen, sendet Telegram-Alerts.
+
 > banking-fints hat seit 2026-06-26 einen unauthentifizierten **`/health`-Endpoint** (HTTP 200,
 > `{"status":"ok","service":"banking-fints"}`). Reine Prozess-Liveness — **kein** Bank-Kontakt,
 > kein DB-Zugriff, kein Auth. Authentifizierter Health-Check unter `/fints/health` (Bearer).
