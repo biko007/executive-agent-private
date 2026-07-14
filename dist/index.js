@@ -419,7 +419,7 @@ export default function (api) {
         'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
         'banking', 'tan',
         'memory',
-        'report', 'ccstop',
+        'report', 'ccstop', 'ccgo',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
     const persistedRuns = new Set();
@@ -1575,13 +1575,15 @@ export default function (api) {
     // ── /report Command: Abruf neuester Reports via Telegram ────────────────────
     api.registerCommand({
         name: 'report',
-        description: 'Reports abrufen. /report [n] — n=1 (neuester), 2 (zweitneuester), ...',
+        description: 'Reports abrufen. /report [n] (slim) oder /report full [n] (volltext in Chunks)',
         acceptsArgs: true,
         handler: async (ctx) => {
             const raw = String(ctx?.args || '').trim();
-            const n = raw ? parseInt(raw, 10) : 1;
+            const fullMode = /^full\b/i.test(raw);
+            const numPart = fullMode ? raw.replace(/^full\s*/i, '').trim() : raw;
+            const n = numPart ? parseInt(numPart, 10) : 1;
             if (isNaN(n) || n < 1) {
-                return { text: 'Nutzung: /report [n] — n = 1 (neuester), 2 (zweitneuester), ...' };
+                return { text: 'Nutzung: /report [n] (slim) oder /report full [n] (volltext)' };
             }
             const homeDir = process.env.HOME || '/home/biko';
             const specDir = path.join(homeDir, 'bikosoc-spec');
@@ -1624,14 +1626,26 @@ export default function (api) {
             const chatId = loadSettings().telegramChatId || '133260792';
             // Send as document
             await sendTelegramDocument(chatId, target.filePath, `Report #${n}: ${target.name}`);
-            // Send summary text (Zusammenfassung section or first 1500 chars)
+            // Send text: full mode = chunked volltext, normal = slim summary
             try {
                 const content = fs.readFileSync(target.filePath, 'utf-8');
-                const summary = extractReportSummary(content);
-                await sendTelegram(chatId, `${target.name}\n\n${summary}`);
+                if (fullMode) {
+                    const chunkSize = 3500;
+                    const totalChunks = Math.ceil(content.length / chunkSize);
+                    for (let i = 0; i < totalChunks; i++) {
+                        const chunk = content.slice(i * chunkSize, (i + 1) * chunkSize);
+                        const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${target.name}\n\n` : `${target.name}\n\n`;
+                        await sendTelegram(chatId, header + chunk);
+                    }
+                }
+                else {
+                    const summary = extractReportSummary(content);
+                    await sendTelegram(chatId, `${target.name}\n\n${summary}`);
+                }
             }
             catch { /* text preview best-effort */ }
-            return { text: `Report #${n}: ${target.name}` };
+            const mode = fullMode ? 'full' : 'slim';
+            return { text: `Report #${n} (${mode}): ${target.name}` };
         },
     });
     // ── /ccstop Command: Kill-Switch fuer laufenden cc in tmux bikosoc ─────────
@@ -1665,6 +1679,49 @@ export default function (api) {
             catch (e) {
                 api.logger.error(`[ccstop] Fehler: ${e.message}`);
                 return { text: `cc-stop Fehler: ${e.message}` };
+            }
+        },
+    });
+    // ── /ccgo Command: Plan-Approval in tmux bikosoc bestaetigen (Gegenstueck zu /ccstop) ──
+    api.registerCommand({
+        name: 'ccgo',
+        description: 'Plan-Approval: wartenden Plan-Prompt in tmux bikosoc bestaetigen. /ccgo',
+        acceptsArgs: true,
+        handler: async (ctx) => {
+            const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
+            if (ctxSenderId !== OWNER_SENDER_ID) {
+                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+            }
+            try {
+                // Capture tmux pane content to detect a waiting plan-approval prompt
+                let paneContent = '';
+                try {
+                    paneContent = execSync('tmux capture-pane -t bikosoc -p 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
+                }
+                catch {
+                    return { text: 'tmux-Session bikosoc nicht erreichbar.' };
+                }
+                // Detect plan-approval prompt: numbered options with "Yes" near cursor indicator
+                // Claude Code shows: "❯ 1. Yes, and bypass permissions" or similar numbered list
+                const lines = paneContent.split('\n');
+                const lastLines = lines.slice(-30).join('\n');
+                const hasPlanPrompt = /[❯>]\s*1\.\s*Yes/i.test(lastLines);
+                if (!hasPlanPrompt) {
+                    const chatId = loadSettings().telegramChatId || '133260792';
+                    await sendTelegram(chatId, 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
+                    return { text: 'Kein wartender Plan-Prompt erkannt.' };
+                }
+                // Select "1. Yes, and bypass permissions" — send "1" then Enter
+                execSync('tmux send-keys -t bikosoc 1 2>/dev/null', { timeout: 5000 });
+                execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
+                const chatId = loadSettings().telegramChatId || '133260792';
+                await sendTelegram(chatId, 'ccgo: Plan-Prompt erkannt und bestaetigt (Option 1: Yes, and bypass permissions).');
+                api.logger.info('[ccgo] Plan-Approval gesendet');
+                return { text: 'Plan-Approval gesendet.' };
+            }
+            catch (e) {
+                api.logger.error(`[ccgo] Fehler: ${e.message}`);
+                return { text: `ccgo Fehler: ${e.message}` };
             }
         },
     });
@@ -2314,8 +2371,7 @@ export default function (api) {
         const REPORT_PLANS_DIR = path.join(REPORT_HOME_DIR, '.claude', 'plans');
         const REPORT_SENT_PATH = path.join(REPORT_SPEC_DIR, '.report-sent.json');
         const REPORT_RATE_MS = 60_000; // Max 1 file per minute
-        const REPORT_MAX_CHUNKS = 3;
-        const REPORT_CHUNK_SIZE = 4000;
+        const REPORT_CHUNK_SIZE = 3500;
         let reportLastAutoSendAt = 0;
         function loadReportSentMap() {
             try {
@@ -2450,11 +2506,22 @@ export default function (api) {
                     // Send document
                     const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
                     await sendTelegramDocument(chatId, file.filePath, caption);
-                    // Send summary text (Zusammenfassung section or first 1500 chars)
+                    // Send text: plans get full chunked content, reports get slim summary
                     try {
                         const content = fs.readFileSync(file.filePath, 'utf-8');
-                        const summary = extractReportSummary(content);
-                        await sendTelegram(chatId, `${file.name}\n\n${summary}`);
+                        if (file.key.startsWith('plan:')) {
+                            // Full text in chunks so Claude can read plans in Telegram Web
+                            const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
+                            for (let i = 0; i < totalChunks; i++) {
+                                const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
+                                const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
+                                await sendTelegram(chatId, header + chunk);
+                            }
+                        }
+                        else {
+                            const summary = extractReportSummary(content);
+                            await sendTelegram(chatId, `${file.name}\n\n${summary}`);
+                        }
                     }
                     catch { /* text preview best-effort */ }
                     sentMap.set(file.key, file.mtimeMs);

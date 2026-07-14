@@ -495,7 +495,7 @@ export default function (api: any) {
     'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
     'banking', 'tan',
     'memory',
-    'report', 'ccstop',
+    'report', 'ccstop', 'ccgo',
   ]);
 
   /** Set of runIds already persisted — guards against multi-load duplicate writes */
@@ -1836,6 +1836,53 @@ export default function (api: any) {
       } catch (e: any) {
         api.logger.error(`[ccstop] Fehler: ${e.message}`);
         return { text: `cc-stop Fehler: ${e.message}` };
+      }
+    },
+  });
+
+  // ── /ccgo Command: Plan-Approval in tmux bikosoc bestaetigen (Gegenstueck zu /ccstop) ──
+  api.registerCommand({
+    name: 'ccgo',
+    description: 'Plan-Approval: wartenden Plan-Prompt in tmux bikosoc bestaetigen. /ccgo',
+    acceptsArgs: true,
+    handler: async (ctx: any) => {
+      const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
+      if (ctxSenderId !== OWNER_SENDER_ID) {
+        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+      }
+
+      try {
+        // Capture tmux pane content to detect a waiting plan-approval prompt
+        let paneContent = '';
+        try {
+          paneContent = execSync('tmux capture-pane -t bikosoc -p 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
+        } catch {
+          return { text: 'tmux-Session bikosoc nicht erreichbar.' };
+        }
+
+        // Detect plan-approval prompt: numbered options with "Yes" near cursor indicator
+        // Claude Code shows: "❯ 1. Yes, and bypass permissions" or similar numbered list
+        const lines = paneContent.split('\n');
+        const lastLines = lines.slice(-30).join('\n');
+        const hasPlanPrompt = /[❯>]\s*1\.\s*Yes/i.test(lastLines);
+
+        if (!hasPlanPrompt) {
+          const chatId = loadSettings().telegramChatId || '133260792';
+          await sendTelegram(chatId, 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
+          return { text: 'Kein wartender Plan-Prompt erkannt.' };
+        }
+
+        // Select "1. Yes, and bypass permissions" — send "1" then Enter
+        execSync('tmux send-keys -t bikosoc 1 2>/dev/null', { timeout: 5000 });
+        execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
+
+        const chatId = loadSettings().telegramChatId || '133260792';
+        await sendTelegram(chatId, 'ccgo: Plan-Prompt erkannt und bestaetigt (Option 1: Yes, and bypass permissions).');
+        api.logger.info('[ccgo] Plan-Approval gesendet');
+        return { text: 'Plan-Approval gesendet.' };
+      } catch (e: any) {
+        api.logger.error(`[ccgo] Fehler: ${e.message}`);
+        return { text: `ccgo Fehler: ${e.message}` };
       }
     },
   });

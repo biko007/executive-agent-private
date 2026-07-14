@@ -561,7 +561,12 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   sortiert nach mtime (neueste zuerst). Sendet als Dokument + Text-Preview.
 - **`/ccstop`:** Kill-Switch fuer laufenden Claude Code in tmux bikosoc. Sendet C-c via tmux,
   dann SIGTERM an Kindprozesse. Owner-only (133260792). Bestaetigung via Telegram.
-- **Command-Guard:** `report` und `ccstop` in REGISTERED_COMMANDS. verify:commands gruen.
+- **`/ccgo`:** Plan-Approval in tmux bikosoc bestaetigen (Gegenstueck zu /ccstop).
+  Owner-only (133260792). Erkennt wartenden Plan-Prompt (Muster `❯ 1. Yes`), waehlt
+  „Yes, and bypass permissions" (Option 1). Ohne erkannten Prompt: kein Tastendruck,
+  Telegram-Meldung „kein wartender Plan-Prompt". Selftest: Prompt-Detektor, Non-Owner-Ablehnung,
+  kein-Prompt-Meldung. Live-E2E (echte Plan-Bestaetigung) offen fuer naechsten REVIEW-Lauf.
+- **Command-Guard:** `report`, `ccstop` und `ccgo` in REGISTERED_COMMANDS. verify:commands gruen.
 
 ### Report-Konvention (stehende Regel, ab 2026-07-12)
 
@@ -587,6 +592,18 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   (Lehre 12.07.: B1-B6-Kontext ging bei Context-Wechsel verloren).
 - Plan-Files in `~/.claude/plans/` werden ebenfalls vom Watcher ueberwacht
   und mit Prefix `Plan:` zugestellt.
+
+### Auftrags-Abschluss-Workflow (bindend, ab 2026-07-14)
+
+- **REPORT-PFLICHT:** Jeder cc-Auftrag (AUTO und REVIEW) gilt erst als FERTIG, wenn
+  `~/bikosoc-spec/report-<slug>-<datum>.md` GESCHRIEBEN ist. Terminal-Summary ersetzt den
+  Report NICHT — die Datei IST die Auslieferung (Watcher → Telegram).
+- **CLEAR-CONTEXT-FEST:** Bei REVIEW-Plaenen ist die Report-Pflicht ZWINGEND als LETZTER
+  Schritt ins Plan-File zu schreiben (uebersteht „clear context").
+- **PLAN-AUSLIEFERUNG:** Bei REVIEW schreibt cc VOR dem Plan-Stopp den Plan als
+  `~/bikosoc-spec/report-plan-<slug>-<datum>.md` (Watcher liefert; zusaetzlich plans/-Watch).
+- **Report-Pfad:** `~/bikosoc-spec/report-<slug>-YYYYMMDD-HHMM.md`
+  (Watcher auf `~/bikosoc-spec/` erfasst automatisch).
 
 ### Deny-Hook (stehende Regel, ab 2026-07-13)
 
