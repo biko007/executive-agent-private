@@ -1860,11 +1860,23 @@ export default function (api: any) {
           return { text: 'tmux-Session bikosoc nicht erreichbar.' };
         }
 
-        // Detect plan-approval prompt: numbered options with "Yes" near cursor indicator
-        // Claude Code shows: "❯ 1. Yes, and bypass permissions" or similar numbered list
+        // Find the numbered option containing "bypass permissions" by TEXT-MATCH.
+        // Claude Code plan-approval prompts show numbered options like:
+        //   ❯ 1. Yes, and bypass permissions    (without clear-context)
+        //   ❯ 1. Yes, and clear context          (with high context usage)
+        //     2. Yes, and bypass permissions
+        // The option number shifts — never hardcode "1".
         const lines = paneContent.split('\n');
-        const lastLines = lines.slice(-30).join('\n');
-        const hasPlanPrompt = /[❯>]\s*1\.\s*Yes/i.test(lastLines);
+        const lastLines = lines.slice(-30);
+        let bypassOptionNum: string | null = null;
+        const bypassPattern = /(\d+)\.\s*Yes.*bypass/i;
+        for (const line of lastLines) {
+          const m = line.match(bypassPattern);
+          if (m) { bypassOptionNum = m[1]; break; }
+        }
+
+        // Also check: is there any plan-approval prompt at all? (numbered "Yes" options)
+        const hasPlanPrompt = lastLines.some(l => /[❯>]?\s*\d+\.\s*Yes/i.test(l));
 
         if (!hasPlanPrompt) {
           const chatId = loadSettings().telegramChatId || '133260792';
@@ -1872,14 +1884,20 @@ export default function (api: any) {
           return { text: 'Kein wartender Plan-Prompt erkannt.' };
         }
 
-        // Select "1. Yes, and bypass permissions" — send "1" then Enter
-        execSync('tmux send-keys -t bikosoc 1 2>/dev/null', { timeout: 5000 });
+        if (!bypassOptionNum) {
+          const chatId = loadSettings().telegramChatId || '133260792';
+          await sendTelegram(chatId, 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
+          return { text: 'Plan-Prompt erkannt, aber bypass permissions nicht verfuegbar.' };
+        }
+
+        // Send the detected option number + Enter
+        execSync(`tmux send-keys -t bikosoc ${bypassOptionNum} 2>/dev/null`, { timeout: 5000 });
         execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
 
         const chatId = loadSettings().telegramChatId || '133260792';
-        await sendTelegram(chatId, 'ccgo: Plan-Prompt erkannt und bestaetigt (Option 1: Yes, and bypass permissions).');
-        api.logger.info('[ccgo] Plan-Approval gesendet');
-        return { text: 'Plan-Approval gesendet.' };
+        await sendTelegram(chatId, `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
+        api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
+        return { text: `Plan-Approval gesendet (Option ${bypassOptionNum}).` };
       } catch (e: any) {
         api.logger.error(`[ccgo] Fehler: ${e.message}`);
         return { text: `ccgo Fehler: ${e.message}` };
@@ -2750,11 +2768,12 @@ export default function (api: any) {
         const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
         await sendTelegramDocument(chatId, file.filePath, caption);
 
-        // Send text: plans get full chunked content, reports get slim summary
+        // Send text: plans + short reports get full chunked content, long reports get summary
         try {
           const content = fs.readFileSync(file.filePath, 'utf-8');
-          if (file.key.startsWith('plan:')) {
-            // Full text in chunks so Claude can read plans in Telegram Web
+          const sendFullText = file.key.startsWith('plan:') || content.length <= REPORT_CHUNK_SIZE;
+          if (sendFullText) {
+            // Full text in chunks (plans always; short reports fit in 1 chunk)
             const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
             for (let i = 0; i < totalChunks; i++) {
               const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
