@@ -1862,17 +1862,19 @@ export default function (api: any) {
 
         // Find the numbered option containing "bypass permissions" by TEXT-MATCH.
         // Claude Code plan-approval prompts show numbered options like:
-        //   ❯ 1. Yes, and bypass permissions    (without clear-context)
-        //   ❯ 1. Yes, and clear context          (with high context usage)
+        //   ❯ 1. Yes, and bypass permissions              (low context)
+        //   ❯ 1. Yes, and clear context (81% used) and bypass permissions  (high context)
         //     2. Yes, and bypass permissions
         // The option number shifts — never hardcode "1".
+        // IMPORTANT: "Yes, clear context ... and bypass permissions" also contains "bypass"
+        // but must be SKIPPED — we never auto-select clear-context.
         const lines = paneContent.split('\n');
         const lastLines = lines.slice(-30);
         let bypassOptionNum: string | null = null;
         const bypassPattern = /(\d+)\.\s*Yes.*bypass/i;
         for (const line of lastLines) {
           const m = line.match(bypassPattern);
-          if (m) { bypassOptionNum = m[1]; break; }
+          if (m && !/clear\s+context/i.test(line)) { bypassOptionNum = m[1]; break; }
         }
 
         // Also check: is there any plan-approval prompt at all? (numbered "Yes" options)
