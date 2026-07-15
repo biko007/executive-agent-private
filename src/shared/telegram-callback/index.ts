@@ -29,6 +29,8 @@ export interface CallbackEvent {
   args: string[];
   /** Sender ID from event.metadata.senderId (empty string if missing) */
   senderId: string;
+  /** Chat ID from explicit chat metadata only; empty when the gateway omits it. */
+  chatId: string;
   /** Original event.content (full callback_data string) */
   content: string;
 }
@@ -46,6 +48,13 @@ export function parseCallbackEvent(
   const payload = content.slice(marker.length);
   const args = payload.split('::');
   const senderId = String(event.metadata?.senderId ?? '');
+  const chatId = String(
+    event.metadata?.chatId ??
+    event.metadata?.threadId ??
+    event.metadata?.conversationId ??
+    event.metadata?.channelId ??
+    '',
+  ).replace(/^telegram:/, '').trim();
 
-  return { prefix, payload, args, senderId, content };
+  return { prefix, payload, args, senderId, chatId, content };
 }

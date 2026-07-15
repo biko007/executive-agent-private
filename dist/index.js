@@ -36,6 +36,8 @@ import { sleep, fetchWithTimeout, berlinDate, } from "./src/shared/utils/index.j
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, } from "./src/shared/settings/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
+import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
+import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -235,7 +237,7 @@ export default function (api) {
                 const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+                    body: JSON.stringify({ chat_id: chatId, text }),
                 }, 15000);
                 if (res.ok) {
                     if (attempt > 0)
@@ -284,7 +286,6 @@ export default function (api) {
                     body: JSON.stringify({
                         chat_id: chatId,
                         text,
-                        parse_mode: 'Markdown',
                         reply_markup: { inline_keyboard: keyboard },
                     }),
                 }, 15000);
@@ -374,6 +375,70 @@ export default function (api) {
             return false;
         }
     }
+    async function getTelegramTargets(roleTag, opts = {}) {
+        try {
+            let bindings = await listActiveTelegramBindings(roleTag);
+            if (bindings.length === 0 && roleTag === 'dev' && opts.fallbackToOperativ) {
+                bindings = await listActiveTelegramBindings('operativ');
+            }
+            return [...new Set(bindings.map((b) => b.telegramChatId).filter((id) => Boolean(id)))];
+        }
+        catch (e) {
+            api.logger.warn(`[telegram-routing] target lookup failed for role=${roleTag}: ${e.message}`);
+            return [];
+        }
+    }
+    const telegramTargetCache = { operativ: [], dev: [] };
+    async function refreshTelegramTargetCache() {
+        const [operativ, dev] = await Promise.all([
+            getTelegramTargets('operativ'),
+            getTelegramTargets('dev'),
+        ]);
+        telegramTargetCache.operativ = operativ;
+        telegramTargetCache.dev = dev;
+    }
+    function getCachedTelegramTarget(roleTag, opts = {}) {
+        const direct = telegramTargetCache[roleTag][0];
+        if (direct)
+            return direct;
+        if (roleTag === 'dev' && opts.fallbackToOperativ)
+            return telegramTargetCache.operativ[0];
+        return undefined;
+    }
+    async function sendTelegramToRole(roleTag, text, opts = {}) {
+        const targets = await getTelegramTargets(roleTag, opts);
+        if (targets.length === 0) {
+            api.logger.warn(`[telegram-routing] no active ${roleTag} binding; message not sent`);
+            return false;
+        }
+        const results = await Promise.all(targets.map((chatId) => sendTelegram(chatId, text)));
+        return results.some(Boolean);
+    }
+    async function sendTelegramDocumentToRole(roleTag, filePath, caption, opts = {}) {
+        const targets = await getTelegramTargets(roleTag, opts);
+        if (targets.length === 0) {
+            api.logger.warn(`[telegram-routing] no active ${roleTag} binding; document not sent: ${path.basename(filePath)}`);
+            return false;
+        }
+        const results = await Promise.all(targets.map((chatId) => sendTelegramDocument(chatId, filePath, caption)));
+        return results.some(Boolean);
+    }
+    async function assertBoundOwner(ctxOrEvent) {
+        const identity = extractTelegramIdentity(ctxOrEvent);
+        if (!identity.chatId || !identity.userId) {
+            return { ok: false, chatId: identity.chatId, userId: identity.userId };
+        }
+        try {
+            const ok = await isBoundTelegramOwner(identity.chatId, identity.userId);
+            return ok
+                ? { ok: true, chatId: identity.chatId, userId: identity.userId }
+                : { ok: false, chatId: identity.chatId, userId: identity.userId };
+        }
+        catch (e) {
+            api.logger.warn(`[telegram-binding] owner guard failed: ${e.message}`);
+            return { ok: false, chatId: identity.chatId, userId: identity.userId };
+        }
+    }
     function extractReportSummary(content) {
         const MAX_SUMMARY = 1500;
         // Try to find ## Zusammenfassung or ## Summary section
@@ -419,7 +484,7 @@ export default function (api) {
         'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
         'banking', 'tan',
         'memory',
-        'report', 'ccstop', 'ccgo',
+        'bind', 'report', 'ccstop', 'ccgo', 'do',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
     const persistedRuns = new Set();
@@ -601,8 +666,9 @@ export default function (api) {
         // ========== BRANCH 6: Owner-Profil-Injektion ==========
         // Inject owner facts for owner DM sessions (free-text messages only).
         // Commands/callbacks/media are handled by branches 1-5 above; voice falls through (framework transcribes natively).
-        // v2026.6.11: sender ID from ctx (plaintext envelope removed from prompt).
-        if (ownerTelegramId && ctxSenderId === ownerTelegramId) {
+        // Owner context injection is binding-based: active chat binding + sender match.
+        const ownerBinding = await assertBoundOwner(ctx);
+        if (ownerBinding.ok) {
             let prepend = '';
             const profile = loadOwnerProfile();
             if (profile) {
@@ -622,7 +688,7 @@ export default function (api) {
                     && (now - cache.ts < 60_000)
                     && cache.ownerFactsMtimeMs === currentMtime;
                 if (!cacheValid) {
-                    cache.facts = await getActiveOwnerFacts(OWNER_SENDER_ID);
+                    cache.facts = await getActiveOwnerFacts(ownerBinding.userId);
                     cache.ts = now;
                     cache.ownerFactsMtimeMs = currentMtime;
                 }
@@ -1162,7 +1228,7 @@ export default function (api) {
     initFleetCommands({ getLinksForEntity, formatLinksForTelegram });
     registerFleetCommands(api);
     // ── Banking → src/modules/banking/commands.ts ──────────────────────────
-    const bankingTelegramChatId = () => loadSettings().telegramChatId;
+    const bankingTelegramChatId = () => getCachedTelegramTarget('operativ');
     initBankingCommands({ sendTelegram, telegramChatId: bankingTelegramChatId });
     registerBankingCommands(api);
     initTanBridge({ sendTelegram, telegramChatId: bankingTelegramChatId });
@@ -1501,10 +1567,9 @@ export default function (api) {
                 return { text: '❌ Ungültige Uhrzeit.' };
             const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
             await setSetting('briefing_time', time);
-            const s = loadSettings();
             return {
                 text: `⏰ Tägliches Briefing auf ${time} Uhr (Europe/Berlin) gesetzt.\n` +
-                    `Chat-ID: ${s.telegramChatId || '(noch nicht erfasst — sende irgendeine Nachricht)'}`,
+                    `Zustellung: aktives operativ-Binding`,
             };
         },
     });
@@ -1522,25 +1587,71 @@ export default function (api) {
     registerAssetsCommands(api);
     // ── Mail-Scanner: Buchungsbestätigungen → Trip-Segmente ────────────────
     // formatBookingMessage → src/modules/travel/enrichment.ts
-    // ── Owner-Memory constants ─────────────────────────────────────────────────
-    const OWNER_SENDER_ID = '133260792';
     // Gateway-routed LLM wrapper for memory extraction.
     // Provider, model, and credentials resolved by api.runtime.llm.complete().
     const llmComplete = (params) => api.runtime.llm.complete(params);
+    // ── /bind Command: Nonce-basierte Telegram-Bindung ─────────────────────────
+    api.registerCommand({
+        name: 'bind',
+        description: 'Telegram-Ziel binden. /bind <nonce> oder /bind create <operativ|dev>',
+        acceptsArgs: true,
+        handler: async (args, ctx) => {
+            const raw = String(args || '').trim();
+            const parts = raw.split(/\s+/).filter(Boolean);
+            if (parts[0]?.toLowerCase() === 'create') {
+                const guard = await assertBoundOwner(ctx);
+                if (!guard.ok)
+                    return { text: 'Dieser Befehl ist nur fuer gebundene Owner verfuegbar.' };
+                const role = parts[1];
+                if (role !== 'operativ' && role !== 'dev') {
+                    return { text: 'Nutzung: /bind create <operativ|dev>' };
+                }
+                const pending = await createPendingTelegramBinding(role);
+                return {
+                    text: `Binding vorbereitet (${pending.roleTag}).\nNonce: ${pending.nonce}\n\nInnerhalb von 15 Minuten im Zielchat senden:\n/bind ${pending.nonce}`,
+                };
+            }
+            const nonce = parts[0] || '';
+            if (!nonce)
+                return { text: 'Nutzung: /bind <nonce>' };
+            const identity = extractTelegramIdentity(ctx);
+            if (!identity.chatId || !identity.userId) {
+                return { text: 'Binding fehlgeschlagen: Telegram-Chat oder Sender nicht ermittelbar.' };
+            }
+            try {
+                const binding = await activateTelegramBinding({
+                    nonce,
+                    chatId: identity.chatId,
+                    userId: identity.userId,
+                    chatType: identity.chatType,
+                });
+                await refreshTelegramTargetCache().catch(() => { });
+                return { text: `Binding aktiv: ${binding.roleTag} (${binding.chatType}).` };
+            }
+            catch (e) {
+                if (e?.code === 'NONCE_MISMATCH')
+                    return { text: 'Binding fehlgeschlagen: Nonce ungueltig oder abgelaufen.' };
+                if (e?.code === 'BINDING_CONFLICT')
+                    return { text: 'Binding fehlgeschlagen: Dieser Chat ist bereits gebunden.' };
+                api.logger.warn(`[telegram-binding] /bind failed: ${e.message}`);
+                return { text: 'Binding fehlgeschlagen.' };
+            }
+        },
+    });
     // ── /memory Command: Owner-only Fakten-Pflege ──────────────────────────────
     api.registerCommand({
         name: 'memory',
         description: 'Owner-Memory pflegen. /memory list | /memory drop <id>',
         requireAuth: true,
         handler: async (args, ctx) => {
-            const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
-            if (ctxSenderId !== OWNER_SENDER_ID) {
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
             const parts = args.trim().split(/\s+/);
             const sub = parts[0]?.toLowerCase() || 'list';
             if (sub === 'list') {
-                const { facts, total } = await listActiveFacts(OWNER_SENDER_ID, 20, 0);
+                const { facts, total } = await listActiveFacts(guard.userId, 20, 0);
                 if (facts.length === 0) {
                     return { text: 'Keine aktiven Fakten im Gedaechtnis.' };
                 }
@@ -1562,7 +1673,7 @@ export default function (api) {
                     return { text: `Fakt #${factId} nicht gefunden.` };
                 }
                 const factShort = fact.fact.length > 80 ? fact.fact.slice(0, 77) + '...' : fact.fact;
-                const chatId = loadSettings().telegramChatId;
+                const chatId = guard.chatId;
                 if (chatId) {
                     await sendTelegramWithKeyboard(chatId, `Fakt #${factId} entfernen?\n\n${factShort}\n\nFolge: status → rejected`, [[{ text: 'Ja, entfernen', callback_data: `memdrop_${factId}` }]]);
                     return { text: '' }; // Keyboard sent, no additional text needed
@@ -1623,9 +1734,9 @@ export default function (api) {
                 return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfuegbar).` };
             }
             const target = reportFiles[n - 1];
-            const chatId = loadSettings().telegramChatId || '133260792';
             // Send as document
-            await sendTelegramDocument(chatId, target.filePath, `Report #${n}: ${target.name}`);
+            const targetRole = fullMode ? 'dev' : 'operativ';
+            await sendTelegramDocumentToRole(targetRole, target.filePath, `Report #${n}: ${target.name}`, { fallbackToOperativ: fullMode });
             // Send text: full mode = chunked volltext, normal = slim summary
             try {
                 const content = fs.readFileSync(target.filePath, 'utf-8');
@@ -1635,12 +1746,12 @@ export default function (api) {
                     for (let i = 0; i < totalChunks; i++) {
                         const chunk = content.slice(i * chunkSize, (i + 1) * chunkSize);
                         const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${target.name}\n\n` : `${target.name}\n\n`;
-                        await sendTelegram(chatId, header + chunk);
+                        await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
                     }
                 }
                 else {
                     const summary = extractReportSummary(content);
-                    await sendTelegram(chatId, `${target.name}\n\n${summary}`);
+                    await sendTelegramToRole('operativ', `${target.name}\n\n${summary}`);
                 }
             }
             catch { /* text preview best-effort */ }
@@ -1654,8 +1765,8 @@ export default function (api) {
         description: 'Kill-Switch: laufenden Claude Code in tmux bikosoc beenden. /ccstop',
         acceptsArgs: true,
         handler: async (ctx) => {
-            const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
-            if (ctxSenderId !== OWNER_SENDER_ID) {
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
             try {
@@ -1671,8 +1782,7 @@ export default function (api) {
                     }
                 }
                 catch { /* best-effort */ }
-                const chatId = loadSettings().telegramChatId || '133260792';
-                await sendTelegram(chatId, '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
+                await sendTelegramToRole('operativ', '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
                 api.logger.info('[ccstop] Kill-Switch ausgefuehrt');
                 return { text: 'cc-stop ausgefuehrt.' };
             }
@@ -1688,8 +1798,8 @@ export default function (api) {
         description: 'Plan-Approval: wartenden Plan-Prompt in tmux bikosoc bestaetigen. /ccgo',
         acceptsArgs: true,
         handler: async (ctx) => {
-            const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
-            if (ctxSenderId !== OWNER_SENDER_ID) {
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
             try {
@@ -1701,23 +1811,41 @@ export default function (api) {
                 catch {
                     return { text: 'tmux-Session bikosoc nicht erreichbar.' };
                 }
-                // Detect plan-approval prompt: numbered options with "Yes" near cursor indicator
-                // Claude Code shows: "❯ 1. Yes, and bypass permissions" or similar numbered list
+                // Find the numbered option containing "bypass permissions" by TEXT-MATCH.
+                // Claude Code plan-approval prompts show numbered options like:
+                //   ❯ 1. Yes, and bypass permissions              (low context)
+                //   ❯ 1. Yes, and clear context (81% used) and bypass permissions  (high context)
+                //     2. Yes, and bypass permissions
+                // The option number shifts — never hardcode "1".
+                // IMPORTANT: "Yes, clear context ... and bypass permissions" also contains "bypass"
+                // but must be SKIPPED — we never auto-select clear-context.
                 const lines = paneContent.split('\n');
-                const lastLines = lines.slice(-30).join('\n');
-                const hasPlanPrompt = /[❯>]\s*1\.\s*Yes/i.test(lastLines);
+                const lastLines = lines.slice(-30);
+                let bypassOptionNum = null;
+                const bypassPattern = /(\d+)\.\s*Yes.*bypass/i;
+                for (const line of lastLines) {
+                    const m = line.match(bypassPattern);
+                    if (m && !/clear\s+context/i.test(line)) {
+                        bypassOptionNum = m[1];
+                        break;
+                    }
+                }
+                // Also check: is there any plan-approval prompt at all? (numbered "Yes" options)
+                const hasPlanPrompt = lastLines.some(l => /[❯>]?\s*\d+\.\s*Yes/i.test(l));
                 if (!hasPlanPrompt) {
-                    const chatId = loadSettings().telegramChatId || '133260792';
-                    await sendTelegram(chatId, 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
+                    await sendTelegramToRole('operativ', 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
                     return { text: 'Kein wartender Plan-Prompt erkannt.' };
                 }
-                // Select "1. Yes, and bypass permissions" — send "1" then Enter
-                execSync('tmux send-keys -t bikosoc 1 2>/dev/null', { timeout: 5000 });
+                if (!bypassOptionNum) {
+                    await sendTelegramToRole('operativ', 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
+                    return { text: 'Plan-Prompt erkannt, aber bypass permissions nicht verfuegbar.' };
+                }
+                // Send the detected option number + Enter
+                execSync(`tmux send-keys -t bikosoc ${bypassOptionNum} 2>/dev/null`, { timeout: 5000 });
                 execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
-                const chatId = loadSettings().telegramChatId || '133260792';
-                await sendTelegram(chatId, 'ccgo: Plan-Prompt erkannt und bestaetigt (Option 1: Yes, and bypass permissions).');
-                api.logger.info('[ccgo] Plan-Approval gesendet');
-                return { text: 'Plan-Approval gesendet.' };
+                await sendTelegramToRole('operativ', `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
+                api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
+                return { text: `Plan-Approval gesendet (Option ${bypassOptionNum}).` };
             }
             catch (e) {
                 api.logger.error(`[ccgo] Fehler: ${e.message}`);
@@ -1725,9 +1853,34 @@ export default function (api) {
             }
         },
     });
+    // ── /do Command: Prompt direkt an laufenden cc in tmux bikosoc uebergeben ──
+    api.registerCommand({
+        name: 'do',
+        description: 'Prompt an Claude Code in tmux bikosoc uebergeben. /do <text>',
+        acceptsArgs: true,
+        handler: async (args, ctx) => {
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
+                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+            }
+            const prompt = String(args || ctx?.args || '').trim();
+            if (!prompt) {
+                return { text: 'Nutzung: /do <text>' };
+            }
+            try {
+                sendPromptToBikosocTmux(prompt);
+                api.logger.info('[do] Prompt an tmux bikosoc uebergeben');
+                return { text: 'Prompt uebergeben.' };
+            }
+            catch (e) {
+                api.logger.error(`[do] Fehler: ${e.message}`);
+                return { text: `do Fehler: ${e.message}` };
+            }
+        },
+    });
     // ── Message Sink: persist conversation turns + trigger extraction ──────────
     // Fire-and-forget — Schreibfehler blockieren den Agenten nie.
-    // Scope: Owner-only (senderId 133260792).
+    // Scope: binding-based owner chats only.
     api.on('agent_end', async (event, ctx) => {
         try {
             if (!event.success || !event.messages || event.messages.length === 0)
@@ -1748,7 +1901,8 @@ export default function (api) {
             if (!firstUser)
                 return;
             const senderId = String(firstUser.senderId || ctx?.channelId || '').trim();
-            if (senderId !== OWNER_SENDER_ID)
+            const guard = await assertBoundOwner({ ...ctx, senderId });
+            if (!guard.ok)
                 return;
             // User content and voice detection
             const rawContent = typeof firstUser.content === 'string' ? firstUser.content : '';
@@ -1818,7 +1972,8 @@ export default function (api) {
                 const logId = await getLastConversationLogId(senderId);
                 if (!logId)
                     return;
-                const guard = shouldExtractMemory(userText, senderId);
+                const ownerIds = await listActiveTelegramOwnerUserIds();
+                const guard = shouldExtractMemory(userText, senderId, ownerIds);
                 if (guard.decision === 'skip') {
                     await updateExtractStatus(logId, 'skipped');
                     api.logger.debug(`[memory-extract] logId=${logId} skipped: ${guard.reason}`);
@@ -1835,21 +1990,7 @@ export default function (api) {
             api.logger.warn(`[message-sink] Write failed: ${err.message}`);
         }
     });
-    // ── Chat-ID aus eingehenden Nachrichten erfassen ───────────────────────────
-    api.on('message_received', (event) => {
-        try {
-            // Prefer real chat id; fallback to sender id.
-            const id = String(event?.metadata?.senderId || '').trim();
-            if (!id)
-                return;
-            const s = loadSettings();
-            if (s.telegramChatId !== id) {
-                setSetting('telegram_chat_id', id).catch(() => { });
-                api.logger.info(`[executive-agent] telegramChatId gespeichert: ${id}`);
-            }
-        }
-        catch { }
-    });
+    // Telegram chat targets are managed by /bind and workspace_telegram_bindings.
     // ── Standort via Telegram Location Message speichern ──────────────────────
     api.on('message_received', async (event) => {
         try {
@@ -1874,10 +2015,7 @@ export default function (api) {
             const label = await resolveLocationLabel(lat, lon);
             await insertLocationEvent({ lat, lon, label, source: 'telegram' });
             api.logger.info(`[executive-agent] Standort gespeichert: ${label} (${lat}, ${lon})`);
-            const chatId = loadSettings().telegramChatId;
-            if (chatId) {
-                sendTelegram(chatId, `📍 Standort gespeichert: ${label}`).catch(() => { });
-            }
+            sendTelegramToRole('operativ', `📍 Standort gespeichert: ${label}`).catch(() => { });
         }
         catch (e) {
             api.logger.error(`[executive-agent] Location-Handler Fehler: ${e?.message}`);
@@ -2078,8 +2216,15 @@ export default function (api) {
             // ── memdrop_ callbacks (Memory fact rejection confirmation) ──
             const memdropCb = parseCallbackEvent(event, 'memdrop');
             if (memdropCb) {
-                const chatId = memdropCb.senderId;
-                if (chatId !== OWNER_SENDER_ID) {
+                const chatId = memdropCb.chatId;
+                const senderId = memdropCb.senderId;
+                if (!chatId || !senderId) {
+                    if (senderId)
+                        await sendTelegram(senderId, 'Memory-Aktion abgelehnt: Telegram-Chat nicht verifizierbar.');
+                    return;
+                }
+                const guard = await assertBoundOwner({ chatId, senderId });
+                if (!guard.ok) {
                     await sendTelegram(chatId, 'Dieser Befehl ist nur fuer den Owner verfuegbar.');
                     return;
                 }
@@ -2143,10 +2288,10 @@ export default function (api) {
             try {
                 if (!m365Enabled && !yahooEnabled)
                     return;
-                const s = loadSettings();
-                if (!s.telegramChatId)
+                const chatId = getCachedTelegramTarget('operativ');
+                if (!chatId)
                     return;
-                const { found } = await scanMailsForBookings(s.telegramChatId);
+                const { found } = await scanMailsForBookings(chatId);
                 if (found > 0) {
                     api.logger.info(`[executive-agent] Mail-Scanner: ${found} Buchung(en) erkannt`);
                 }
@@ -2164,7 +2309,8 @@ export default function (api) {
         setInterval(async () => {
             try {
                 const s = loadSettings();
-                if (!s.telegramChatId)
+                const chatId = getCachedTelegramTarget('operativ');
+                if (!chatId)
                     return;
                 // ── Briefing-Retry: zuvor fehlgeschlagene Zustellung nochmal versuchen ──
                 if (pendingBriefingRetry && pendingBriefingRetry.attempts < 5) {
@@ -2207,14 +2353,14 @@ export default function (api) {
                     };
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                     const text = await Promise.race([briefingWork(), timeoutPromise]);
-                    const sent = await sendTelegram(s.telegramChatId, text);
+                    const sent = await sendTelegram(chatId, text);
                     if (sent) {
                         lastBriefingDate = today;
                         api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
                     }
                     else {
                         // Zustellung fehlgeschlagen → Retry-Queue
-                        pendingBriefingRetry = { text, chatId: s.telegramChatId, attempts: 0 };
+                        pendingBriefingRetry = { text, chatId, attempts: 0 };
                         lastBriefingDate = today; // Prevent re-generating, retry the existing text
                         api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
                     }
@@ -2231,8 +2377,8 @@ export default function (api) {
         let lastDailyHealthDate = '';
         setInterval(async () => {
             try {
-                const s = loadSettings();
-                if (!s.telegramChatId)
+                const chatId = getCachedTelegramTarget('operativ');
+                if (!chatId)
                     return;
                 const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
                 const hh = String(inBerlin.getHours()).padStart(2, '0');
@@ -2244,10 +2390,10 @@ export default function (api) {
                     const report = await runDailyHealthCheck();
                     api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
                     if (report.status === 'green') {
-                        await sendTelegram(s.telegramChatId, '🟢 Daily Health Check — alle Systeme OK');
+                        await sendTelegram(chatId, '🟢 Daily Health Check — alle Systeme OK');
                     }
                     else {
-                        await sendTelegram(s.telegramChatId, formatHealthReport(report, 'Daily Health Check'));
+                        await sendTelegram(chatId, formatHealthReport(report, 'Daily Health Check'));
                     }
                 }
             }
@@ -2262,8 +2408,8 @@ export default function (api) {
         let lastBankingReminderDate = '';
         setInterval(async () => {
             try {
-                const s = loadSettings();
-                if (!s.telegramChatId)
+                const chatId = getCachedTelegramTarget('operativ');
+                if (!chatId)
                     return;
                 const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
                 const hh = String(inBerlin.getHours()).padStart(2, '0');
@@ -2273,7 +2419,7 @@ export default function (api) {
                 // Montag = getDay() === 1
                 if (nowHHMM === '12:00' && inBerlin.getDay() === 1 && lastBankingReminderDate !== today) {
                     lastBankingReminderDate = today;
-                    await sendTelegramWithKeyboard(s.telegramChatId, '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.', [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]]);
+                    await sendTelegramWithKeyboard(chatId, '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.', [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]]);
                 }
             }
             catch (e) {
@@ -2287,8 +2433,8 @@ export default function (api) {
         g.__ea_memorySweepRegistered = true;
         setInterval(async () => {
             try {
-                const s = loadSettings();
-                await runExtractSweep(llmComplete, { info: (m) => api.logger.info(m), warn: (m) => api.logger.warn(m) }, s.telegramChatId ? (cid, txt) => sendTelegram(cid, txt) : undefined, s.telegramChatId || undefined);
+                const ownerIds = await listActiveTelegramOwnerUserIds();
+                await runExtractSweep(llmComplete, ownerIds, { info: (m) => api.logger.info(m), warn: (m) => api.logger.warn(m) }, (cid, txt) => sendTelegram(cid, txt), (await getTelegramTargets('operativ'))[0]);
             }
             catch (e) {
                 api.logger.warn(`[memory-sweep] Error: ${e?.message}`);
@@ -2352,7 +2498,7 @@ export default function (api) {
                         lastRun = dates.sort().pop();
                 }
                 catch { /* file missing → 'noch keiner' */ }
-                await sendTelegram('133260792', `\uD83D\uDCCB Monats-Audit f\u00e4llig \u2014 letzter Lauf: ${lastRun}`);
+                await sendTelegramToRole('operativ', `\uD83D\uDCCB Monats-Audit f\u00e4llig \u2014 letzter Lauf: ${lastRun}`);
                 api.logger.info(`[audit-reminder] Monthly reminder sent (last run: ${lastRun})`);
             }
             catch (e) {
@@ -2447,7 +2593,6 @@ export default function (api) {
                 return; // Prevent concurrent scans (double-event guard)
             reportScanInProgress = true;
             try {
-                const chatId = loadSettings().telegramChatId || '133260792';
                 const sentMap = loadReportSentMap();
                 const toSend = [];
                 // Scan ~/bikosoc-spec/ — whitelist: report-*.md
@@ -2505,22 +2650,24 @@ export default function (api) {
                     }
                     // Send document
                     const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
-                    await sendTelegramDocument(chatId, file.filePath, caption);
-                    // Send text: plans get full chunked content, reports get slim summary
+                    const fileRole = file.key.startsWith('plan:') ? 'dev' : 'operativ';
+                    await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: fileRole === 'dev' });
+                    // Send text: plans + short reports get full chunked content, long reports get summary
                     try {
                         const content = fs.readFileSync(file.filePath, 'utf-8');
-                        if (file.key.startsWith('plan:')) {
-                            // Full text in chunks so Claude can read plans in Telegram Web
+                        const sendFullText = file.key.startsWith('plan:') || content.length <= REPORT_CHUNK_SIZE;
+                        if (sendFullText) {
+                            // Full text in chunks (plans always; short reports fit in 1 chunk)
                             const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
                             for (let i = 0; i < totalChunks; i++) {
                                 const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
                                 const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
-                                await sendTelegram(chatId, header + chunk);
+                                await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
                             }
                         }
                         else {
                             const summary = extractReportSummary(content);
-                            await sendTelegram(chatId, `${file.name}\n\n${summary}`);
+                            await sendTelegramToRole('operativ', `${file.name}\n\n${summary}`);
                         }
                     }
                     catch { /* text preview best-effort */ }
@@ -2626,9 +2773,8 @@ export default function (api) {
                     return;
                 lastPaneContentHash = contentHash;
                 lastWaitNotifyAt = now;
-                const chatId = loadSettings().telegramChatId || '133260792';
                 const preview = lastLines.slice(0, 200);
-                await sendTelegram(chatId, `⏳ cc wartet auf Eingabe (tmux bikosoc):\n\n\`\`\`\n${preview}\n\`\`\``);
+                await sendTelegramToRole('dev', `⏳ cc wartet auf Eingabe (tmux bikosoc):\n\n\`\`\`\n${preview}\n\`\`\``, { fallbackToOperativ: true });
                 api.logger.info('[wait-notifier] Notification sent');
             }
             catch (e) {
@@ -3123,11 +3269,10 @@ export default function (api) {
                 const defaultEmoji = { info: 'ℹ️', warn: '⚠️', error: '🔴' };
                 const emoji = typeof body.emoji === 'string' && body.emoji.length > 0 ? body.emoji : defaultEmoji[severity];
                 const text = `${emoji} ${message}`;
-                const s = loadSettings();
-                const chatId = s.telegramChatId;
+                const chatId = getCachedTelegramTarget('operativ');
                 if (!chatId) {
                     res.writeHead(503, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: 'telegramChatId not configured' }));
+                    res.end(JSON.stringify({ ok: false, error: 'operativ Telegram binding not configured' }));
                     return;
                 }
                 // Send via direct Telegram API to capture message_id
@@ -3139,7 +3284,7 @@ export default function (api) {
                 const tgRes = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+                    body: JSON.stringify({ chat_id: chatId, text }),
                 }, 15000);
                 const tgBody = await tgRes.json();
                 if (!tgRes.ok) {
@@ -3352,10 +3497,7 @@ export default function (api) {
             const summary = report.checks.map(c => `${c.status}: ${c.name}`).join(', ');
             api.logger.info(`[executive-agent] Startup Self-Test: ${report.status.toUpperCase()} — ${summary}`);
             if (report.status === 'red') {
-                const s = loadSettings();
-                if (s.telegramChatId) {
-                    await sendTelegram(s.telegramChatId, formatHealthReport(report));
-                }
+                await sendTelegramToRole('operativ', formatHealthReport(report));
             }
         }
         catch (e) {
@@ -3373,6 +3515,19 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[settings] Init failed: ${e.message} — file fallback`);
+        }
+        // ── Telegram Binding Migrations + Target Cache ─────────────────────────
+        try {
+            const tgBindingMigrationsDir = path.join(__dirname, 'src/modules/telegram-binding/migrations');
+            const tgBindingApplied = await runMigrations(tgBindingMigrationsDir, 'telegram-binding');
+            if (tgBindingApplied > 0)
+                api.logger.info(`[telegram-binding] Applied ${tgBindingApplied} migration(s)`);
+            await refreshTelegramTargetCache();
+            setInterval(() => { refreshTelegramTargetCache().catch(() => { }); }, 60_000).unref?.();
+            api.logger.info('[telegram-binding] Target cache initialized');
+        }
+        catch (e) {
+            api.logger.error(`[telegram-binding] Init failed: ${e.message}`);
         }
         // ── Location Migrations (Sprint 8) ─────���──────���───────────────────────
         try {
@@ -3430,7 +3585,7 @@ export default function (api) {
             api.logger.info(`[health-monitor] Applied ${applied} migration(s)`);
             const monitor = new HealthMonitor({
                 sendTelegram,
-                getChatId: () => loadSettings().telegramChatId,
+                getChatId: () => getCachedTelegramTarget('operativ'),
                 logger: api.logger,
             });
             await monitor.start();

@@ -1,0 +1,8 @@
+[Unit]
+Description=bikosoc Prompt-Inbox Poll
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.openclaw/workspace/.openclaw/extensions/executive-agent
+ExecStart=/home/biko/.bun/bin/bun scripts/prompt-inbox-poll.ts
+EnvironmentFile=-%h/.config/openclaw/env

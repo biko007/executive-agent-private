@@ -12,6 +12,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import pg from 'pg';
 import { ANTHROPIC_MODEL } from '../src/shared/utils/index.js';
+import { listActiveTelegramBindings } from '../src/modules/telegram-binding/index.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -19,7 +20,6 @@ const HOME = process.env.HOME || '/home/biko';
 const ARTIFACTS = path.join(HOME, '.openclaw/workspace/artifacts/personal');
 const INSTA_DIR = path.join(ARTIFACTS, 'instagram');
 const ENV_FILE = path.join(HOME, '.config/openclaw/env');
-const CHAT_ID = '133260792';
 const NOTIFY = process.argv.includes('--notify');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -64,13 +64,22 @@ function loadTelegramBotToken(): string {
 async function sendTelegram(text: string): Promise<void> {
   const botToken = loadTelegramBotToken();
   if (!botToken) { console.log('[smoke] Kein Bot-Token — Telegram-Versand übersprungen'); return; }
+  process.env.POSTGRES_URL ||= readEnvVar('POSTGRES_URL');
+  const targets = await listActiveTelegramBindings('dev');
+  if (targets.length === 0) {
+    console.log('[smoke] Kein dev-Telegram-Binding — Telegram-Versand übersprungen');
+    return;
+  }
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML' }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    for (const target of targets) {
+      if (!target.telegramChatId) continue;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: target.telegramChatId, text, parse_mode: 'HTML' }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
   } catch (e: any) {
     console.log(`[smoke] Telegram-Fehler: ${e.message}`);
   }
@@ -584,7 +593,7 @@ async function checkSystemSettings() {
       'SELECT key FROM system_settings ORDER BY key'
     );
     const settingsKeys = settingsRows.map((r: any) => r.key);
-    const required = ['briefing_time', 'telegram_chat_id', 'sp_default_site_id'];
+    const required = ['briefing_time', 'sp_default_site_id'];
     const missing = required.filter(k => !settingsKeys.includes(k));
     if (missing.length === 0) {
       pass('System Settings (DB)', `${settingsRows.length} keys`);
@@ -593,6 +602,21 @@ async function checkSystemSettings() {
     }
   } catch (e: any) {
     fail('System Settings (DB)', `DB-Fehler: ${e.message}`);
+  }
+}
+
+async function checkTelegramBindings() {
+  try {
+    process.env.POSTGRES_URL ||= readEnvVar('POSTGRES_URL');
+    const bindings = await listActiveTelegramBindings();
+    const roles = new Set(bindings.map((binding) => binding.roleTag));
+    if (roles.has('operativ') && roles.has('dev')) {
+      pass('Telegram Bindings', `${bindings.length} aktive Bindings`);
+    } else {
+      fail('Telegram Bindings', `Fehlende Rolle(n): ${roles.has('operativ') ? '' : 'operativ '}${roles.has('dev') ? '' : 'dev'}`.trim());
+    }
+  } catch (e: any) {
+    fail('Telegram Bindings', `DB-Fehler: ${e.message}`);
   }
 }
 
@@ -725,6 +749,7 @@ async function main() {
 
   // 11. System Settings (Sprint 11)
   await checkSystemSettings();
+  await checkTelegramBindings();
 
   // 12. SP Default-Site (Sprint 11.4)
   await checkDefaultSite();

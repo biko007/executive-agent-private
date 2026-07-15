@@ -24,7 +24,6 @@ import pg from 'pg';
 const HOME = process.env.HOME || '/home/biko';
 const ENV_FILE = path.join(HOME, '.config/openclaw/env');
 const AGENT_ROOT = path.resolve(import.meta.dir, '..');
-const CHAT_ID = '133260792';
 const NOTIFY = process.argv.includes('--notify');
 
 /**
@@ -44,6 +43,7 @@ const MIGRATION_DIRS: Array<{ dir: string; module: string }> = [
   { dir: 'src/modules/links/migrations',       module: 'links' },
   { dir: 'src/modules/sharepoint/migrations',  module: 'sharepoint' },
   { dir: 'src/modules/memory/migrations',      module: 'memory' },
+  { dir: 'src/modules/telegram-binding/migrations', module: 'telegram-binding' },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -79,13 +79,23 @@ function loadTelegramBotToken(): string {
 async function sendTelegram(text: string): Promise<void> {
   const botToken = loadTelegramBotToken();
   if (!botToken) { console.log('[drift] Kein Bot-Token — Telegram übersprungen'); return; }
+  process.env.POSTGRES_URL ||= readEnvVar('POSTGRES_URL');
+  const { listActiveTelegramBindings } = await import('../src/modules/telegram-binding/index.js');
+  const targets = await listActiveTelegramBindings('dev');
+  if (targets.length === 0) {
+    console.log('[drift] Kein dev-Telegram-Binding — Telegram übersprungen');
+    return;
+  }
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML' }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    for (const target of targets) {
+      if (!target.telegramChatId) continue;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: target.telegramChatId, text, parse_mode: 'HTML' }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
   } catch (e: any) {
     console.log(`[drift] Telegram-Fehler: ${e.message}`);
   }

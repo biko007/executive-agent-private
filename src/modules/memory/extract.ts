@@ -24,7 +24,6 @@ import {
   hashFact,
 } from './store.js';
 
-const OWNER_SENDER_ID = '133260792';
 const PROMPT_VERSION = 'v1';
 
 // ── Types for gateway LLM call ─────────────────────────────────────────────
@@ -104,9 +103,10 @@ export interface ExtractGuardResult {
 export function shouldExtractMemory(
   userText: string,
   senderId: string,
+  ownerSenderIds: string[] = [],
 ): ExtractGuardResult {
   // Non-owner: never extract
-  if (senderId !== OWNER_SENDER_ID) {
+  if (!ownerSenderIds.includes(senderId)) {
     return { decision: 'skip', reason: 'non_owner' };
   }
 
@@ -207,13 +207,14 @@ function loadOwnerFactsContent(): string {
  */
 export async function extractFacts(
   logId: number,
+  ownerSenderId: string,
   userText: string,
   agentText: string | null,
   llmComplete: LlmCompleteFunc,
   logger?: { info: (msg: string) => void; warn: (msg: string) => void },
 ): Promise<void> {
   // Load existing active facts for dedup context
-  const activeFacts = await getActiveOwnerFacts(OWNER_SENDER_ID);
+  const activeFacts = await getActiveOwnerFacts(ownerSenderId);
   const activeFactsContext = activeFacts
     .slice(0, 50)
     .map(f => `[${f.id}] ${f.fact}`)
@@ -338,7 +339,7 @@ ${agentText || '(keine)'}`;
       : 0.5;
 
     const params = {
-      ownerSenderId: OWNER_SENDER_ID,
+      ownerSenderId,
       fact: f.fact.trim(),
       factNorm,
       factHash,
@@ -382,6 +383,7 @@ ${agentText || '(keine)'}`;
  */
 export async function runExtractSweep(
   llmComplete: LlmCompleteFunc,
+  ownerSenderIds: string[],
   logger?: { info: (msg: string) => void; warn: (msg: string) => void },
   sendTelegram?: (chatId: string, text: string) => Promise<boolean>,
   chatId?: string,
@@ -390,20 +392,20 @@ export async function runExtractSweep(
   if (!acquired) return; // Another instance is running
 
   try {
-    const jobs = await getPendingExtractionJobs(5);
+    const jobs = await getPendingExtractionJobs(ownerSenderIds, 5);
     if (jobs.length === 0) return;
 
     logger?.info(`[memory-sweep] Processing ${jobs.length} job(s)`);
 
     for (const job of jobs) {
       try {
-        const guard = shouldExtractMemory(job.user_text, OWNER_SENDER_ID);
+        const guard = shouldExtractMemory(job.user_text, job.sender_id, ownerSenderIds);
         if (guard.decision === 'skip') {
           await updateExtractStatus(job.id, 'skipped');
           continue;
         }
 
-        await extractFacts(job.id, job.user_text, job.agent_text, llmComplete, logger);
+        await extractFacts(job.id, job.sender_id, job.user_text, job.agent_text, llmComplete, logger);
       } catch (err: any) {
         const errorMsg = err?.message?.slice(0, 200) ?? 'unknown';
         await updateExtractStatus(job.id, 'failed', errorMsg);

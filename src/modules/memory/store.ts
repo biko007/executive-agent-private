@@ -223,22 +223,24 @@ export async function getFactById(factId: number): Promise<OwnerFact | null> {
 
 export interface PendingExtractionJob {
   id: number;
+  sender_id: string;
   user_text: string;
   agent_text: string | null;
   memory_extract_attempts: number;
 }
 
 /** Fetch pending/failed extraction jobs for sweep processing. */
-export async function getPendingExtractionJobs(limit = 5): Promise<PendingExtractionJob[]> {
+export async function getPendingExtractionJobs(ownerSenderIds: string[], limit = 5): Promise<PendingExtractionJob[]> {
+  if (ownerSenderIds.length === 0) return [];
   const { rows } = await query<PendingExtractionJob>(
-    `SELECT id, user_text, agent_text, memory_extract_attempts
+    `SELECT id, sender_id, user_text, agent_text, memory_extract_attempts
        FROM conversation_log
       WHERE memory_extract_status IN ('pending', 'failed')
         AND memory_extract_attempts < 3
-        AND sender_id = '133260792'
+        AND sender_id = ANY($1)
       ORDER BY id ASC
-      LIMIT $1`,
-    [limit],
+      LIMIT $2`,
+    [ownerSenderIds, limit],
   );
   return rows;
 }

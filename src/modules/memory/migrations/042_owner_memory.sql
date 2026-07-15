@@ -20,7 +20,7 @@ END $$;
 -- owner_memory: Fakten-Speicher
 CREATE TABLE IF NOT EXISTS owner_memory (
   id                BIGSERIAL PRIMARY KEY,
-  owner_sender_id   TEXT NOT NULL DEFAULT '133260792',
+  owner_sender_id   TEXT NOT NULL,
   fact              TEXT NOT NULL CHECK (length(trim(fact)) > 0),
   fact_norm         TEXT NOT NULL,
   fact_hash         TEXT NOT NULL,

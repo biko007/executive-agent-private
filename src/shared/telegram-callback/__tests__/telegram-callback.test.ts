@@ -14,6 +14,7 @@ describe('parseCallbackEvent', () => {
       payload: 'jb-1805-1xkk::ja',
       args: ['jb-1805-1xkk', 'ja'],
       senderId: '12345',
+      chatId: '',
       content: 'icraft_jb-1805-1xkk::ja',
     });
   });
@@ -46,6 +47,29 @@ describe('parseCallbackEvent', () => {
     const result = parseCallbackEvent(event, 'icraft');
     expect(result).not.toBeNull();
     expect(result!.senderId).toBe('');
+    expect(result!.chatId).toBe('');
+  });
+
+  test('extracts explicit chatId without falling back to senderId', () => {
+    const event = {
+      content: 'memdrop_42',
+      metadata: { chatId: 'telegram:-10042', senderId: '777' },
+    };
+    const result = parseCallbackEvent(event, 'memdrop');
+    expect(result).not.toBeNull();
+    expect(result!.chatId).toBe('-10042');
+    expect(result!.senderId).toBe('777');
+  });
+
+  test('does not invent chatId from senderId for callbacks', () => {
+    const event = {
+      content: 'memdrop_42',
+      metadata: { senderId: '777' },
+    };
+    const result = parseCallbackEvent(event, 'memdrop');
+    expect(result).not.toBeNull();
+    expect(result!.chatId).toBe('');
+    expect(result!.senderId).toBe('777');
   });
 
   // (f) undefined content → null

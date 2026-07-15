@@ -1,0 +1,10 @@
+[Unit]
+Description=bikosoc Prompt-Inbox Poll Timer
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

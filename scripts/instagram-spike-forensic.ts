@@ -10,6 +10,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { listActiveTelegramBindings } from '../src/modules/telegram-binding/index.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,6 @@ const TOKENS_FILE = path.join(ARTIFACTS_DIR, 'tokens.json');
 const SNAPSHOTS_DIR = path.join(ARTIFACTS_DIR, 'demographics-snapshots');
 const TODAY = new Date().toISOString().slice(0, 10);
 const OUTPUT_FILE = path.join(ARTIFACTS_DIR, `spike-forensic-v2-${TODAY}.json`);
-const CHAT_ID = '133260792';
 const SPIKE_THRESHOLD_MULTIPLE = 3; // day > 3x median = spike
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -145,25 +145,38 @@ async function sendTelegram(botToken: string, text: string): Promise<boolean> {
     console.log(text);
     return false;
   }
+  const env = loadEnv();
+  process.env.POSTGRES_URL ||= env.POSTGRES_URL;
+  const targets = await listActiveTelegramBindings('dev');
+  if (targets.length === 0) {
+    console.log('[forensic] Kein dev-Telegram-Binding — nur Konsole');
+    console.log(text);
+    return false;
+  }
   try {
-    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML' }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.log(`[forensic] Telegram HTML failed (${res.status}), retrying plain...`);
-      const res2 = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    let ok = false;
+    for (const target of targets) {
+      if (!target.telegramChatId) continue;
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: CHAT_ID, text: text.replace(/<[^>]+>/g, '') }),
+        body: JSON.stringify({ chat_id: target.telegramChatId, text, parse_mode: 'HTML' }),
         signal: AbortSignal.timeout(10_000),
       });
-      return res2.ok;
+      if (!res.ok) {
+        console.log(`[forensic] Telegram HTML failed (${res.status}), retrying plain...`);
+        const res2 = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: target.telegramChatId, text: text.replace(/<[^>]+>/g, '') }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        ok = res2.ok || ok;
+      } else {
+        ok = true;
+      }
     }
-    return true;
+    return ok;
   } catch (e: any) {
     console.log(`[forensic] Telegram error: ${e.message}`);
     return false;

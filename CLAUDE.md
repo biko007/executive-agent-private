@@ -1,8 +1,8 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-07-12**
+**Stand: 2026-07-15**
 
-## Stand 2026-07-12
+## Stand 2026-07-15
 
 Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
 
@@ -74,24 +74,27 @@ Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3
   blind `set_tan_mechanism('999')` was den aus `from_data` restaurierten Mechanismus zerstört.
   ~~Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).~~ Erledigt 2026-06-25.
 
-### Module (14)
+### Module (17)
 
 | Modul | Pfad | Commands | DI |
 |-------|------|----------|----|
 | assets | src/modules/assets/ | 7 | Postgres, NK-Engine |
 | banking | src/modules/banking/ | — (via routes.ts) | Postgres, Encryption, Python-Sidecar (FinTS) |
 | calendar | src/modules/calendar/ | 4 | M365 |
+| cc-prompt-dispatch | src/modules/cc-prompt-dispatch/ | — | tmux (execFileSync) |
 | executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
 | fleet | src/modules/fleet/ | 10 | Links |
-| health | src/modules/health/ | 14 | sendTelegram, Postgres, Oura API, Withings API |
-| instagram | src/modules/instagram/ | 21 | sendTelegram, Meta API, Voice, Postgres |
+| health | src/modules/health/ | 14 | sendTelegramToRole, Postgres, Oura API, Withings API |
+| instagram | src/modules/instagram/ | 21 | sendTelegramToRole, Meta API, Voice, Postgres |
 | links | src/modules/links/ | — | Postgres |
 | location | src/modules/location/ | — | Postgres |
 | mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
 | memory | src/modules/memory/ | — | Postgres |
 | nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
 | pe | src/modules/pe/ | 5 | self-contained |
+| prompt-inbox | src/modules/prompt-inbox/ | — | cc-prompt-dispatch, fs |
 | sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
+| telegram-binding | src/modules/telegram-binding/ | — | Postgres |
 | travel | src/modules/travel/ | 8 | M365, Telegram, Links |
 
 ### Daten-Hygiene
@@ -259,7 +262,8 @@ CALLBACK_PREFIXES eintragen, sonst greift die Callback-Suppression.
 | `src/modules/location/migrations` | location | 032 |
 | `src/modules/links/migrations` | links | 033 |
 | `src/modules/sharepoint/migrations` | sharepoint | 034 |
-| `src/modules/memory/migrations` | memory | 041 |
+| `src/modules/memory/migrations` | memory | 041, 042, 043 |
+| `src/modules/telegram-binding/migrations` | telegram-binding | 043 |
 
 **DR-Pfad:** `pg_dump --format=custom` als Wahrheits-Quelle, unabhaengig vom Migration-Runner.
 Borg-Backup sichert den Dump taeglich.
@@ -544,6 +548,8 @@ Owner-Memory Phase 3 (2026-07-06): Fakten-Extraktion, Recall-Injektion, /memory 
 Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
 SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
 Betriebsautomatisierung (2026-07-12): Report-Watcher, Wait-Notifier, /ccstop live.
+Telegram-Binding-Refactor + Prompt-Inbox + /do (2026-07-15): DB-basierter Owner-Guard,
+  /do Prompt-Dispatch, ~/inbox/ File-Drop mit systemd-Timer, Plans-Watcher Slug-kompatibel.
 
 ### Betriebsautomatisierung (2026-07-12, Portierung von HDCC)
 
@@ -560,13 +566,40 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
 - **`/report [n]`:** Manueller Abruf von Reports. Listet alle .md in ~/bikosoc-spec/ + ~/report-*.md,
   sortiert nach mtime (neueste zuerst). Sendet als Dokument + Text-Preview.
 - **`/ccstop`:** Kill-Switch fuer laufenden Claude Code in tmux bikosoc. Sendet C-c via tmux,
-  dann SIGTERM an Kindprozesse. Owner-only (133260792). Bestaetigung via Telegram.
+  dann SIGTERM an Kindprozesse. Owner-only (assertBoundOwner). Bestaetigung via Telegram.
 - **`/ccgo`:** Plan-Approval in tmux bikosoc bestaetigen (Gegenstueck zu /ccstop).
-  Owner-only (133260792). Erkennt wartenden Plan-Prompt (Muster `❯ 1. Yes`), waehlt
+  Owner-only (assertBoundOwner). Erkennt wartenden Plan-Prompt (Muster `❯ 1. Yes`), waehlt
   „Yes, and bypass permissions" (Option 1). Ohne erkannten Prompt: kein Tastendruck,
   Telegram-Meldung „kein wartender Plan-Prompt". Selftest: Prompt-Detektor, Non-Owner-Ablehnung,
   kein-Prompt-Meldung. Live-E2E (echte Plan-Bestaetigung) offen fuer naechsten REVIEW-Lauf.
-- **Command-Guard:** `report`, `ccstop` und `ccgo` in REGISTERED_COMMANDS. verify:commands gruen.
+- **`/do <text>`:** Sendet beliebigen Text als Prompt an die laufende cc-Session in tmux bikosoc.
+  Owner-only (assertBoundOwner). Nutzt `execFileSync` mit `--` Separator (injection-sicher,
+  kein Shell-Escaping). Modul: `src/modules/cc-prompt-dispatch/index.ts`.
+- **Prompt-Inbox (Datei-Drop):** systemd-Timer (`prompt-inbox.timer`, 10s Intervall) pollt
+  `~/inbox/*.txt`. Jede Datei wird als Prompt an tmux bikosoc dispatcht, dann nach
+  `~/inbox/done/` verschoben. Report-Watcher meldet Zustellung. Standalone-Skript:
+  `scripts/prompt-inbox-poll.ts`. Modul: `src/modules/prompt-inbox/index.ts`.
+- **Command-Guard:** `report`, `ccstop`, `ccgo` und `do` in REGISTERED_COMMANDS. verify:commands gruen.
+
+### Telegram-Binding (2026-07-15, Migration 043)
+
+Hardcoded `OWNER_SENDER_ID = '133260792'` komplett entfernt. Ersetzt durch DB-basiertes
+`assertBoundOwner()` via `workspace_telegram_bindings` Tabelle (Boot-Time-DDL, Migration 043).
+
+- **DB-Tabelle:** `workspace_telegram_bindings` (binding_id, workspace_key, bot_key, role_tag,
+  telegram_chat_id, telegram_user_id, chat_type, status, verification_nonce_hash, nonce_expires_at)
+- **Owner-Guard:** `assertBoundOwner(ctx)` prueft ob Absender ein aktives Binding hat.
+  Ersetzt alle `senderId === OWNER_SENDER_ID` Checks.
+- **Sende-Target:** `sendTelegramToRole('operativ', ...)` ersetzt `sendTelegram(chatId, ...)`.
+  Liest Ziel-Chat-ID aus aktivem Binding fuer die angegebene Rolle.
+- **Binding-Flow:** CLI (`scripts/telegram-binding.ts create --role operativ`) → Nonce →
+  `/bind <nonce>` im Telegram-Chat → aktiviert Binding.
+- **Fallback bei Lockout:** SQL INSERT direkt in DB (siehe Plan).
+- **parse_mode entfernt:** `parse_mode: 'Markdown'` aus allen Telegram-Sends entfernt
+  (verursachte Fehler bei Sonderzeichen).
+- **Modul:** `src/modules/telegram-binding/index.ts` (201 Zeilen)
+- **Advisory-Lock-Registry:** 42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session,
+  47=Oura, 48=Memory-Sweep
 
 ### Report-Konvention (stehende Regel, ab 2026-07-12)
 
