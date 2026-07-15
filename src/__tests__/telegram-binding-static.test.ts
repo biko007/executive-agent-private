@@ -48,6 +48,13 @@ describe('telegram binding static guards', () => {
     expect(source).not.toContain("name.startsWith('plan-')");
   });
 
+  test('no handler uses the broken (args, ctx) two-param pattern', () => {
+    const source = read('index.ts');
+    const badPattern = /handler:\s*async\s*\(\s*args\s*:/g;
+    const matches = source.match(badPattern) || [];
+    expect(matches.length).toBe(0);
+  });
+
   test('memdrop callback fails closed without explicit chat id', () => {
     const source = read('index.ts');
     expect(source).toContain('const chatId = memdropCb.chatId;');

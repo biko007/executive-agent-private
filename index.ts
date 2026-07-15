@@ -1762,8 +1762,8 @@ export default function (api: any) {
     name: 'bind',
     description: 'Telegram-Ziel binden. /bind <nonce> oder /bind create <operativ|dev>',
     acceptsArgs: true,
-    handler: async (args: string, ctx: any) => {
-      const raw = String(args || '').trim();
+    handler: async (ctx: any) => {
+      const raw = String(ctx?.args || '').trim();
       const parts = raw.split(/\s+/).filter(Boolean);
 
       if (parts[0]?.toLowerCase() === 'create') {
@@ -1809,13 +1809,13 @@ export default function (api: any) {
     name: 'memory',
     description: 'Owner-Memory pflegen. /memory list | /memory drop <id>',
     requireAuth: true,
-    handler: async (args: string, ctx: any) => {
+    handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
       }
 
-      const parts = args.trim().split(/\s+/);
+      const parts = String(ctx?.args || '').trim().split(/\s+/);
       const sub = parts[0]?.toLowerCase() || 'list';
 
       if (sub === 'list') {
@@ -2044,13 +2044,13 @@ export default function (api: any) {
     name: 'do',
     description: 'Prompt an Claude Code in tmux bikosoc uebergeben. /do <text>',
     acceptsArgs: true,
-    handler: async (args: string, ctx: any) => {
+    handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
       }
 
-      const prompt = String(args || ctx?.args || '').trim();
+      const prompt = String(ctx?.args || '').trim();
       if (!prompt) {
         return { text: 'Nutzung: /do <text>' };
       }
