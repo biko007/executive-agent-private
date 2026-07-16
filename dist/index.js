@@ -484,7 +484,7 @@ export default function (api) {
         'trips', 'tripnew', 'trip', 'tripshow', 'tripadd', 'tripdel', 'tripsync', 'pack',
         'banking', 'tan',
         'memory',
-        'bind', 'report', 'ccstop', 'ccgo', 'do',
+        'bind', 'report', 'ccstop', 'ccgo', 'do', 'arm',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
     const persistedRuns = new Set();
@@ -1595,8 +1595,8 @@ export default function (api) {
         name: 'bind',
         description: 'Telegram-Ziel binden. /bind <nonce> oder /bind create <operativ|dev>',
         acceptsArgs: true,
-        handler: async (args, ctx) => {
-            const raw = String(args || '').trim();
+        handler: async (ctx) => {
+            const raw = String(ctx?.args || '').trim();
             const parts = raw.split(/\s+/).filter(Boolean);
             if (parts[0]?.toLowerCase() === 'create') {
                 const guard = await assertBoundOwner(ctx);
@@ -1643,12 +1643,12 @@ export default function (api) {
         name: 'memory',
         description: 'Owner-Memory pflegen. /memory list | /memory drop <id>',
         requireAuth: true,
-        handler: async (args, ctx) => {
+        handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
-            const parts = args.trim().split(/\s+/);
+            const parts = String(ctx?.args || '').trim().split(/\s+/);
             const sub = parts[0]?.toLowerCase() || 'list';
             if (sub === 'list') {
                 const { facts, total } = await listActiveFacts(guard.userId, 20, 0);
@@ -1735,8 +1735,8 @@ export default function (api) {
             }
             const target = reportFiles[n - 1];
             // Send as document
-            const targetRole = fullMode ? 'dev' : 'operativ';
-            await sendTelegramDocumentToRole(targetRole, target.filePath, `Report #${n}: ${target.name}`, { fallbackToOperativ: fullMode });
+            const targetRole = 'dev';
+            await sendTelegramDocumentToRole(targetRole, target.filePath, `Report #${n}: ${target.name}`, { fallbackToOperativ: true });
             // Send text: full mode = chunked volltext, normal = slim summary
             try {
                 const content = fs.readFileSync(target.filePath, 'utf-8');
@@ -1751,7 +1751,7 @@ export default function (api) {
                 }
                 else {
                     const summary = extractReportSummary(content);
-                    await sendTelegramToRole('operativ', `${target.name}\n\n${summary}`);
+                    await sendTelegramToRole('dev', `${target.name}\n\n${summary}`, { fallbackToOperativ: true });
                 }
             }
             catch { /* text preview best-effort */ }
@@ -1858,12 +1858,12 @@ export default function (api) {
         name: 'do',
         description: 'Prompt an Claude Code in tmux bikosoc uebergeben. /do <text>',
         acceptsArgs: true,
-        handler: async (args, ctx) => {
+        handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
-            const prompt = String(args || ctx?.args || '').trim();
+            const prompt = String(ctx?.args || '').trim();
             if (!prompt) {
                 return { text: 'Nutzung: /do <text>' };
             }
@@ -1875,6 +1875,30 @@ export default function (api) {
             catch (e) {
                 api.logger.error(`[do] Fehler: ${e.message}`);
                 return { text: `do Fehler: ${e.message}` };
+            }
+        },
+    });
+    // ── /arm Command: Red Zone einmalig scharfstellen (one-shot) ──
+    api.registerCommand({
+        name: 'arm',
+        description: 'Red Zone: einmalig scharfstellen fuer naechste rote Aktion. /arm',
+        acceptsArgs: true,
+        handler: async (ctx) => {
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
+                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+            }
+            try {
+                const fs = await import('fs');
+                const flagPath = `${process.env.HOME}/.armed-bikosoc`;
+                fs.writeFileSync(flagPath, `armed by owner at ${new Date().toISOString()}\n`);
+                await sendTelegramToRole('operativ', 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
+                api.logger.info('[arm] Red Zone armed (one-shot)');
+                return { text: 'Red Zone scharfgestellt (one-shot).' };
+            }
+            catch (e) {
+                api.logger.error(`[arm] Fehler: ${e.message}`);
+                return { text: `arm Fehler: ${e.message}` };
             }
         },
     });
@@ -2650,8 +2674,8 @@ export default function (api) {
                     }
                     // Send document
                     const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
-                    const fileRole = file.key.startsWith('plan:') ? 'dev' : 'operativ';
-                    await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: fileRole === 'dev' });
+                    const fileRole = 'dev';
+                    await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: true });
                     // Send text: plans + short reports get full chunked content, long reports get summary
                     try {
                         const content = fs.readFileSync(file.filePath, 'utf-8');
@@ -2667,7 +2691,7 @@ export default function (api) {
                         }
                         else {
                             const summary = extractReportSummary(content);
-                            await sendTelegramToRole('operativ', `${file.name}\n\n${summary}`);
+                            await sendTelegramToRole('dev', `${file.name}\n\n${summary}`, { fallbackToOperativ: true });
                         }
                     }
                     catch { /* text preview best-effort */ }
@@ -3269,10 +3293,11 @@ export default function (api) {
                 const defaultEmoji = { info: 'ℹ️', warn: '⚠️', error: '🔴' };
                 const emoji = typeof body.emoji === 'string' && body.emoji.length > 0 ? body.emoji : defaultEmoji[severity];
                 const text = `${emoji} ${message}`;
-                const chatId = getCachedTelegramTarget('operativ');
+                const role = body.role === 'dev' ? 'dev' : 'operativ';
+                const chatId = getCachedTelegramTarget(role, { fallbackToOperativ: role === 'dev' });
                 if (!chatId) {
                     res.writeHead(503, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: 'operativ Telegram binding not configured' }));
+                    res.end(JSON.stringify({ ok: false, error: `${role} Telegram binding not configured` }));
                     return;
                 }
                 // Send via direct Telegram API to capture message_id

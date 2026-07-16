@@ -1,8 +1,8 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-07-15**
+**Stand: 2026-07-16**
 
-## Stand 2026-07-15
+## Stand 2026-07-16
 
 Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
 
@@ -612,9 +612,12 @@ Hardcoded `OWNER_SENDER_ID = '133260792'` komplett entfernt. Ersetzt durch DB-ba
 - **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` + `~/.claude/plans/*.md`.
 - **Zustellung Reports:** 1 Dokument-Anhang + 1 Zusammenfassungs-Chunk (`## Zusammenfassung`/`## Summary`
   Abschnitt, max 1500 Zeichen; Fallback: erste 1500 Zeichen).
+  Ziel: **dev** (bikosoc-dev). `fallbackToOperativ: true` falls dev-Binding fehlt.
 - **Zustellung Plans:** 1 Dokument-Anhang + Volltext in nummerierten Chunks (~3500 Zeichen pro Chunk).
   Plans werden komplett als Text gesendet, weil Telegram Web .md-Dateien nicht rendert.
+  Ziel: **dev** (bikosoc-dev). `fallbackToOperativ: true` falls dev-Binding fehlt.
 - **Manueller Abruf:** `/report [n]` (slim) oder `/report full [n]` (volltext in Chunks).
+  Beide Modi senden an **dev**.
 
 ### Plan-Report-Konvention (stehende Regel, ab 2026-07-12)
 
