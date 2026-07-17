@@ -104,6 +104,8 @@ import {
   type TelegramBindingRole,
 } from './src/modules/telegram-binding/index.js';
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
+import { createDropboxAdapter } from './src/adapters/dropbox.js';
+import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -203,6 +205,32 @@ export default function (api: any) {
   g.__ea_auditReminderRegistered ??= false;
   g.__ea_reportWatcherRegistered ??= false;
   g.__ea_waitNotifierRegistered ??= false;
+  g.__ea_dropboxAdapter ??= null;
+  g.__ea_dropboxAdapterInited ??= false;
+
+  // ── Dropbox Adapter Init (Report-Upload, one-shot) ─────────────────────────
+  // Aktiviert wenn EA_DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN gesetzt — sonst still inaktiv.
+  if (!g.__ea_dropboxAdapterInited) {
+    g.__ea_dropboxAdapterInited = true;
+    const dboxKey = process.env['EA_DROPBOX_APP_KEY'];
+    const dboxSecret = process.env['EA_DROPBOX_APP_SECRET'];
+    const dboxToken = process.env['EA_DROPBOX_REFRESH_TOKEN'];
+    if (dboxKey && dboxSecret && dboxToken) {
+      try {
+        const adapter = createDropboxAdapter({ appKey: dboxKey, appSecret: dboxSecret, refreshToken: dboxToken });
+        g.__ea_dropboxAdapter = adapter;
+        // Ordner idempotent beim Boot anlegen (409 wird vom Adapter ignoriert)
+        adapter.createFolder('/bikosoc-reports').catch((e: Error) =>
+          api.logger.warn(`[dropbox] createFolder /bikosoc-reports fehlgeschlagen: ${e.message}`)
+        );
+        api.logger.info('[dropbox] Adapter initialisiert (EA_DROPBOX_*), Zielordner: /bikosoc-reports');
+      } catch (e: any) {
+        api.logger.warn(`[dropbox] Adapter-Init fehlgeschlagen: ${e.message}`);
+      }
+    } else {
+      api.logger.info('[dropbox] EA_DROPBOX_* nicht vollstaendig gesetzt — Feature inaktiv');
+    }
+  }
 
   // pluginConfig maps to: plugins.entries.executive-agent.config
   const pcfg = api.pluginConfig || {};
@@ -550,6 +578,30 @@ export default function (api: any) {
     }
     // Fallback: first 1500 chars
     return content.slice(0, MAX_SUMMARY);
+  }
+
+  /**
+   * Erzeugt einen kompakten 5-Zeilen-Digest aus Report-Inhalt.
+   * Reihenfolge: ## Zusammenfassung/Summary-Abschnitt → erste 5 inhaltliche Zeilen.
+   * Wird oben im Dropbox-Upload vorangestellt; bei langen Reports als Telegram-Text.
+   */
+  function generateDigest(content: string): string {
+    // Bevorzuge vorhandenen Zusammenfassungs-Abschnitt
+    const match = content.match(/^##\s+(Zusammenfassung|Summary|DIGEST)\s*$/im);
+    if (match) {
+      const start = match.index! + match[0].length;
+      const rest = content.slice(start);
+      const nextHeader = rest.search(/^## /m);
+      const section = nextHeader > 0 ? rest.slice(0, nextHeader).trim() : rest.trim();
+      const lines = section.split('\n').filter(l => l.trim()).slice(0, 5);
+      if (lines.length > 0) return lines.join('\n');
+    }
+    // Fallback: erste 5 nicht-leere, nicht-strukturelle Zeilen (keine Heading, keine Trennlinien)
+    return content
+      .split('\n')
+      .filter(l => l.trim() && !l.startsWith('#') && !/^[-=]{3,}$/.test(l.trim()))
+      .slice(0, 5)
+      .join('\n');
   }
 
   /* ---------------- Command Guard: suppress AI agent for registered commands ---------------- */
@@ -2940,32 +2992,66 @@ export default function (api: any) {
           break; // Will retry on next scan
         }
 
+        // Inhalt lesen + Digest erzeugen (nur fuer Reports, nicht Plans)
+        let reportContent = '';
+        let digestText = '';
+        const isPlan = file.key.startsWith('plan:');
+        try {
+          reportContent = fs.readFileSync(file.filePath, 'utf-8');
+          if (!isPlan) digestText = generateDigest(reportContent);
+        } catch { /* best-effort */ }
+
         // Send document
-        const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
+        const caption = isPlan ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
         const fileRole: TelegramBindingRole = 'dev';
         await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: true });
 
-        // Send text: plans + short reports get full chunked content, long reports get summary
+        // Send text: plans + short reports get full chunked content, long reports get digest
         try {
-          const content = fs.readFileSync(file.filePath, 'utf-8');
-          const sendFullText = file.key.startsWith('plan:') || content.length <= REPORT_CHUNK_SIZE;
+          const content = reportContent || fs.readFileSync(file.filePath, 'utf-8');
+          const sendFullText = isPlan || content.length <= REPORT_CHUNK_SIZE;
           if (sendFullText) {
             // Full text in chunks (plans always; short reports fit in 1 chunk)
             const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
             for (let i = 0; i < totalChunks; i++) {
               const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
               const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
-                await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
+              await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
             }
           } else {
-            const summary = extractReportSummary(content);
-              await sendTelegramToRole('dev', `${file.name}\n\n${summary}`, { fallbackToOperativ: true });
+            // Langer Report: Digest bevorzugen, Fallback auf extractReportSummary
+            const text = digestText || extractReportSummary(content);
+            await sendTelegramToRole('dev', `${file.name}\n\n${text}`, { fallbackToOperativ: true });
           }
         } catch { /* text preview best-effort */ }
 
         sentMap.set(file.key, file.mtimeMs);
         reportLastAutoSendAt = Date.now();
         api.logger.info(`[report-watcher] Delivered: ${file.name}`);
+
+        // ── Dropbox-Upload (fire-and-forget, sekundaer) ─────────────────────
+        // Telegram-Zustellung ist primaer — Dropbox-Fehler werden NUR geloggt.
+        // Plans werden nicht hochgeladen (nur report-*.md).
+        if (!isPlan && g.__ea_dropboxAdapter) {
+          const dropboxAdapter = g.__ea_dropboxAdapter as DropboxAdapter;
+          const content = reportContent;
+          if (content) {
+            // Digest oben voranstellen (Format: ## DIGEST\n<5 Zeilen>\n\n---\n\n<Original>)
+            const uploadContent = digestText
+              ? `## DIGEST\n${digestText}\n\n---\n\n${content}`
+              : content;
+            const uploadBuf = Buffer.from(uploadContent, 'utf-8');
+            dropboxAdapter.uploadFile({
+              path: `/bikosoc-reports/${file.name}`,
+              body: uploadBuf,
+              contentType: 'text/markdown',
+            }).then((result) => {
+              api.logger.info(`[report-watcher] Dropbox upload OK: ${result.pathDisplay} (${result.size} bytes)`);
+            }).catch((e: Error) => {
+              api.logger.warn(`[report-watcher] Dropbox upload fehlgeschlagen: ${e.message}`);
+            });
+          }
+        }
       }
 
       saveReportSentMap(sentMap);
