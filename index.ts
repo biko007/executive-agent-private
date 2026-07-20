@@ -223,7 +223,10 @@ export default function (api: any) {
         adapter.createFolder('/bikosoc-reports').catch((e: Error) =>
           api.logger.warn(`[dropbox] createFolder /bikosoc-reports fehlgeschlagen: ${e.message}`)
         );
-        api.logger.info('[dropbox] Adapter initialisiert (EA_DROPBOX_*), Zielordner: /bikosoc-reports');
+        adapter.createFolder('/bikosoc-plans').catch((e: Error) =>
+          api.logger.warn(`[dropbox] createFolder /bikosoc-plans fehlgeschlagen: ${e.message}`)
+        );
+        api.logger.info('[dropbox] Adapter initialisiert (EA_DROPBOX_*), Zielordner: /bikosoc-reports, /bikosoc-plans');
       } catch (e: any) {
         api.logger.warn(`[dropbox] Adapter-Init fehlgeschlagen: ${e.message}`);
       }
@@ -3108,18 +3111,29 @@ export default function (api: any) {
 
         // ── Dropbox-Upload (fire-and-forget, sekundaer) ─────────────────────
         // Telegram-Zustellung ist primaer — Dropbox-Fehler werden NUR geloggt.
-        // Plans werden nicht hochgeladen (nur report-*.md).
-        if (!isPlan && g.__ea_dropboxAdapter) {
+        // Reports → /bikosoc-reports/<name>.md (mit Digest-Prefix)
+        // Plans   → /bikosoc-plans/<name>.md  (Rohinhalt, kein Digest)
+        // Fremd-Strang-Plans werden hier nie erreicht (isBikosocPlan-Filter greift vorher).
+        if (g.__ea_dropboxAdapter) {
           const dropboxAdapter = g.__ea_dropboxAdapter as DropboxAdapter;
           const content = reportContent;
           if (content) {
-            // Digest oben voranstellen (Format: ## DIGEST\n<5 Zeilen>\n\n---\n\n<Original>)
-            const uploadContent = digestText
-              ? `## DIGEST\n${digestText}\n\n---\n\n${content}`
-              : content;
+            let uploadContent: string;
+            let dropboxPath: string;
+            if (isPlan) {
+              // Plans: Rohinhalt ohne Digest, eigener Ordner
+              uploadContent = content;
+              dropboxPath = `/bikosoc-plans/${file.name}`;
+            } else {
+              // Reports: Digest voranstellen
+              uploadContent = digestText
+                ? `## DIGEST\n${digestText}\n\n---\n\n${content}`
+                : content;
+              dropboxPath = `/bikosoc-reports/${file.name}`;
+            }
             const uploadBuf = Buffer.from(uploadContent, 'utf-8');
             dropboxAdapter.uploadFile({
-              path: `/bikosoc-reports/${file.name}`,
+              path: dropboxPath,
               body: uploadBuf,
               contentType: 'text/markdown',
             }).then((result) => {

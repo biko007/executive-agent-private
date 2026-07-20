@@ -48,6 +48,18 @@ describe('telegram binding static guards', () => {
     expect(source).not.toContain("name.startsWith('plan-')");
   });
 
+  test('plans are uploaded to /bikosoc-plans/ separate from /bikosoc-reports/', () => {
+    const source = read('index.ts');
+    // Folder created at boot
+    expect(source).toContain("createFolder('/bikosoc-plans')");
+    // Upload path for plans
+    expect(source).toContain('dropboxPath = `/bikosoc-plans/${file.name}`');
+    // Upload path for reports (unchanged)
+    expect(source).toContain('dropboxPath = `/bikosoc-reports/${file.name}`');
+    // Guard no longer excludes plans — both branches handled inside
+    expect(source).not.toContain('if (!isPlan && g.__ea_dropboxAdapter)');
+  });
+
   test('no handler uses the broken (args, ctx) two-param pattern', () => {
     const source = read('index.ts');
     const badPattern = /handler:\s*async\s*\(\s*args\s*:/g;
