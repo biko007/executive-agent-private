@@ -562,13 +562,16 @@ Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
   Rate-Limit 1/min. Dedupe via `~/bikosoc-spec/.report-sent.json`.
   Erstlauf: bestehende Dateien werden in Dedupe-Map geseeded, NICHT gesendet.
   fs.watch mit 5s Debounce. globalThis-Guard `__ea_reportWatcherRegistered`.
-- **Dropbox-Upload (Report-Backup, 2026-07-17):** Reports werden zusaetzlich per Dropbox-API
-  nach `/bikosoc-reports/<name>.md` hochgeladen (mode overwrite). Adapter: `src/adapters/dropbox.ts`
-  (portiert von HDCC, fetch-basiert, kein SDK, Token-Refresh + Retry). Init beim Boot via
-  EA_DROPBOX_APP_KEY / EA_DROPBOX_APP_SECRET / EA_DROPBOX_REFRESH_TOKEN in `~/.config/openclaw/env`
-  (KEY=VALUE ohne export-Prefix fuer systemd). Guard: silent inaktiv wenn Vars fehlen.
+- **Dropbox-Upload (Report + Plan Backup, ab 2026-07-17):** Reports und Plans werden zusaetzlich
+  per Dropbox-API hochgeladen. Adapter: `src/adapters/dropbox.ts` (fetch-basiert, kein SDK,
+  Token-Refresh + Retry). Init beim Boot via EA_DROPBOX_APP_KEY / EA_DROPBOX_APP_SECRET /
+  EA_DROPBOX_REFRESH_TOKEN in `~/.config/openclaw/env` (KEY=VALUE ohne export-Prefix fuer systemd).
+  Guard: silent inaktiv wenn Vars fehlen.
+  - **Reports** → `/bikosoc-reports/<name>.md` (mit `## DIGEST`-Prefix, 5 Zeilen)
+  - **Plans** → `/bikosoc-plans/<name>.md` (Rohinhalt, kein Digest)
+  - Fremd-Strang-Plans (HDCC etc.) erreichen den Upload nie (isBikosocPlan-Filter vorgelagert).
   Fire-and-forget: Fehler werden nur als WARN geloggt, Telegram-Zustellung bleibt primaer.
-  Ordner `/bikosoc-reports` wird idempotent beim Boot angelegt.
+  Ordner `/bikosoc-reports` und `/bikosoc-plans` werden idempotent beim Boot angelegt.
   WICHTIG: EA_DROPBOX_*-Credentials muessen gueltiger Refresh-Token sein (400 = revoked/falsch).
 - **Wait-Notifier (Warte-Melder):** Prueft alle 30s via `tmux capture-pane -t bikosoc` ob
   Claude Code auf Eingabe wartet. Telegram-Notification mit Preview (max 1x pro 5min, dedup
