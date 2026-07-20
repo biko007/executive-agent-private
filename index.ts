@@ -2885,6 +2885,75 @@ export default function (api: any) {
       }
     }
 
+    // ── Strand-Filter: nur bikosoc-eigene Plan-Files zustellen ────────────────
+    // Kriterium 1 (Ausschluss): HDCC-Inhalts-Marker → NICHT zustellen
+    // Kriterium 2 (Einschluss): bikosoc-Inhalts-Marker → zustellen
+    // Kriterium 3 (Sekundär):   Tmux-Korrelation für frische, ambivalente Files
+    // Fallback:                  NICHT zustellen (Im Zweifel Fremd-Strang schützen)
+    function isBikosocPlan(filePath: string, content: string, stat: fs.Stats): boolean {
+      // Step 1: Hard-Exclude — HDCC-Workspace-Marker schließen das File aus
+      if (
+        content.includes('/home/biko/hdcc') ||
+        content.includes('~/hdcc') ||
+        content.includes('hdcc-spec') ||
+        /\bhdcc\//.test(content)
+      ) {
+        return false;
+      }
+
+      // Step 2: Positiv-Match — bikosoc-Workspace-Marker bestätigen das File
+      if (
+        content.includes('/home/biko/.openclaw/workspace') ||
+        content.includes('~/.openclaw/workspace') ||
+        content.includes('bikosoc-spec') ||
+        content.includes('openclaw-gateway') ||
+        content.includes('openclaw-pdf-worker') ||
+        content.includes('openclaw-banking') ||
+        content.includes('executive-agent') ||
+        content.includes('bikosoc')
+      ) {
+        return true;
+      }
+
+      // Step 3: Tmux-Korrelation — nur für Files die <10 Minuten alt sind
+      // bikosoc:claude im Plan-Modus UND HDCC-Session NICHT im Plan-Modus → vermutlich unseres
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs < 10 * 60_000) {
+        try {
+          const bikoPane = execSync('tmux capture-pane -t bikosoc -p -l 5 2>/dev/null', {
+            encoding: 'utf-8', timeout: 3000,
+          }).trim();
+          const bikoLines = bikoPane.split('\n').slice(-8).join('\n');
+          const bikoInPlanMode =
+            /plan mode/i.test(bikoLines) ||
+            /^\s*\d+\.\s/m.test(bikoLines);
+
+          if (bikoInPlanMode) {
+            // Zusatz-Check: HDCC ebenfalls im Plan-Modus? → Ambiguität → NICHT zustellen
+            let hdccInPlanMode = false;
+            try {
+              const hdccPane = execSync('tmux capture-pane -t HDCC -p -l 5 2>/dev/null', {
+                encoding: 'utf-8', timeout: 3000,
+              }).trim();
+              const hdccLines = hdccPane.split('\n').slice(-8).join('\n');
+              hdccInPlanMode =
+                /plan mode/i.test(hdccLines) ||
+                /^\s*\d+\.\s/m.test(hdccLines);
+            } catch { /* HDCC-Session nicht erreichbar — kein Fehler */ }
+
+            if (!hdccInPlanMode) {
+              api.logger.info(`[report-watcher] Plan akzeptiert via tmux-Heuristik (bikosoc Plan-Modus, HDCC nicht): ${path.basename(filePath)}`);
+              return true;
+            }
+            api.logger.info(`[report-watcher] Plan übersprungen (beide Stränge im Plan-Modus — ambivalent): ${path.basename(filePath)}`);
+          }
+        } catch { /* tmux nicht verfügbar — Fallback */ }
+      }
+
+      // Fallback: NICHT zustellen — Fremd-Strang-Schutz
+      return false;
+    }
+
     // Seed: record all existing files so they won't be sent on first run
     function seedReportSentMap(): void {
       const sentMap = loadReportSentMap();
@@ -2968,7 +3037,7 @@ export default function (api: any) {
         }
       } catch { /* ignore */ }
 
-      // Scan ~/.claude/plans/ — all *.md
+      // Scan ~/.claude/plans/ — all *.md (bikosoc-Strang-Filter aktiv)
       try {
         for (const name of fs.readdirSync(REPORT_PLANS_DIR)) {
           if (!name.endsWith('.md') || name.startsWith('.')) continue;
@@ -2977,6 +3046,14 @@ export default function (api: any) {
           const key = `plan:${name}`;
           const lastSent = sentMap.get(key);
           if (lastSent === undefined || st.mtimeMs > lastSent) {
+            let planContent = '';
+            try { planContent = fs.readFileSync(fp, 'utf-8'); } catch { /* best-effort */ }
+            if (!isBikosocPlan(fp, planContent, st)) {
+              // Fremd-Strang: in Dedupe-Map eintragen (verhindert Log-Spam bei Folge-Scans)
+              sentMap.set(key, st.mtimeMs);
+              api.logger.info(`[report-watcher] Plan gefiltert (Fremd-Strang): ${name}`);
+              continue;
+            }
             toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
           }
         }

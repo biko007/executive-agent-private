@@ -38,6 +38,7 @@ import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
+import { createDropboxAdapter } from './src/adapters/dropbox.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -137,6 +138,31 @@ export default function (api) {
     g.__ea_auditReminderRegistered ??= false;
     g.__ea_reportWatcherRegistered ??= false;
     g.__ea_waitNotifierRegistered ??= false;
+    g.__ea_dropboxAdapter ??= null;
+    g.__ea_dropboxAdapterInited ??= false;
+    // ── Dropbox Adapter Init (Report-Upload, one-shot) ─────────────────────────
+    // Aktiviert wenn EA_DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN gesetzt — sonst still inaktiv.
+    if (!g.__ea_dropboxAdapterInited) {
+        g.__ea_dropboxAdapterInited = true;
+        const dboxKey = process.env['EA_DROPBOX_APP_KEY'];
+        const dboxSecret = process.env['EA_DROPBOX_APP_SECRET'];
+        const dboxToken = process.env['EA_DROPBOX_REFRESH_TOKEN'];
+        if (dboxKey && dboxSecret && dboxToken) {
+            try {
+                const adapter = createDropboxAdapter({ appKey: dboxKey, appSecret: dboxSecret, refreshToken: dboxToken });
+                g.__ea_dropboxAdapter = adapter;
+                // Ordner idempotent beim Boot anlegen (409 wird vom Adapter ignoriert)
+                adapter.createFolder('/bikosoc-reports').catch((e) => api.logger.warn(`[dropbox] createFolder /bikosoc-reports fehlgeschlagen: ${e.message}`));
+                api.logger.info('[dropbox] Adapter initialisiert (EA_DROPBOX_*), Zielordner: /bikosoc-reports');
+            }
+            catch (e) {
+                api.logger.warn(`[dropbox] Adapter-Init fehlgeschlagen: ${e.message}`);
+            }
+        }
+        else {
+            api.logger.info('[dropbox] EA_DROPBOX_* nicht vollstaendig gesetzt — Feature inaktiv');
+        }
+    }
     // pluginConfig maps to: plugins.entries.executive-agent.config
     const pcfg = api.pluginConfig || {};
     const mailCfg = pcfg.mail || {};
@@ -453,6 +479,30 @@ export default function (api) {
         }
         // Fallback: first 1500 chars
         return content.slice(0, MAX_SUMMARY);
+    }
+    /**
+     * Erzeugt einen kompakten 5-Zeilen-Digest aus Report-Inhalt.
+     * Reihenfolge: ## Zusammenfassung/Summary-Abschnitt → erste 5 inhaltliche Zeilen.
+     * Wird oben im Dropbox-Upload vorangestellt; bei langen Reports als Telegram-Text.
+     */
+    function generateDigest(content) {
+        // Bevorzuge vorhandenen Zusammenfassungs-Abschnitt
+        const match = content.match(/^##\s+(Zusammenfassung|Summary|DIGEST)\s*$/im);
+        if (match) {
+            const start = match.index + match[0].length;
+            const rest = content.slice(start);
+            const nextHeader = rest.search(/^## /m);
+            const section = nextHeader > 0 ? rest.slice(0, nextHeader).trim() : rest.trim();
+            const lines = section.split('\n').filter(l => l.trim()).slice(0, 5);
+            if (lines.length > 0)
+                return lines.join('\n');
+        }
+        // Fallback: erste 5 nicht-leere, nicht-strukturelle Zeilen (keine Heading, keine Trennlinien)
+        return content
+            .split('\n')
+            .filter(l => l.trim() && !l.startsWith('#') && !/^[-=]{3,}$/.test(l.trim()))
+            .slice(0, 5)
+            .join('\n');
     }
     /* ---------------- Command Guard: suppress AI agent for registered commands ---------------- */
     // All registered plugin commands. When user sends one of these,
@@ -2563,6 +2613,66 @@ export default function (api) {
                 api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
             }
         }
+        // ── Strand-Filter: nur bikosoc-eigene Plan-Files zustellen ────────────────
+        // Kriterium 1 (Ausschluss): HDCC-Inhalts-Marker → NICHT zustellen
+        // Kriterium 2 (Einschluss): bikosoc-Inhalts-Marker → zustellen
+        // Kriterium 3 (Sekundär):   Tmux-Korrelation für frische, ambivalente Files
+        // Fallback:                  NICHT zustellen (Im Zweifel Fremd-Strang schützen)
+        function isBikosocPlan(filePath, content, stat) {
+            // Step 1: Hard-Exclude — HDCC-Workspace-Marker schließen das File aus
+            if (content.includes('/home/biko/hdcc') ||
+                content.includes('~/hdcc') ||
+                content.includes('hdcc-spec') ||
+                /\bhdcc\//.test(content)) {
+                return false;
+            }
+            // Step 2: Positiv-Match — bikosoc-Workspace-Marker bestätigen das File
+            if (content.includes('/home/biko/.openclaw/workspace') ||
+                content.includes('~/.openclaw/workspace') ||
+                content.includes('bikosoc-spec') ||
+                content.includes('openclaw-gateway') ||
+                content.includes('openclaw-pdf-worker') ||
+                content.includes('openclaw-banking') ||
+                content.includes('executive-agent') ||
+                content.includes('bikosoc')) {
+                return true;
+            }
+            // Step 3: Tmux-Korrelation — nur für Files die <10 Minuten alt sind
+            // bikosoc:claude im Plan-Modus UND HDCC-Session NICHT im Plan-Modus → vermutlich unseres
+            const ageMs = Date.now() - stat.mtimeMs;
+            if (ageMs < 10 * 60_000) {
+                try {
+                    const bikoPane = execSync('tmux capture-pane -t bikosoc -p -l 5 2>/dev/null', {
+                        encoding: 'utf-8', timeout: 3000,
+                    }).trim();
+                    const bikoLines = bikoPane.split('\n').slice(-8).join('\n');
+                    const bikoInPlanMode = /plan mode/i.test(bikoLines) ||
+                        /^\s*\d+\.\s/m.test(bikoLines);
+                    if (bikoInPlanMode) {
+                        // Zusatz-Check: HDCC ebenfalls im Plan-Modus? → Ambiguität → NICHT zustellen
+                        let hdccInPlanMode = false;
+                        try {
+                            const hdccPane = execSync('tmux capture-pane -t HDCC -p -l 5 2>/dev/null', {
+                                encoding: 'utf-8', timeout: 3000,
+                            }).trim();
+                            const hdccLines = hdccPane.split('\n').slice(-8).join('\n');
+                            hdccInPlanMode =
+                                /plan mode/i.test(hdccLines) ||
+                                    /^\s*\d+\.\s/m.test(hdccLines);
+                        }
+                        catch { /* HDCC-Session nicht erreichbar — kein Fehler */ }
+                        if (!hdccInPlanMode) {
+                            api.logger.info(`[report-watcher] Plan akzeptiert via tmux-Heuristik (bikosoc Plan-Modus, HDCC nicht): ${path.basename(filePath)}`);
+                            return true;
+                        }
+                        api.logger.info(`[report-watcher] Plan übersprungen (beide Stränge im Plan-Modus — ambivalent): ${path.basename(filePath)}`);
+                    }
+                }
+                catch { /* tmux nicht verfügbar — Fallback */ }
+            }
+            // Fallback: NICHT zustellen — Fremd-Strang-Schutz
+            return false;
+        }
         // Seed: record all existing files so they won't be sent on first run
         function seedReportSentMap() {
             const sentMap = loadReportSentMap();
@@ -2649,7 +2759,7 @@ export default function (api) {
                     }
                 }
                 catch { /* ignore */ }
-                // Scan ~/.claude/plans/ — all *.md
+                // Scan ~/.claude/plans/ — all *.md (bikosoc-Strang-Filter aktiv)
                 try {
                     for (const name of fs.readdirSync(REPORT_PLANS_DIR)) {
                         if (!name.endsWith('.md') || name.startsWith('.'))
@@ -2659,6 +2769,17 @@ export default function (api) {
                         const key = `plan:${name}`;
                         const lastSent = sentMap.get(key);
                         if (lastSent === undefined || st.mtimeMs > lastSent) {
+                            let planContent = '';
+                            try {
+                                planContent = fs.readFileSync(fp, 'utf-8');
+                            }
+                            catch { /* best-effort */ }
+                            if (!isBikosocPlan(fp, planContent, st)) {
+                                // Fremd-Strang: in Dedupe-Map eintragen (verhindert Log-Spam bei Folge-Scans)
+                                sentMap.set(key, st.mtimeMs);
+                                api.logger.info(`[report-watcher] Plan gefiltert (Fremd-Strang): ${name}`);
+                                continue;
+                            }
                             toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
                         }
                     }
@@ -2672,14 +2793,24 @@ export default function (api) {
                         api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`);
                         break; // Will retry on next scan
                     }
+                    // Inhalt lesen + Digest erzeugen (nur fuer Reports, nicht Plans)
+                    let reportContent = '';
+                    let digestText = '';
+                    const isPlan = file.key.startsWith('plan:');
+                    try {
+                        reportContent = fs.readFileSync(file.filePath, 'utf-8');
+                        if (!isPlan)
+                            digestText = generateDigest(reportContent);
+                    }
+                    catch { /* best-effort */ }
                     // Send document
-                    const caption = file.key.startsWith('plan:') ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
+                    const caption = isPlan ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
                     const fileRole = 'dev';
                     await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: true });
-                    // Send text: plans + short reports get full chunked content, long reports get summary
+                    // Send text: plans + short reports get full chunked content, long reports get digest
                     try {
-                        const content = fs.readFileSync(file.filePath, 'utf-8');
-                        const sendFullText = file.key.startsWith('plan:') || content.length <= REPORT_CHUNK_SIZE;
+                        const content = reportContent || fs.readFileSync(file.filePath, 'utf-8');
+                        const sendFullText = isPlan || content.length <= REPORT_CHUNK_SIZE;
                         if (sendFullText) {
                             // Full text in chunks (plans always; short reports fit in 1 chunk)
                             const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
@@ -2690,14 +2821,38 @@ export default function (api) {
                             }
                         }
                         else {
-                            const summary = extractReportSummary(content);
-                            await sendTelegramToRole('dev', `${file.name}\n\n${summary}`, { fallbackToOperativ: true });
+                            // Langer Report: Digest bevorzugen, Fallback auf extractReportSummary
+                            const text = digestText || extractReportSummary(content);
+                            await sendTelegramToRole('dev', `${file.name}\n\n${text}`, { fallbackToOperativ: true });
                         }
                     }
                     catch { /* text preview best-effort */ }
                     sentMap.set(file.key, file.mtimeMs);
                     reportLastAutoSendAt = Date.now();
                     api.logger.info(`[report-watcher] Delivered: ${file.name}`);
+                    // ── Dropbox-Upload (fire-and-forget, sekundaer) ─────────────────────
+                    // Telegram-Zustellung ist primaer — Dropbox-Fehler werden NUR geloggt.
+                    // Plans werden nicht hochgeladen (nur report-*.md).
+                    if (!isPlan && g.__ea_dropboxAdapter) {
+                        const dropboxAdapter = g.__ea_dropboxAdapter;
+                        const content = reportContent;
+                        if (content) {
+                            // Digest oben voranstellen (Format: ## DIGEST\n<5 Zeilen>\n\n---\n\n<Original>)
+                            const uploadContent = digestText
+                                ? `## DIGEST\n${digestText}\n\n---\n\n${content}`
+                                : content;
+                            const uploadBuf = Buffer.from(uploadContent, 'utf-8');
+                            dropboxAdapter.uploadFile({
+                                path: `/bikosoc-reports/${file.name}`,
+                                body: uploadBuf,
+                                contentType: 'text/markdown',
+                            }).then((result) => {
+                                api.logger.info(`[report-watcher] Dropbox upload OK: ${result.pathDisplay} (${result.size} bytes)`);
+                            }).catch((e) => {
+                                api.logger.warn(`[report-watcher] Dropbox upload fehlgeschlagen: ${e.message}`);
+                            });
+                        }
+                    }
                 }
                 saveReportSentMap(sentMap);
             }
