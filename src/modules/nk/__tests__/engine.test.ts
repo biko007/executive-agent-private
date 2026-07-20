@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import pg from 'pg';
 import { readFileSync, existsSync } from 'node:fs';
+import { assertSafeDbUrl } from '../../../core/db-guard.js';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,7 @@ async function setupTestDb() {
   await testPool.query(v024Sql);
 
   process.env.POSTGRES_URL = testUrl;
+  assertSafeDbUrl(testUrl);
 }
 
 async function cleanupTestDb() {

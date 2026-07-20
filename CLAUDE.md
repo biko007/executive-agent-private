@@ -91,7 +91,7 @@ Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen 
 Tests laufen NUR gegen die Test-DB. NIEMALS gegen `openclaw_core` oder die n8n-DB. Vor
 Test/Migration/Seed prüft ein Guard DB-Name und Rolle fail-closed; zeigt die Verbindung auf eine
 Produktiv-DB → Abbruch. (Banking-/Mieterdaten = Super-GAU; POSTGRES_URL-Mutations-Mechanik erhöht das Risiko.)
-Technische Implementierung: Folgeauftrag (docs/TODO.md #4).
+Technisch erzwungen via `src/core/db-guard.ts` (Guard-Marker: OPENCLAW_TEST=1, gesetzt in run-tests.sh).
 
 **C2 — Destruktive Prod-Mutationen:**
 DB-Migrationen mit Datenanteil, Backfills, Hard-Deletes, `dry_run=false`-Läufe, Cleanup-Endpunkte,

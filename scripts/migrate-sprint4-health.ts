@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
+import { assertSafeDbUrl } from '../src/core/db-guard.js';
 
 const { Pool } = pg;
 
@@ -302,6 +303,8 @@ async function main() {
     console.error('POSTGRES_URL not set');
     process.exit(1);
   }
+
+  if (process.env.OPENCLAW_TEST === '1') assertSafeDbUrl(connStr);
 
   console.log(`\nConnecting to ${dbName}...`);
   const pool = new Pool({ connectionString: connStr, max: 2 });

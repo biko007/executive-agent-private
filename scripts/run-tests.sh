@@ -5,6 +5,7 @@
 # level poison the cache for other files. Running each file in its own bun
 # process eliminates this class of failures.
 set -uo pipefail
+export OPENCLAW_TEST=1
 
 TOTAL_PASS=0
 TOTAL_FAIL=0

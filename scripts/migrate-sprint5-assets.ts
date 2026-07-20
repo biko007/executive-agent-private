@@ -14,6 +14,7 @@ import pg from 'pg';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { assertSafeDbUrl } from '../src/core/db-guard.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -337,6 +338,7 @@ async function apply(): Promise<void> {
 
   // ── Connect ──
   const connStr = getConnectionString();
+  if (process.env.OPENCLAW_TEST === '1') assertSafeDbUrl(connStr);
   const dbName = connStr.match(/\/([^/?]+)(\?|$)/)?.[1] || '???';
   console.log(`Connecting to ${dbName}...`);
 

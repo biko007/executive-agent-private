@@ -13,6 +13,7 @@ import pg from 'pg';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { assertSafeDbUrl } from '../../../core/db-guard.js';
 
 /** Load POSTGRES_URL from ~/.config/openclaw/env if not in environment. */
 function ensurePostgresUrl(): string {
@@ -83,6 +84,7 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
 
   // 3. Point POSTGRES_URL to test database
   process.env.POSTGRES_URL = testUrl;
+  assertSafeDbUrl(testUrl);
 
   return {
     testDbName,

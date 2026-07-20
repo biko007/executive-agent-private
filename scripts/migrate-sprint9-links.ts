@@ -13,6 +13,7 @@ import pg from 'pg';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { assertSafeDbUrl } from '../src/core/db-guard.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -132,7 +133,9 @@ async function apply(): Promise<void> {
 
   console.log(`Valid: ${valid.length} | Skipped: ${skipped.length}`);
 
-  const pool = new pg.Pool({ connectionString: loadEnv(), max: 5 });
+  const _dbUrl = loadEnv();
+  if (process.env.OPENCLAW_TEST === '1') assertSafeDbUrl(_dbUrl);
+  const pool = new pg.Pool({ connectionString: _dbUrl, max: 5 });
 
   try {
     // Verify table exists

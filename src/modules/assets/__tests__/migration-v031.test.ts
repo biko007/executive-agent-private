@@ -8,6 +8,7 @@ import pg from 'pg';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { assertSafeDbUrl } from '../../../core/db-guard.js';
 
 let pool: pg.Pool;
 let adminPool: pg.Pool;
@@ -58,6 +59,7 @@ beforeAll(async () => {
   await pool.query(readFileSync(v031Path, 'utf-8'));
 
   process.env.POSTGRES_URL = testUrl;
+  assertSafeDbUrl(testUrl);
 });
 
 afterAll(async () => {

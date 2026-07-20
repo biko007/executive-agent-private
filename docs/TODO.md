@@ -27,9 +27,7 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 3. **Deploy-Skript mit SHA-Erfassung + Auto-Rollback:** Manifest 10 ist SOLL. Aktuelles
    Deploy-Skript prüft sich nicht selbst. Folgeauftrag: SHA vor Deploy festhalten,
    Auto-Rollback bei fehlgeschlagenem Smoke.
-4. **Test-DB-Guard (C1) technisch implementieren:** Regel C1 fordert fail-closed DB-Name-Check
-   vor jedem Test/Migration/Seed. Aktuell nur durch POSTGRES_URL-Mutation in Tests geregelt.
-   Folgeauftrag: Guard-Funktion in shared/db mit Produktiv-DB-Abbruch.
+4. ~~**Test-DB-Guard (C1) technisch implementieren:**~~ Erledigt 2026-07-20 — `src/core/db-guard.ts` (OPENCLAW_TEST=1).
 
 ---
 

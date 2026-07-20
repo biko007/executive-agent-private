@@ -10,6 +10,7 @@ import pg from 'pg';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { assertSafeDbUrl } from '../../../core/db-guard.js';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +61,7 @@ async function setupTestDb() {
   await testPool.query(v024Sql);
 
   process.env.POSTGRES_URL = testUrl;
+  assertSafeDbUrl(testUrl);
 }
 
 async function cleanupTestDb() {

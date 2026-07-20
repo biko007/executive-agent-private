@@ -13,6 +13,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
+import { assertSafeDbUrl } from '../../../core/db-guard.js';
 import { homedir } from 'node:os';
 
 let cleanup: () => Promise<void>;
@@ -65,6 +66,7 @@ beforeAll(async () => {
   await testPool.end();
 
   process.env.POSTGRES_URL = testUrl;
+  assertSafeDbUrl(testUrl);
 
   // Dynamic imports after POSTGRES_URL set
   const withings = await import('../withings.js');
