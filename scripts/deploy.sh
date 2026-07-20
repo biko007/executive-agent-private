@@ -31,7 +31,7 @@ DASHBOARD_DIR="${AGENT_DIR}/../executive-dashboard"
 TRADING_DIR="${AGENT_DIR}/../trading-agent"
 MARKER_DIR="${HOME}/.deploy-markers"
 NOTIFY_CMD="/home/biko/.scripts/notify"
-SETTLE_SECS=3   # seconds to wait after restart before health check
+SETTLE_SECS=5   # seconds to wait after restart before health check
 
 # ── Services ───────────────────────────────────────────────────────────────
 
@@ -160,11 +160,14 @@ health_check_one() {
   local port
   port="$(port_for "$svc")"
   if [[ -n "$port" ]]; then
-    local code
+    # Capture curl output and exit code separately.
+    # Do NOT use || echo "000" inside $() — that doubles the output on failure.
+    local code curl_rc
     code="$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-            "http://127.0.0.1:${port}/" 2>/dev/null || echo "000")"
-    if [[ "$code" == "000" ]]; then
-      log "HEALTH FAIL: $svc port $port not responding (connection refused or timeout)"
+            "http://127.0.0.1:${port}/" 2>/dev/null)"
+    curl_rc=$?
+    if [[ "$curl_rc" -ne 0 || "$code" == "000" ]]; then
+      log "HEALTH FAIL: $svc port $port not responding (curl exit=$curl_rc, http_code=$code)"
       return 1
     fi
     log "HEALTH OK: $svc → active, port $port HTTP $code"
