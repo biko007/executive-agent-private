@@ -172,7 +172,7 @@ cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner p
 
 Vor jedem **Commit/Push** (nicht "Vor jedem Merge"):
 build → verify:commands → test → restart → smoke-test.
-Manifest 10 (Auto-Rollback) ist SOLL — Folgeauftrag: docs/TODO.md #3.
+Manifest 10 (Auto-Rollback): erfüllt via `scripts/deploy.sh` (SHA-Capture, Auto-Rollback auf LAST_GOOD).
 
 ---
 
