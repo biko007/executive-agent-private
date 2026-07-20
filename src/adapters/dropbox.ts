@@ -391,7 +391,7 @@ export function createDropboxAdapter(params: {
 
     async healthCheck(): Promise<boolean> {
       const testPath = "/healthcheck.txt";
-      const testBody = Buffer.from(`HDCC Dropbox connection verified: ${new Date().toISOString()}\n`);
+      const testBody = Buffer.from(`bikosoc Dropbox connection verified: ${new Date().toISOString()}\n`);
 
       await this.uploadFile({ path: testPath, body: testBody, contentType: "text/plain" });
 
