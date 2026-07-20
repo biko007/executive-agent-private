@@ -24,9 +24,7 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 2. **Deny-Hook + telegram-notify ins Repo versionieren:** `~/.claude/hooks/deny-destructive.sh` und
    `~/.claude/hooks/telegram-notify.sh` sind nicht im Repo versioniert. Folgeauftrag: ins Repo +
    Existenz- und Ausführbarkeits-Check im Smoke-Test.
-3. **Deploy-Skript mit SHA-Erfassung + Auto-Rollback:** Manifest 10 ist SOLL. Aktuelles
-   Deploy-Skript prüft sich nicht selbst. Folgeauftrag: SHA vor Deploy festhalten,
-   Auto-Rollback bei fehlgeschlagenem Smoke.
+3. ~~**Deploy-Skript mit SHA-Erfassung + Auto-Rollback:**~~ Erledigt 2026-07-20 — `scripts/deploy.sh` implementiert (Dirty-Tree-Guard, SHA-Capture, Health-Check, Auto-Rollback auf LAST_GOOD, Telegram-Notify). Manifest 10 erfüllt.
 4. ~~**Test-DB-Guard (C1) technisch implementieren:**~~ Erledigt 2026-07-20 — `src/core/db-guard.ts` (OPENCLAW_TEST=1).
 
 ---

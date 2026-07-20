@@ -100,21 +100,29 @@ src/pdf-worker.ts                  Standalone PDF-Worker (Playwright Chromium)
 ## Deployment
 
 ```bash
-npm run build
-npm run verify:commands
-systemctl --user restart openclaw-gateway.service
-systemctl --user restart openclaw-pdf-worker.service
-systemctl --user status openclaw-gateway.service --no-pager
-systemctl --user status openclaw-pdf-worker.service --no-pager
-journalctl --user -u openclaw-gateway.service -n 20 --no-pager
-bun run scripts/smoke-test.ts
+# Standard-Deploy (gateway — Default):
+scripts/deploy.sh
+
+# Mehrere Services:
+scripts/deploy.sh openclaw-gateway openclaw-pdf-worker
+
+# Dashboard oder Trading (nur wenn explizit gewünscht):
+scripts/deploy.sh openclaw-dashboard
+scripts/deploy.sh openclaw-trading
 ```
 
-Nach jedem Build + Restart IMMER `bun run scripts/smoke-test.ts` ausführen.
-`npm run verify:commands` ist Pflichtteil des Build-Gates — Exit 1 blockiert den Commit.
-Bei Exit-Code 1: Deployment als fehlgeschlagen betrachten, Fehler beheben bevor „Erledigt" gemeldet.
+Das Skript (`scripts/deploy.sh`) führt automatisch durch:
+1. **Dirty-Tree-Check** — Abbruch bei uncommittierten Änderungen (tracked files)
+2. **Build** — `npm run build` pro betroffenem Build-Dir; für executive-agent zusätzlich `verify:commands` + `npm test`
+3. **Restart** — `systemctl --user restart` NUR für benannte Services
+4. **Health-Check** — `systemctl --user is-active` + Port antwortet (`curl` HTTP-Code ≠ 000)
+5. **Smoke-Test** — `bun run scripts/smoke-test.ts` (exit 0 = ALL PASS erforderlich)
+6. **Erfolg** → Marker `~/.deploy-markers/.deploy-last-good-<service>` mit Deploy-SHA; Telegram „DEPLOY OK"
+7. **Fehler** → Auto-Rollback auf LAST_GOOD: `git checkout $LAST_GOOD -- .` (nur Arbeitsbaum), rebuild, restart; Telegram „ROLLBACK auf <sha>" oder „ROLLBACK FAILED = ALARM"
 
-Rollback: `git revert <commit>`; bei Migrationen zusätzlich migrationsspezifisches Runbook konsultieren.
+Exit-Codes: `0` = OK, `1` = Deploy fehlgeschlagen (Rollback OK), `2` = Rollback fehlgeschlagen (Alarm).
+
+Rollback (manuell): `git revert <commit>`; bei Migrationen zusätzlich Migrations-Runbook konsultieren.
 
 ---
 

@@ -73,7 +73,7 @@ Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen 
 7. **Klein anfangen, groß denken.** Modularer Monolith jetzt — Microservices wenn Wartung wehtut.
 8. **Idempotency vor Side-Effects.** Jeder externe Call braucht einen Idempotency-Key.
 9. **Sensitive Daten klassifiziert.** Nie in Logs, callback_data oder n8n-Logs.
-10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst. (SOLL — Folgeauftrag: docs/TODO.md #3)
+10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst. (Erfüllt: `scripts/deploy.sh` — SHA-Capture, Health-Check, Auto-Rollback auf LAST_GOOD, Telegram-Notify)
 11. **Human-Reviewability (Hard Rule).** All code must be traceable by a human reviewer: descriptive
     names, comments explain the *why* for non-obvious logic, no clever one-liners, one commit per
     Etappe. No code goes to `origin` unreviewed.
