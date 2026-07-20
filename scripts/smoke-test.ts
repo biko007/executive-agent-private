@@ -699,6 +699,44 @@ async function checkBulkReadingsIdempotency() {
   }
 }
 
+// ── 15. CLAUDE CODE HOOKS (Drift-Check) ─────────────────────────────────────
+
+function checkClaudeHooks() {
+  const REPO_HOOKS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'hooks');
+  const LIVE_HOOKS_DIR = path.join(HOME, '.claude/hooks');
+  const hooks = ['deny-destructive.sh', 'telegram-notify.sh'];
+
+  for (const hook of hooks) {
+    const live = path.join(LIVE_HOOKS_DIR, hook);
+    const repo = path.join(REPO_HOOKS_DIR, hook);
+    const label = `Hook ${hook}`;
+
+    // (a) Existenz + ausführbar
+    let stat: ReturnType<typeof fs.statSync> | null = null;
+    try { stat = fs.statSync(live); } catch {
+      fail(label, `fehlt in ~/.claude/hooks/ — scripts/install-hooks.sh ausführen`);
+      continue;
+    }
+    if (!(stat.mode & 0o111)) {
+      fail(label, `nicht ausführbar — scripts/install-hooks.sh ausführen`);
+      continue;
+    }
+
+    // (b) Hash-Vergleich live vs. Repo
+    try {
+      const liveHash = execSync(`sha256sum "${live}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+      const repoHash = execSync(`sha256sum "${repo}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+      if (liveHash === repoHash) {
+        pass(label, `vorhanden + ausführbar + kein Drift (${liveHash.slice(0, 12)}…)`);
+      } else {
+        fail(label, `Drift erkannt (live: ${liveHash.slice(0, 12)}… ≠ repo: ${repoHash.slice(0, 12)}…) — scripts/install-hooks.sh ausführen`);
+      }
+    } catch (e: any) {
+      fail(label, `Hash-Vergleich fehlgeschlagen: ${e.message}`);
+    }
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -759,6 +797,9 @@ async function main() {
 
   // 14. Bulk-Readings Idempotency Infra (Sprint 11.1)
   await checkBulkReadingsIdempotency();
+
+  // 15. Claude Code Hooks (Drift-Check)
+  checkClaudeHooks();
 
   // ── Report ──────────────────────────────────────────────────────────────
 

@@ -137,3 +137,23 @@ Fallback-Kette: system_settings → location_events (letzter Eintrag) → DEFAUL
 
 Endpoint: `POST /api/internal/notify` (localhost only, nginx-Whitelist).
 Body: `{ "message": "...", "severity": "info"|"warn"|"error" }`
+
+---
+
+## Claude Code Hooks
+
+Versioniert in `hooks/` (executive-agent-Repo). Live-Pfad: `~/.claude/hooks/`.
+
+| Hook | Typ | Funktion |
+|------|-----|----------|
+| `deny-destructive.sh` | PreToolUse | Destruktiv-Sperre + Red-Zone-Guard (Strang-aware seit 2026-07-20) |
+| `telegram-notify.sh` | Notification | Sendet bei `permission_prompt` / `idle_prompt` an bikosoc-dev |
+
+**Install (idempotent):**
+```bash
+bash scripts/install-hooks.sh
+# meldet pro Hook: installed / unchanged / updated
+```
+
+**Drift-Check:** Smoke-Test Check #15 — vergleicht sha256 live vs. Repo.
+Abweichung oder fehlender Hook → ❌ mit Hinweis `scripts/install-hooks.sh ausführen`.
