@@ -1,344 +1,71 @@
 # Executive Agent — CLAUDE.md
 
-**Stand: 2026-07-16**
+**Stand: 2026-07-20** | Sprint-Historie: docs/CHANGELOG.md | Offene Punkte: docs/TODO.md | Infra-Detail: docs/INFRA.md
 
-## Stand 2026-07-16
+---
 
-Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
+## §1 Präzedenzblock
 
-- **Sprint 1 (Plattform-Hardening):** nginx konsolidiert, n8n gehärtet, Audit-Log-Infra,
-  Borg-Backup auf Hetzner Storage Box (daily/weekly/monthly + Restore-Drill),
-  Health Monitor mit Telegram-Alerts, Sub-Commands, Smoke-Test, Deploy-Skript,
-  Dashboard Status-Widget.
-- **Sprint 2 (Code-Refactor):** index.ts 9.357 → 2.165 Zeilen (-77%), 10 Module extrahiert,
-  19 audit.log() Calls in 4 Modulen, Approval-Hard-Rule im Code + CI-Test.
-- **Sprint 3 (Instagram Postgres):** Instagram-Modul auf Postgres migriert.
-  3 Tabellen (insta_drafts, insta_tokens, insta_style_profile). store.ts mit 10 pool.query,
-  0 File-IO für Drafts/Tokens. Token Guardian via n8n-Workflow (daily 08:00).
-  Status-Enum: englisch (draft/review/approved/published/archived).
-- **Sprint 4 (Health Postgres):** Health-Modul auf Postgres migriert.
-  2 Tabellen (health_logs 407 Einträge, health_withings_tokens). store.ts mit 13 dbQuery,
-  withings.ts mit 7 dbQuery/getClient, 0 File-IO. pg_advisory_lock(42) für Sync-Schutz.
-  Withings-Sync via n8n-Workflow `health-withings-sync-daily` (Cron daily 07:00 UTC).
-  Core-Endpoints: POST /api/health/withings-sync, GET /api/health/sync-status.
-  Retry-on-401 mit Single-Refresh + Fatal-Error-Pfad (Telegram-Notify).
-- **Sprint 5.5a (Asset CRUD + NK PreCheck):** Assets-Modul auf Postgres migriert (V022+V023).
-  Properties, Units, Leases, Tenants, Allocation Rules, Cost Categories, Expense Bookings,
-  Meters, Readings, Unit Residents, Lease Charges, Heating Config, NK Period Obligations.
-  CRUD-Endpoints mit Approval-Workflow, Idempotency, Audit-Log.
-  nkPreCheck() mit 11 Blocker-Checks. Dashboard ENDPOINT_MAP für Assets.
-- **Sprint 5.5b (NK-Engine + PDF):** Volle Nebenkostenabrechnung (13 Etappes a-m).
-  NK-Engine: computeNk() mit Personentage, Vorauszahlung, Pro-Rata, HeizKV §7/§8/§9.
-  V024 Schema: nk_statement_runs, nk_statements, nk_statement_items, nk_alert_log + Lock-Trigger.
-  Endpoints: Preview, Finalize (Approval+Idempotency), Read, PDF, Re-Render, Serve, Run-List/Detail.
-  PDF-Worker: Standalone Playwright Chromium Service, Handlebars-Template, atomisches Schreiben.
-  §556-Cron: Fristüberwachung mit Telegram-Alerts (30d/14d/7d/1d/expired).
-  Telegram: /nebenkostenabrechnung preview|status.
-  54 Tests über 6 Dateien, 21/21 Smoke.
-- **Sprint 10 (SharePoint Postgres):** SharePoint-Index (12.088 Dateien, 10 Sites) von JSON auf
-  Postgres migriert. V034 Schema: `sharepoint_files` mit `pg_trgm` GIN-Index (`search_haystack`),
-  Soft-Delete via `missing_since`, `sharepoint_sync_runs` Audit-Tabelle.
-  Advisory-Lock(44) für Sync-Schutz. Canonical Key: `${siteId}::${driveId}::${path}`.
-  One-Shot Import (12.088 in 1.0s). Golden Test: 41/41 entity_links resolven.
-  Neue Module: store.ts (fullSync, UPSERT), queries.ts (searchFiles mit pg_trgm),
-  routes.ts (HTTP API für Dashboard-Proxy). Polling entfernt (Q2).
-  Dashboard SP-Routes auf proxyToCore umgestellt. 24/24 Smoke.
-- **Sprint 11 (Closure + Housekeeping, 7 Etappen):**
-  - **11.1:** Bulk-Readings atomar (BEGIN/COMMIT), idempotent (idempotency_keys), audit-pflicht
-    (audit_log INSERT innerhalb Transaction). Pool-Release via `finally`.
-  - **11.2:** SharePoint-Modul Hybrid aufgelöst — kein JSON mehr. Alle Reads aus Postgres.
-    `sharepoint-index.json` + 2 Snapshots archiviert nach `archive/`.
-  - **11.3:** Settings nach Postgres (V035). `system_settings` Tabelle (key TEXT PK, value JSONB).
-    In-Memory-Cache (Single-Process, 60s Refresh). Caveat: Cache-Drift bei Multi-Instance.
-  - **11.4:** Dashboard SP-Default-Site backend-resolved via `system_settings.sp_default_site_id`.
-    Fallback: erster Site aus `sharepoint_files`. nextTick-Wraps für Vue-Reaktivität.
-  - **11.5:** Migrations-Konvention dokumentiert (Dual-Pattern: V-Prefix One-Shot + 0xx Boot-Time).
-    Drift-Detector (`npm run verify-schema`) als Sprint-Cut-Checkliste.
-  - **11.6:** Housekeeping: 4 Legacy-JSON-Archive (instagram-drafts, location-history, links,
-    sharepoint-index). Neuer Endpoint `POST /api/sharepoint/cleanup-missing` mit 2x-Sync-Schutz,
-    Dry-Run-Default, LIMIT-50-Cap, entity_links-Ausschluss, Telegram-Notify.
-    Hard-Delete Phase 1 (Dry-Run only). Phase 2 BEDINGT an 3 synthetische Tests.
-  - **11.7:** Closure-Docs. Smoke 28/28. Drift-Detector clean. CLAUDE.md finalisiert.
-  Archive-Status: `history.jsonl`, `links.json`, 3× `sharepoint-index*.json`, 6× Instagram-Drafts.
-- **Sprint 2.10-A (Banking Session Reuse):** FinTS BPD/UPD-Cache Passthrough.
-  Etappen: d (encryption) → a (findReusableSession) → c (decideReuse + advisory-lock) →
-  b (sidecar-client + tan-bridge clientDataB64 passthrough) → g (sidecar fetch_tan_mechanisms fix).
-  Session-Reuse: `decideReuse()` findet existierende Session mit gültigem encrypted State,
-  `clientDataB64` wird durch routes → tan-bridge → sidecar-client → Python-Sidecar geschleust.
-  Python-Sidecar gibt `from_data` an python-fints Library weiter → kein TAN bei Reuse.
-  `ConnectResponse` Typ, `redactClientData()` Log-Redaction (Hard Rule 8).
-  Advisory-Lock(46) für User+Institution-Serialisierung. Decrypt-Failure-Policy mit
-  `markSessionStateInvalid()` + Audit. 71 Tests (Agent 35 + Sidecar 36).
-  E2E: KSK Tuttlingen, 12 Konten, HAPPY PATH ohne TAN (Tag `2.10-a-e2e-passed`).
-  Sidecar-Fix (Etappe g): `fetch_tan_mechanisms()` bei Reuse übersprungen — Library setzt
-  blind `set_tan_mechanism('999')` was den aus `from_data` restaurierten Mechanismus zerstört.
-  ~~Tech-Debt: TD-3 Sidecar GitHub-Remote (Sprint 2.10-F Backlog).~~ Erledigt 2026-06-25.
+Bei Widerspruch gilt: **Manifest/Hard Rules > Auftrags-Klassen > stehende Regeln > Status-Sektionen.**
 
-### Module (17)
+Jeder erkannte Widerspruch in dieser Datei ist eine **Stop-Condition:** STOP + Telegram-Meldung
+an Owner, keine eigenmächtige Interpretation.
 
-| Modul | Pfad | Commands | DI |
-|-------|------|----------|----|
-| assets | src/modules/assets/ | 7 | Postgres, NK-Engine |
-| banking | src/modules/banking/ | — (via routes.ts) | Postgres, Encryption, Python-Sidecar (FinTS) |
-| calendar | src/modules/calendar/ | 4 | M365 |
-| cc-prompt-dispatch | src/modules/cc-prompt-dispatch/ | — | tmux (execFileSync) |
-| executive | src/modules/executive/ | Health Monitor, Briefing-Scheduler | — |
-| fleet | src/modules/fleet/ | 10 | Links |
-| health | src/modules/health/ | 14 | sendTelegramToRole, Postgres, Oura API, Withings API |
-| instagram | src/modules/instagram/ | 21 | sendTelegramToRole, Meta API, Voice, Postgres |
-| links | src/modules/links/ | — | Postgres |
-| location | src/modules/location/ | — | Postgres |
-| mail | src/modules/mail/ | 12 | M365, Yahoo, Telegram |
-| memory | src/modules/memory/ | — | Postgres |
-| nk | src/modules/nk/ | — (via assets) | Postgres, Playwright, Handlebars |
-| pe | src/modules/pe/ | 5 | self-contained |
-| prompt-inbox | src/modules/prompt-inbox/ | — | cc-prompt-dispatch, fs |
-| sharepoint | src/modules/sharepoint/ | 8 | M365, Telegram, Postgres, pg_trgm |
-| telegram-binding | src/modules/telegram-binding/ | — | Postgres |
-| travel | src/modules/travel/ | 8 | M365, Telegram, Links |
+---
 
-### Daten-Hygiene
+## §2 Rolle + Projekt-Basics
 
-- `artifacts/personal/*` ist .gitignore'd. Tokens nicht mehr im Repo.
-- Daten via borg auf Hetzner Storage Box gesichert (daily/weekly/monthly).
-- Secrets ausschließlich in `~/.config/openclaw/env`.
+**Rolle:**
+Engineering-Partner für das OpenClaw Executive System. Operator: Juergen Bickel — nicht-technisch,
+arbeitet ausschließlich via Claude und Claude Code. System: privater Executive Agent „Hans_Dampf"
+auf Hetzner VPS (Helsinki). Single-User, Produktionssystem, always-on.
+Aufgabe: Design, Implementierung, Debugging und Erweiterung von OpenClaw. Technische Entscheidungen
+eigenverantwortlich treffen. Risiken benennen bevor implementiert wird.
 
-### Postgres-User-Modell (Stand 2026-05-11)
+**Projekt:**
+OpenClaw Executive Agent (Telegram Bot), Hetzner VPS (CCX33, Helsinki).
+User: `biko` | Tailscale: `100.121.45.4`
+Dashboard: `https://app.bikobickel.de/dashboard/?token=<DASHBOARD_TOKEN>`
+Git: 3 Repos (workspace, executive-agent, executive-dashboard)
+Runtime: Node.js/TypeScript, Bun | Secrets: `~/.config/openclaw/env`
 
-EINE Instanz `n8n-docker-postgres-1`, zwei DBs.
-- **n8n:** Bootstrap-Superuser, nur für pg_dump
-- **n8n_app:** App-User für n8n-Service, nur Rechte auf n8n-DB
-- **openclaw:** App-User für Core, nur Rechte auf openclaw_core
-- **postgres:** Notfall-Superuser (Maintenance), Passwort in 1P
-
-Regel: `n8n_app` niemals GRANT auf `openclaw_core` geben. Smoke-Test prüft das (`scripts/smoke-test.ts`, Check 14+15).
-
-### Token Guardian (Sprint 3) — vollständig entfernt
-
-Instagram ist nach HDCC umgezogen. Alle Token-Guardian-Logik entfernt:
-- `evaluateTokenAlert()` und `checkAndRefreshInstagramToken()` aus system-health.ts gelöscht
-- Briefing-Scheduler Token Guardian (index.ts) gelöscht
-- Startup Token Guardian (index.ts) gelöscht
-- Meta-Token-Überwachung (`getTokenExpirations()`) und Briefing-Ablauf-Hinweis bereits 2026-06-28 entfernt
-- Core-Endpoints `/api/instagram/token-health` + `/api/instagram/token-refresh` entfernt (2026-07-07)
-- nginx-Routing für token-health/token-refresh entfernt (2026-07-07)
-- `token-health.json` gelöscht, `getTokenHealth()` aus store.ts entfernt (2026-07-07)
-- `initSystemHealth()` DI-Adapter + `InstaTokenAdapter` Interface entfernt (2026-07-07)
-- IG-Token-Check aus `preFlightInstagram()` entfernt (2026-07-07)
-- n8n-Workflow `instagram-token-health-daily` war bereits `active=false` in Live-DB
-
-### Instagram Status-Enum (Sprint 3)
-
-`draft` | `review` | `approved` | `published` | `archived`
-
-### Withings Sync (Sprint 4, auf weight-only reduziert 2026-06-27)
-
-- Withings holt nur noch Gewicht + Körperfett (Sleep/Activity/Workouts/HR → Oura)
-- n8n-Workflow `health-withings-sync-daily` deaktiviert (active=false)
-- Core-Endpoints: `POST /api/health/withings-sync`, `GET /api/health/sync-status`
-- Auth: Bearer `CORE_SERVICE_TOKEN`
-- Sync-Lock: `pg_advisory_lock(42)` / `pg_advisory_unlock(42)` — verhindert parallele Syncs
-- Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
-- Token-Rotation: Transaction (UPDATE active=false, INSERT new active=true)
-
-### Oura Sync (2026-06-27)
-
-- Oura Ring = primäre Quelle für Schlaf, HRV, Readiness, Temperatur, Ruhe-HR, Schritte
-- DB-Tabelle: `health_oura_tokens` (V040, ohne userid). `health_logs.external_id` (provider-neutral)
-- Neue Typen in `health_logs`: `hrv`, `readiness`, `temperature` (V040 CHECK-Erweiterung)
-- Sync-Lock: `pg_advisory_lock(47)` / `pg_advisory_unlock(47)`
-- Retry-on-401: Single-Refresh-Attempt, dann Fatal-Error mit Telegram-Notify
-- Core-Endpoints: `POST /api/health/oura-sync`, `GET /api/health/oura-sync-status`
-- Telegram-Commands: `/ouraauth` (OAuth2 temp-server Port 8081), `/ourasync N`
-- nginx: `/oura/callback` → 127.0.0.1:8081 (direkt zum temp-server, nicht Gateway)
-- Briefing: HRV, Readiness, Temperatur werden angezeigt (D2: display only, keine neuen Alerts)
-- Dashboard: HRV Summary-Card + Chart, Readiness Summary-Card
-- Advisory-Lock-Registry: 42=Withings, 44=SharePoint, 46=Banking, **47=Oura**
-- Env-Vars: `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, `OURA_REDIRECT_URI`
-
-### SharePoint Sync (Sprint 10)
-
-- DB-Tabellen: `sharepoint_files` (12.088 Einträge), `sharepoint_sync_runs`
-- Sync-Lock: `pg_advisory_lock(44)` / `pg_advisory_unlock(44)` — session-level, `finally`-Block
-- Canonical Key: `sp_item_key = ${siteId}::${driveId}::${path}` (identisch mit `entity_links.sp_item_id`)
-- Soft-Delete: `missing_since` Timestamp; Hard-Delete via `cleanup-missing` (Sprint 11.6)
-- Suche: `search_haystack` generated column + GIN trgm Index (ILIKE per Term, AND-Verknüpfung)
-- Kein JSON mehr: Legacy `sharepoint-index.json` + 2 Snapshots archiviert (Sprint 11.2/11.6)
-- Core-Endpoints (Bearer `CORE_SERVICE_TOKEN`):
-  - `GET /api/sharepoint/sites` — Sites mit File-Count
-  - `GET /api/sharepoint/drives/:siteId` — Drives für Site
-  - `GET /api/sharepoint/files/:siteId/:driveId` — Files mit Pagination
-  - `GET /api/sharepoint/search?q=` — pg_trgm Suche
-  - `POST /api/sharepoint/upsert-uploaded` — Einzel-File nach Upload
-  - `GET /api/sharepoint/default-site` — resolves default site+drive from `system_settings.sp_default_site_id`, validates against `sharepoint_files`, fallback to first site (Sprint 11.4)
-  - `POST /api/sharepoint/cleanup-missing?dry_run=true|false` — Hard-Delete missing >30d (Sprint 11.6)
-    Safety: 2x-Sync-Schutz, NOT EXISTS entity_links, LIMIT 50, Telegram-Notify.
-    Phase 1: Dry-Run only. Phase 2 bedingt an 3 synthetische Tests (siehe Runbook).
-- Import-Script: `npx tsx src/modules/sharepoint/import-sprint10.ts` (one-shot, nicht im Boot)
-- Polling entfernt (30-min setInterval aus commands.ts gelöscht, Q2-Entscheidung)
-
-### Banking Session Reuse (Sprint 2.10-A)
-
-- DB-Tabellen: `banking_institutions`, `banking_sessions`, `banking_accounts`, `banking_pending_challenges`, `banking_sync_reminders` (V027-V029)
-- Session-Reuse: `decideReuse()` in store.ts findet existierende Session mit gültigem encrypted State
-  - Kriterien: `session_format = 'fints5'`, `last_success_at < 30d`, `session_expires_at > NOW()`, User-Match (decrypt + timingSafeEqual)
-  - Decrypt-Failure-Policy: `markSessionStateInvalid()` (last_success_at = NULL) + Audit, nächste Candidate
-- Advisory-Lock: `pg_advisory_lock(46, hash(userId:institutionId))` — serialisiert parallele decideReuse-Calls
-- Encryption: AES-256-GCM, Key aus `BANKING_ENCRYPTION_KEY` (64 hex), AAD = sessionId + field-name
-- Sidecar: Python FastAPI (`~/openclaw-banking-fints`, Port 18794), python-fints Library
-  - `from_data` restauriert BPD/UPD/TAN-Mechanismus aus `client_data_b64`
-  - WICHTIG: `fetch_tan_mechanisms()` bei Reuse NICHT aufrufen (setzt blind '999', Etappe g)
-  - Parked-Client-Pattern für decoupled pushTAN (3955/3956)
-- Log-Redaction: `redactClientData()` in sidecar-client.ts — redacts `client_data`/`client_data_b64` in connect request/response logs
-- Core-Endpoints (Bearer `CORE_SERVICE_TOKEN`):
-  - `POST /api/banking/connect` — Dashboard-Flow (blz/user_id/pin) oder Telegram-Flow (session_id)
-  - `POST /api/banking/complete-tan` — TAN-Eingabe
-  - `GET /api/banking/institutions` — Institutionen-Liste
-  - `GET /api/banking/accounts` — Konten-Liste
-  - `GET /api/banking/accounts/:id/transactions` — Umsätze
-  - `DELETE /api/banking/session/:id` — Sidecar-Session cancel (fire-and-forget)
-
-### Banking Telegram-Trigger (kein zeitgesteuerter Auto-Sync)
-
-Banking-Sync startet ausschliesslich manuell ueber Telegram — KEIN zeitgesteuerter
-Auto-Trigger. n8n `banking-sync-daily` ist inaktiv/archiviert.
-
-Callback-Prefixes (registriert in `CALLBACK_PREFIXES`, index.ts:412):
-- `bweekly_start` — startet woechentlichen Banking-Sync (Keyboard-Button, index.ts:1911).
-  Handler: index.ts:1693-1697.
-- `bsync_<runId>` — Re-Sync nach TAN-Bestaetigung; Ketten-Button bei erneuter TAN-Aufforderung
-  (Button generiert in sync-engine.ts:465 + 799). Handler: index.ts:1715-1718.
-
-Beide laufen ueber `parseCallbackEvent`. Bei neuen Banking-Buttons immer Prefix in
-CALLBACK_PREFIXES eintragen, sonst greift die Callback-Suppression.
-
-### Settings (Sprint 11)
-
-- DB-Tabelle: `system_settings` (key TEXT PK, value JSONB)
-- `loadSettings()` liest sync aus In-Memory-Cache (populiert beim Boot)
-- `setSetting(key, value)` schreibt atomar in DB (UPSERT + audit_log in einer Transaktion)
-- Cache-Refresh: Hintergrund-Intervall alle 60s
-- WARNUNG: Cache ist prozesslokal (Single-Process). Bei mehreren Instanzen Cache-Drift moeglich.
-- Key-Convention: snake_case im DB (`briefing_time`), camelCase im TS-Interface (`briefingTime`)
-- `sp_default_site_id` als Seed fuer Etappe 4 (Dashboard Site-Resolution)
-
-### Schema-Migration-Konvention (Sprint 11.5)
-
-**Dual Pattern:**
-
-1. **V-Prefix (`Vxxx__name.sql`):** One-Shot-Migrationen mit Daten-Import via `migrate-sprintX` / `migrate-vXXX`-Skripte.
-   Manuell ausgeführt (`bun run scripts/migrate-*.ts --apply`). Enthalten DDL + DML (Tabellen + Daten).
-   Schema-Version wird vom Skript oder nachtraeglich in `schema_version` eingetragen.
-
-2. **0xx-Prefix (`0xx_name.sql`):** Boot-Time-DDL-only via `runMigrations()` in `src/shared/db/index.ts`.
-   Idempotent (`IF NOT EXISTS`), automatisch bei jedem Gateway-Start. Nur DDL, keine Daten.
-
-**Migrate-Skripte (One-Shot, manuell):**
-
-| Skript | Modul | Versions |
-|--------|-------|----------|
-| `scripts/migrate-sprint3-instagram.ts` | instagram | 020_insta_tables.sql |
-| `scripts/migrate-sprint4-health.ts` | health | V021 |
-| (manual, psql) | health | V040 (Oura integration) |
-| `scripts/migrate-sprint5-assets.ts` | assets | V022, V023, V024 |
-| `src/modules/fleet/migrate-v025.ts` | fleet | V025 |
-| (manual) | fleet | V026__fleet_tire_sets.sql |
-| `src/modules/banking/migrate-v027.ts` | banking | V027, V028, V029 |
-| `src/modules/assets/migrate-v030.ts` | assets | V030 |
-| `src/modules/assets/migrate-v031.ts` | assets | V031 |
-| (manual) | assets | V036__properties_polish_fields.sql |
-| (manual) | fleet | V037__vehicles_fuel_type.sql |
-| (manual) | instagram | V037_insta_media_edits.sql |
-| `scripts/migrate-sprint8-location.ts` | location | V032 |
-| `scripts/migrate-sprint9-links.ts` | links | V033 |
-
-**Boot-Time-Migrationen (automatisch via `runMigrations()`):**
-
-| Aufruf in index.ts | Modul | Versions |
-|---------------------|-------|----------|
-| `src/shared/migrations` | shared | 001 |
-| `src/shared/settings/migrations` | settings | 035 |
-| `src/modules/executive/migrations` | executive | 001 |
-| `src/modules/location/migrations` | location | 032 |
-| `src/modules/links/migrations` | links | 033 |
-| `src/modules/sharepoint/migrations` | sharepoint | 034 |
-| `src/modules/memory/migrations` | memory | 041, 042, 043 |
-| `src/modules/telegram-binding/migrations` | telegram-binding | 043 |
-
-**DR-Pfad:** `pg_dump --format=custom` als Wahrheits-Quelle, unabhaengig vom Migration-Runner.
-Borg-Backup sichert den Dump taeglich.
-
-**Drift-Detector:** `npm run verify-schema` (`scripts/verify-schema-versions.ts`).
-Vergleicht SQL-Files auf Disk mit `schema_version`-Tabelle. Exit 0 = clean, Exit 1 = drift.
-**Sprint-Cut-Checkliste:** Drift-Detector mit Exit 0 ist Pflicht vor jedem Commit/Release.
-
-### Offene TODOs
-
-- ~~n8n-Postgres separat im Borg-Backup (Spec §15.4)~~ — erledigt 2026-05-11
-- ~~Helper-Endpoint POST /api/internal/notify~~ — erledigt 2026-05-11
-- ~~Spec V3 §3 erweitern um 5 neue Module~~ — erledigt 2026-05-11 (v3.1)
-- ~~Sprint 3 Instagram auf Postgres~~ — erledigt 2026-05-12
-- ~~Sprint 4 Health auf Postgres~~ — erledigt 2026-05-12
-- ~~Sprint 5.5a Asset CRUD + NK PreCheck~~ — erledigt 2026-05-12
-- ~~Sprint 5.5b NK-Engine + PDF V1.3~~ — erledigt 2026-05-13
-- ~~Sprint 10 SharePoint Postgres~~ — erledigt 2026-05-16
-- ~~Sprint 11 Closure + Housekeeping~~ — erledigt 2026-05-17 (7 Etappen, 28/28 Smoke)
-- Etappe n (Real-Test L19 2024): wartet auf L19 Datenpflege
-- SP Hard-Delete Phase 2: 3 synthetische Tests Pflicht VOR n8n-Workflow auf `dry_run=false` (siehe Runbook)
-- ~~n8n-Workflow `nk-obligations-alert-daily`~~ — erledigt 2026-07-13 (systemd-Timer statt n8n, siehe NK-Obligations-Alert Abschnitt)
-- Withings OAuth-Callback-Route reparieren (F-009, zurückgestellt ~1 Jahr). nginx `/withings/callback` → Gateway, aber kein Handler. Temp-Server auf Port 8080. Fix: analog Oura-Pattern (Port 8081 direkt) oder Gateway-Route registrieren.
-- Optional: Meta-Token rotieren (User-Entscheidung)
-- ~~`bun test` Parallelismus-Problem~~ — erledigt 2026-07-13 (`scripts/run-tests.sh` fuehrt jede Test-Datei in eigenem bun-Prozess aus, verhindert Modul-Cache-Bleeding bei HOME/POSTGRES_URL-Mutation)
-- cc-pre-backup.sh: In AUTO-Konvention als Pflicht-Erstschritt integrieren (Skript vorhanden, Konvention dokumentiert)
-- **Callback-Prefix-Liste (E4):** `before_agent_start` in index.ts unterdrückt LLM für Telegram-Callback-Buttons.
-  Pattern matcht `callback_data: <prefix>` (aktuelles Framework-Format) UND `] <prefix>` (Legacy).
-  Bekannte Prefixes: `icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `meeting_`, `bsync_`, `bweekly_`, `memdrop_`. Bei neuem Callback-Prefix hier UND in
-  `CALLBACK_PREFIXES` (index.ts, before_agent_start) ergänzen.
-- ~~**TD-3:** Sidecar (`~/openclaw-banking-fints`) hat kein GitHub-Remote. Lokaler Commit only. Sprint 2.10-F Backlog.~~ Erledigt 2026-06-25: `biko007/openclaw-banking-fints-private.git`, 5 Commits gepusht.
-
-### Sprint-Roadmap
-
-| Sprint | Inhalt | Status |
-|--------|--------|--------|
-| 1 | Plattform-Hardening | abgeschlossen |
-| 2 | Code-Refactor | abgeschlossen |
-| 3 | Instagram Postgres | abgeschlossen |
-| 4 | Health Postgres | abgeschlossen |
-| 5.5a | Asset CRUD + NK PreCheck | abgeschlossen |
-| 5.5b | NK-Engine + PDF V1.3 | abgeschlossen (Etappe n pending) |
-| 10 | SharePoint Postgres (pg_trgm, soft-delete, V034) | abgeschlossen |
-| 11 | Closure + Housekeeping (7 Etappen, V035) | abgeschlossen |
-| 2.10-A | Banking Session Reuse (5 Etappen, 71 Tests, E2E KSK) | abgeschlossen |
-| Phase 3 | Owner-Memory (Extraktion, Recall, /memory, V042) | abgeschlossen |
-| 6 | Fleet auf Postgres | offen |
-| 7a | Banking-CSV | offen |
-
-### Lessons
-
-- **Postgres-Bootstrap-User:** `ALTER ROLE n8n NOSUPERUSER` → `permission denied to alter role`.
-  Lösung: separater App-User `n8n_app` mit GRANT-Modell. Smoke-Test verhindert Rückfall.
-- **python-fints fetch_tan_mechanisms() bei Reuse:** `fetch_tan_mechanisms()` setzt blind
-  `set_tan_mechanism('999')`. Bei `from_data`-Restore mit bestehendem `system_id` wird
-  `_ensure_system_id()` zum No-Op → kein Server-Roundtrip korrigiert den Mechanismus →
-  `KeyError: '999'`. Fix: Skip bei Reuse — TAN-Mechanismus kommt aus dem gespeicherten State.
-- **Mock-Sidecar ≠ Library-Edge-Cases:** Bun.serve()-Mocks validieren HTTP-Contract, fangen
-  aber keine Library-Interaktions-Bugs. E2E gegen echte Bank ist unersetzlich für FinTS.
-
-## Telegram-Notify aus Skripten/Claude Code
-
-```bash
-~/.scripts/notify 'Nachricht' [info|warn|error]
+**Services / Ports:**
+```
+openclaw-gateway      18789   (Core-API, bindet auf 127.0.0.1)
+openclaw-dashboard    18800   (Dashboard, bindet auf 127.0.0.1)
+openclaw-pdf-worker   —       (Playwright Chromium, standalone)
+openclaw-trading      18793   (Trading-Service)
+openclaw-banking-fints 18794  (Python-Sidecar, FinTS)
+ibgateway             7497    (IB Gateway)
+xvfb                  :1
 ```
 
-Endpoint: `POST /api/internal/notify` (localhost only, nginx-Whitelist).
-Body: `{ "message": "...", "severity": "info"|"warn"|"error" }`
+nginx: `app.bikobickel.de:443` → 127.0.0.1 (alle Services). Details: docs/INFRA.md.
 
-## Architektur-Disziplin (Manifest)
+**Wichtige Pfade:**
+```
+index.ts              Haupt-Entry-Point (Plugin-Logik)
+dist/index.js         Build-Output (NICHT manuell bearbeiten)
+~/.config/openclaw/env  Secrets (KEY=VALUE ohne export-Prefix für systemd)
+artifacts/personal/   Laufzeit-Daten (gitignored)
+```
+
+**Starten:**
+```bash
+claude --allowedTools "Write,Edit,Bash,Read"
+```
+
+---
+
+## §3 Manifest (Architektur-Disziplin)
 
 Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen wird:
 
 1. **Eine Schraube pro Sprint.** Niemals zwei Module gleichzeitig migrieren.
-2. **n8n bleibt dumm.** n8n macht nur Trigger + Routing, keine Business-Logik. n8n ruft dedizierte, Bearer-`CORE_SERVICE_TOKEN`-geschützte Core-Endpoints auf (z.B. `/api/internal/banking/*`, `/api/sharepoint/cleanup-missing`, `/api/health/*`, `/api/instagram/*`). Der Core bindet ausschließlich auf `127.0.0.1`; `/api/internal/*` ist zusätzlich per nginx-IP-Whitelist (127.0.0.1) abgesichert. Es gibt KEINE Linter-Regel für Routen — ESLint erzwingt nur Modul-Grenzen (`no-deep-module-import`).
+2. **n8n bleibt dumm.** n8n macht nur Trigger + Routing, keine Business-Logik. n8n ruft dedizierte,
+   Bearer-`CORE_SERVICE_TOKEN`-geschützte Core-Endpoints auf. Core bindet ausschließlich auf
+   `127.0.0.1`; `/api/internal/*` zusätzlich per nginx-IP-Whitelist abgesichert.
+   ESLint erzwingt Modul-Grenzen (`no-deep-module-import`), nicht Routen.
 3. **Modul-Grenzen sind heilig.** ESLint erzwingt — nicht Disziplin.
 4. **Backup-Restore vor Backup-Schreiben.** Jedes neue Backup-Ziel: erst Restore-Test.
 5. **Tests für Geld.** Alles, was IBANs oder Posts ins Internet schickt, hat Tests.
@@ -346,568 +73,277 @@ Diese Regeln stehen über allem, was in Implementierungs-Sessions vorgeschlagen 
 7. **Klein anfangen, groß denken.** Modularer Monolith jetzt — Microservices wenn Wartung wehtut.
 8. **Idempotency vor Side-Effects.** Jeder externe Call braucht einen Idempotency-Key.
 9. **Sensitive Daten klassifiziert.** Nie in Logs, callback_data oder n8n-Logs.
-10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst.
-11. **Human-Reviewability (Hard Rule).** All code must be traceable by a human reviewer: descriptive names instead of cryptic identifiers; comments explain the *why* for non-obvious logic (triggers, guards, security paths); no clever one-liners where a readable form exists; one commit per etappe, never bundled. No code goes to `origin` unreviewed.
-12. **Sprechende IDs (verbindlich).** Alle neuen Entitäten, Assets, Tabellen-Einträge und Dateinamen nutzen sprechende, menschenlesbare Bezeichner. Muster: `subject-location-DDMM` bzw. modulüblich (`img-NNNN-NN`, `YYMMDD-kontext`). Kryptische Hex-Strings, UUIDs oder reine Timestamps als owner-sichtbare IDs sind verboten. Interne DB-Surrogatkeys (SERIAL/BIGINT) davon unberührt.
-
-## Projekt
-
-OpenClaw Executive Agent (Telegram Bot) auf Hetzner VPS (CCX33, Helsinki).
-User: `biko` | IP: `46.62.153.181` | Tailscale: `100.121.45.4`
-Dashboard: `https://app.bikobickel.de/dashboard/?token=<DASHBOARD_TOKEN>`
-Location-API: `https://app.bikobickel.de/location` (POST, Bearer-Auth)
-
-## Starten
-
-```bash
-claude --allowedTools "Write,Edit,Bash,Read"
-```
-
-## Wichtige Pfade
-
-```
-Hauptdatei:   index.ts  (einzige Quelle aller Plugin-Logik)
-Build-Output: dist/index.js  (NICHT manuell bearbeiten)
-Secrets:      ~/.config/openclaw/env
-Daten:        ~/.openclaw/workspace/artifacts/personal/
-```
-
-## Datenschicht
-
-```
-travel-store.ts     Trips + Segmente
-assets-store.ts     Immobilien, Units, Mietverträge, NK-Abrechnung
-fleet-store.ts      Fuhrpark, Service, TÜV, Versicherung
-sharepoint-store.ts SP Graph-API Helpers (listSites, listDrives, crawlFolder)
-src/modules/sharepoint/store.ts    SP fullSync, UPSERT, markMissingSince (Postgres-backed, Sprint 10)
-src/modules/sharepoint/queries.ts  SP searchFiles (pg_trgm), listSites/Drives/Files (Postgres-backed)
-src/modules/sharepoint/routes.ts   SP HTTP-API für Dashboard-Proxy (Sprint 10)
-src/modules/sharepoint/key.ts      buildSpItemKey() — canonical key builder
-link-store.ts       Entity-Dokument-Verknüpfungen
-src/modules/instagram/store.ts  Instagram Business API, Drafts, Tokens, Style (Postgres-backed)
-src/modules/health/store.ts     Gewicht, Schlaf, HRV, Readiness, Trends, Alerts (Postgres-backed)
-src/modules/health/withings.ts  Withings OAuth2 + API, Tokens (Postgres-backed) — weight-only
-src/modules/health/oura.ts      Oura Ring OAuth2 + API v2, Tokens (Postgres-backed) — primary health source
-src/modules/nk/engine.ts       NK-Berechnung: computeNk(), Personentage, Pro-Rata, HeizKV (Postgres-backed)
-src/modules/nk/heating.ts      HeizKV §7/§8/§9, Method A/B, Verbrauchsberechnung
-src/modules/nk/snapshot.ts     Snapshot Build + Read/Write (gzip, SHA-256)
-src/modules/nk/routes.ts       NK HTTP-Endpoints (Preview, Finalize, Serve, Re-Render)
-src/modules/nk/pdf-template.ts Handlebars HTML-Template für NK-Abrechnungen
-src/modules/nk/alerts.ts       §556-Fristüberwachung + Telegram-Alerts
-src/modules/nk/precheck.ts     nkPreCheck() — 11 Blocker-Checks vor Berechnung
-src/pdf-worker.ts              Standalone PDF-Worker (Playwright Chromium)
-```
-
-## Datenpfade
-
-```
-Trips:       artifacts/personal/travel/<trip-id>.json
-Health:      Postgres health_logs, health_withings_tokens (Sprint 4)
-Settings:    artifacts/personal/health/settings.json (inkl. Standort)
-Loc-History: Postgres location_entries (Sprint 8), Legacy: archived (Sprint 11.6)
-Fleet:       artifacts/personal/fleet/vehicles.json
-Assets:      artifacts/personal/assets/properties.json
-             artifacts/personal/assets/leases.json
-             artifacts/personal/assets/operating-costs/<id>-<year>.json
-Bilder:      artifacts/personal/images/<entityType>-<entityId>.jpg
-Mail-Parse:  artifacts/personal/mail-parsing/processed.json
-Links:       Postgres entity_links (Sprint 9), Legacy: archived (Sprint 11.6)
-SP-Index:    Postgres sharepoint_files (Sprint 10), Legacy: archived (Sprint 11.6)
-Drafts:      artifacts/personal/mail-drafts/<id>.json
-Instagram:   Postgres insta_drafts, insta_tokens, insta_style_profile (Sprint 3)
-             artifacts/personal/instagram/insights-cache.json  (File)
-             artifacts/personal/instagram/media-cache.json     (File)
-             artifacts/personal/instagram/content-calendar.json (File)
-NK-Snapshots: artifacts/personal/nk-snapshots/<run_id>.json.gz (Sprint 5.5b)
-NK-PDFs:      artifacts/personal/nk-statements/<PROP_CODE>/<YEAR>/run-<RUN_ID>/<lease-ID|owner>.pdf
-```
-
-## Netzwerk / nginx
-
-```
-Alle externen Endpoints laufen über nginx + Let's Encrypt SSL (app.bikobickel.de:443).
-Kein Service bindet extern — alles auf 127.0.0.1, nginx proxied:
-
-  /api/internal/*                       → 127.0.0.1:18789  (Gateway, localhost-only deny all)
-  /api/                                 → 127.0.0.1:18800  (Dashboard, Catch-All)
-  /dashboard/*                          → 127.0.0.1:18800  (Dashboard)
-  /location                             → 127.0.0.1:18790  (Location-API, POST)
-  /withings/callback                    → 127.0.0.1:18789  (Withings OAuth)
-  /n8n/                                 → 127.0.0.1:5678   (n8n Web-UI)
-
-Reihenfolge: spezifischere Locations (internal) VOR dem /api/ Catch-All.
-Dashboard proxied Modul-Routen (/api/health/*, /api/assets/*, etc.) intern an Core 18789
-weiter (Double-Hop mit Bearer CORE_SERVICE_TOKEN).
-
-Tote Routen via nginx (Dashboard hat keinen Handler, nur direkt auf 18789 erreichbar):
-  POST /api/health/withings-sync       — n8n-Caller deaktiviert (6782fd2)
-  GET  /api/health/sync-status         — kein externer Caller
-
-Backlog: Single-Hop-Optimierung (nginx → Gateway direkt) optional,
-funktioniert aktuell korrekt via Double-Hop.
-
-nginx-Config:   /etc/nginx/sites-enabled/openclaw.conf (konsolidiert)
-Cert:           Let's Encrypt (auto-renew via certbot)
-Reload:         sudo nginx -t && sudo systemctl reload nginx
-```
-
-## Deployment
-
-```bash
-npm run build
-npm run verify:commands
-systemctl --user restart openclaw-gateway.service
-systemctl --user restart openclaw-pdf-worker.service
-systemctl --user status openclaw-gateway.service --no-pager
-systemctl --user status openclaw-pdf-worker.service --no-pager
-journalctl --user -u openclaw-gateway.service -n 20 --no-pager
-bun run scripts/smoke-test.ts
-```
-
-Nach jedem Build + Restart IMMER `bun run scripts/smoke-test.ts` ausführen.
-`npm run verify:commands` ist Pflichtteil des Build-Gates — Exit 1 blockiert den Commit.
-Bei Exit-Code 1: Deployment als fehlgeschlagen betrachten,
-Fehler beheben bevor "Erledigt" gemeldet wird.
-
-## CI-Tests — MUSS GRÜN BLEIBEN
-
-```bash
-npm test              # bun test — 345 test blocks über 34 Dateien
-npm run verify:commands  # Command-Registration-Guard (bidirektional)
-```
-
-**Command-Guard:** `npm run verify:commands` (`scripts/verify-commands.ts`) prüft bidirektional:
-- Direction A: `api.registerCommand({ name })` ohne Eintrag in `REGISTERED_COMMANDS` → AI antwortet statt Handler
-- Direction B: `REGISTERED_COMMANDS`-Eintrag ohne Handler → User bekommt NO_REPLY ohne Antwort
-Exit 0 = clean. Pflicht vor jedem Commit — wie `verify-schema`.
-
-**acceptsArgs-Konvention (F-008):** Commands mit Argumenten MUESSEN `acceptsArgs: true`
-setzen und Handler-Signatur `(ctx: any)` verwenden. Args via `String(ctx?.args || '').trim()`.
-verify:commands prueft dies NICHT — E2E-Test neuer Arg-Commands ist Owner-Verantwortung.
-Referenz-Pattern: `/healthsync`, `/trademode`, `/report`.
-
-**Hinweis:** Paralleler `bun test` hat ein bekanntes Problem: mehrere Test-Dateien ändern
-`POSTGRES_URL` (eigene Test-DB), was bei Parallelisierung Konflikte verursacht. Alle 345 Tests
-sind grün wenn sie einzeln/sequenziell laufen.
-
-**Pflicht-Tests (Spec §17):**
-- `src/modules/instagram/__tests__/approval-hard-rule.test.ts` — Spec §17.2
-  Prüft: Draft ohne Freigabe kann NICHT veröffentlicht werden.
-  NIEMALS löschen oder deaktivieren. Nutzt echte Postgres-Test-DB.
-- `src/modules/instagram/__tests__/insta-store-db.test.ts` — Sprint 3 §6.1
-  Prüft: Roundtrip insert → load → update → filter gegen echte Postgres-DB.
-- `src/modules/health/__tests__/health-store-db.test.ts` — Sprint 4 §5
-  Prüft: Health-Entry Roundtrip (weight, sleep, steps, heartrate, alerts) gegen echte Postgres-DB.
-- `src/modules/executive/__tests__/health-monitor.test.ts`
-  Prüft: Alert-Throttling für Service-Monitoring.
-- `src/modules/nk/__tests__/engine.test.ts` — Sprint 5.5b §11
-  Prüft: 6 Goldfile-Szenarien, 11 Blocker-Tests, Personentage, Vorauszahlung.
-- `src/modules/nk/__tests__/e2e-lifecycle.test.ts` — Sprint 5.5b §11
-  Prüft: Preview → Finalize → Snapshot → Re-Render → Serve → Lock → Version-Cascade.
-- `src/modules/assets/__tests__/bulk-readings.test.ts` — Sprint 11.1
-  Prüft: Atomicity (BEGIN/COMMIT), Idempotency-Replay, Audit innerhalb TX, Pool-Release.
-- `src/modules/banking/__tests__/etappe-2.10a.test.ts` — Sprint 2.10-A
-  Prüft: findReusableSession (9 Tests: happy path, user-mismatch, expired, stale, format-mismatch,
-  multi-candidate, decrypt-failure + invalidation, roundtrip, all-decrypt-fail → fresh).
-- `src/modules/banking/__tests__/etappe-2.10b.test.ts` — Sprint 2.10-A
-  Prüft: clientDataB64 passthrough (8 Tests: sidecar connect with/without b64, redactClientData,
-  initiateConnect passthrough, E2E state persistence, log-redaction spy).
-- `src/modules/banking/__tests__/etappe-2.10c.test.ts` — Sprint 2.10-A
-  Prüft: decideReuse + advisory-lock (7 Tests: fresh/reuse modes, lock release, concurrency).
-
-**Vor jedem Merge: `npm test` MUSS grün sein.**
-
-## Grundregeln
-
-- Git Snapshot VOR jeder Änderung
-- Keine Secrets in Code oder Chat
-- Nach Abschluss: alle drei Repos committen + pushen
-- Rollback: `git log --oneline -5` dann `git checkout <hash> -- index.ts`
-- Keine Services auf 0.0.0.0 binden — immer 127.0.0.1, nginx proxied extern
-
-## Git-Commit am Ende
-
-Alle Änderungen committen und pushen — alle drei Repos (Agent, Dashboard, Parent). Dann `git status` zeigen.
-
-## Standort-Fallback
-
-```typescript
-const DEFAULT_LOCATION = { lat: 47.9838, lon: 8.8234, label: "Tuttlingen" };
-```
-
-Dynamisch: `settings.json` → `location` (via Telegram Location Message oder POST /location)
-
-## Laufende Arbeiten
-<!-- Hier aktuelle Session-Aufgaben festhalten damit Claude Code nach
-Reconnect den Kontext findet -->
-
-Sprint 1 + 2 + 3 + 4 + 5.5a + 5.5b + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.
-Banking Tests: 71/71 PASS (Agent 35 + Sidecar 36). E2E: KSK Tuttlingen HAPPY PATH (Tag `2.10-a-e2e-passed`).
-Archive: 6× Instagram-Drafts, history.jsonl, links.json, 3× sharepoint-index in `archive/`.
-Owner-Memory Phase 3 (2026-07-06): Fakten-Extraktion, Recall-Injektion, /memory Pflege live.
-Nächste Schritte: Sprint 2.10 Backlog (B/C/E), Etappe n (L19 Datenpflege).
-SP Hard-Delete Phase 2 wartet auf 3 synthetische Tests (siehe Runbook).
-Betriebsautomatisierung (2026-07-12): Report-Watcher, Wait-Notifier, /ccstop live.
-Telegram-Binding-Refactor + Prompt-Inbox + /do (2026-07-15): DB-basierter Owner-Guard,
-  /do Prompt-Dispatch, ~/inbox/ File-Drop mit systemd-Timer, Plans-Watcher Slug-kompatibel.
-
-### Betriebsautomatisierung (2026-07-12, Portierung von HDCC)
-
-Portierung der HDCC-Betriebsautomatisierung nach bikosoc (executive-agent):
-
-- **Report-Watcher:** Ueberwacht `~/bikosoc-spec/` und `~` (Whitelist `report-*.md`).
-  Neue/geaenderte Reports automatisch via Telegram zugestellt (Dokument + max 3 Text-Chunks).
-  Digest (5 Zeilen, `generateDigest()`) wird dem Telegram-Text vorangestellt und oben im
-  Dropbox-Upload als `## DIGEST`-Block eingebettet.
-  Rate-Limit 1/min. Dedupe via `~/bikosoc-spec/.report-sent.json`.
-  Erstlauf: bestehende Dateien werden in Dedupe-Map geseeded, NICHT gesendet.
-  fs.watch mit 5s Debounce. globalThis-Guard `__ea_reportWatcherRegistered`.
-- **Dropbox-Upload (Report + Plan Backup, ab 2026-07-17):** Reports und Plans werden zusaetzlich
-  per Dropbox-API hochgeladen. Adapter: `src/adapters/dropbox.ts` (fetch-basiert, kein SDK,
-  Token-Refresh + Retry). Init beim Boot via EA_DROPBOX_APP_KEY / EA_DROPBOX_APP_SECRET /
-  EA_DROPBOX_REFRESH_TOKEN in `~/.config/openclaw/env` (KEY=VALUE ohne export-Prefix fuer systemd).
-  Guard: silent inaktiv wenn Vars fehlen.
-  - **Reports** → `/bikosoc-reports/<name>.md` (mit `## DIGEST`-Prefix, 5 Zeilen)
-  - **Plans** → `/bikosoc-plans/<name>.md` (Rohinhalt, kein Digest)
-  - Fremd-Strang-Plans (HDCC etc.) erreichen den Upload nie (isBikosocPlan-Filter vorgelagert).
-  Fire-and-forget: Fehler werden nur als WARN geloggt, Telegram-Zustellung bleibt primaer.
-  Ordner `/bikosoc-reports` und `/bikosoc-plans` werden idempotent beim Boot angelegt.
-  WICHTIG: EA_DROPBOX_*-Credentials muessen gueltiger Refresh-Token sein (400 = revoked/falsch).
-- **Wait-Notifier (Warte-Melder):** Prueft alle 30s via `tmux capture-pane -t bikosoc` ob
-  Claude Code auf Eingabe wartet. Telegram-Notification mit Preview (max 1x pro 5min, dedup
-  auf Content-Hash). globalThis-Guard `__ea_waitNotifierRegistered`.
-- **`/report [n]`:** Manueller Abruf von Reports. Listet alle .md in ~/bikosoc-spec/ + ~/report-*.md,
-  sortiert nach mtime (neueste zuerst). Sendet als Dokument + Text-Preview.
-- **`/ccstop`:** Kill-Switch fuer laufenden Claude Code in tmux bikosoc. Sendet C-c via tmux,
-  dann SIGTERM an Kindprozesse. Owner-only (assertBoundOwner). Bestaetigung via Telegram.
-- **`/ccgo`:** Plan-Approval in tmux bikosoc bestaetigen (Gegenstueck zu /ccstop).
-  Owner-only (assertBoundOwner). Erkennt wartenden Plan-Prompt (Muster `❯ 1. Yes`), waehlt
-  „Yes, and bypass permissions" (Option 1). Ohne erkannten Prompt: kein Tastendruck,
-  Telegram-Meldung „kein wartender Plan-Prompt". Selftest: Prompt-Detektor, Non-Owner-Ablehnung,
-  kein-Prompt-Meldung. Live-E2E (echte Plan-Bestaetigung) offen fuer naechsten REVIEW-Lauf.
-- **`/do <text>`:** Sendet beliebigen Text als Prompt an die laufende cc-Session in tmux bikosoc.
-  Owner-only (assertBoundOwner). Nutzt `execFileSync` mit `--` Separator (injection-sicher,
-  kein Shell-Escaping). Modul: `src/modules/cc-prompt-dispatch/index.ts`.
-- **Prompt-Inbox (Datei-Drop):** systemd-Timer (`prompt-inbox.timer`, 10s Intervall) pollt
-  `~/inbox/*.txt`. Jede Datei wird als Prompt an tmux bikosoc dispatcht, dann nach
-  `~/inbox/done/` verschoben. Report-Watcher meldet Zustellung. Standalone-Skript:
-  `scripts/prompt-inbox-poll.ts`. Modul: `src/modules/prompt-inbox/index.ts`.
-- **Command-Guard:** `report`, `ccstop`, `ccgo` und `do` in REGISTERED_COMMANDS. verify:commands gruen.
-
-### Telegram-Binding (2026-07-15, Migration 043)
-
-Hardcoded `OWNER_SENDER_ID = '133260792'` komplett entfernt. Ersetzt durch DB-basiertes
-`assertBoundOwner()` via `workspace_telegram_bindings` Tabelle (Boot-Time-DDL, Migration 043).
-
-- **DB-Tabelle:** `workspace_telegram_bindings` (binding_id, workspace_key, bot_key, role_tag,
-  telegram_chat_id, telegram_user_id, chat_type, status, verification_nonce_hash, nonce_expires_at)
-- **Owner-Guard:** `assertBoundOwner(ctx)` prueft ob Absender ein aktives Binding hat.
-  Ersetzt alle `senderId === OWNER_SENDER_ID` Checks.
-- **Sende-Target:** `sendTelegramToRole('operativ', ...)` ersetzt `sendTelegram(chatId, ...)`.
-  Liest Ziel-Chat-ID aus aktivem Binding fuer die angegebene Rolle.
-- **Binding-Flow:** CLI (`scripts/telegram-binding.ts create --role operativ`) → Nonce →
-  `/bind <nonce>` im Telegram-Chat → aktiviert Binding.
-- **Fallback bei Lockout:** SQL INSERT direkt in DB (siehe Plan).
-- **parse_mode entfernt:** `parse_mode: 'Markdown'` aus allen Telegram-Sends entfernt
-  (verursachte Fehler bei Sonderzeichen).
-- **Modul:** `src/modules/telegram-binding/index.ts` (201 Zeilen)
-- **Advisory-Lock-Registry:** 42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session,
-  47=Oura, 48=Memory-Sweep
-
-### Report-Konvention (stehende Regel, ab 2026-07-12)
-
-- **Prefix:** Alle cc/Codex-Reports in `~` muessen mit `report-` beginnen (Muster: `report-<thema>-YYYYMMDD-HHMM.md`).
-  Nur `report-*.md` im Home-Verzeichnis werden vom Watcher erfasst.
-- **Kopfzeile (erste Zeile nach Titel):**
-  - `AUTO` — automatisch generierter Report (cc-Lauf ohne manuelle Intervention)
-  - `REVIEW` — cc-Auftrag mit Review-Erwartung (Owner soll pruefen/abnehmen)
-- **Ablage:** `~/bikosoc-spec/` fuer dauerhafte Spec-Dokumente, `~` fuer Session-Reports.
-- **Watcher-Scope:** `~/bikosoc-spec/report-*.md` + `~/report-*.md` + `~/.claude/plans/*.md`.
-- **Zustellung Reports:** 1 Dokument-Anhang + 1 Zusammenfassungs-Chunk (`## Zusammenfassung`/`## Summary`
-  Abschnitt, max 1500 Zeichen; Fallback: erste 1500 Zeichen).
-  Ziel: **dev** (bikosoc-dev). `fallbackToOperativ: true` falls dev-Binding fehlt.
-- **Zustellung Plans:** 1 Dokument-Anhang + Volltext in nummerierten Chunks (~3500 Zeichen pro Chunk).
-  Plans werden komplett als Text gesendet, weil Telegram Web .md-Dateien nicht rendert.
-  Ziel: **dev** (bikosoc-dev). `fallbackToOperativ: true` falls dev-Binding fehlt.
-- **Manueller Abruf:** `/report [n]` (slim) oder `/report full [n]` (volltext in Chunks).
-  Beide Modi senden an **dev**.
-
-### Plan-Report-Konvention (stehende Regel, ab 2026-07-12)
-
-- REVIEW-Auftraege schreiben ihren vollstaendigen Plan ZUSAETZLICH als
-  `~/report-plan-<thema>-YYYYMMDD-HHMM.md` (Watcher stellt zu).
-- Alle Plan-Schritte muessen im Plan-File stehen (clear-context-fest).
-- Zweck: Owner sieht alle Schritte unabhaengig von der cc-Session
-  (Lehre 12.07.: B1-B6-Kontext ging bei Context-Wechsel verloren).
-- Plan-Files in `~/.claude/plans/` werden ebenfalls vom Watcher ueberwacht
-  und mit Prefix `Plan:` zugestellt.
-
-### Auftrags-Abschluss-Workflow (bindend, ab 2026-07-14)
-
-- **REPORT-PFLICHT:** Jeder cc-Auftrag (AUTO und REVIEW) gilt erst als FERTIG, wenn
-  `~/bikosoc-spec/report-<slug>-<datum>.md` GESCHRIEBEN ist. Terminal-Summary ersetzt den
-  Report NICHT — die Datei IST die Auslieferung (Watcher → Telegram).
-- **CLEAR-CONTEXT-FEST:** Bei REVIEW-Plaenen ist die Report-Pflicht ZWINGEND als LETZTER
-  Schritt ins Plan-File zu schreiben (uebersteht „clear context").
-- **PLAN-AUSLIEFERUNG:** Bei REVIEW schreibt cc VOR dem Plan-Stopp den Plan als
-  `~/bikosoc-spec/report-plan-<slug>-<datum>.md` (Watcher liefert; zusaetzlich plans/-Watch).
-- **Report-Pfad:** `~/bikosoc-spec/report-<slug>-YYYYMMDD-HHMM.md`
-  (Watcher auf `~/bikosoc-spec/` erfasst automatisch).
-
-### Deny-Hook (stehende Regel, ab 2026-07-13)
-
-PreToolUse-Hook (`~/.claude/hooks/deny-destructive.sh`) blockiert destruktive Bash-Commands
-VOR Ausfuehrung. Fail-closed (Exit 2 bei unerwartetem Fehler → Command wird blockiert).
-
-**Blockierte Patterns:**
-- `rm -r` / `rm -rf` / `rm -fr` (rekursives Loeschen)
-- `DROP TABLE`, `DROP DATABASE`, `TRUNCATE` (SQL destruktiv)
-- `DELETE FROM` ohne `WHERE` (SQL Massenlöschung)
-- `git push --force` / `push -f`, `reset --hard`, `clean -f` (Git destruktiv)
-- `git checkout .`, `git restore .` (Arbeitsverlust)
-- `chmod`/`chown` auf `/etc`, `/usr`, `/var`, `/sys`, `/boot` (Systemrechte)
-- `curl|sh`, `wget|sh` (Remote-Exec)
-- `mkfs`, `dd if=`, Fork-Bomb (Systemzerstoerung)
-
-**Notification-Hook** (`~/.claude/hooks/telegram-notify.sh`): Sendet Telegram-Meldung
-bei `permission_prompt` und `idle_prompt` Events. Non-fatal (Exit 0 bei jedem Fehler).
-Konfiguration in `~/.claude/settings.json`.
-
-### pg_dump-vor-AUTO-Konvention (stehende Regel, ab 2026-07-13)
-
-Bei AUTO-Laeufen die Datenbank-Aenderungen beinhalten: `scripts/cc-pre-backup.sh` als
-Pflicht-Erstschritt ausfuehren. Das Skript:
-- Liest `POSTGRES_URL` aus `~/.config/openclaw/env`
-- Custom-Format-Dump (`-Fc`) nach `~/backups/openclaw-YYYYMMDD-HHMMSS.dump`
-- Rotation: behaelt die 10 neuesten Dumps
-- Beleg-Zeile im Report: `Backup: openclaw-YYYYMMDD-HHMMSS.dump`
-
-### NK-Obligations-Alert (systemd-Timer, ab 2026-07-13)
-
-Taeglich 07:00 UTC prueft der systemd-Timer `openclaw-nk-obligations-daily` alle
-NK-Perioden-Verpflichtungen auf ablaufende Fristen und sendet Telegram-Alerts.
-
-- **Timer:** `~/.config/systemd/user/openclaw-nk-obligations-daily.timer` (OnCalendar 07:00, Persistent)
-- **Service:** oneshot-curl auf `POST /api/internal/nk-trigger/obligations-alert` (Bearer CORE_SERVICE_TOKEN, localhost)
-- **Schwellwerte:** 30d (info), 14d (warn), 7d (warn), 1d (error), expired (error)
-- **Idempotenz:** UNIQUE constraint auf `(obligation_id, alert_phase, alert_date)` — kein Duplikat bei Mehrfach-Aufruf
-- **Entscheidung:** systemd-Timer statt n8n-Workflow, weil n8n als Docker-Container fragil ist und der Call trivial
-
-### Location-Staleness-Alert (2026-06-26)
-
-Health-Monitor (`src/modules/executive/health-monitor.ts`) prüft im 5-min-Polling-Zyklus den
-jüngsten `location_events.recorded_at`. Schwellwert: `LOCATION_STALE_THRESHOLD_MS` (12h, exportiert).
-- fresh→stale: ein WARN (`⚠️ Standort seit Xh nicht aktualisiert`)
-- Wiedervorlage alle `LOCATION_STALE_RENAG_MS` (24h) solange stale
-- stale→fresh: eine Entwarnung (`✅ Standort aktualisiert`)
-- Leere Tabelle: kein Alert, kein Crash
-- `evaluateLocationStaleness()` als reine Funktion, getestet in `__tests__/stale-location.test.ts`
-- Briefing `getBestEffortLocationForBriefing()` nutzt dieselbe Konstante (kein Drift).
-
-### Withings Sync-Konsolidierung (2026-06-26)
-
-Root Cause: Cursor-Poisoning (`syncWithingsForBriefing()` setzte `last_sync = NOW` obwohl nur
-Weight/Sleep geholt) + n8n 404 (fehlende nginx-Location). Fix: eine `runWithingsSync()` Routine
-für alle Pfade, alle 3 Caller routen durch `executeWithingsSync` (Lock 42 + Retry-on-401),
-`/healthsync N` ehrt N wörtlich (toter `last_sync`-Zweig entfernt), n8n-Workflow deaktiviert.
-Briefing-Fehler werden geloggt + in `last_sync_error` persistiert (nicht mehr lautlos verschluckt).
-Abschluss (2026-06-27): Status-Widget Withings-Ablauf-Zähler entfernt (`index.ts` — Access Token
-3h auto-rotiert, `days_remaining` immer ~0, nicht aktionierbar). Pre-Condition `audit.log()` bei
-fehlendem Token (`withings.ts`). nginx-Doku auf belegte Realität korrigiert (Catch-All `/api/` →
-Dashboard 18800, Double-Hop zu Core 18789). Telegram-Ablauf-Alert war belegt-tot
-(`getTokenExpirations()` schliesst Withings explizit aus).
-
-### Oura Ring Integration (2026-06-27)
-
-Oura Ring als primäre Quelle für Schlaf, HRV, Readiness, Temperatur, Ruhe-HR. Withings auf
-Gewicht+Körperfett reduziert. 10 Etappen (V040 Migration, types, store, oura.ts, commands,
-exports, briefing+routes, dashboard, nginx, tests). Advisory-Lock 47 (nächster freier nach
-42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session).
-Schema: `health_logs.withings_id` → `external_id` (provider-neutral), neue CHECK-Werte
-(hrv, readiness, temperature, oura). 12 Tests (3 Oura-Sync + 3 neue HRV/Readiness/Temp
-Roundtrips + 6 bestehende). Withings-Tests auf weight-only angepasst.
-
-### Message-Sink / Conversation Log (2026-07-02)
-
-Baustein 1 fuer dynamisches Gedaechtnis. `agent_end`-Hook persistiert jeden
-erfolgreichen Owner-Telegram-Turn (User-Text + Agent-Antwort) in `conversation_log`.
-Fire-and-forget: Schreibfehler loggen WARN, blockieren nie den Agenten.
-
-- DB-Tabelle: `conversation_log` (Migration 041, Modul `memory`, Boot-Time-DDL)
-- Hook: `agent_end` in index.ts (feuert NACH Antwortversand)
-- Scope: Owner-only (senderId `133260792`). Nicht-Owner-Turns werden uebergangen.
-- Voice: Transkript via `resolveTranscript()` in `agent_end` — parst `[Audio transcript ...]: "..."` aus `firstUser.content` (source: `audio_block`, primaer). `inbound_claim` Stash als Fallback (sekundaer). `metadata.voice = true`, `metadata.transcript_source`.
-- Filter: NO_REPLY, bare media, fehlgeschlagene Runs werden uebergangen
-- Store: `src/modules/memory/store.ts` (`insertConversationTurn()`)
-- Retention: `created_at` fuer spaeteres Pruning, aber KEIN Auto-Pruning in diesem Schritt
-
-### Owner-Memory Phase 3 (2026-07-06)
-
-Dynamisches Gedaechtnis: EA lernt aus Owner-Konversationen. Voice-Transkripte im Klartext
-persistieren, Fakten extrahieren, bei kuenftigen Nachrichten injizieren, Pflege via /memory.
-
-- DB-Tabellen: `conversation_log` (erweitert um `memory_extract_status/attempts/error/extracted_at`),
-  `owner_memory` (Migration 042, Modul `memory`, Boot-Time-DDL)
-- Advisory-Lock: `pg_advisory_lock(48)` fuer Sweep-Serialisierung
-- Advisory-Lock-Registry: 42=Withings, 43=Banking-Test, 44=SP, 46=Banking-Session, 47=Oura, **48=Memory-Sweep**
-- Voice: `resolveTranscript()` in `agent_end` parst `[Audio transcript (machine-generated, untrusted)]: "..."`
-  aus `firstUser.content` (rawContent). Source: `audio_block`. Framework transkribiert via
-  `tools.media.audio` (openai/gpt-4o-mini-transcribe) VOR Agent-Start und setzt das Ergebnis
-  als Content-Block. `inbound_claim`-Stash bleibt als sekundaerer Fallback erhalten.
-- Extraktion: `shouldExtractMemory()` Guard (Kommando, Kurztext, Platzhalter → 'skipped'),
-  `extractFacts()` LLM-gestuetzt (via `api.runtime.llm.complete()`, Modell/Provider
-  durch Gateway-Config aufgeloest), max 5 Fakten/Turn, 200 Zeichen/Fakt, temperature 0.2.
-  Dedup: Unique Index + LLM-gestuetzter Abgleich. Supersede statt Loeschen.
-- Sweep: `runExtractSweep()` alle 60s (einmal via `globalThis.__ea_memorySweepRegistered`),
-  `pg_advisory_lock(48)`, max 3 Versuche, Telegram-Hinweis bei 3x failed.
-- Recall: Branch 7 in `before_agent_start` (nach Branch 6 Owner-Profil, nur Owner),
-  max 50 Fakten / 4 KB, Framing "Ergaenzendes Gedaechtnis (nachrangig)".
-  Cache: `globalThis.__ea_memoryRecallCache` (TTL 60s, invalidiert bei Writes + owner-facts.md mtime).
-  `sensitive` nur bei Keyword-Match, `never_inject` nie.
-- Pflege: `/memory list` (nummerierte aktive Fakten), `/memory drop <id>` (Bestaetigungs-Button,
-  `memdrop_` Callback-Prefix). Owner-only, Non-Owner abgelehnt.
-- Log-Disziplin: Journal loggt nur IDs, Counts, Fehlerklassen — keine Fakten-Klartexte.
-- Dateien: `src/modules/memory/extract.ts` (NEU), `src/modules/memory/store.ts` (erweitert),
-  `src/modules/memory/migrations/042_owner_memory.sql` (NEU), `index.ts` (erweitert)
-
-## Role
-
-You are the engineering partner for the OpenClaw Executive System.
-The operator is Juergen Bickel — non-technical, works exclusively via
-Claude and Claude Code. Your counterpart is not a developer.
-
-System: Private executive agent "Hans_Dampf" running on a Hetzner VPS
-(Helsinki). Single-user, production system, always-on.
-
-Your job: Design, implement, debug and extend OpenClaw. Translate
-operator intent into production-grade code. Own the technical decisions.
-Flag risks before implementing. Never wait for permission to apply
-engineering best practices.
-
-## System Topology
-
-- VPS: Hetzner Helsinki, Ubuntu 24.04, User: biko
-- Services: openclaw-gateway (18789), openclaw-dashboard (18800),
-  openclaw-pdf-worker, openclaw-trading (18793), ibgateway (7497), xvfb (:1)
-- Reverse Proxy: nginx → app.bikobickel.de
-- Runtime: Node.js/TypeScript, Bun
-- Secrets: ~/.config/openclaw/env
-- Git: 3 Repos (workspace, executive-agent, executive-dashboard)
-
-## Plan Mode
-
-- Bei komplexen Aufträgen (>3 Dateien oder neue Features): IMMER Plan Mode verwenden — kein direktes Implementieren ohne Review
-- Plan Mode aktivieren: `Shift+Tab` zweimal drücken vor der Eingabe
+10. **Auto-Rollback im Deploy.** Jedes Deploy-Skript prüft sich selbst. (SOLL — Folgeauftrag: docs/TODO.md #3)
+11. **Human-Reviewability (Hard Rule).** All code must be traceable by a human reviewer: descriptive
+    names, comments explain the *why* for non-obvious logic, no clever one-liners, one commit per
+    Etappe. No code goes to `origin` unreviewed.
+12. **Sprechende IDs (verbindlich, kanonisch).** Format: `YYMMDD-<subject>-<location>`.
+    Kleinbuchstaben, nur a-z + Bindestriche, max 30 Zeichen.
+    Modulübliche Ausnahmen (explizit): `img-NNNN-NN` (Bilder), `YYMMDD-<prefix>` (Fallback ohne Kontext).
+    Kryptische Strings, UUIDs oder reine Timestamps als owner-sichtbare IDs sind verboten.
+    Interne DB-Surrogatkeys (SERIAL/BIGINT) davon unberührt.
+
+---
+
+## §4 Harte Regeln (C-Block)
+
+**C1 — Test-DB-Isolation:**
+Tests laufen NUR gegen die Test-DB. NIEMALS gegen `openclaw_core` oder die n8n-DB. Vor
+Test/Migration/Seed prüft ein Guard DB-Name und Rolle fail-closed; zeigt die Verbindung auf eine
+Produktiv-DB → Abbruch. (Banking-/Mieterdaten = Super-GAU; POSTGRES_URL-Mutations-Mechanik erhöht das Risiko.)
+Technische Implementierung: Folgeauftrag (docs/TODO.md #4).
+
+**C2 — Destruktive Prod-Mutationen:**
+DB-Migrationen mit Datenanteil, Backfills, Hard-Deletes, `dry_run=false`-Läufe, Cleanup-Endpunkte,
+Token-Revokes und manuelle SQL-Änderungen an Produktiv-DBs erfordern IMMER: explizite Owner-Freigabe +
+frischen Dump-Beleg + Rollback-Kommando + Post-Check-Beweis im Report — AUTO wie REVIEW.
+
+**C3 — Geld-Regel:**
+NIEMALS autonom Geld bewegen: keine Überweisung, kein Dauerauftrag, keine TAN absenden, keine
+Bankzugangs-Änderung, kein Live-Trading aktivieren, keine Live-Order, kein Live-Publishing.
+Jede solche Aktion braucht frische schriftliche Owner-Freigabe mit Konto/Ziel, Betrag bzw. Artefakt
+und konkreter Aktion. Autonomes Banking = ausschließlich read-only Sync.
+Bank-E2E ist Owner-initiiert, read-only, nie Teil automatischer Tests.
+
+**C4 — Multi-Repo-Preflight + Abschlusszustände:**
+Vor erstem Write und vor jedem Push: Repo, Remote-URL, Branch, Upstream, HEAD, Working Tree jedes
+betroffenen Repos prüfen. Fremde Änderungen, falsches Repo, Divergenz, unklares Ziel oder fehlende
+Gates → STOP. DONE nur bei vollständigen Gates + Commit-/Push-Policy + ggf. Deploy+Smoke + Report;
+sonst PARTIAL oder BLOCKED. Nicht ausführbares Pflicht-Gate = BLOCKED, nie still grün.
+
+**C5 — PII-Schutz extern:**
+PIN, TAN, Tokens, vollständige IBANs/Kontonummern, Gesundheits-, Standort- und Konversationsdaten
+erscheinen nie in Logs, Reports, Telegram oder Dropbox. Jeder Report trägt eine Datenklassifizierung;
+als `sensitive` markierte Reports/Plans lädt der Watcher NICHT extern hoch. Vor Versand: Secret-/PII-Redaktion.
+
+**C6 — Deny-Hook-Regel:**
+Der PreToolUse-Deny-Hook ist zweite Verteidigungslinie — semantisch destruktive Aktionen
+(DELETE mit formalem WHERE, ALTER…DROP, Object-Store-Löschung, Datei-Ersetzung via Write/Edit,
+indirekte Skriptaufrufe) unterliegen denselben Freigabe-, Backup- und Dry-Run-Regeln. Vor Arbeitsbeginn:
+Hook-Existenz + Ausführbarkeit prüfen; fehlt er → STOP für produktive Schreibaktionen.
+Hook-Versionierung ins Repo: Folgeauftrag (docs/TODO.md #2).
+
+**C7 — Kontrollflächen-Schutz:**
+Jede Änderung an /do, /ccgo, /ccstop, Prompt-Inbox, Report-Watcher oder Telegram-Binding ist
+REVIEW-pflichtig und braucht vor Sign-off Non-Owner-Negativtests (Abuse-Cases: fremder Sender,
+ungebundener Chat, Injection).
+
+**C8 — Gate-Schutz:**
+Kein Gate/Test darf aufgeweicht oder umgangen werden, um grün zu werden; Änderungen an
+Gate-Skripten sind REVIEW-pflichtig. Pflicht-Tests dürfen NIEMALS gelöscht oder deaktiviert werden.
+
+---
+
+## §5 Auftrags-Klassen + Plan Mode
+
+### AUTO
+
+Autonome Ausführung wenn:
+- `AUTO`-Kopfzeile im Auftrag
+- Freigegebene Spec vorhanden
+- Alle Gates grün
+- Diff ausschließlich auftragsbezogen
+
+**AUTO erlaubt:** Push + Restart autonom nach Gates. cc-pre-backup.sh als Pflicht-Erstschritt
+bei Aufträgen mit DB-Änderungen.
+
+### REVIEW
+
+cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner prüft + gibt frei.
+
+### Push-Regel (kanonisch — ersetzt alle früheren Push-Sätze)
+
+- Nur tatsächlich geänderte Repos committen — nie pauschal alle drei
+- Push-Reihenfolge: Submodule zuerst → dann Parent-Pointer
+- **Red-Zone-Pfade** (index.ts, CLAUDE.md, Hooks, Migrations, `.github/workflows/**`) brauchen
+  zusätzlich `/arm` im Chat Hans_Dampf — one-shot, Owner-only
+- **cc setzt `/arm` NIE selbst**
+- Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht)
+- Manifest 11 erfüllt durch: Gates + Evidence-Bundle im Report + Owner-Freigabe
+
+### Plan Mode
+
+- Bei Aufträgen **≥3 Dateien oder neuen Features:** immer Plan Mode
+- Plan schreiben, Plan-Datei in `~/.claude/plans/` ablegen (Watcher stellt zu)
+- Auf Freigabe warten (via /ccgo oder manuelle Eingabe in Pane)
 - Ausnahmen: triviale Edits (Config, Token), Bug-Fixes mit klarer Diagnose
 
-## Engineering Principles
+### Deploy-Regel
 
-- Minimale, inkrementelle Änderungen — keine unrelated Refactors
-- Ein logischer Schritt pro Auftrag
-- Production-grade Code — keine Platzhalter, kein Pseudo-Code
-- Explizites Error-Handling, keine hidden Side Effects
-- Secrets immer aus ~/.config/openclaw/env — nie hardcoded, nie geloggt
-- Bestehende Architektur erhalten — neue Patterns nur wenn klar begründet
+Vor jedem **Commit/Push** (nicht "Vor jedem Merge"):
+build → verify:commands → test → restart → smoke-test.
+Manifest 10 (Auto-Rollback) ist SOLL — Folgeauftrag: docs/TODO.md #3.
 
-## Task Output Protocol (mandatory — cc and Codex)
+---
 
-- Every cc/Codex task writes its complete result to ONE timestamped file:
-  cc → `~/bikosoc-spec/<task>.md`, Codex → `~/codex-audit/bikosoc/<date>-<type>.md`.
-- Terminal output is ONLY: `DONE → <path>`. No result content, no diffs, no logs to stdout.
-- Owner uploads the FILE for review — never raw terminal scrollback.
-- Secrets NEVER go to stdout, logs, or report files. If a secret must be handed over:
-  write it to a chmod-600 temp file (or 1Password/op), reference the path, shred after use.
+## §6 Gates + Testregeln
 
-## Alpine CSP Hard Rules (gilt für alle Dashboard-JS-Files)
+**Gates-Kette:**
+```
+npm run build          → tsc, 0 Fehler
+npm run verify:commands → bidirektionaler Command-Guard
+npm test               → run-tests.sh, sequenziell (Testumfang liefert der Test-Runner)
+systemctl restart      → openclaw-gateway + pdf-worker
+bun run scripts/smoke-test.ts → ALL PASS erforderlich
+```
 
-1. **x-if Template: EXAKT 1 direktes Kind-Element** (Single-Root-Constraint).
-   Mehrere Siblings → in Wrapper-Div einschließen.
-2. **x-show/x-text/x-if: keine &&/||/+/Regex/Globals** (Number, Date, Array-Methods).
-   Alles via Alpine-Methods auslagern.
-3. **Kein `<style>`-Block im Template-String.**
-4. **Vor jedem Dashboard-Commit prüfen:**
-   `grep -n "x-if" public/js/*.js` → jede x-if auf Single-Root prüfen.
+**Tests:** Tests IMMER via `npm test` (= `scripts/run-tests.sh`, sequenziell, jede Datei
+isoliert). **Nie `bun test` direkt** (Parallelismus-Problem: POSTGRES_URL-Mutation verursacht
+Konflikte zwischen Test-Dateien). Testumfang liefert der Test-Runner.
 
-## Debugging
+**Command-Guard:** `npm run verify:commands` (`scripts/verify-commands.ts`) prüft bidirektional:
+- Direction A: `api.registerCommand({ name })` ohne `REGISTERED_COMMANDS`-Eintrag → AI antwortet
+- Direction B: `REGISTERED_COMMANDS`-Eintrag ohne Handler → NO_REPLY
+Exit 0 = clean. Pflicht vor jedem Commit.
 
-- Hypothesen nach Wahrscheinlichkeit geordnet
-- Konkrete Check-Befehle, Schritt für Schritt einengen
-- Keine voreiligen Schlüsse
+**acceptsArgs-Konvention (F-008):** Commands mit Argumenten MÜSSEN `acceptsArgs: true` setzen
+und Handler-Signatur `(ctx: any)` verwenden. Args via `String(ctx?.args || '').trim()`.
 
-## Push Back wenn
+**Pflicht-Tests (NIEMALS löschen oder deaktivieren):**
+- `src/modules/instagram/__tests__/approval-hard-rule.test.ts` — Draft ohne Freigabe kann NICHT veröffentlicht werden
+- `src/modules/instagram/__tests__/insta-store-db.test.ts` — Roundtrip insert/load/update/filter
+- `src/modules/health/__tests__/health-store-db.test.ts` — Health-Entry Roundtrip
+- `src/modules/executive/__tests__/health-monitor.test.ts` — Alert-Throttling
+- `src/modules/nk/__tests__/engine.test.ts` — 6 Goldfile-Szenarien, 11 Blocker-Tests
+- `src/modules/nk/__tests__/e2e-lifecycle.test.ts` — Preview → Finalize → Snapshot → Serve → Lock
+- `src/modules/assets/__tests__/bulk-readings.test.ts` — Atomicity, Idempotency, Audit, Pool-Release
+- `src/modules/banking/__tests__/etappe-2.10a.test.ts` — findReusableSession (9 Tests)
+- `src/modules/banking/__tests__/etappe-2.10b.test.ts` — clientDataB64 passthrough (8 Tests)
+- `src/modules/banking/__tests__/etappe-2.10c.test.ts` — decideReuse + advisory-lock (7 Tests)
 
-- Unnötige Komplexität eingeführt würde
-- Eine einfachere Lösung existiert
-- Widerspruch zu bestehenden Architektur-Entscheidungen
+**Pre-Commit Pflicht:**
+- `npm run verify-schema` (Drift-Detector, Exit 0 erforderlich)
+- Doc-Cochange-Hook (GOV-001): `*.ts` ohne `*.md` → Warnung
 
-## Naming Conventions (PFLICHT — gilt für alle Entities)
+**Multi-Repo-Preflight (C4):** Vor erstem Write + vor jedem Push: Repo/Remote/Branch/HEAD/Tree
+aller betroffenen Repos prüfen. DONE nur bei vollständigen Gates; sonst PARTIAL oder BLOCKED.
 
-Alle IDs und Dateinamen starten mit YYMMDD.
+**Alpine CSP Hard Rules (Dashboard-JS-Files):**
+1. `x-if` Template: EXAKT 1 direktes Kind-Element (Single-Root-Constraint)
+2. `x-show/x-text/x-if`: keine `&&/||/+/Regex/Globals`
+3. Kein `<style>`-Block im Template-String
+4. Vor jedem Dashboard-Commit: `grep -n "x-if" public/js/*.js` → jede x-if auf Single-Root prüfen
 
-### IDs
+---
 
-Format: `YYMMDD-<subject>-<location>`
+## §7 Report- & Plan-Konvention
 
-Kontext = erster bedeutsamer Begriff aus: Ort, Anlass, Thema, Caption, Titel.
-Kleinbuchstaben, nur a-z und Bindestriche, max 30 Zeichen gesamt.
+**Kanonische Pfade (EINE Fassung, ersetzt alle früheren Varianten):**
+- Report: `~/bikosoc-spec/report-<slug>-YYYYMMDD-HHMM.md`
+- REVIEW-Plan vor Stopp: `~/bikosoc-spec/report-plan-<slug>-YYYYMMDD-HHMM.md`
 
-Beispiele:
-- `260506-sub-sannicandro`   (Instagram Submission)
-- `260506-insta-solaredge`   (Instagram Draft)
-- `260415-trip-barcelona`    (Reise)
-- `260304-fleet-service`     (Fuhrpark-Eintrag)
-- `260101-lease-mueller`     (Mietvertrag)
+**Regeln:**
+- Report-Pflicht **clear-context-fest als letzter Plan-Schritt** bei REVIEW-Aufträgen
+- Terminal nur: `DONE → <Pfad>` — kein Inhalt, keine Diffs, keine Logs in stdout
+- Kopfzeile im Report: `AUTO` oder `REVIEW`
+- REVIEW: Report schreiben BEVOR `DONE` gemeldet wird
+- Secrets, PII, Tokens: **NIE** in stdout, Logs, Reports, Telegram oder Dropbox (C5)
+- Als `sensitive` markierte Reports/Plans: Watcher lädt NICHT nach Dropbox hoch
 
-Fallback wenn kein Kontext: `YYMMDD-<prefix>`
-Niemals: zufällige Zeichenketten, reine Timestamps, UUIDs oder andere
-nicht-lesbare Formate.
+**Zustellung (Watcher):**
+- Reports → Telegram dev-Gruppe + Dropbox `/bikosoc-reports/<name>.md` (mit `## DIGEST`-Prefix)
+- Plans → Telegram dev-Gruppe + Dropbox `/bikosoc-plans/<name>.md` (Rohinhalt)
+- Fremd-Strang-Plans: werden nie zugestellt (isBikosocPlan-Filter)
+- `fallbackToOperativ: true` wenn dev-Binding fehlt
+- Rate: max 1/min; Dedupe via `~/bikosoc-spec/.report-sent.json`
 
-### Dateinamen (PFLICHT)
+---
 
-Format: `YYMMDD-<kontext>-<nummer>.<ext>`
+## §8 Betriebsautomatisierung-Kurzreferenz
 
-Beispiele:
-- `260509-jb-01.jpg`   (erste Datei in Session)
-- `260509-jb-02.mp4`   (zweite Datei)
-- `260506-sub-strand-01.jpg` (Submission-Bild)
+Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 
-Nummerierung in Upload-Reihenfolge, zweistellig (01, 02, ...).
-Niemals: Hashes, UUIDs, Timestamps allein, Telegram-interne Dateinamen
-(z.B. `file_60---AgACAgIAAxkDAAIC.jpg`).
+| Feature | Kurzbeschreibung |
+|---------|-----------------|
+| **Report-Watcher** | Überwacht `~/bikosoc-spec/`, `~/report-*.md`, `~/.claude/plans/`; 5s Debounce, Rate 1/min |
+| **Dropbox-Upload** | Reports → `/bikosoc-reports/` (mit Digest), Plans → `/bikosoc-plans/` (Roh) |
+| **Wait-Notifier** | `tmux capture-pane -t bikosoc` alle 30s; max 1 Notify/5min |
+| **/report [full] [n]** | Manueller Abruf; sendet an dev |
+| **/ccstop** | Kill-Switch Claude Code in bikosoc (Owner-only, assertBoundOwner) |
+| **/ccgo** | Plan-Approval (Owner-only; Slug-Match-Prüfung: Folgeauftrag docs/TODO.md #1) |
+| **/do \<text\>** | Prompt-Dispatch an tmux bikosoc (injection-sicher, `--` Separator) |
+| **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
+| **/arm** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst |
+| **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
 
-## Trading Safety
+**Regel /ccgo (E3, Owner-Entscheidung):**
+/ccgo bestätigt einen wartenden Plan-Prompt NUR wenn: (a) der Plan zuvor über den Watcher
+zugestellt wurde UND (b) Plan-Slug/Dateiname zum zuletzt zugestellten Plan passt. Ohne
+zugestellten Plan oder bei Slug-Mismatch: kein Tastendruck, Telegram-Warnung.
+Clear-context-Optionen werden **nie** gewählt. Slug-Match-Prüfung ist Code-Folgeauftrag (docs/TODO.md #1).
 
+**Callback-Prefix-Registry (kanonisch, EINE Fassung):**
+`icraft_`, `iscan_`, `isub_`, `segdel_`, `booking_`, `meeting_`, `bsync_`, `bweekly_`, `memdrop_`
+Bei neuem Prefix: CALLBACK_PREFIXES (index.ts) + diese Tabelle aktualisieren.
+
+**Advisory-Lock-Registry (kanonisch, EINE Fassung, verifiziert 2026-07-20):**
+```
+42  Withings-Sync         health/withings.ts
+43  Banking-Test          test-only (nicht Produktion)
+44  SharePoint-Sync       sharepoint/store.ts
+46  Banking-Session       banking/store.ts (per userId+institutionId)
+47  Oura-Sync             health/oura.ts
+48  Memory-Sweep          memory/extract.ts
+```
+
+**Telegram-Binding (assertBoundOwner):**
+- DB-basiert via `workspace_telegram_bindings` (Migration 043)
+- `assertBoundOwner(ctx)` ersetzt alle hardcodierten senderId-Checks
+- `sendTelegramToRole('operativ'/'dev', ...)` — kein hardcodierter senderId
+- Lockout-Fallback: **Break-Glass-Runbook** (Konsolenzugriff + Owner-Bestätigung + Audit +
+  Nonce-Rotation) — KEINE normale Agenten-Option
+
+**Deny-Hook (`~/.claude/hooks/deny-destructive.sh`):**
+Fail-closed PreToolUse-Hook. Blockiert: `rm -r/-rf`, SQL DROP/TRUNCATE/DELETE ohne WHERE,
+`git push --force`/`reset --hard`/`clean -f`, `git checkout .`/`restore .`, chmod/chown auf
+Systempfade, `curl|sh`, mkfs, dd, Fork-Bomb. Red-Zone-Pfade: zusätzlicher Layer.
+Armed-Flag: `~/.armed-bikosoc` (one-shot). Hook-Versionierung: Folgeauftrag (docs/TODO.md #2).
+
+**Schema-Migration-Namespace:**
+Schema-Version ist **PER MODUL**, nicht global. Kollisionen bei V037 (Fleet+Instagram) und 043
+(Memory+Telegram-Binding) sind bekannt und dokumentiert (docs/CHANGELOG.md). Manuelles psql
+nur mit Runbook + Backup + Transaktion + Nachverifikation.
+
+**Doku-Disziplin (GOV-001):**
+- `docs/ARCHITECTURE.md` — führende Quelle für Architektur
+- `docs/SHARED_PLATFORM.md` — geteilte Infra (VPS, Postgres, nginx)
+- `docs/CHANGELOG.md` — Sprint-Historie + Feature-Narrative
+- `docs/TODO.md` — offene Punkte + Folgeaufträge
+- `docs/INFRA.md` — nginx-Routing-Detail, Datenpfade
+- Doc-Cochange-Hook: `*.ts` ohne `*.md` im Commit → Warnung (GOV-001)
+- Evidence-Bundle: `docs/workpackages/YYYY-MM-DD-<name>.md` nach größeren Arbeitspaketen
+- Regelquelle: `governance/AUDIT-CHECKLIST.md`
+
+**Trading Safety:**
 - Paper Trading Account: DUP514636 — kein echtes Geld
 - Live Trading nur nach expliziter schriftlicher Freigabe durch Operator
 - Kill-Switch (/tradekill) hat immer höchste Priorität
 
-## Doku-Disziplin (stehende Regel, ab 2026-06-26)
+**Engineering Principles:**
+- Minimale, inkrementelle Änderungen — keine unrelated Refactors
+- Ein logischer Schritt pro Auftrag
+- Production-grade Code — keine Platzhalter, kein Pseudo-Code
+- Explizites Error-Handling, keine hidden Side Effects
+- Bestehende Architektur erhalten — neue Patterns nur wenn klar begründet
 
-Die Architektur-Doku ist Markdown-Master im Repo und wird **in jedem Etappen-Commit
-mitgepflegt** — Doku im selben Commit wie der Code, nicht nachgelagert.
+**Debugging:**
+- Hypothesen nach Wahrscheinlichkeit geordnet
+- Konkrete Check-Befehle, Schritt für Schritt einengen
+- Keine voreiligen Schlüsse
 
-- `docs/ARCHITECTURE.md` — **Führende Quelle** für OpenClaw-Architektur (ersetzt PDF-Doku).
-- `docs/SHARED_PLATFORM.md` — geteilte Infra (VPS, Postgres-Instanz, nginx, MinIO, ffmpeg,
-  Ports). **Autoritativ**; Änderungen an geteilter Infra gehören hierher, nicht in ARCHITECTURE.md.
-- Eine Feature-Etappe editiert `ARCHITECTURE.md`; eine Infra-Änderung `SHARED_PLATFORM.md`.
-- Status-Marker je Abschnitt: ✅ verifiziert (Datum + Quelle) / ⏳ zu verifizieren. Nur
-  empirisch auf dem VPS Verifiziertes als ✅ markieren — kein Abschreiben aus Specs/Memory.
-- PDF (`openclawarchitektur_v32.pdf`) ist veraltet und wird nicht mehr gepflegt.
-- **Doc-Cochange-Hook:** `scripts/hooks/pre-commit` warnt wenn `*.ts` ohne `*.md` committet
-  wird (GOV-001). Installation: `git config core.hooksPath scripts/hooks`.
+**Push Back wenn:**
+- Unnötige Komplexität eingeführt würde
+- Eine einfachere Lösung existiert
+- Widerspruch zu bestehenden Architektur-Entscheidungen
 
-## Evidence-Bundle-Pflicht (stehende Regel, ab 2026-07-09)
+---
 
-Am Ende jedes groesseren Arbeitspakets wird ein Evidence-Bundle unter
-`docs/workpackages/YYYY-MM-DD-<name>.md` erstellt. Inhalt:
-- Commits (Hashes + Messages)
-- Betroffene Regeln (GOV-xxx / BIK-xxx)
-- Gate-Outputs (build, verify:commands, verify-schema, smoke-test)
-- Owner-Approval (Checkbox)
-- Doku-Aenderung (welche Dateien)
-- Offene Risiken
+## §9 Betriebsstatus (2026-07-20)
 
-## Regelquelle (stehende Regel, ab 2026-07-09)
-
-`governance/AUDIT-CHECKLIST.md` ist die autoritative Regel-Registry.
-Chat-Beschluesse gelten erst nach Ueberfuehrung in die Checkliste.
+- Alle Sprints 1–Phase 3 abgeschlossen; Details: docs/CHANGELOG.md
+- Tests: 423/0/0 (`npm test`), Smoke: 29/29
+- Offene Sprints: 6 (Fleet Postgres), 7a (Banking-CSV)
+- Offene Punkte: Etappe n (L19), SP Hard-Delete Phase 2, Withings Callback F-009
+- Plan-Dropbox-Upload: aktiv (Plans → `/bikosoc-plans/`, Reports → `/bikosoc-reports/`)
+- Armed-Flag-Fix: deployed (`deny-destructive.sh:85` → `~/.armed-bikosoc`)
+- CLAUDE.md-Rewrite: 2026-07-20 (Panel-Review-Freigabe, Struktur §1–§9)
