@@ -2892,28 +2892,28 @@ export default function (api: any) {
     // ── Strand-Klassifikation: bikosoc vs. HDCC vs. unclassified ──────────────
     // Reihenfolge:
     // (1) tmux-Pane als PRIMÄRES Signal (keine Altersbeschränkung)
+    //     Targets: bikosoc (Session bikosoc, aktives Fenster)
+    //              HDCC:claude (Session HDCC, Fenster "claude", Index 1)
+    //     Plan-Modus-Erkennung: /plan mode/i (Claude Code zeigt "plan mode" in der Statuszeile)
+    //     Hinweis: capture-pane ohne -l (tmux 3.4 kennt kein -l für capture-pane)
     // (2) Content-Marker als Tiebreaker (kein Hard-Exclude — bloße Erwähnung schließt nicht aus)
     // (3) Fallback: 'unclassified' → wird als bikosoc zugestellt, nie verworfen
     function classifyPlan(filePath: string, content: string, _stat: fs.Stats): 'bikosoc' | 'hdcc' | 'unclassified' {
       // Step 1: tmux als primäres Signal (keine Altersbeschränkung)
       try {
-        const bikoPane = execSync('tmux capture-pane -t bikosoc -p -l 5 2>/dev/null', {
+        const bikoPane = execSync('tmux capture-pane -t bikosoc -p 2>/dev/null', {
           encoding: 'utf-8', timeout: 3000,
         }).trim();
         const bikoLines = bikoPane.split('\n').slice(-8).join('\n');
-        const bikoInPlanMode =
-          /plan mode/i.test(bikoLines) ||
-          /^\s*\d+\.\s/m.test(bikoLines);
+        const bikoInPlanMode = /plan mode/i.test(bikoLines);
 
         let hdccInPlanMode = false;
         try {
-          const hdccPane = execSync('tmux capture-pane -t HDCC -p -l 5 2>/dev/null', {
+          const hdccPane = execSync('tmux capture-pane -t HDCC:claude -p 2>/dev/null', {
             encoding: 'utf-8', timeout: 3000,
           }).trim();
           const hdccLines = hdccPane.split('\n').slice(-8).join('\n');
-          hdccInPlanMode =
-            /plan mode/i.test(hdccLines) ||
-            /^\s*\d+\.\s/m.test(hdccLines);
+          hdccInPlanMode = /plan mode/i.test(hdccLines);
         } catch { /* HDCC-Session nicht erreichbar */ }
 
         if (bikoInPlanMode && !hdccInPlanMode) {
