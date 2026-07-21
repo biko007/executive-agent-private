@@ -2866,6 +2866,7 @@ export default function (api: any) {
     const REPORT_SENT_PATH = path.join(REPORT_SPEC_DIR, '.report-sent.json');
     const REPORT_RATE_MS = 60_000; // Max 1 file per minute
     const REPORT_CHUNK_SIZE = 3500;
+    const HDCC_CHAT_ID = '-5178308220'; // HDCC-Dev-Gruppe
     let reportLastAutoSendAt = 0;
 
     function loadReportSentMap(): Map<string, number | string> {
@@ -3003,7 +3004,7 @@ export default function (api: any) {
       reportScanInProgress = true;
       try {
       const sentMap = loadReportSentMap();
-      const toSend: { key: string; filePath: string; name: string; mtimeMs: number; note?: string; hashKey?: string; contentHash?: string }[] = [];
+      const toSend: { key: string; filePath: string; name: string; mtimeMs: number; note?: string; hashKey?: string; contentHash?: string; strand?: 'bikosoc' | 'hdcc' | 'unclassified' }[] = [];
 
       // Scan ~/bikosoc-spec/ — whitelist: report-*.md
       try {
@@ -3049,11 +3050,6 @@ export default function (api: any) {
           try { planContent = fs.readFileSync(fp, 'utf-8'); } catch { /* best-effort */ }
 
           const strand = classifyPlan(fp, planContent, st);
-          if (strand === 'hdcc') {
-            sentMap.set(key, st.mtimeMs);
-            api.logger.info(`[report-watcher] Plan übersprungen (HDCC-Strang): ${name}`);
-            continue;
-          }
 
           // Content-Hash-Dedupe: keine erneute Zustellung bei unverändertem Inhalt
           const contentHash = planContent
@@ -3067,7 +3063,7 @@ export default function (api: any) {
           }
 
           const note = strand === 'unclassified' ? ' [unclassified]' : '';
-          toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs, note, hashKey, contentHash });
+          toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs, note, hashKey, contentHash, strand });
         }
       } catch { /* ignore */ }
 
@@ -3085,21 +3081,33 @@ export default function (api: any) {
         let reportContent = '';
         let digestText = '';
         const isPlan = file.key.startsWith('plan:');
+        const isHdccPlan = isPlan && file.strand === 'hdcc';
         try {
           reportContent = fs.readFileSync(file.filePath, 'utf-8');
           if (!isPlan) digestText = generateDigest(reportContent);
         } catch { /* best-effort */ }
 
         // Send document
-        const caption = isPlan ? `Plan: ${file.name}${file.note ?? ''}` : `Auto-Report: ${file.name}`;
-        const fileRole: TelegramBindingRole = 'dev';
-        await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: true });
+        if (isHdccPlan) {
+          await sendTelegramDocument(HDCC_CHAT_ID, file.filePath, `HDCC-Plan: ${file.name}`);
+        } else {
+          const caption = isPlan ? `Plan: ${file.name}${file.note ?? ''}` : `Auto-Report: ${file.name}`;
+          await sendTelegramDocumentToRole('dev', file.filePath, caption, { fallbackToOperativ: true });
+        }
 
         // Send text: plans + short reports get full chunked content, long reports get digest
         try {
           const content = reportContent || fs.readFileSync(file.filePath, 'utf-8');
           const sendFullText = isPlan || content.length <= REPORT_CHUNK_SIZE;
-          if (sendFullText) {
+          if (isHdccPlan) {
+            // HDCC Plans: full text in chunks to HDCC chatId
+            const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
+            for (let i = 0; i < totalChunks; i++) {
+              const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
+              const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
+              await sendTelegram(HDCC_CHAT_ID, header + chunk);
+            }
+          } else if (sendFullText) {
             // Full text in chunks (plans always; short reports fit in 1 chunk)
             const totalChunks = Math.ceil(content.length / REPORT_CHUNK_SIZE);
             for (let i = 0; i < totalChunks; i++) {
@@ -3121,17 +3129,21 @@ export default function (api: any) {
 
         // ── Dropbox-Upload (fire-and-forget, sekundaer) ─────────────────────
         // Telegram-Zustellung ist primaer — Dropbox-Fehler werden NUR geloggt.
-        // Reports → /bikosoc-reports/<name>.md (mit Digest-Prefix)
-        // Plans   → /bikosoc-plans/<name>.md  (Rohinhalt, kein Digest)
-        // Fremd-Strang-Plans (HDCC) werden hier nie erreicht (classifyPlan filtert vorher).
+        // bikosoc Reports → /bikosoc-reports/<name>.md (mit Digest-Prefix)
+        // bikosoc Plans   → /bikosoc-plans/<name>.md  (Rohinhalt, kein Digest)
+        // HDCC Plans      → /hdcc-reports/hdcc-plans/<name>.md (Rohinhalt, kein Digest)
         if (g.__ea_dropboxAdapter) {
           const dropboxAdapter = g.__ea_dropboxAdapter as DropboxAdapter;
           const content = reportContent;
           if (content) {
             let uploadContent: string;
             let dropboxPath: string;
-            if (isPlan) {
-              // Plans: Rohinhalt ohne Digest, eigener Ordner
+            if (isHdccPlan) {
+              // HDCC Plans: Rohinhalt, eigener Ordner
+              uploadContent = content;
+              dropboxPath = `/hdcc-reports/hdcc-plans/${file.name}`;
+            } else if (isPlan) {
+              // bikosoc Plans: Rohinhalt ohne Digest, eigener Ordner
               uploadContent = content;
               dropboxPath = `/bikosoc-plans/${file.name}`;
             } else {
