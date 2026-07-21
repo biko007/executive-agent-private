@@ -2868,17 +2868,17 @@ export default function (api: any) {
     const REPORT_CHUNK_SIZE = 3500;
     let reportLastAutoSendAt = 0;
 
-    function loadReportSentMap(): Map<string, number> {
+    function loadReportSentMap(): Map<string, number | string> {
       try {
         const raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
-        const obj = JSON.parse(raw) as Record<string, number>;
+        const obj = JSON.parse(raw) as Record<string, number | string>;
         return new Map(Object.entries(obj));
       } catch {
         return new Map();
       }
     }
 
-    function saveReportSentMap(m: Map<string, number>): void {
+    function saveReportSentMap(m: Map<string, number | string>): void {
       try {
         fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
         const obj = Object.fromEntries(m);
@@ -2888,24 +2888,46 @@ export default function (api: any) {
       }
     }
 
-    // ── Strand-Filter: nur bikosoc-eigene Plan-Files zustellen ────────────────
-    // Kriterium 1 (Ausschluss): HDCC-Inhalts-Marker → NICHT zustellen
-    // Kriterium 2 (Einschluss): bikosoc-Inhalts-Marker → zustellen
-    // Kriterium 3 (Sekundär):   Tmux-Korrelation für frische, ambivalente Files
-    // Fallback:                  NICHT zustellen (Im Zweifel Fremd-Strang schützen)
-    function isBikosocPlan(filePath: string, content: string, stat: fs.Stats): boolean {
-      // Step 1: Hard-Exclude — HDCC-Workspace-Marker schließen das File aus
-      if (
-        content.includes('/home/biko/hdcc') ||
-        content.includes('~/hdcc') ||
-        content.includes('hdcc-spec') ||
-        /\bhdcc\//.test(content)
-      ) {
-        return false;
-      }
+    // ── Strand-Klassifikation: bikosoc vs. HDCC vs. unclassified ──────────────
+    // Reihenfolge:
+    // (1) tmux-Pane als PRIMÄRES Signal (keine Altersbeschränkung)
+    // (2) Content-Marker als Tiebreaker (kein Hard-Exclude — bloße Erwähnung schließt nicht aus)
+    // (3) Fallback: 'unclassified' → wird als bikosoc zugestellt, nie verworfen
+    function classifyPlan(filePath: string, content: string, _stat: fs.Stats): 'bikosoc' | 'hdcc' | 'unclassified' {
+      // Step 1: tmux als primäres Signal (keine Altersbeschränkung)
+      try {
+        const bikoPane = execSync('tmux capture-pane -t bikosoc -p -l 5 2>/dev/null', {
+          encoding: 'utf-8', timeout: 3000,
+        }).trim();
+        const bikoLines = bikoPane.split('\n').slice(-8).join('\n');
+        const bikoInPlanMode =
+          /plan mode/i.test(bikoLines) ||
+          /^\s*\d+\.\s/m.test(bikoLines);
 
-      // Step 2: Positiv-Match — bikosoc-Workspace-Marker bestätigen das File
-      if (
+        let hdccInPlanMode = false;
+        try {
+          const hdccPane = execSync('tmux capture-pane -t HDCC -p -l 5 2>/dev/null', {
+            encoding: 'utf-8', timeout: 3000,
+          }).trim();
+          const hdccLines = hdccPane.split('\n').slice(-8).join('\n');
+          hdccInPlanMode =
+            /plan mode/i.test(hdccLines) ||
+            /^\s*\d+\.\s/m.test(hdccLines);
+        } catch { /* HDCC-Session nicht erreichbar */ }
+
+        if (bikoInPlanMode && !hdccInPlanMode) {
+          api.logger.info(`[report-watcher] Plan klassifiziert via tmux (bikosoc Plan-Modus): ${path.basename(filePath)}`);
+          return 'bikosoc';
+        }
+        if (hdccInPlanMode && !bikoInPlanMode) {
+          api.logger.info(`[report-watcher] Plan klassifiziert via tmux (HDCC Plan-Modus): ${path.basename(filePath)}`);
+          return 'hdcc';
+        }
+        // Beide oder keiner im Plan-Modus → Content-Marker als Tiebreaker
+      } catch { /* tmux nicht verfügbar — weiter zu Content-Markern */ }
+
+      // Step 2: Content-Marker als Tiebreaker (kein Hard-Exclude)
+      const hasBikosocMarker =
         content.includes('/home/biko/.openclaw/workspace') ||
         content.includes('~/.openclaw/workspace') ||
         content.includes('bikosoc-spec') ||
@@ -2913,48 +2935,19 @@ export default function (api: any) {
         content.includes('openclaw-pdf-worker') ||
         content.includes('openclaw-banking') ||
         content.includes('executive-agent') ||
-        content.includes('bikosoc')
-      ) {
-        return true;
-      }
+        content.includes('bikosoc');
+      const hasHdccMarker =
+        content.includes('/home/biko/hdcc') ||
+        content.includes('~/hdcc') ||
+        content.includes('hdcc-spec') ||
+        /\bhdcc\//.test(content);
 
-      // Step 3: Tmux-Korrelation — nur für Files die <10 Minuten alt sind
-      // bikosoc:claude im Plan-Modus UND HDCC-Session NICHT im Plan-Modus → vermutlich unseres
-      const ageMs = Date.now() - stat.mtimeMs;
-      if (ageMs < 10 * 60_000) {
-        try {
-          const bikoPane = execSync('tmux capture-pane -t bikosoc -p -l 5 2>/dev/null', {
-            encoding: 'utf-8', timeout: 3000,
-          }).trim();
-          const bikoLines = bikoPane.split('\n').slice(-8).join('\n');
-          const bikoInPlanMode =
-            /plan mode/i.test(bikoLines) ||
-            /^\s*\d+\.\s/m.test(bikoLines);
+      if (hasBikosocMarker && !hasHdccMarker) return 'bikosoc';
+      if (hasHdccMarker && !hasBikosocMarker) return 'hdcc';
 
-          if (bikoInPlanMode) {
-            // Zusatz-Check: HDCC ebenfalls im Plan-Modus? → Ambiguität → NICHT zustellen
-            let hdccInPlanMode = false;
-            try {
-              const hdccPane = execSync('tmux capture-pane -t HDCC -p -l 5 2>/dev/null', {
-                encoding: 'utf-8', timeout: 3000,
-              }).trim();
-              const hdccLines = hdccPane.split('\n').slice(-8).join('\n');
-              hdccInPlanMode =
-                /plan mode/i.test(hdccLines) ||
-                /^\s*\d+\.\s/m.test(hdccLines);
-            } catch { /* HDCC-Session nicht erreichbar — kein Fehler */ }
-
-            if (!hdccInPlanMode) {
-              api.logger.info(`[report-watcher] Plan akzeptiert via tmux-Heuristik (bikosoc Plan-Modus, HDCC nicht): ${path.basename(filePath)}`);
-              return true;
-            }
-            api.logger.info(`[report-watcher] Plan übersprungen (beide Stränge im Plan-Modus — ambivalent): ${path.basename(filePath)}`);
-          }
-        } catch { /* tmux nicht verfügbar — Fallback */ }
-      }
-
-      // Fallback: NICHT zustellen — Fremd-Strang-Schutz
-      return false;
+      // Step 3: nicht eindeutig klassifizierbar → unclassified (wird als bikosoc zugestellt)
+      api.logger.info(`[report-watcher] Plan nicht eindeutig klassifizierbar → unclassified: ${path.basename(filePath)}`);
+      return 'unclassified';
     }
 
     // Seed: record all existing files so they won't be sent on first run
@@ -3010,7 +3003,7 @@ export default function (api: any) {
       reportScanInProgress = true;
       try {
       const sentMap = loadReportSentMap();
-      const toSend: { key: string; filePath: string; name: string; mtimeMs: number }[] = [];
+      const toSend: { key: string; filePath: string; name: string; mtimeMs: number; note?: string; hashKey?: string; contentHash?: string }[] = [];
 
       // Scan ~/bikosoc-spec/ — whitelist: report-*.md
       try {
@@ -3020,7 +3013,7 @@ export default function (api: any) {
           const st = fs.statSync(fp);
           const key = `spec:${name}`;
           const lastSent = sentMap.get(key);
-          if (lastSent === undefined || st.mtimeMs > lastSent) {
+          if (lastSent === undefined || typeof lastSent === 'string' || st.mtimeMs > lastSent) {
             toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
           }
         }
@@ -3034,31 +3027,47 @@ export default function (api: any) {
           const st = fs.statSync(fp);
           const key = `home:${name}`;
           const lastSent = sentMap.get(key);
-          if (lastSent === undefined || st.mtimeMs > lastSent) {
+          if (lastSent === undefined || typeof lastSent === 'string' || st.mtimeMs > lastSent) {
             toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
           }
         }
       } catch { /* ignore */ }
 
-      // Scan ~/.claude/plans/ — all *.md (bikosoc-Strang-Filter aktiv)
+      // Scan ~/.claude/plans/ — all *.md (Strang-Klassifikation + Content-Hash-Dedupe)
       try {
         for (const name of fs.readdirSync(REPORT_PLANS_DIR)) {
           if (!name.endsWith('.md') || name.startsWith('.')) continue;
           const fp = path.join(REPORT_PLANS_DIR, name);
           const st = fs.statSync(fp);
           const key = `plan:${name}`;
+          const hashKey = `plan-hash:${name}`;
           const lastSent = sentMap.get(key);
-          if (lastSent === undefined || st.mtimeMs > lastSent) {
-            let planContent = '';
-            try { planContent = fs.readFileSync(fp, 'utf-8'); } catch { /* best-effort */ }
-            if (!isBikosocPlan(fp, planContent, st)) {
-              // Fremd-Strang: in Dedupe-Map eintragen (verhindert Log-Spam bei Folge-Scans)
-              sentMap.set(key, st.mtimeMs);
-              api.logger.info(`[report-watcher] Plan gefiltert (Fremd-Strang): ${name}`);
-              continue;
-            }
-            toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs });
+          // Coarse mtime gate: skip only if mtime is unchanged (hash check handles content dedup)
+          if (lastSent !== undefined && typeof lastSent === 'number' && st.mtimeMs <= lastSent) continue;
+
+          let planContent = '';
+          try { planContent = fs.readFileSync(fp, 'utf-8'); } catch { /* best-effort */ }
+
+          const strand = classifyPlan(fp, planContent, st);
+          if (strand === 'hdcc') {
+            sentMap.set(key, st.mtimeMs);
+            api.logger.info(`[report-watcher] Plan übersprungen (HDCC-Strang): ${name}`);
+            continue;
           }
+
+          // Content-Hash-Dedupe: keine erneute Zustellung bei unverändertem Inhalt
+          const contentHash = planContent
+            ? crypto.createHash('sha256').update(planContent).digest('hex').slice(0, 16)
+            : '';
+          const lastHash = sentMap.get(hashKey);
+          if (lastHash === contentHash && contentHash !== '') {
+            sentMap.set(key, st.mtimeMs);
+            api.logger.info(`[report-watcher] Plan unverändert (Hash ${contentHash}): ${name}`);
+            continue;
+          }
+
+          const note = strand === 'unclassified' ? ' [unclassified]' : '';
+          toSend.push({ key, filePath: fp, name, mtimeMs: st.mtimeMs, note, hashKey, contentHash });
         }
       } catch { /* ignore */ }
 
@@ -3082,7 +3091,7 @@ export default function (api: any) {
         } catch { /* best-effort */ }
 
         // Send document
-        const caption = isPlan ? `Plan: ${file.name}` : `Auto-Report: ${file.name}`;
+        const caption = isPlan ? `Plan: ${file.name}${file.note ?? ''}` : `Auto-Report: ${file.name}`;
         const fileRole: TelegramBindingRole = 'dev';
         await sendTelegramDocumentToRole(fileRole, file.filePath, caption, { fallbackToOperativ: true });
 
@@ -3106,6 +3115,7 @@ export default function (api: any) {
         } catch { /* text preview best-effort */ }
 
         sentMap.set(file.key, file.mtimeMs);
+        if (file.hashKey && file.contentHash) sentMap.set(file.hashKey, file.contentHash);
         reportLastAutoSendAt = Date.now();
         api.logger.info(`[report-watcher] Delivered: ${file.name}`);
 
@@ -3113,7 +3123,7 @@ export default function (api: any) {
         // Telegram-Zustellung ist primaer — Dropbox-Fehler werden NUR geloggt.
         // Reports → /bikosoc-reports/<name>.md (mit Digest-Prefix)
         // Plans   → /bikosoc-plans/<name>.md  (Rohinhalt, kein Digest)
-        // Fremd-Strang-Plans werden hier nie erreicht (isBikosocPlan-Filter greift vorher).
+        // Fremd-Strang-Plans (HDCC) werden hier nie erreicht (classifyPlan filtert vorher).
         if (g.__ea_dropboxAdapter) {
           const dropboxAdapter = g.__ea_dropboxAdapter as DropboxAdapter;
           const content = reportContent;
