@@ -27,7 +27,7 @@ OpenClaw Executive Agent (Telegram Bot), Hetzner VPS (CCX33, Helsinki).
 User: `biko` | Tailscale: `100.121.45.4`
 Dashboard: `https://app.bikobickel.de/dashboard/?token=<DASHBOARD_TOKEN>`
 Git: 3 Repos (workspace, executive-agent, executive-dashboard)
-Runtime: Node.js/TypeScript, Bun | Secrets: `~/.config/openclaw/env`
+Runtime: Node.js ≥ 22.22.3 (aktuell 22.23.2)/TypeScript, Bun | OpenClaw-Gateway: 2026.9.1 | Secrets: `~/.config/openclaw/env`
 
 **Services / Ports:**
 ```
@@ -338,12 +338,23 @@ nur mit Runbook + Backup + Transaktion + Nachverifikation.
 
 ---
 
-## §9 Betriebsstatus (2026-07-20)
+## §9 Betriebsstatus (2026-09-04)
 
 - Alle Sprints 1–Phase 3 abgeschlossen; Details: docs/CHANGELOG.md
-- Tests: 423/0/0 (`npm test`), Smoke: 29/29
+- Tests: 430/0/0 (`npm test`), Smoke: 31/31
 - Offene Sprints: 6 (Fleet Postgres), 7a (Banking-CSV)
 - Offene Punkte: Etappe n (L19), SP Hard-Delete Phase 2, Withings Callback F-009
 - Plan-Dropbox-Upload: aktiv (Plans → `/bikosoc-plans/`, Reports → `/bikosoc-reports/`)
 - Armed-Flag-Fix: deployed (`deny-destructive.sh:85` → `~/.armed-bikosoc`)
 - CLAUDE.md-Rewrite: 2026-07-20 (Panel-Review-Freigabe, Struktur §1–§9)
+- OpenClaw-Upgrade 2026.6.11 → **2026.9.1** (2026-09-04): Node auf 22.23.2, Gateway-Unit zeigt jetzt
+  auf `~/.npm-global/lib/node_modules/openclaw` (npm-Prefix des Users), Rückfall 6.11 bleibt unter
+  `/usr/lib/node_modules/openclaw` liegen.
+- Hook-Stage: `before_agent_start` (in 9.1 entfernt) → **`before_prompt_build`** (index.ts).
+  Voraussetzung in der Config, beide explizit gesetzt:
+  `plugins.entries.executive-agent.hooks.allowConversationAccess: true` +
+  `...hooks.allowPromptInjection: true` (9.1 gated `before_prompt_build` über beide Flags).
+- Plugin-Manifest: `entry`/`main` entfernt (in 9.1 keine Manifest-Felder), Einstieg über
+  `package.json` → `openclaw.extensions`; `openclaw.compat.pluginApi: ">=2026.8.1"` ergänzt.
+- Neu in 9.1: Plugins brauchen Capability-Consent
+  (`openclaw plugins enable executive-agent --accept-capabilities`).

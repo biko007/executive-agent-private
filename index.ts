@@ -662,11 +662,12 @@ export default function (api: any) {
     }
   }, { priority: 50 });
 
-  // before_agent_start: fires before every AI agent turn.
+  // before_prompt_build: fires before every AI agent turn (ab OpenClaw 2026.9.x;
+  // ersetzt den entfernten Hook before_agent_start).
   // - For registered commands: instructs AI to stay silent (NO_REPLY) so plugin handler responds.
   // - For voice messages: sets voice flag (framework transcribes natively via tools.media.audio).
   // - For bare media (image/video): saves to raw session and suppresses AI commentary.
-  api.on('before_agent_start', async (event: any, ctx: any) => {
+  api.on('before_prompt_build', async (event: any, ctx: any) => {
     const prompt: string = event?.prompt ?? '';
     // Sender ID from structured ctx (v2026.6.11: plaintext envelope removed from prompt)
     const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
@@ -686,7 +687,7 @@ export default function (api: any) {
 
     // Suppress AI when user is in active craft dialog (any step, TTL-guarded).
     // Step-agnostic because message_received handler mutates step synchronously
-    // before before_agent_start fires (~575ms race window).
+    // before before_prompt_build fires (~575ms race window).
     if (ctxSenderId) {
       const craftState = activeCraftDialogs.get(ctxSenderId);
       api.logger.debug(`[E4b] dialog-check senderId=${ctxSenderId} dialog=${!!craftState} step=${craftState?.step} expiresAt=${craftState?.expiresAt}`);

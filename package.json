@@ -3,7 +3,12 @@
   "private": true,
   "type": "module",
   "openclaw": {
-    "extensions": ["./dist/index.js"]
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.8.1"
+    }
   },
   "dependencies": {
     "busboy": "^1.6.0",

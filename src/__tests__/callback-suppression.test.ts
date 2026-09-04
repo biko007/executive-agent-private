@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 /**
- * E4 — Callback prefix detection for before_agent_start suppression.
+ * E4 — Callback prefix detection for before_prompt_build suppression.
  *
- * The before_agent_start hook uses this logic to detect Telegram inline-button
+ * The before_prompt_build hook uses this logic to detect Telegram inline-button
  * callback content and suppress LLM forwarding. The framework wraps all prompts
  * in an envelope: "[Telegram sender timestamp] body". We match the envelope
  * boundary "] " followed by the callback prefix.

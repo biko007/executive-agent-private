@@ -4,6 +4,32 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-09-04 — OpenClaw-Upgrade 2026.6.11 → 2026.9.1
+
+Direkt-Upgrade auf Produktion (Owner-Risikoentscheidung, kein Staging). Ablauf und Rohbelege:
+`~/bikosoc-spec/report-upgrade-9.1-20260904-*.md`, Artefakte `~/upgrade-artifacts/20260904-up/`.
+
+- **Node** 22.22.1 → 22.23.2 (NodeSource); 9.1 verlangt `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`.
+  Nebenwirkung: das deb hat den global installierten npm 11.14.1 durch den gebündelten npm 10.9.8 ersetzt.
+- **Core** via `openclaw update --tag 2026.9.1 --yes --no-restart`. Das Update installiert in den
+  npm-Prefix des Users (`~/.npm-global`); die alte root-Installation `/usr/lib/node_modules/openclaw`
+  bleibt auf 6.11 als Rückfallpaket bestehen. Die systemd-Unit wurde deshalb auf den neuen Pfad
+  gezogen (ExecStart) und die Versions-Strings aktualisiert.
+- **Hook-Migration:** `before_agent_start` existiert in 9.1 nicht mehr
+  (`unknown typed hook ... ignored`). `index.ts` nutzt jetzt `before_prompt_build`
+  (Event `{prompt, messages}`, Result `{prependContext, appendContext, systemPrompt, toolsAllow, ...}`,
+  ctx unverändert mit `senderId`/`channelId`). Command-Guard, Callback-, Craft-Dialog- und
+  Media-Suppression laufen unverändert über die neue Stage.
+- **Config:** `plugins.entries.executive-agent.hooks.allowPromptInjection: true` explizit gesetzt —
+  9.1 gated `before_prompt_build` über `allowConversationAccess` **und** `allowPromptInjection`.
+- **Manifest/Package:** `entry`/`main` aus `openclaw.plugin.json` entfernt (in 9.1 keine
+  Manifest-Felder), `openclaw.compat.pluginApi: ">=2026.8.1"` in `package.json` ergänzt.
+- **Capability-Consent** (neu in 9.1): `openclaw plugins enable executive-agent --accept-capabilities`.
+- Gates nach dem Upgrade: build 0 Fehler, verify:commands 118/118, verify-schema ohne Drift,
+  `npm test` 430/0/0 (48 Dateien), Smoke 31/31, plugin-inspector gegen 2026.9.1: P0 = 0 (vorher 1).
+
+---
+
 ## Stand 2026-07-16
 
 Sprint 1 + 2 + 3 + 4 + 5 (5.5a + 5.5b) + 10 + 11 + 2.10-A + Owner-Memory Phase 3 vollständig abgeschlossen.

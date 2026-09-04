@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
 /**
- * E4b-v2 — Craft-dialog suppression for before_agent_start.
+ * E4b-v2 — Craft-dialog suppression for before_prompt_build.
  *
  * Suppresses LLM for ANY active (non-expired) craft dialog, regardless of step.
  * Step-agnostic because the message_received handler mutates step synchronously
- * (~575ms before before_agent_start fires), causing a race condition where the
+ * (~575ms before before_prompt_build fires), causing a race condition where the
  * hook would see 'generating' instead of 'awaiting_direction'.
  *
  * Only guard: dialog exists AND TTL not expired.

@@ -2298,8 +2298,8 @@ export function registerInstagramCommands(api: any): void {
     }
   });
 
-  // Raw material saving is now handled in before_agent_start (command-guard).
-  // The before_agent_start hook has direct access to file paths from the prompt
+  // Raw material saving is now handled in before_prompt_build (command-guard).
+  // The before_prompt_build hook has direct access to file paths from the prompt
   // and can suppress AI commentary via prependContext + NO_REPLY.
 
   // ── Cut Engine ─────────────────────────────────────────────────────────────
