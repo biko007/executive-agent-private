@@ -155,7 +155,7 @@ Versioniert in `hooks/` (executive-agent-Repo). Live-Pfad: `~/.claude/hooks/`.
 | Hook | Typ | Funktion |
 |------|-----|----------|
 | `deny-destructive.sh` | PreToolUse | Destruktiv-Sperre + Red-Zone-Guard (Strang-aware seit 2026-07-20) |
-| `telegram-notify.sh` | Notification | Sendet bei `permission_prompt` / `idle_prompt` an bikosoc-dev |
+| `telegram-notify.sh` | Notification | Protokolliert Warte-Ereignisse (`permission_prompt` / `idle_prompt`) ins Hook-Log |
 
 **Install (idempotent):**
 ```bash
@@ -165,3 +165,59 @@ bash scripts/install-hooks.sh
 
 **Drift-Check:** Smoke-Test Check #15 — vergleicht sha256 live vs. Repo.
 Abweichung oder fehlender Hook → ❌ mit Hinweis `scripts/install-hooks.sh ausführen`.
+
+### Notify-Regeln (seit 2026-09-05, „Notify entlärmen")
+
+Auslöser: 6× „unbekannter Strang — fail-closed" innerhalb einer Minute in die
+HDCC-dev-Gruppe (05.09. 10:50). Ursache: bei nicht auflösbarem Push-Ziel lief gar
+keine Strang-Erkennung, und jede Blockade ging nach Telegram.
+
+| Ereignis | Telegram | Log |
+|----------|----------|-----|
+| Armed-Flag verbraucht | ja — operativer Chat des erkannten Strangs | ja |
+| Rote Zone blockiert (`not armed`) | nein | ja |
+| `fail-closed` (Push-Ziel unbestimmbar) | nein | ja |
+| Strang unbestimmbar | nein — nie an eine Dev-Gruppe | ja |
+| Warte-Ereignis (`permission_prompt` / `idle_prompt`) | nein | ja |
+
+- Blockaden gehen nicht mehr nach Telegram: cc sieht den Grund ohnehin im Tool-Output.
+- Dedupe: identische Meldung innerhalb von 5 min wird nur einmal gesendet.
+  Marker unter `~/.cache/claude-hooks/`, Fenster über `HOOK_DEDUPE_WINDOW` (Sekunden).
+- Warte-Meldungen nach Telegram liefert weiterhin der Wait-Notifier (`index.ts`,
+  30s-Poll auf tmux `bikosoc` + `HDCC:claude`, max 1 Meldung/5min, Rolle dev mit
+  Operativ-Fallback). Der Hook war dazu eine Dublette.
+
+**Hook-Log:** `~/.claude/hooks.log` (Rotation bei 1 MB nach `.log.1`; Pfad über `HOOK_LOG`).
+Format: `<UTC-Zeit> [LEVEL] [STRANG] <Text>` mit LEVEL aus `BLOCK | ARMED | NOTIFY | WAIT`.
+
+**Strang-Erkennung** (`hook_strand`) — erster auflösbarer Pfad gewinnt: Rote-Zone-Repo →
+`git -C`-Pfad → `cwd` aus dem Hook-Payload → `$PWD`. Unterverzeichnisse werden vorher auf
+den Repo-Root gehoben.
+
+| Pfad | Strang | Armed-Flag |
+|------|--------|-----------|
+| `~/hdcc` | `hdcc` | `~/.armed-hdcc` |
+| `…/executive-agent`, `…/openclaw/workspace`, `…/.openclaw/workspace` | `bikosoc` | `~/.armed-bikosoc` |
+| alles andere | `unknown` | keins — Block, nur Log |
+
+Owner-Override (optional): `~/.config/openclaw/strands.conf`, je Zeile
+`<glob-pfadmuster> = <strang>`, wird vor der eingebauten Karte geprüft. Beispiel —
+cc-Sessions, die aus `$HOME` laufen, dem bikosoc-Strang zuordnen:
+
+```
+/home/biko = bikosoc
+```
+
+**Fail-closed bleibt fail-closed:** Ist das Push-Ziel nicht bestimmbar (kein absoluter
+Pfad, kein Upstream), blockiert der Hook **auch mit** gesetztem Armed-Flag — dann steht
+nicht fest, welcher Diff gepusht würde. Der Tool-Output nennt den Fix (Push mit
+absolutem Repo-Pfad wiederholen). Ein Armed-Flag wird ausschließlich bei einem echten
+Rote-Zone-Treffer verbraucht.
+
+**Duplizierter Unterbau:** `hook_log` / `hook_strand_conf` / `hook_strand` / `hook_dedupe`
+stehen byte-identisch in beiden Hooks; `deny-destructive.sh` hat zusätzlich `hook_notify`
+und `hook_send_hdcc` (einziger Telegram-Ausgang der Hook-Ebene). Kein gemeinsames
+lib-File, weil der Drift-Check #15 auf genau zwei Hook-Dateien fixiert ist
+(Gate-Änderung wäre REVIEW-pflichtig, C8) und ein fehlendes lib-File in
+`deny-destructive.sh` unter `set -e` die Fail-Closed-Sperre aushebeln würde.
+Bei Änderung **beide** Dateien anpassen, dann `scripts/install-hooks.sh`.
