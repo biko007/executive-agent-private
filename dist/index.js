@@ -2596,23 +2596,52 @@ export default function (api) {
         const REPORT_CHUNK_SIZE = 3500;
         const HDCC_CHAT_ID = '-5178308220'; // HDCC-Dev-Gruppe
         let reportLastAutoSendAt = 0;
+        // Liest die Sent-Map. Wirft bei unlesbarem/defektem Index, statt auf eine leere Map
+        // zurueckzufallen: ein Fail-open-auf-leer laesst den Scan den gesamten Bestand fuer
+        // "nie zugestellt" halten und schreibt die leere Map anschliessend zurueck — genau die
+        // Re-Zustellungsschleife aus report-gateway-restart-1257.md (Paragraph 3).
+        // Nur ENOENT ist ein legitimer Zustand (Erstlauf).
         function loadReportSentMap() {
+            let raw;
             try {
-                const raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
-                const obj = JSON.parse(raw);
-                return new Map(Object.entries(obj));
+                raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
             }
-            catch {
-                return new Map();
+            catch (e) {
+                if (e?.code === 'ENOENT')
+                    return new Map();
+                api.logger.error(`[report-watcher] sent-map unlesbar (${REPORT_SENT_PATH}): ${e.message} — Scan wird uebersprungen, KEINE Zustellung`);
+                throw e;
+            }
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    throw new Error(`unerwartete Struktur: ${Array.isArray(parsed) ? 'Array' : typeof parsed}`);
+                }
+                return new Map(Object.entries(parsed));
+            }
+            catch (e) {
+                api.logger.error(`[report-watcher] sent-map defekt (${REPORT_SENT_PATH}): ${e.message} — Scan wird uebersprungen, KEINE Zustellung`);
+                throw e;
             }
         }
+        // Atomar schreiben: writeFileSync truncated die Zieldatei und befuellt sie neu — ein
+        // gleichzeitiger Leser sieht abgeschnittenes JSON. Schreiben in .tmp + renameSync
+        // (atomar innerhalb desselben Dateisystems) macht den Index race-frei.
+        // Die .tmp-Datei liegt in REPORT_SPEC_DIR, wird aber vom Scan-Whitelist-Filter
+        // (report-*.md) nicht erfasst.
         function saveReportSentMap(m) {
+            const tmpPath = `${REPORT_SENT_PATH}.tmp`;
             try {
                 fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
                 const obj = Object.fromEntries(m);
-                fs.writeFileSync(REPORT_SENT_PATH, JSON.stringify(obj, null, 2));
+                fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+                fs.renameSync(tmpPath, REPORT_SENT_PATH);
             }
             catch (e) {
+                try {
+                    fs.unlinkSync(tmpPath);
+                }
+                catch { /* best-effort cleanup */ }
                 api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
             }
         }
@@ -2676,7 +2705,16 @@ export default function (api) {
         }
         // Seed: record all existing files so they won't be sent on first run
         function seedReportSentMap() {
-            const sentMap = loadReportSentMap();
+            let sentMap;
+            try {
+                sentMap = loadReportSentMap();
+            }
+            catch {
+                // Fehler ist bereits in loadReportSentMap geloggt. Nicht seeden — ein Seed auf
+                // Basis einer unbekannten Map wuerde den defekten Index ueberschreiben.
+                api.logger.error('[report-watcher] Seed uebersprungen — sent-map reparieren oder entfernen');
+                return;
+            }
             let seeded = 0;
             // Seed ~/bikosoc-spec/*.md
             try {
@@ -2728,7 +2766,15 @@ export default function (api) {
                 return; // Prevent concurrent scans (double-event guard)
             reportScanInProgress = true;
             try {
-                const sentMap = loadReportSentMap();
+                let sentMap;
+                try {
+                    sentMap = loadReportSentMap();
+                }
+                catch {
+                    // Index unlesbar/defekt — Fehler ist bereits geloggt. Scan abbrechen, damit der
+                    // Bestand NICHT erneut zugestellt und die Map nicht ueberschrieben wird.
+                    return;
+                }
                 const toSend = [];
                 // Scan ~/bikosoc-spec/ — whitelist: report-*.md
                 try {

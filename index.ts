@@ -2870,22 +2870,50 @@ export default function (api: any) {
     const HDCC_CHAT_ID = '-5178308220'; // HDCC-Dev-Gruppe
     let reportLastAutoSendAt = 0;
 
+    // Liest die Sent-Map. Wirft bei unlesbarem/defektem Index, statt auf eine leere Map
+    // zurueckzufallen: ein Fail-open-auf-leer laesst den Scan den gesamten Bestand fuer
+    // "nie zugestellt" halten und schreibt die leere Map anschliessend zurueck — genau die
+    // Re-Zustellungsschleife aus report-gateway-restart-1257.md (Paragraph 3).
+    // Nur ENOENT ist ein legitimer Zustand (Erstlauf).
     function loadReportSentMap(): Map<string, number | string> {
+      let raw: string;
       try {
-        const raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
-        const obj = JSON.parse(raw) as Record<string, number | string>;
-        return new Map(Object.entries(obj));
-      } catch {
-        return new Map();
+        raw = fs.readFileSync(REPORT_SENT_PATH, 'utf-8');
+      } catch (e: any) {
+        if (e?.code === 'ENOENT') return new Map();
+        api.logger.error(
+          `[report-watcher] sent-map unlesbar (${REPORT_SENT_PATH}): ${e.message} — Scan wird uebersprungen, KEINE Zustellung`,
+        );
+        throw e;
+      }
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(`unerwartete Struktur: ${Array.isArray(parsed) ? 'Array' : typeof parsed}`);
+        }
+        return new Map(Object.entries(parsed as Record<string, number | string>));
+      } catch (e: any) {
+        api.logger.error(
+          `[report-watcher] sent-map defekt (${REPORT_SENT_PATH}): ${e.message} — Scan wird uebersprungen, KEINE Zustellung`,
+        );
+        throw e;
       }
     }
 
+    // Atomar schreiben: writeFileSync truncated die Zieldatei und befuellt sie neu — ein
+    // gleichzeitiger Leser sieht abgeschnittenes JSON. Schreiben in .tmp + renameSync
+    // (atomar innerhalb desselben Dateisystems) macht den Index race-frei.
+    // Die .tmp-Datei liegt in REPORT_SPEC_DIR, wird aber vom Scan-Whitelist-Filter
+    // (report-*.md) nicht erfasst.
     function saveReportSentMap(m: Map<string, number | string>): void {
+      const tmpPath = `${REPORT_SENT_PATH}.tmp`;
       try {
         fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
         const obj = Object.fromEntries(m);
-        fs.writeFileSync(REPORT_SENT_PATH, JSON.stringify(obj, null, 2));
+        fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+        fs.renameSync(tmpPath, REPORT_SENT_PATH);
       } catch (e: any) {
+        try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
         api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
       }
     }
@@ -2954,7 +2982,15 @@ export default function (api: any) {
 
     // Seed: record all existing files so they won't be sent on first run
     function seedReportSentMap(): void {
-      const sentMap = loadReportSentMap();
+      let sentMap: Map<string, number | string>;
+      try {
+        sentMap = loadReportSentMap();
+      } catch {
+        // Fehler ist bereits in loadReportSentMap geloggt. Nicht seeden — ein Seed auf
+        // Basis einer unbekannten Map wuerde den defekten Index ueberschreiben.
+        api.logger.error('[report-watcher] Seed uebersprungen — sent-map reparieren oder entfernen');
+        return;
+      }
       let seeded = 0;
 
       // Seed ~/bikosoc-spec/*.md
@@ -3004,7 +3040,14 @@ export default function (api: any) {
       if (reportScanInProgress) return; // Prevent concurrent scans (double-event guard)
       reportScanInProgress = true;
       try {
-      const sentMap = loadReportSentMap();
+      let sentMap: Map<string, number | string>;
+      try {
+        sentMap = loadReportSentMap();
+      } catch {
+        // Index unlesbar/defekt — Fehler ist bereits geloggt. Scan abbrechen, damit der
+        // Bestand NICHT erneut zugestellt und die Map nicht ueberschrieben wird.
+        return;
+      }
       const toSend: { key: string; filePath: string; name: string; mtimeMs: number; note?: string; hashKey?: string; contentHash?: string; strand?: 'bikosoc' | 'hdcc' | 'unclassified' }[] = [];
 
       // Scan ~/bikosoc-spec/ — whitelist: report-*.md

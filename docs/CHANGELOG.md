@@ -4,6 +4,41 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-09-05 — Report-Watcher: Delivered-Index race-frei
+
+Fix fuer die Alt-Report-Schleife vom 2026-09-04 (239 Zustellungen zwischen 07:01 und 12:39 UTC
+ueber nur 68 verschiedene Dateien, teils 5x). Diagnose: `~/bikosoc-spec/report-gateway-restart-1257.md`,
+Fix-Report: `~/bikosoc-spec/report-watcher-index-fix-*.md`.
+
+Der Delivered-Index `~/bikosoc-spec/.report-sent.json` wurde mehrmals taeglich komplett verloren.
+Zwei Defekte griffen ineinander:
+
+- `saveReportSentMap()` schrieb per `writeFileSync` direkt auf die Zieldatei. Der Schreibvorgang
+  leert sie und befuellt sie neu — ein gleichzeitiger Leser sieht unvollstaendiges JSON. Leser gibt
+  es reichlich: drei `fs.watch`-Watcher mit eigenem Debounce, und die Datei liegt selbst im
+  ueberwachten `~/bikosoc-spec/`.
+- `loadReportSentMap()` fiel bei *jedem* Fehler auf eine leere Map zurueck. Der Scan hielt daraufhin
+  den gesamten Bestand fuer unzugestellt, lieferte aus und schrieb die fast leere Map zurueck — der
+  Verlust wurde persistiert und die Schleife begann von vorn.
+
+Behoben:
+
+- **Atomarer Write:** `.report-sent.json.tmp` + `renameSync`. Das Ziel wird nur noch als Ganzes
+  ausgetauscht. Die `.tmp`-Datei faellt nicht in die Scan-Whitelist (`report-*.md`) und wird im
+  Fehlerfall entfernt.
+- **Fail-closed Read:** nur `ENOENT` gilt als Erstlauf (leere Map). Lese-/Parse-Fehler und
+  strukturell falsches JSON (`null`, Array, Skalar) werden geloggt und geworfen.
+- **Beide Aufrufer ueberspringen ihren Lauf:** `scanAndDeliverReports()` bricht vor dem Ausliefern
+  ab, `seedReportSentMap()` seedet nicht auf Basis einer unbekannten Map. Ein defekter Index legt
+  die Zustellung damit still, statt den Bestand erneut zu verschicken — die Datei ist dann zu
+  reparieren oder zu entfernen (Log: `sent-map defekt`/`sent-map unlesbar`).
+
+Test `src/__tests__/report-sent-map.test.ts` (19 Faelle): spiegelt die Implementierung gegen echte
+Dateien (Konvention wie `callback-suppression.test.ts`) und sichert `index.ts` zusaetzlich mit
+statischen Guards gegen Drift ab. `npm test` 449 pass / 0 fail (vorher 430).
+
+---
+
 ## Stand 2026-09-04 — OpenClaw-Upgrade 2026.6.11 → 2026.9.1
 
 Direkt-Upgrade auf Produktion (Owner-Risikoentscheidung, kein Staging). Ablauf und Rohbelege:
