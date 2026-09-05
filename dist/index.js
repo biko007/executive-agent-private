@@ -1931,22 +1931,46 @@ export default function (api) {
         },
     });
     // ── /arm Command: Red Zone einmalig scharfstellen (one-shot) ──
+    // /arm       → nur armen (unveraendertes Verhalten)
+    // /arm push  → armen UND "push" + Enter an tmux bikosoc (gleicher Dispatch-Helfer wie /do)
+    // Unbekanntes Argument armt NICHT (fail-closed) — ein Tippfehler darf die Rote Zone
+    // nicht unbemerkt scharfstellen.
     api.registerCommand({
         name: 'arm',
-        description: 'Red Zone: einmalig scharfstellen fuer naechste rote Aktion. /arm',
+        description: 'Red Zone: einmalig scharfstellen fuer naechste rote Aktion. /arm [push]',
         acceptsArgs: true,
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
                 return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
             }
+            const mode = String(ctx?.args || '').trim().toLowerCase();
+            if (mode !== '' && mode !== 'push') {
+                return { text: 'Nutzung: /arm  oder  /arm push' };
+            }
             try {
                 const fs = await import('fs');
                 const flagPath = `${process.env.HOME}/.armed-bikosoc`;
                 fs.writeFileSync(flagPath, `armed by owner at ${new Date().toISOString()}\n`);
-                await sendTelegramToRole('operativ', 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
-                api.logger.info('[arm] Red Zone armed (one-shot)');
-                return { text: 'Red Zone scharfgestellt (one-shot).' };
+                if (mode !== 'push') {
+                    await sendTelegramToRole('operativ', 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
+                    api.logger.info('[arm] Red Zone armed (one-shot)');
+                    return { text: 'Red Zone scharfgestellt (one-shot).' };
+                }
+                // Reihenfolge: erst armen, dann dispatchen. Schlaegt der Dispatch fehl, ist das
+                // Flag gesetzt (one-shot) und der Owner kann "push" selbst nachreichen — der
+                // umgekehrte Weg liefe in den Red-Zone-Block.
+                try {
+                    sendPromptToBikosocTmux('push');
+                }
+                catch (e) {
+                    api.logger.error(`[arm] push-Dispatch fehlgeschlagen: ${e.message}`);
+                    await sendTelegramToRole('operativ', `Armed — push-Dispatch fehlgeschlagen: ${e.message}`);
+                    return { text: `Armed — push-Dispatch fehlgeschlagen: ${e.message}` };
+                }
+                await sendTelegramToRole('operativ', 'Armed + push dispatched.');
+                api.logger.info('[arm] Red Zone armed (one-shot) + push an tmux bikosoc uebergeben');
+                return { text: 'Armed + push dispatched.' };
             }
             catch (e) {
                 api.logger.error(`[arm] Fehler: ${e.message}`);

@@ -263,7 +263,7 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **/ccgo** | Plan-Approval (Owner-only; Slug-Match-Prüfung: Folgeauftrag docs/TODO.md #1) |
 | **/do \<text\>** | Prompt-Dispatch an tmux bikosoc (injection-sicher, `--` Separator) |
 | **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
-| **/arm** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst |
+| **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. `/arm push` armt zusätzlich und dispatcht danach „push" + Enter an tmux bikosoc (gleicher Helfer wie /do). Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
 
 **Regel /ccgo (E3, Owner-Entscheidung):**

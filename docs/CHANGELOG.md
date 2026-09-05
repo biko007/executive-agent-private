@@ -4,6 +4,35 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-09-05 — `/arm push`: armen und Push anstoßen in einem Schritt
+
+Neue Argument-Variante des bestehenden `/arm`-Kommandos. Fix-Report:
+`~/bikosoc-spec/report-bypass-armpush-*.md`.
+
+Anlass: nach `/arm` musste der Owner den Push separat anstoßen — in der Praxis zwei Nachrichten
+im Chat Hans_Dampf, zwischen denen das one-shot-Flag ungenutzt stehen bleibt.
+
+- `/arm` **ohne Argument bleibt unverändert**: Flag `~/.armed-bikosoc` setzen, Telegram-Quittung
+  „Rote Zone SCHARFGESTELLT …", kein Dispatch.
+- `/arm push` armt **und** schickt anschließend „push" + Enter an die tmux-Session `bikosoc` —
+  über denselben Helfer wie `/do` (`sendPromptToBikosocTmux`, `execFileSync` mit `--`-Separator,
+  keine Shell). Telegram-Quittung: „Armed + push dispatched."
+- Reihenfolge ist bewusst **erst armen, dann dispatchen**: schlägt der Dispatch fehl, bleibt das
+  one-shot-Flag gesetzt und der Owner kann „push" selbst nachreichen. Der umgekehrte Weg liefe in
+  den Red-Zone-Block. Bei Dispatch-Fehler meldet die Quittung genau das und behauptet keinen Push.
+- Ein **unbekanntes Argument armt nicht** (fail-closed) — ein Tippfehler wie `/arm pusch` darf die
+  Rote Zone nicht unbemerkt scharfstellen.
+- Owner-Gate (`assertBoundOwner`) steht unverändert vor jeder Wirkung, für beide Pfade.
+
+Test `src/__tests__/arm-push.test.ts` (15 Fälle): beide Pfade, Argument-Normalisierung,
+Dispatch-Fehler, fail-closed bei unbekanntem Argument, Non-Owner-Negativtests für beide Pfade
+(C7), exakte tmux-argv über den echten Helfer, plus statische Guards gegen `index.ts`.
+
+C7 (Kontrollflächen-Schutz) gilt: Änderung an einer Kontrollfläche → Owner-Freigabe vor Push,
+hier über `/arm` selbst.
+
+---
+
 ## Stand 2026-09-05 — Report-Watcher: Delivered-Index race-frei
 
 Fix fuer die Alt-Report-Schleife vom 2026-09-04 (239 Zustellungen zwischen 07:01 und 12:39 UTC
