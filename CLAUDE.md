@@ -266,6 +266,23 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. `/arm push` armt zusätzlich und dispatcht danach „push" + Enter an tmux bikosoc (gleicher Helfer wie /do). Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
 
+**Meldungsdisziplin (2026-09-18) — Env-Flags in `~/.config/openclaw/env`:**
+
+Die täglichen Prüfungen laufen unverändert weiter; gedrosselt ist nur der Telegram-Versand.
+Jede Prüfung schreibt ihr Ergebnis ins Ledger, die Montags-Zusammenfassung liest daraus.
+
+| Flag | Default | Wirkung |
+|------|---------|---------|
+| `HEALTH_REPORT_MODE` | `exception` | `exception` = Daily Health Check (08:00 Berlin) meldet nur bei Abweichung; `always` = altes Verhalten mit täglicher OK-Meldung |
+| `WEEKLY_SUMMARY_ENABLED` | `true` | Montag 08:00 Berlin: EINE Wochen-Nachricht („Woche OK" + Kurzstatistik); die Tagesmeldung entfällt an dem Tag, Abweichungen der Woche sind in der Nachricht gelistet |
+| `MAIL_BOOKING_SCAN_ENABLED` | `true` | `false` pausiert den Mail-Buchungs-/Termin-Scan: kein Parsing, kein LLM-Call, keine „Buchungsbestätigung erkannt"-Meldung. Es wird nichts gelöscht — Reaktivierung = `true` + `systemctl --user restart openclaw-gateway.service` |
+
+- Ledger: `artifacts/personal/health/report-ledger.json` (60 Tage, ein Eintrag/Tag)
+- Trading-Kennzahlen der Woche kommen per `GET http://127.0.0.1:18793/weekly-stats`
+  vom trading-agent (dort `HEALTH_REPORT_MODE` / `TRADING_REPORT_MODE`, gleiche Semantik)
+- Code: `report-ledger.ts` (Ledger + `dailyHealthAction()` + `buildWeeklySummary()`),
+  Gate des Mail-Scans in `src/modules/mail/commands.ts` (`mailBookingScanEnabled()`)
+
 **Regel /ccgo (E3, Owner-Entscheidung):**
 /ccgo bestätigt einen wartenden Plan-Prompt NUR wenn: (a) der Plan zuvor über den Watcher
 zugestellt wurde UND (b) Plan-Slug/Dateiname zum zuletzt zugestellten Plan passt. Ohne
