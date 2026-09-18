@@ -359,7 +359,23 @@ function parseKvArgs(inputRaw: string): Record<string, string> {
 
 // ── Mail Scanner ──────────────────────────────────────────────────────────
 
+/**
+ * Meldungsdisziplin (2026-09-18): Buchungs-/Termin-Scan pausierbar.
+ * MAIL_BOOKING_SCAN_ENABLED=false in ~/.config/openclaw/env → kein Parsing
+ * (kein LLM-Call, keine Telegram-Meldung). Es wird nichts gelöscht, die
+ * Reaktivierung ist reines Umlegen des Flags + Restart des Gateways.
+ * Wird bei jedem Aufruf gelesen, damit auch Tests/Ops den Zustand prüfen können.
+ */
+export function mailBookingScanEnabled(): boolean {
+  return (process.env.MAIL_BOOKING_SCAN_ENABLED ?? 'true').toLowerCase() !== 'false';
+}
+
 export async function scanMailsForBookings(reportChatId?: string): Promise<{ scanned: number; found: number; details: string[] }> {
+  if (!mailBookingScanEnabled()) {
+    deps.logger.info('[executive-agent] Mail-Buchungsscan pausiert (MAIL_BOOKING_SCAN_ENABLED=false)');
+    return { scanned: 0, found: 0, details: [] };
+  }
+
   const details: string[] = [];
   let scanned = 0;
   let found = 0;

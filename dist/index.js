@@ -26,6 +26,7 @@ registerInboxHttpRoute,
 registerEditQueueRoutes, recoverStaleJobs, } from "./src/modules/instagram/index.js";
 import { closeBrowser } from "./browser-agent.js";
 import { runStartupChecks, formatHealthReport, runDailyHealthCheck, } from "./system-health.js";
+import { recordHealthDay, buildWeeklySummary, dailyHealthAction } from './report-ledger.js';
 import { insertConversationTurn, getLastConversationLogId, updateExtractStatus, getActiveOwnerFacts, rejectFact, listActiveFacts, getFactById, } from './src/modules/memory/store.js';
 import { resolveTranscript, shouldExtractMemory, runExtractSweep, invalidateRecallCache, } from './src/modules/memory/extract.js';
 import { HealthMonitor, LOCATION_STALE_THRESHOLD_MS } from "./src/modules/executive/index.js";
@@ -46,6 +47,15 @@ import http from "node:http";
 // ESM polyfill: __dirname = plugin root (one level up from dist/)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.resolve(path.dirname(__filename), '..');
+/* ---------------- Meldungsdisziplin (2026-09-18) ---------------- */
+// Flags aus ~/.config/openclaw/env (EnvironmentFile der openclaw-gateway.service).
+// HEALTH_REPORT_MODE=exception  → Daily Health Check meldet nur bei Abweichung
+//                     always    → altes Verhalten (tägliche OK-Meldung)
+// WEEKLY_SUMMARY_ENABLED=true   → Montag 08:00 Berlin eine Wochen-Nachricht
+// MAIL_BOOKING_SCAN_ENABLED=false → Buchungs-/Termin-Scan pausiert (kein Parsing)
+const HEALTH_REPORT_MODE = (process.env.HEALTH_REPORT_MODE ?? 'exception').toLowerCase();
+const WEEKLY_SUMMARY_ENABLED = (process.env.WEEKLY_SUMMARY_ENABLED ?? 'true').toLowerCase() !== 'false';
+const MAIL_BOOKING_SCAN_ENABLED = (process.env.MAIL_BOOKING_SCAN_ENABLED ?? 'true').toLowerCase() !== 'false';
 function getAstroData(date, location = DEFAULT_LOCATION) {
     const tz = 'Europe/Berlin';
     const fmt = (d) => new Intl.DateTimeFormat('de-DE', {
@@ -2386,6 +2396,11 @@ export default function (api) {
         g.__ea_mailScannerRegistered = true;
         setInterval(async () => {
             try {
+                // Meldungsdisziplin (2026-09-18): Buchungs-/Termin-Scan pausierbar.
+                // MAIL_BOOKING_SCAN_ENABLED=false in ~/.config/openclaw/env → kein
+                // Parsing, keine Meldung. Reaktivierung = Flag umdrehen + Restart.
+                if (!MAIL_BOOKING_SCAN_ENABLED)
+                    return;
                 if (!m365Enabled && !yahooEnabled)
                     return;
                 const chatId = getCachedTelegramTarget('operativ');
@@ -2489,7 +2504,25 @@ export default function (api) {
                     lastDailyHealthDate = today;
                     const report = await runDailyHealthCheck();
                     api.logger.info(`[executive-agent] Daily Health Check: ${report.status.toUpperCase()}`);
-                    if (report.status === 'green') {
+                    // Meldungsdisziplin (2026-09-18): Prüfung läuft täglich, Ergebnis
+                    // wandert immer ins Ledger — Telegram nur bei Abweichung.
+                    recordHealthDay(today, report);
+                    // Montag: EINE Wochen-Nachricht statt Tagesmeldung (Abweichungen
+                    // des Tages sind darin gelistet).
+                    const action = dailyHealthAction({
+                        status: report.status,
+                        mode: HEALTH_REPORT_MODE,
+                        isMonday: inBerlin.getDay() === 1,
+                        weeklyEnabled: WEEKLY_SUMMARY_ENABLED,
+                    });
+                    if (action === 'weekly') {
+                        await sendTelegram(chatId, await buildWeeklySummary(today));
+                        api.logger.info('[executive-agent] Wochen-Zusammenfassung gesendet');
+                    }
+                    else if (action === 'silent') {
+                        api.logger.info('[executive-agent] Daily Health Check grün — kein Telegram (Meldungsdisziplin)');
+                    }
+                    else if (report.status === 'green') {
                         await sendTelegram(chatId, '🟢 Daily Health Check — alle Systeme OK');
                     }
                     else {

@@ -13,7 +13,7 @@ export { listDrafts } from './commands.js';
 export { m365Unread, yahooUnread, m365Recent, yahooRecent } from './commands.js';
 
 // Mail Scanner (for background task in index.ts)
-export { scanMailsForBookings } from './commands.js';
+export { scanMailsForBookings, mailBookingScanEnabled } from './commands.js';
 
 // State (for booking + meeting callback handlers in index.ts)
 export { pendingBookings, pendingTripSelections, pendingMeetings } from './commands.js';
