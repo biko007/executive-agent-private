@@ -37,6 +37,7 @@ import {
   PASSWORD_PAGES, type AttachmentIndexEntry,
   convertJspWikiToMarkdown, slugify, titleFromPageName, deriveCategory, detectSensitive,
   upsertImportedPage, upsertAttachment, getPageIdBySlug,
+  readNuveonCredentials,
 } from '../../src/modules/wiki/index.js';
 import { closePool } from '../../src/shared/db/index.js';
 
@@ -387,10 +388,12 @@ async function saveState(state: ImportState): Promise<void> {
 }
 
 async function main(): Promise<number> {
-  // 1. Zugangsdaten
-  const creds = readEnvFile(CRED_FILE);
-  const username = (creds.NUVEON_WIKI_USER ?? '').trim();
-  const password = creds.NUVEON_WIKI_PASS ?? '';
+  // 1. Zugangsdaten. Die Datei ist shell-zitiert (printf %q), daher wertet sie
+  //    die Shell aus — ein eigener Parser würde Escapes wie "geh\!eim" falsch
+  //    lesen und den Login mit richtigem Passwort scheitern lassen.
+  const creds = await readNuveonCredentials(CRED_FILE);
+  const username = creds.user;
+  const password = creds.pass;
   if (!username || !password) {
     log('Keine Zugangsdaten in ~/.config/openclaw/nuveon-wiki.env (Variablen fehlen oder leer).');
     log('Import wird nicht gestartet. Es wurde keine Anfrage an Nuveon gesendet.');

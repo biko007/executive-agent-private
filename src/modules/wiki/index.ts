@@ -32,3 +32,6 @@ export {
   decodeHtmlEntities, stripTags, SYSTEM_PAGES, PASSWORD_PAGES,
 } from './nuveon-parsers.js';
 export type { AttachmentIndexEntry } from './nuveon-parsers.js';
+
+export { readNuveonCredentials } from './nuveon-credentials.js';
+export type { NuveonCredentials } from './nuveon-credentials.js';

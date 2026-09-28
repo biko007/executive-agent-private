@@ -498,7 +498,19 @@ Unter 15 GB freiem Plattenplatz entfällt der Anhang-Download. Der Lauf ist übe
 Zugangsdaten bricht das Skript **vor** jeder Netzaktivität mit Exit-Code 3 ab.
 
 Die HTML-Parser liegen bewusst im Modul (`src/modules/wiki/nuveon-parsers.ts`), nicht im
-Skriptordner: so erfassen Build-Gate, ESLint und Test-Runner sie mit.
+Skriptordner: so erfassen Build-Gate, ESLint und Test-Runner sie mit. Gleiches gilt für
+`nuveon-credentials.ts`.
+
+**Zugangsdaten.** `~/.config/openclaw/nuveon-wiki.env` wird per Konvention mit
+`printf %q` geschrieben, damit die Datei mit `set -a; source …` verwendbar bleibt.
+`%q` zitiert shell-gerecht: aus `P&w!2026$x` wird `P\&w\!2026\$x`. Ein Parser, der
+nur umschließende Anführungszeichen abstreift, liefert dafür den falschen String — der
+Login scheitert mit richtigem Passwort und der Import stoppt nach zwei Versuchen.
+`readNuveonCredentials()` lässt deshalb **bash die Datei auswerten** und übernimmt beide
+Werte NUL-getrennt über stdout. Der Dateipfad geht als Argument, nicht in das Skript.
+Die Werte stehen nie in argv, nie in der Prozessumgebung und nie im Log. Abgesichert
+durch 18 Tests in `__tests__/nuveon-credentials.test.ts`, darunter zwölf
+`printf %q`-Rundläufe mit echtem bash.
 
 Medienaufbereitung: Rasterbilder (auch TIF) → `vipsthumbnail`, PDFs → `pdftotext -layout`
 (Paket `poppler-utils`, am 2026-09-28 nachinstalliert).

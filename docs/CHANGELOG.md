@@ -32,6 +32,11 @@ Auftrag: `~/bikosoc-spec/spec-wiki-migration-20260928.md`.
 - **Agententools:** `wiki_search`, `wiki_read` über `api.registerTool` — erste Nutzung dieser
   API in diesem Repo, dafür `typebox` als Dependency und `contracts.tools` im Plugin-Manifest
   (in 2026.9.1 Pflicht). Beide nur lesend.
+- **Zugangsdaten shell-korrekt einlesen** (`nuveon-credentials.ts`): die Env-Datei wird mit
+  `printf %q` geschrieben und ist damit shell-zitiert. Ein eigener Parser hätte `P&w!2026$x`
+  als `P\&w\!2026\$x` gelesen — Login gescheitert trotz richtigem Passwort, Import nach zwei
+  Versuchen gestoppt. Jetzt wertet bash die Datei aus; 18 Tests decken das ab, davon zwölf
+  `printf %q`-Rundläufe mit echtem bash.
 
 **Sicherheitsgrenze.** Sensible Seiten (erkannt über Muster für Passwort, PIN, WLAN-Schlüssel,
 IBAN, API-Key …) sind für den Agenten **nicht erreichbar** — `AND sensitive = false` steht hart
