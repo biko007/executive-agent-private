@@ -82,7 +82,7 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 - **Schema-Versionierung: pro Modul.** Tabelle `schema_version` = `(module, version,
   applied_at)`. Es gibt **keinen globalen Linearstand**. Höchste Versionen je Modul:
   memory **42**, health **40**, banking **39**, fleet 37, instagram 37, assets 36,
-  settings **35**, sharepoint 34, links 33, location 32, executive/shared 1.
+  settings **35**, sharepoint 34, links 33, location 32, executive/shared 1, **wiki 1**.
 
 **Modul-Migrationsstand (verifiziert über Tabellenbestand):**
 
@@ -97,6 +97,7 @@ getriggert per **systemd-Timer** (nicht Cron) — siehe `SHARED_PLATFORM.md §9`
 | SharePoint | Postgres (`sharepoint_files`, `sharepoint_sync_runs`) | **migriert** |
 | Links | Postgres (`entity_links`) | **migriert** |
 | Memory | Postgres (`conversation_log`, `owner_memory`) | **neu** (2026-07-06) |
+| **Wiki** | Postgres (`wiki_pages`, `wiki_page_revisions`, `wiki_attachments`) | **neu** (2026-09-28) |
 | Calendar | kein lokaler Store (by design) | — |
 | **Travel** | **file-basiert** (`src/modules/travel/store.ts`), keine Tabelle | nicht migriert |
 | **Mail** | **file-basiert** (`src/modules/mail/store.ts`), keine Tabelle | nicht migriert |
@@ -382,3 +383,130 @@ nk-trigger-Endpoint gesichert, n8n-Workflow als Backlog.
 **Offene Tails (nicht doku-blockierend, niedrige Prio):**
 - Travel + Mail → Postgres migrieren — §4
 - ⏳ erster echter 3955-Live-Test (Banking) — §5
+
+---
+
+## 15. Wiki-Modul (Ablösung Nuveon/JSPWiki)
+
+**Status:** Modul, Oberfläche und Agententools stehen und sind verifiziert (2026-09-28).
+Der Datenimport aus Nuveon ist noch offen — er wartet auf die Zugangsdaten.
+
+**Anlass.** Das private Wiki lag als gehostetes JSPWiki 2.8.4 bei Nuveon
+(`https://asp.nuveon.de/biko/`, letzte inhaltliche Änderung 2016): rund 80 Seiten,
+139 Anhänge, ca. 5,2 GB, davon ca. 5 GB TIF-Fotos. Ziel ist die Ablösung des
+Fremdhostings — Inhalte in `openclaw_core`, Dateien im bestehenden Artefaktbaum,
+Bedienung im Dashboard, Lesezugriff für Hans_Dampf.
+
+### Tabellen (Modul `wiki`, Version 1)
+
+| Tabelle | Zweck |
+|---|---|
+| `wiki_pages` | Seiten: `slug` (sprechend, unique), `title`, `category`, `body_md`, `source_markup` (JSPWiki-Original), `sensitive`, `source` (`nuveon`/`local`), `source_page_name`, `source_author`, `source_modified_at`, generierter `search_tsv` (deutsch) mit GIN-Index |
+| `wiki_page_revisions` | Revisionshistorie; Import = Rev 1, jedes Speichern im Dashboard = neue Revision. `UNIQUE (page_id, rev)` |
+| `wiki_attachments` | Anhänge: `filename`, `mime`, `size`, `sha256`, `path`, `preview_path`, `thumb_path`, `text_content` (PDF-Text), generierter `search_tsv`. `UNIQUE (page_id, filename)`, `ON DELETE CASCADE` |
+
+Alle Pfadspalten sind **relativ** zu `artifacts/personal/wiki/` — ein Restore an
+anderer Stelle zieht die Datenbank nicht nach.
+
+### Dateiablage
+
+```
+artifacts/personal/wiki/
+  <seiten-slug>/<datei>              Originalanhang
+  <seiten-slug>/_preview/<datei>.jpg Vorschau (lange Kante 2000 px, Q 85)
+  <seiten-slug>/_thumb/<datei>.jpg   Miniatur (320 px)
+  _raw/<seiten-slug>.jspwiki.txt     unverändertes Quellmarkup
+  _state/import-state.json           Wiederaufnahmepunkt des Imports
+  _state/import-summary.json         Zähler des letzten Importlaufs
+```
+
+Der Pfad liegt unter `ARTIFACTS_DIR` von `~/.scripts/openclaw-backup` und ist damit
+**ohne Konfigänderung im Borg-Umfang** (daily ohne, weekly/monthly mit Medien).
+
+### Sicherheitsgrenze Agent ↔ Wiki
+
+`src/modules/wiki/store.ts` hat **zwei getrennte Lesepfade**:
+
+- `searchWiki` / `getPageBySlug` — Dashboard, sieht alle Seiten.
+- `searchForAgent` / `readForAgent` — Agent, mit `AND sensitive = false` **hart in der
+  SQL-Bedingung**, für Seitentext und Anhangtext.
+
+Der Agentenpfad ist absichtlich eine eigene Funktion und kein Parameter des
+Dashboardpfads: ein vergessener Parameter würde sonst Geheimnisse an das Sprachmodell
+geben. `src/modules/wiki/__tests__/agent-filter.test.ts` ist ein **BITE-Test** — entfernt
+man den Filter, fallen 7 Tests um (nachgewiesen). Der Test darf nicht gelöscht werden.
+
+`wiki_read` antwortet für eine sensible Seite **wortgleich** wie für eine nicht
+vorhandene Seite; aus der Fehlermeldung ist die Existenz nicht ableitbar.
+
+`sensitive` wird beim Import und bei jedem Speichern automatisch aus Mustern
+abgeleitet (Passwort, Kennwort, PIN, PUK, TAN, WLAN-Schlüssel, IBAN/BIC, Kontonummer,
+Kreditkarte, CVC, Zugangsdaten, API-Key, Lizenz-/Seriennummer). Die Erkennung ist
+absichtlich breit: ein Fehlalarm verbirgt eine Seite nur vor dem Agenten, ein
+verpasster Treffer gäbe ein Geheimnis an das Modell. Einmal gesetzt bleibt die
+Markierung beim Speichern erhalten; nur eine ausdrückliche Angabe im Request hebt sie auf.
+
+### Agententools (Hans_Dampf)
+
+| Tool | Wirkung |
+|---|---|
+| `wiki_search(query, limit?)` | Volltextsuche über Seitentext **und** extrahierten PDF-Text; liefert Titel, Slug, Kategorie, Trefferart, Textausschnitt |
+| `wiki_read(slug)` | Seiteninhalt als Markdown + Anhangliste; Text bei 12.000 Zeichen gekürzt |
+
+Beide sind **nur lesend**, nicht optional (also ohne `tools.allow` verfügbar) und in
+`openclaw.plugin.json` unter `contracts.tools` deklariert — in OpenClaw 2026.9.1 Pflicht.
+Parameterschemata über `typebox`. Das ist die **erste** Nutzung von `api.registerTool`
+in diesem Repo; frühere Module sprachen den Agenten nur über Telegram-Commands an.
+
+### HTTP-Schnittstellen
+
+Core (`src/modules/wiki/routes.ts`, Bearer `CORE_SERVICE_TOKEN`, nur 127.0.0.1):
+
+```
+GET    /api/wiki/pages                              Liste
+POST   /api/wiki/pages                              neue Seite (Rev 1)
+GET    /api/wiki/pages/:slug                        Seite + Anhänge
+PUT    /api/wiki/pages/:slug                        speichern → neue Revision
+PATCH  /api/wiki/pages/:slug/category               Kategorie ändern
+GET    /api/wiki/pages/:slug/revisions[/:rev]       Revisionen
+GET    /api/wiki/pages/:slug/attachments/:filename  Anhang-Metadaten
+POST   /api/wiki/pages/:slug/attachments            Upload-Metadaten eintragen
+GET    /api/wiki/search?q=&limit=                   Volltextsuche
+GET    /api/wiki/stats | /api/wiki/categories       Kennzahlen, Kategorien
+```
+
+Dashboard (`server.mjs`, hinter `DASHBOARD_TOKEN`; Mutationen zusätzlich CSRF):
+
+- JSON-Routen → `proxyToCore`.
+- `GET /api/wiki/pages/:slug` → eigener Handler: Markdown wird **serverseitig** mit
+  `marked` gerendert und mit `sanitize-html` auf eine Erlaubnisliste reduziert
+  (kein `<script>`, keine Event-Attribute, keine `javascript:`-URLs) → Feld `bodyHtml`.
+- `GET /api/wiki/{file,preview,thumb}/:slug/:filename` → Datei **direkt vom
+  Dateisystem**, weil `proxyToCore` nur JSON/Text überträgt. Zusätzlich `path.resolve`
+  gegen Ausbruch aus dem Wiki-Verzeichnis.
+- `GET /wiki/:slug` → Weiterleitung auf `/dashboard/?tab=wiki&page=<slug>`; so
+  funktionieren die aus dem JSPWiki-Markup erzeugten internen Links auch als tiefe Links.
+
+### Import (`scripts/wiki-import/import.ts`)
+
+Strikt lesend gegenüber Nuveon: der **einzige POST ist die Anmeldung**, höchstens zwei
+gleichzeitige Anfragen mit 300 ms Pause, Abbruch nach zwei fehlgeschlagenen Anmeldungen.
+Editor-Seiten (`EditX.jsp`) werden nur per GET gelesen. Die Seiten `PW`, `Passwörter`,
+`PasswortÄndern` werden weder geladen noch importiert, auch ihre Anhänge nicht.
+Unter 15 GB freiem Plattenplatz entfällt der Anhang-Download. Der Lauf ist über
+`_state/import-state.json` wiederaufnahmefähig und je Slug idempotent. Ohne
+Zugangsdaten bricht das Skript **vor** jeder Netzaktivität mit Exit-Code 3 ab.
+
+Die HTML-Parser liegen bewusst im Modul (`src/modules/wiki/nuveon-parsers.ts`), nicht im
+Skriptordner: so erfassen Build-Gate, ESLint und Test-Runner sie mit.
+
+Medienaufbereitung: Rasterbilder (auch TIF) → `vipsthumbnail`, PDFs → `pdftotext -layout`
+(Paket `poppler-utils`, am 2026-09-28 nachinstalliert).
+
+### Dateinamen-Konvention, bewusste Abweichung
+
+Anhänge behalten ihren **Originaldateinamen** statt des Schemas `YYMMDD-<kontext>-NN`.
+Grund: der Dateiname ist im Wiki Teil der Identität und wird aus dem Seitentext
+verlinkt; eine Umbenennung würde die konvertierten Links brechen.
+
+---

@@ -1,7 +1,7 @@
 {
   "id": "executive-agent",
   "name": "Executive Agent",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "kind": "extension",
   "activation": {
     "onStartup": true
@@ -93,6 +93,20 @@
           }
         }
       }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "wiki_search",
+      "wiki_read"
+    ]
+  },
+  "toolMetadata": {
+    "wiki_search": {
+      "optional": false
+    },
+    "wiki_read": {
+      "optional": false
     }
   }
 }

@@ -4,6 +4,56 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-09-28 — Modul `wiki`: Ablösung des JSPWiki bei Nuveon
+
+Neues Modul `wiki` (Schema-Version 1) mit Dashboard-Oberfläche und zwei Nur-Lese-Agententools.
+Ziel: das gehostete JSPWiki 2.8.4 unter `https://asp.nuveon.de/biko/` (letzte inhaltliche
+Änderung 2016) kündbar machen. Architekturdetails: `docs/ARCHITECTURE.md §15`.
+Auftrag: `~/bikosoc-spec/spec-wiki-migration-20260928.md`.
+
+**Was steht:**
+
+- **Datenmodell:** `wiki_pages`, `wiki_page_revisions`, `wiki_attachments` in `openclaw_core`,
+  deutsche `tsvector`-Spalten (generiert, `to_tsvector('german'::regconfig, …)` — die
+  einargumentige Variante wäre nur STABLE und in generierten Spalten nicht zulässig) mit
+  GIN-Indizes. Dateipfade relativ zu `artifacts/personal/wiki/`.
+- **Konverter** `src/modules/wiki/convert.ts`: JSPWiki-Markup → Markdown (Überschriften,
+  Auszeichnung, Listen, Tabellen, Links, Code, Umbruch, Trennlinie). Plugins `[{…}]` werden
+  entfernt **und gezählt** — ihre Auswertung setzt einen JSPWiki-Server voraus, also wird
+  nichts stillschweigend geschluckt. Originalmarkup bleibt in `source_markup` erhalten.
+- **Import** `scripts/wiki-import/import.ts`: strikt lesend, einziger POST ist die Anmeldung,
+  max. 2 parallele Anfragen, Abbruch nach 2 Fehlanmeldungen, Passwortseiten werden nicht
+  einmal geladen, wiederaufnahmefähig, je Slug idempotent. Ohne Zugangsdaten Exit 3 **vor**
+  jeder Netzaktivität.
+- **Dashboard:** Tab „Wiki" (Übersicht nach Kategorie, Volltextsuche inkl. PDF-Inhalte,
+  Seitenansicht, Bearbeiten mit Revisionierung, neue Seite, Revisionsliste, Anhänge mit
+  Galerie/Download/Upload). Markdown wird **serverseitig** gerendert (`marked`) und mit
+  `sanitize-html` auf eine Erlaubnisliste reduziert.
+- **Agententools:** `wiki_search`, `wiki_read` über `api.registerTool` — erste Nutzung dieser
+  API in diesem Repo, dafür `typebox` als Dependency und `contracts.tools` im Plugin-Manifest
+  (in 2026.9.1 Pflicht). Beide nur lesend.
+
+**Sicherheitsgrenze.** Sensible Seiten (erkannt über Muster für Passwort, PIN, WLAN-Schlüssel,
+IBAN, API-Key …) sind für den Agenten **nicht erreichbar** — `AND sensitive = false` steht hart
+in den SQL-Bedingungen von `searchForAgent`/`readForAgent`, auch für Textausschnitte aus
+Anhängen. `wiki_read` antwortet für eine sensible Seite wortgleich wie für eine nicht
+vorhandene. Der BITE-Test `src/modules/wiki/__tests__/agent-filter.test.ts` ist Pflicht-Test:
+mit entferntem Filter fallen 7 Tests um (nachgewiesen, nicht behauptet).
+
+**Nebenwirkungen im Bestand:**
+
+- `scripts/verify-schema-versions.ts`: Modul `wiki` in `MIGRATION_DIRS` ergänzt. Ohne den
+  Eintrag hätte der Drift-Detektor die neue DB-Version als ORPHAN gemeldet. Additiv, keine
+  Aufweichung eines Gates.
+- `poppler-utils` (`pdftotext`) auf dem VPS nachinstalliert — der bestehende pdf-worker
+  rendert HTML→PDF und kann keinen Text extrahieren.
+
+**Offen:** Der eigentliche Datenimport. `~/.config/openclaw/nuveon-wiki.env` existiert, beide
+Variablen sind aber leere Platzhalter. Tabellen, Oberfläche und Tools sind fertig und getestet;
+sobald die Zugangsdaten stehen, genügt ein Lauf des Import-Skripts.
+
+---
+
 ## Stand 2026-09-05 — `/arm push`: armen und Push anstoßen in einem Schritt
 
 Neue Argument-Variante des bestehenden `/arm`-Kommandos. Fix-Report:

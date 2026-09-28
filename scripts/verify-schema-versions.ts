@@ -44,6 +44,7 @@ const MIGRATION_DIRS: Array<{ dir: string; module: string }> = [
   { dir: 'src/modules/sharepoint/migrations',  module: 'sharepoint' },
   { dir: 'src/modules/memory/migrations',      module: 'memory' },
   { dir: 'src/modules/telegram-binding/migrations', module: 'telegram-binding' },
+  { dir: 'src/modules/wiki/migrations',         module: 'wiki' },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

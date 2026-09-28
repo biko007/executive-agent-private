@@ -9,6 +9,7 @@ import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands,
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
+import { registerWikiHttpRoutes, registerWikiTools } from "./src/modules/wiki/index.js";
 import { registerPECommands } from "./src/modules/pe/index.js";
 import { registerCalendarCommands, initCalendarCommands, createCalendarEventDirect } from "./src/modules/calendar/index.js";
 import { registerMailCommands, initMailCommands, m365Unread, yahooUnread, listDrafts, scanMailsForBookings, pendingBookings, pendingTripSelections, pendingMeetings, } from "./src/modules/mail/index.js";
@@ -3733,6 +3734,11 @@ export default function (api) {
     registerLinksHttpRoutes(api);
     // ── SharePoint HTTP API (Sprint 10) ──────────────────────────────────────
     registerSharePointHttpRoutes(api);
+    // ── Wiki HTTP API + Agententools (Nuveon-Ablösung) ───────────────────────
+    // Die Tools wiki_search/wiki_read sind ausschließlich lesend und liefern
+    // niemals als sensibel markierte Seiten (Filter in src/modules/wiki/store.ts).
+    registerWikiHttpRoutes(api);
+    registerWikiTools(api);
     // ── Instagram Inbox HTTP API (E2b) ──────────────────────────────────────
     registerInboxHttpRoute(api);
     // ── Instagram Edit Queue HTTP API (E4a) ────────────────────────────────
@@ -3893,6 +3899,16 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[memory] Migration failed: ${e.message}`);
+        }
+        // ── Wiki Migrations (Nuveon-Ablösung) ─────────────────────────────────
+        try {
+            const wikiMigrationsDir = path.join(__dirname, 'src/modules/wiki/migrations');
+            const wikiApplied = await runMigrations(wikiMigrationsDir, 'wiki');
+            if (wikiApplied > 0)
+                api.logger.info(`[wiki] Applied ${wikiApplied} migration(s)`);
+        }
+        catch (e) {
+            api.logger.error(`[wiki] Migration failed: ${e.message}`);
         }
         // ── Instagram Edit Queue Recovery (E4a) ────────────────────────────────
         try {
