@@ -4,6 +4,32 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-03 (später) — Quellwiki bei Nuveon geleert
+
+Nach dem verifizierten Import wurde das Quellwiki auf Owner-Direktive geleert. Report:
+`~/bikosoc-spec/report-nuveon-loeschung-20261003-*.md`, Löschliste:
+`~/bikosoc-spec/nuveon-loeschliste-20261003.md`.
+
+Neu: `scripts/wiki-import/nuveon-purge.ts` — die einzige Stelle im Repo, die gegenüber
+Nuveon schreibend arbeitet. Der Importer bleibt strikt lesend.
+
+Vor dem ersten Löschen geprüft und belegt: Import vollständig (48 = Index 86 − 38), alle
+139 Anhänge mit sha256 lokal, `_raw/` vollständig (48/48), Borg-Umfang erfasst, und ein
+frischer Tageslauf `daily-2026-10-03_210520`, in dem **187 von 187** Originaldateien
+einzeln nachgewiesen sind.
+
+Ergebnis: 139 Anhänge, 48 Inhaltsseiten, 27 Systemseiten gelöscht, 0 Fehler. Verbleibend
+10 Seiten (3 Passwortseiten laut Ausnahme, 5 beim Import leere Seiten ohne lokales
+Gegenstück, 2 von JSPWiki geschützte Systemseiten), 0 Anhänge. Unabhängig nachgeprüft
+durch Einzelabfrage aller 86 Originalnamen.
+
+Eine Lücke im eigenen Schutz: der Abgleich „kein Löschen ohne lokale Kopie" wirkt je
+Eintrag, nicht über die Trägerbeziehung. `LeftMenuLogo/Logo151.gif` wurde als Anhang
+übersprungen, die Trägerseite danach als Systemseite gelöscht — und nahm den Anhang mit.
+Betroffen war das Skin-Logo, kein Inhalt des Eigentümers. In ARCHITECTURE.md §15 vermerkt.
+
+---
+
 ## Stand 2026-10-03 — Wiki-Import durchgeführt; Prompt-Inbox schickte nie ab
 
 Zwei Arbeitspakete. Report: `~/bikosoc-spec/report-wiki-migration-20261003-*.md`.

@@ -388,9 +388,10 @@ nk-trigger-Endpoint gesichert, n8n-Workflow als Backlog.
 
 ## 15. Wiki-Modul (Ablösung Nuveon/JSPWiki)
 
-**Status:** Abgeschlossen (2026-10-03). Modul, Oberfläche, Agententools **und der
-Datenimport** sind verifiziert. 48 Inhaltsseiten, 139 Anhänge (5,16 GB). Nuveon ist
-damit ablösbar.
+**Status:** Abgeschlossen (2026-10-03). Modul, Oberfläche, Agententools und der
+Datenimport sind verifiziert. 48 Inhaltsseiten, 139 Anhänge (4,9 GB). **Das Quellwiki bei
+Nuveon ist geleert** — bis auf die drei Passwortseiten, die der Eigentümer selbst
+überträgt. Der Vertrag ist kündbar.
 
 **Anlass.** Das private Wiki lag als gehostetes JSPWiki 2.8.4 bei Nuveon
 (`https://asp.nuveon.de/biko/`, letzte inhaltliche Änderung 2016). Ziel ist die
@@ -591,6 +592,37 @@ Medienaufbereitung: Rasterbilder (auch TIF) → `vipsthumbnail`, PDFs → `pdfto
 Anhänge behalten ihren **Originaldateinamen** statt des Schemas `YYMMDD-<kontext>-NN`.
 Grund: der Dateiname ist im Wiki Teil der Identität und wird aus dem Seitentext
 verlinkt; eine Umbenennung würde die konvertierten Links brechen.
+
+### Leerung des Quellwikis (2026-10-03)
+
+`scripts/wiki-import/nuveon-purge.ts` ist die **einzige** Stelle im Repo, die gegenüber
+Nuveon schreibend arbeitet; der Importer bleibt strikt lesend. Grundlage war die
+Owner-Direktive vom 2026-10-03, die die Stop-Condition „strikt lesend" für genau diesen
+Zweck aufhob.
+
+Gelöscht über die reguläre Löschfunktion von JSPWiki
+(`POST /biko/Delete.jsp?page=<Ziel>` mit `delete-all`), sequenziell mit Pause, nie
+parallel. Ergebnis: 139 Anhänge, 48 Inhaltsseiten, 27 Systemseiten; 0 Fehler.
+Verbleibend 10 Seiten (3 Passwortseiten, 5 beim Import leere Seiten, 2 von JSPWiki
+geschützte Systemseiten), 0 Anhänge.
+
+Schutzmaßnahmen im Code, in dieser Reihenfolge wirksam:
+
+1. Vor jeder einzelnen Löschung wird die lokale Kopie geprüft — bei Anhängen der
+   **sha256 der Datei auf der Platte** gegen den Datenbankwert, bei Seiten die Existenz
+   in `wiki_pages`. Schlägt das fehl, bleibt der Eintrag stehen.
+2. Passwortseiten sind über `PASSWORD_PAGES` ausgenommen.
+3. Anhänge zuerst, dann Seiten — eine gelöschte Seite nimmt ihre Anhänge mit, die
+   umgekehrte Reihenfolge würde den Einzelnachweis je Anhang verlieren.
+4. Wiederaufnahmefähig über `_state/purge-state.json`.
+5. Abbruch nach zwei gleichartigen Fehlern.
+
+**Bekannte Lücke in Punkt 1.** Der Schutz greift je Eintrag, nicht über die
+Trägerbeziehung: `LeftMenuLogo/Logo151.gif` wurde als Anhang übersprungen (kein lokales
+Gegenstück), die Trägerseite `LeftMenuLogo` danach aber als Systemseite gelöscht — und
+nahm den Anhang mit. Betroffen war das Logo des JSPWiki-Skins, kein Inhalt des
+Eigentümers. Wer das Skript wiederverwendet, sollte vor dem Löschen einer Seite prüfen,
+ob an ihr ein übersprungener Anhang hängt.
 
 ### MIME-Typ für DXF und DWG
 
