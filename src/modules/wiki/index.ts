@@ -8,7 +8,7 @@
  * werden (ESLint-Regel no-deep-module-import).
  */
 export {
-  convertJspWikiToMarkdown, slugify, titleFromPageName,
+  convertJspWikiToMarkdown, slugify, normalizePageName, titleFromPageName,
   deriveCategory, detectSensitive, WIKI_CATEGORIES,
 } from './convert.js';
 export type { ConvertOptions, ConvertResult, WikiCategory } from './convert.js';
@@ -28,10 +28,11 @@ export { registerWikiTools } from './tools.js';
 
 export {
   parsePageIndex, parseAttachmentIndex, extractRawMarkup, parsePageMeta,
-  extractRenderedContent, looksLikeLoginPage, skipReason, parseSizeText,
+  extractRenderedContent, looksLikeLoginPage, looksLikeMissingPage, skipReason, parseSizeText,
   decodeHtmlEntities, stripTags, SYSTEM_PAGES, PASSWORD_PAGES,
+  parseAttachmentInfo,
 } from './nuveon-parsers.js';
-export type { AttachmentIndexEntry } from './nuveon-parsers.js';
+export type { AttachmentIndexEntry, AttachmentInfo } from './nuveon-parsers.js';
 
 export { readNuveonCredentials } from './nuveon-credentials.js';
 export type { NuveonCredentials } from './nuveon-credentials.js';

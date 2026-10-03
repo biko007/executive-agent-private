@@ -37,7 +37,7 @@ import {
   PASSWORD_PAGES, type AttachmentIndexEntry,
   convertJspWikiToMarkdown, slugify, titleFromPageName, deriveCategory, detectSensitive,
   upsertImportedPage, upsertAttachment, getPageIdBySlug,
-  readNuveonCredentials,
+  readNuveonCredentials, parseAttachmentInfo, normalizePageName,
 } from '../../src/modules/wiki/index.js';
 import { closePool } from '../../src/shared/db/index.js';
 
@@ -96,6 +96,10 @@ interface Summary {
   pdfTextsExtracted: number;
   rawMarkupUnavailable: string[];
   sizeMismatches: AttachmentProblem[];
+  /** Anhänge, deren Infoseite keine Größe lieferte (Abgleich nicht möglich). */
+  sizeUnverifiable: AttachmentProblem[];
+  /** Anhänge, bei denen empfangene Bytes == Content-Length == Infoseiten-Größe. */
+  sizeVerified: number;
   diskFreeBytesAtStart: number;
 }
 
@@ -133,7 +137,13 @@ const MIME_BY_EXT: Record<string, string> = {
   '.pdf': 'application/pdf',
   '.tif': 'image/tiff', '.tiff': 'image/tiff',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
-  '.zip': 'application/zip', '.dxf': 'image/vnd.dxf', '.dwg': 'image/vnd.dwg',
+  '.zip': 'application/zip',
+  // DXF/DWG sind Vektor-CAD-Formate. Die formal gültigen Typen image/vnd.dxf
+  // und image/vnd.dwg wären hier schädlich: alles unter image/* landet im
+  // Dashboard in der Bildergalerie und wird dort als Vorschaubild erwartet —
+  // beides scheitert, weil kein Rasterbildwandler DXF lesen kann. Laut Auftrag
+  // §5.4 werden DXF und ZIP ohnehin nur abgelegt und zum Download angeboten.
+  '.dxf': 'application/dxf', '.dwg': 'application/acad',
   '.txt': 'text/plain', '.csv': 'text/csv',
   '.doc': 'application/msword',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -298,7 +308,9 @@ class ReadOnlyWikiClient {
   }
 
   /** Lesende Anfrage; liefert Binärdaten. */
-  async getBinary(path: string): Promise<{ status: number; data: Buffer; lastModified: string | null }> {
+  async getBinary(path: string): Promise<{
+    status: number; data: Buffer; lastModified: string | null; contentLength: number | null;
+  }> {
     await this.acquire();
     try {
       const res = await fetch(`${BASE_URL}${path}`, {
@@ -312,7 +324,15 @@ class ReadOnlyWikiClient {
       });
       this.captureCookies(res);
       const buffer = Buffer.from(await res.arrayBuffer());
-      return { status: res.status, data: buffer, lastModified: res.headers.get('last-modified') };
+      const declaredLength = res.headers.get('content-length');
+      return {
+        status: res.status,
+        data: buffer,
+        lastModified: res.headers.get('last-modified'),
+        // Vom Server angekündigte Länge — unabhängige Gegenprobe zur
+        // tatsächlich empfangenen Bytezahl (erkennt Abbrüche mitten im Strom).
+        contentLength: declaredLength === null ? null : Number(declaredLength),
+      };
     } finally {
       this.release();
       await sleep(REQUEST_PAUSE_MS);
@@ -426,6 +446,22 @@ async function main(): Promise<number> {
   await mkdir(STATE_DIR, { recursive: true });
   const state = await loadState();
 
+  // Bei einem Teillauf (--pages-only) die Anhangzahlen des vorherigen Laufs
+  // übernehmen. Sonst beschreibt die Zusammenfassung nur den letzten Durchgang
+  // und behauptet 0 Anhänge, obwohl sie längst importiert sind — der
+  // Zählerabgleich in verify.ts schlägt dann fälschlich an.
+  let vorher: Partial<Summary> = {};
+  if (PAGES_ONLY) {
+    try {
+      vorher = JSON.parse(await readFile(SUMMARY_FILE, 'utf-8')) as Partial<Summary>;
+      if (vorher.attachmentsDownloaded) {
+        log(`Teillauf: Anhangzahlen des vorherigen Laufs übernommen (${vorher.attachmentsDownloaded} Anhänge).`);
+      }
+    } catch {
+      // Keine frühere Zusammenfassung — dann bleiben die Anhangzahlen bei 0.
+    }
+  }
+
   const summary: Summary = {
     finishedAt: '',
     dryRun: DRY_RUN,
@@ -436,13 +472,15 @@ async function main(): Promise<number> {
     sensitivePages: [],
     removedPlugins: {},
     attachmentsInIndex: 0,
-    attachmentsDownloaded: 0,
-    attachmentsSkipped: [],
-    attachmentBytes: 0,
-    previewsCreated: 0,
-    pdfTextsExtracted: 0,
+    attachmentsDownloaded: vorher.attachmentsDownloaded ?? 0,
+    attachmentsSkipped: vorher.attachmentsSkipped ?? [],
+    attachmentBytes: vorher.attachmentBytes ?? 0,
+    previewsCreated: vorher.previewsCreated ?? 0,
+    pdfTextsExtracted: vorher.pdfTextsExtracted ?? 0,
     rawMarkupUnavailable: [],
-    sizeMismatches: [],
+    sizeMismatches: vorher.sizeMismatches ?? [],
+    sizeUnverifiable: vorher.sizeUnverifiable ?? [],
+    sizeVerified: vorher.sizeVerified ?? 0,
     diskFreeBytesAtStart: freeBytes,
   };
 
@@ -479,9 +517,26 @@ async function main(): Promise<number> {
     attachmentsByPage.set(entry.pageName, list);
   }
 
-  // 6. Seiten importieren
+  // ── 6. Seiten: zwei Durchgänge ───────────────────────────────────────────
+  //
+  // Erst alles lesen, dann umwandeln und schreiben. Grund: die Umwandlung muss
+  // wissen, welche Seiten es am Ende wirklich gibt, sonst entstehen Links auf
+  // Slugs ohne Seite. JSPWiki löst Ziele namensnormalisiert auf — `[[IP
+  // Adressen L19]]` und die Seite `IPAdressenL19` sind dasselbe Ziel. Am echten
+  // Bestand entstanden ohne diesen Schritt 22 tote interne Links.
   const pageIdBySlug = new Map<string, number>();
 
+  interface GeleseneSeite {
+    pageName: string;
+    slug: string;
+    markup: string;
+    markupIsRendered: boolean;
+    author: string | null;
+    modifiedAt: Date | null;
+  }
+  const gelesen: GeleseneSeite[] = [];
+
+  // ── Durchgang 1: lesen und über Aufnahme entscheiden ─────────────────────
   for (const pageName of pageNames) {
     // Passwort- und Systemseiten werden gar nicht erst angefragt.
     const earlySkip = skipReason(pageName, null);
@@ -491,11 +546,6 @@ async function main(): Promise<number> {
     }
 
     const slug = slugForPage(pageName);
-
-    if (state.pages[pageName] && !DRY_RUN) {
-      log(`Seite ${pageName} bereits importiert — übersprungen (Wiederaufnahme).`);
-      continue;
-    }
 
     // Rohmarkup über die Editor-Seite lesen (nur GET, nie absenden).
     const editResponse = await client.get(
@@ -524,45 +574,68 @@ async function main(): Promise<number> {
     const modifiedAt = parseGermanDate(meta.dateText)
       ?? (view.lastModified ? new Date(view.lastModified) : null);
 
-    const attachmentNames = (attachmentsByPage.get(pageName) ?? []).map((a) => a.filename);
-    const { markdown, removedPlugins } = convertJspWikiToMarkdown(markup, {
-      pageName,
-      pageSlug: slug,
+    gelesen.push({
+      pageName, slug, markup, markupIsRendered,
+      author: meta.author, modifiedAt,
+    });
+  }
+
+  // Auflösungstabelle aus den Seiten, die es am Ende wirklich gibt.
+  const slugByNormalized = new Map<string, string>();
+  for (const seite of gelesen) {
+    slugByNormalized.set(normalizePageName(seite.pageName), seite.slug);
+  }
+  /** Linkziel → Slug einer vorhandenen Seite, oder null (dann kein Link). */
+  const resolvePage = (name: string): string | null =>
+    slugByNormalized.get(normalizePageName(name)) ?? null;
+
+  log(`Durchgang 1 beendet: ${gelesen.length} Inhaltsseiten gelesen.`);
+
+  // ── Durchgang 2: umwandeln und schreiben ─────────────────────────────────
+  for (const seite of gelesen) {
+    const attachmentNames = (attachmentsByPage.get(seite.pageName) ?? []).map((a) => a.filename);
+    const { markdown, removedPlugins } = convertJspWikiToMarkdown(seite.markup, {
+      pageName: seite.pageName,
+      pageSlug: seite.slug,
       attachmentNames,
       slugForPage,
+      resolvePage,
     });
     for (const plugin of removedPlugins) {
       summary.removedPlugins[plugin] = (summary.removedPlugins[plugin] ?? 0) + 1;
     }
 
-    const title = titleFromPageName(pageName);
+    const title = titleFromPageName(seite.pageName);
     const category = deriveCategory(title, markdown);
     const sensitive = detectSensitive(title, markdown);
-    if (sensitive) summary.sensitivePages.push(pageName);
+    if (sensitive) summary.sensitivePages.push(seite.pageName);
 
     // Rohdaten unverändert sichern — Beweisstück für spätere Nachprüfung.
-    const rawFile = join(RAW_DIR, `${slug}${markupIsRendered ? '.rendered.txt' : '.jspwiki.txt'}`);
-    if (!DRY_RUN) await writeFile(rawFile, markup, 'utf-8');
+    const rawFile = join(
+      RAW_DIR,
+      `${seite.slug}${seite.markupIsRendered ? '.rendered.txt' : '.jspwiki.txt'}`,
+    );
+    if (!DRY_RUN) await writeFile(rawFile, seite.markup, 'utf-8');
 
     if (!DRY_RUN) {
       const pageId = await upsertImportedPage({
-        slug,
+        slug: seite.slug,
         title,
         category,
         bodyMd: markdown,
-        sourceMarkup: markup,
+        sourceMarkup: seite.markup,
         sensitive,
-        sourcePageName: pageName,
-        sourceAuthor: meta.author,
-        sourceModifiedAt: modifiedAt,
+        sourcePageName: seite.pageName,
+        sourceAuthor: seite.author,
+        sourceModifiedAt: seite.modifiedAt,
       });
-      pageIdBySlug.set(slug, pageId);
-      state.pages[pageName] = { slug, at: new Date().toISOString() };
+      pageIdBySlug.set(seite.slug, pageId);
+      state.pages[seite.pageName] = { slug: seite.slug, at: new Date().toISOString() };
       await saveState(state);
     }
 
     summary.pagesImported++;
-    log(`Seite ${summary.pagesImported}: ${pageName} → ${slug} (${category}${sensitive ? ', sensibel' : ''})`);
+    log(`Seite ${summary.pagesImported}: ${seite.pageName} → ${seite.slug} (${category}${sensitive ? ', sensibel' : ''})`);
   }
 
   // 7. Anhänge
@@ -602,6 +675,22 @@ async function main(): Promise<number> {
       const absPath = join(WIKI_DIR, relPath);
       await mkdir(dirname(absPath), { recursive: true });
 
+      // Metadaten der Infoseite zuerst: Größe, Datum, Autor. Rein lesend.
+      let info: Awaited<ReturnType<typeof parseAttachmentInfo>> | null = null;
+      try {
+        // Seitenname und Dateiname getrennt kodieren — der Schrägstrich
+        // dazwischen muss literal bleiben. `encodeURIComponent` über den
+        // zusammengesetzten Pfad macht daraus %2F, und JSPWiki findet den
+        // Anhang dann nicht (am 2026-10-03 die Ursache dafür, dass alle 139
+        // Größenabgleiche als „nicht prüfbar" endeten).
+        const infoPfad = `${encodeURIComponent(entry.pageName)}/${encodeURIComponent(entry.filename)}`;
+        const infoRes = await client.get(`${WIKI_PATH}/PageInfo.jsp?page=${infoPfad}`);
+        if (infoRes.status === 200) info = parseAttachmentInfo(infoRes.body);
+      } catch {
+        // Fehlende Infoseite ist nicht fatal — der Abgleich wird dann als
+        // nicht durchführbar vermerkt, statt den Anhang zu überspringen.
+      }
+
       const response = await client.getBinary(
         `${WIKI_PATH}/attach/${encodeURIComponent(entry.pageName)}/${encodeURIComponent(entry.filename)}`,
       );
@@ -617,17 +706,40 @@ async function main(): Promise<number> {
       const sha256 = createHash('sha256').update(response.data).digest('hex');
       const size = response.data.length;
 
-      // Größenvergleich gegen den Index, wo eine Angabe vorlag. Die Angabe im
-      // Index ist gerundet ("12.4 kB"), daher 2 % Toleranz.
-      if (entry.size !== null) {
-        const tolerance = Math.max(1024, entry.size * 0.02);
-        if (Math.abs(size - entry.size) > tolerance) {
+      // ── Größenabgleich in zwei Stufen ──────────────────────────────────
+      // Der AnhangIndex dieses Skins führt nur Namen, keine Größen. Belastbare
+      // Quelle ist PageInfo.jsp; zusätzlich prüft die Content-Length-Kopfzeile
+      // den Strom auf Abbruch.
+      let abgleichVollstaendig = true;
+
+      if (response.contentLength !== null && response.contentLength !== size) {
+        summary.sizeMismatches.push({
+          page: entry.pageName, filename: entry.filename,
+          problem: `Content-Length ${response.contentLength} vs. empfangen ${size} Byte`,
+        });
+        abgleichVollstaendig = false;
+      }
+
+      // Angabe der Infoseite: auf 0,1 kB gerundet, daher 100 Byte Toleranz.
+      const deklariert = info?.size ?? entry.size;
+      const deklariertText = info?.sizeText ?? entry.sizeText;
+      if (deklariert !== null && deklariert !== undefined) {
+        if (Math.abs(size - deklariert) > 100) {
           summary.sizeMismatches.push({
             page: entry.pageName, filename: entry.filename,
-            problem: `Index ${entry.sizeText ?? entry.size} vs. geladen ${size} Byte`,
+            problem: `Infoseite ${deklariertText ?? deklariert} vs. geladen ${size} Byte`,
           });
+          abgleichVollstaendig = false;
         }
+      } else {
+        summary.sizeUnverifiable.push({
+          page: entry.pageName, filename: entry.filename,
+          problem: 'Infoseite ohne Größenangabe',
+        });
+        abgleichVollstaendig = false;
       }
+
+      if (abgleichVollstaendig) summary.sizeVerified++;
 
       // Medienaufbereitung
       let previewPath: string | null = null;
@@ -664,8 +776,8 @@ async function main(): Promise<number> {
         previewPath,
         thumbPath,
         textContent,
-        sourceAuthor: entry.author,
-        sourceModifiedAt: parseGermanDate(entry.dateText)
+        sourceAuthor: info?.author ?? entry.author,
+        sourceModifiedAt: parseGermanDate(info?.dateText ?? entry.dateText)
           ?? (response.lastModified ? new Date(response.lastModified) : null),
       });
 
@@ -690,6 +802,7 @@ async function main(): Promise<number> {
   log(`Anhänge im Index: ${summary.attachmentsInIndex}`);
   log(`Anhänge geladen: ${summary.attachmentsDownloaded} (${(summary.attachmentBytes / 1024 / 1024).toFixed(1)} MB)`);
   log(`Vorschauen: ${summary.previewsCreated}, PDF-Texte: ${summary.pdfTextsExtracted}`);
+  log(`Größe bestätigt: ${summary.sizeVerified}, Abweichungen: ${summary.sizeMismatches.length}, nicht prüfbar: ${summary.sizeUnverifiable.length}`);
   log(`Zusammenfassung: ${SUMMARY_FILE}`);
 
   return 0;

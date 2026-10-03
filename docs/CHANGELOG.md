@@ -4,6 +4,76 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-03 — Wiki-Import durchgeführt; Prompt-Inbox schickte nie ab
+
+Zwei Arbeitspakete. Report: `~/bikosoc-spec/report-wiki-migration-20261003-*.md`.
+
+### A — Nuveon-Import abgeschlossen
+
+48 Inhaltsseiten und 139 Anhänge (5,16 GB) importiert und verifiziert; Nuveon ist
+ablösbar. Beim Import traten sechs Fehler im eigenen Code zutage, die der Probelauf
+gegen Fixtures nicht zeigen konnte — alle am echten Bestand gefunden und behoben:
+
+1. **Falsches `textarea`.** Die Editor-Seite führt drei; nur `name="_editedtext"` trägt
+   den Inhalt. Mit dem ersten fielen **41 von 57** Seiten in den HTML-Fallback und wären
+   als Fließtext statt als Markup importiert worden.
+2. **Falscher Markup-Dialekt.** Das Wiki läuft mit **Creole**, nicht klassischem JSPWiki.
+   Entscheidend: `[[Ziel|Text]]` stellt das Ziel voran, `[Text|Ziel]` den Text — jeder
+   Link wäre verdreht worden. Erhoben über alle 81 Seiten mit Inhalt (298 Creole-Links
+   gegen 40 klassische, 78 Creole-Überschriften gegen 1). Details: ARCHITECTURE.md §15.
+3. **Sensibel-Erkennung mit Lücke.** Mehrere Seiten führen Zugangsdaten in Tabellen mit
+   der Spalte `| PW|`. Die Erkennung verlangte `PW:` oder `PW=` und hätte diese Seiten
+   als unbedenklich an das Sprachmodell gegeben. Jetzt 11 statt 4 sensible Seiten.
+4. **22 tote interne Links.** JSPWiki löst Seitennamen normalisiert auf
+   (`[[IP Adressen L19]]` = Seite `IPAdressenL19`). Behoben über `normalizePageName()`
+   und einen Zweipass-Import, der den endgültigen Seitenbestand kennt. Ziele, die es
+   nicht gibt, werden jetzt als Text ohne Link gerendert.
+5. **Größenabgleich unmöglich.** Der AnhangIndex führt nur Namen. Quelle ist
+   `PageInfo.jsp`; dabei zwei Fallstricke: JSPWiki rechnet **dezimal** (kB = 1000 Byte,
+   an zwei Dateien gegengeprüft), und vor der gesuchten Tabelle steht die Upload-Maske,
+   die „Size" ebenfalls enthält. Jetzt alle 139 Größen gegen die Quelle bestätigt.
+6. **DXF als Bild eingestuft.** `image/vnd.dxf` ist formal richtig, hätte aber die
+   Bildergalerie des Dashboards mit sechs unlesbaren Vorschauen gefüllt. Jetzt
+   `application/dxf` — Ablage und Download, wie im Auftrag vorgesehen.
+
+Neu: `scripts/wiki-import/verify.ts` prüft einen abgeschlossenen Import nach (Zähler,
+sha256, Größe gegen die Quelle, Vorschauen, PDF-Texte), `--offline` ohne Quellzugriff.
+
+### B — Prompt-Inbox und `/do` schickten den Auftrag nie ab
+
+`tmux send-keys -t bikosoc -- "<text>" Enter` übergibt Text und Wagenrücklauf in **einem**
+Leseschub. Gegen eine Shell ist das gleichwertig — deshalb sah die bisherige Testlage
+(die gegen eine Shell prüfte) nichts. Eine TUI wie Claude Code unterscheidet: ein Schub
+aus Text **und** Wagenrücklauf ist ein Einfügevorgang und erzeugt einen Zeilenumbruch im
+Eingabefeld; erst ein Wagenrücklauf in einem **eigenen** Schub ist ein Tastendruck.
+
+Im Rohmodus nachgemessen:
+
+```
+ein send-keys-Aufruf   → ein Schub:   "PROMPT-A\r"   (9 Byte)
+zwei send-keys-Aufrufe → zwei Schübe: "PROMPT-B", dann "\r"
+```
+
+Folge: Datei-Drops nach `~/inbox/` und `/do <text>` trugen den Auftrag ein, schickten ihn
+aber nicht ab. Der Poller verschob die Datei trotzdem nach `done/` und meldete „Prompt
+uebergeben" — der Auftrag blieb unbemerkt liegen. Belegt durch
+`~/inbox/done/2026-10-03T19-51-20-907Z-wiki-import.txt`: verarbeitet, nie ausgeführt.
+
+Behoben in `cc-prompt-dispatch`: zwei getrennte Aufrufe mit 400 ms Pause. Denselben
+Zweischritt verwendet der Bypass-Pfad in `index.ts` seit Längerem — die Prompt-Übergabe
+hatte ihn nur nie bekommen.
+
+**Drei bestehende Tests schrieben das defekte Verhalten fest** und sind korrigiert
+(`cc-prompt-dispatch`, `prompt-inbox`, `arm-push`). Neu: E2E-Test über echtes tmux mit
+Gegenprobe (das alte Muster führt nachweislich NICHT aus) und 16 Non-Owner-Negativtests
+für die Kontrollfläche (C7).
+
+**C7-Hinweis:** Teil B berührt eine Kontrollfläche und ist damit REVIEW-pflichtig —
+Owner-Freigabe vor Push, auch wenn der Auftrag AUTO lautete (Präzedenz: Hard Rules über
+Auftragsklassen).
+
+---
+
 ## Stand 2026-09-28 — Modul `wiki`: Ablösung des JSPWiki bei Nuveon
 
 Neues Modul `wiki` (Schema-Version 1) mit Dashboard-Oberfläche und zwei Nur-Lese-Agententools.

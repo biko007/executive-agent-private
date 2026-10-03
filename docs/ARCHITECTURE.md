@@ -388,14 +388,68 @@ nk-trigger-Endpoint gesichert, n8n-Workflow als Backlog.
 
 ## 15. Wiki-Modul (Ablösung Nuveon/JSPWiki)
 
-**Status:** Modul, Oberfläche und Agententools stehen und sind verifiziert (2026-09-28).
-Der Datenimport aus Nuveon ist noch offen — er wartet auf die Zugangsdaten.
+**Status:** Abgeschlossen (2026-10-03). Modul, Oberfläche, Agententools **und der
+Datenimport** sind verifiziert. 48 Inhaltsseiten, 139 Anhänge (5,16 GB). Nuveon ist
+damit ablösbar.
 
 **Anlass.** Das private Wiki lag als gehostetes JSPWiki 2.8.4 bei Nuveon
-(`https://asp.nuveon.de/biko/`, letzte inhaltliche Änderung 2016): rund 80 Seiten,
-139 Anhänge, ca. 5,2 GB, davon ca. 5 GB TIF-Fotos. Ziel ist die Ablösung des
-Fremdhostings — Inhalte in `openclaw_core`, Dateien im bestehenden Artefaktbaum,
-Bedienung im Dashboard, Lesezugriff für Hans_Dampf.
+(`https://asp.nuveon.de/biko/`, letzte inhaltliche Änderung 2016). Ziel ist die
+Ablösung des Fremdhostings — Inhalte in `openclaw_core`, Dateien im bestehenden
+Artefaktbaum, Bedienung im Dashboard, Lesezugriff für Hans_Dampf.
+
+**Tatsächlicher Bestand** (erhoben beim Import am 2026-10-03, nicht geschätzt):
+
+| Position | Zahl |
+|---|---|
+| Namen im Seitenindex | 86 |
+| davon importiert | **48** |
+| übersprungen | 38 (29 System-/Hilfeseiten, 3 Passwortseiten, 5 leer bzw. verwaist) |
+| als sensibel markiert | 11 |
+| Anhänge im AnhangIndex | 140 |
+| davon importiert | **139** (1 Logo auf einer Systemseite entfällt) |
+| Datenmenge | 5,16 GB (68 TIF, 63 PDF, 6 DXF, 2 ZIP) |
+
+### Markup-Dialekt: Creole, nicht klassisches JSPWiki
+
+Das Quellwiki läuft mit dem **Creole**-Parser. Erhoben über das Rohmarkup aller
+81 Seiten mit Inhalt:
+
+| Form | Creole | klassisch |
+|---|---|---|
+| Links | `[[Ziel\|Text]]`, `[[Ziel]]` — 298 | `[Text\|Ziel]` — 40, meist Textklammern wie `[1]` |
+| fett | `**x**` — 67 | `__x__` — 1 |
+| kursiv | `//x//` — 6 | `''x''` — 3 |
+| Überschrift | `=` … `====` — 78 | `!` … `!!!` — 1 |
+| Plugins | `<<Name …>>` | `[{Name …}]` — 0 |
+
+Der folgenschwerste Unterschied: **Creole stellt das Ziel voran.** Eine Verwechslung
+dreht jeden Link um. Beide Formen werden unterstützt, Creole hat Vorrang.
+
+Vier Festlegungen folgen dem, was JSPWiki **tatsächlich ausliefert** — geprüft am
+gerenderten HTML, nicht an der Creole-Spezifikation:
+
+1. `**text` am Zeilenanfang ist **fett**, keine zweite Listenebene. Die Spezifikation
+   sähe `**` als Listenebene 2; dieses JSPWiki rendert `<b>`.
+2. Ein **leeres** Fett-Paar (`****text`) ist in JSPWiki `<b></b>` und damit wirkungslos.
+   Markdown kennt das nicht und würde vier Sterne anzeigen — also entfernen.
+3. `** text` (Markierung, dann Leerzeichen) ist in JSPWiki fett; in Markdown muss die
+   Markierung am Wort kleben, das Leerzeichen wandert davor.
+4. Tabellen ohne `|=`-Zellen bekommen eine **leere** Markdown-Kopfzeile. JSPWiki rendert
+   dort durchgehend `<td>`. Die erste Zeile zur Kopfzeile zu erklären wäre bei
+   Beschriftungstabellen wie „Gruppenadresse | Datei.pdf" sachlich falsch; Markdown
+   verlangt aber eine Kopfzeile. Das Dashboard blendet eine leere Kopfzeile aus.
+
+### Namensauflösung bei internen Links
+
+JSPWiki löst Seitennamen **normalisiert** auf: `[[IP Adressen L19]]` und die Seite
+`IPAdressenL19` sind dasselbe Ziel. `normalizePageName()` bildet das nach (Leerzeichen,
+Unterstriche, Bindestriche, Punkte und Groß-/Kleinschreibung fallen weg). Ohne diesen
+Schritt entstanden am echten Bestand **22 tote interne Links**.
+
+Der Importer arbeitet deshalb in **zwei Durchgängen**: erst alle Seiten lesen und über
+die Aufnahme entscheiden, dann umwandeln und schreiben. Nur so kennt die Umwandlung den
+endgültigen Seitenbestand. Ein Ziel, das es nicht gibt (Passwortseite, Systemseite, leere
+Seite), wird als **Text ohne Link** gerendert statt als Verweis ins Leere.
 
 ### Tabellen (Modul `wiki`, Version 1)
 
@@ -501,6 +555,23 @@ Die HTML-Parser liegen bewusst im Modul (`src/modules/wiki/nuveon-parsers.ts`), 
 Skriptordner: so erfassen Build-Gate, ESLint und Test-Runner sie mit. Gleiches gilt für
 `nuveon-credentials.ts`.
 
+**Größenabgleich.** Der AnhangIndex dieses Skins führt **nur Namen**, keine Größen —
+alle 140 Einträge dort sind ohne Größenangabe. Belastbare Quelle ist
+`PageInfo.jsp?page=<Seite>/<Datei>` (Größe, Datum, Autor, Version). Zwei Fallstricke
+dabei, beide am echten Bestand aufgefallen:
+
+- **JSPWiki rechnet dezimal** (kB = 1000 Byte). Gegengeprüft: `Tools.zip` meldet
+  „1532.6 kB" bei exakt 1.532.597 Byte, `Biko-Haus-2729.tif` „126183.7 kB" bei
+  126.183.728 Byte. Mit dem Faktor 1024 lägen alle Vergleiche um 2,4 % daneben.
+- Vor der gesuchten Tabelle steht die **Upload-Maske**, die das Wort „Size" ebenfalls
+  enthält. Eine Tabellensuche nach „Size" greift die falsche — deshalb wird die Tabelle
+  über die Kopfzeilen `size` **und** `version` identifiziert.
+
+Zusätzlich prüft die `Content-Length`-Kopfzeile des Downloads den Strom auf Abbruch.
+`scripts/wiki-import/verify.ts` führt alle Prüfungen zusammen (Zähler, sha256 gegen die
+Datei auf der Platte, Größe gegen die Infoseiten, Vorschauen, PDF-Texte);
+`--offline` lässt den Quellwiki-Teil weg.
+
 **Zugangsdaten.** `~/.config/openclaw/nuveon-wiki.env` wird per Konvention mit
 `printf %q` geschrieben, damit die Datei mit `set -a; source …` verwendbar bleibt.
 `%q` zitiert shell-gerecht: aus `P&w!2026$x` wird `P\&w\!2026\$x`. Ein Parser, der
@@ -520,5 +591,13 @@ Medienaufbereitung: Rasterbilder (auch TIF) → `vipsthumbnail`, PDFs → `pdfto
 Anhänge behalten ihren **Originaldateinamen** statt des Schemas `YYMMDD-<kontext>-NN`.
 Grund: der Dateiname ist im Wiki Teil der Identität und wird aus dem Seitentext
 verlinkt; eine Umbenennung würde die konvertierten Links brechen.
+
+### MIME-Typ für DXF und DWG
+
+DXF/DWG werden als `application/dxf` bzw. `application/acad` geführt, **nicht** als die
+formal gültigen `image/vnd.dxf` / `image/vnd.dwg`. Begründung: alles unter `image/*`
+landet im Dashboard in der Bildergalerie und wird dort als Vorschaubild erwartet —
+beides scheitert bei einem Vektorformat, das kein Rasterbildwandler liest. Laut Auftrag
+werden DXF und ZIP ohnehin nur abgelegt und zum Download angeboten.
 
 ---
