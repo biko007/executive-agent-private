@@ -32,10 +32,16 @@ describe('prompt inbox', () => {
       runner,
     });
 
+    // Zwei Aufrufe: Text, dann Enter als eigener Tastendruck. Ein gemeinsamer
+    // Aufruf traegt den Auftrag nur ins Eingabefeld ein (Defekt 2026-10-03).
     expect(calls).toEqual([
       {
         file: 'tmux',
-        args: ['send-keys', '-t', 'bikosoc', '--', 'Bitte Status pruefen.', 'Enter'],
+        args: ['send-keys', '-t', 'bikosoc', '--', 'Bitte Status pruefen.'],
+      },
+      {
+        file: 'tmux',
+        args: ['send-keys', '-t', 'bikosoc', 'Enter'],
       },
     ]);
     expect(results).toHaveLength(1);

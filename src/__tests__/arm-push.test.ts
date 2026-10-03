@@ -187,10 +187,14 @@ describe('Dispatch geht ueber den echten /do-Helfer', () => {
     const calls: Array<{ file: string; args: string[] }> = [];
     const runner: TmuxRunner = (file, args) => { calls.push({ file, args }); };
 
-    sendPromptToBikosocTmux('push', { runner });
+    sendPromptToBikosocTmux('push', { runner, enterDelayMs: 0 });
 
+    // Zwei Aufrufe: Text, dann Enter (Fix 2026-10-03, siehe
+    // cc-prompt-dispatch/index.ts). Ohne den Zweischritt landet "push" nur im
+    // Eingabefeld und wird nicht abgeschickt.
     expect(calls).toEqual([
-      { file: 'tmux', args: ['send-keys', '-t', 'bikosoc', '--', 'push', 'Enter'] },
+      { file: 'tmux', args: ['send-keys', '-t', 'bikosoc', '--', 'push'] },
+      { file: 'tmux', args: ['send-keys', '-t', 'bikosoc', 'Enter'] },
     ]);
   });
 });
