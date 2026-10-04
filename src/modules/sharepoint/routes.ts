@@ -7,7 +7,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseJsonBody } from '../../util/body-parser.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
 import {
-  searchFiles, listSitesFromDb, listDrivesFromDb, listFilesFromDb,
+  searchFiles, listSitesFromDb, listDrivesFromDb, listFilesFromDb, countActiveFiles,
 } from './queries.js';
 import { query } from '../../shared/db/index.js';
 import { upsertSingleFileAfterUpload } from './store.js';
@@ -184,6 +184,32 @@ export function registerSharePointHttpRoutes(api: any) {
             return;
           }
           json(res, 200, result);
+          return;
+        }
+
+        // GET /api/sharepoint/sync-status (P1-1 — Datenstand fuer das Dashboard)
+        // Lesend. Liefert den letzten Synchronisationslauf, damit das Dashboard
+        // den Datenstand der Dokumentenliste nennen kann statt ihn zu verschweigen.
+        if (segments[0] === 'sync-status' && segments.length === 1 && req.method === 'GET') {
+          const { rows } = await query(
+            `SELECT started_at, finished_at, status, total_files, total_sites, total_drives, triggered_by
+             FROM sharepoint_sync_runs
+             ORDER BY started_at DESC
+             LIMIT 1`
+          );
+          const letzter = rows[0] || null;
+          const { rows: erfolgRows } = await query(
+            `SELECT finished_at
+             FROM sharepoint_sync_runs
+             WHERE status = 'success' AND finished_at IS NOT NULL
+             ORDER BY finished_at DESC
+             LIMIT 1`
+          );
+          json(res, 200, {
+            last_run: letzter,
+            last_success_at: erfolgRows[0]?.finished_at ?? null,
+            active_files: await countActiveFiles(),
+          });
           return;
         }
 

@@ -3144,37 +3144,67 @@ export default function (api) {
         path: '/api/system-status',
         handler: async (_req, res) => {
             try {
-                // 1. Service health from DB + live checks for Postgres and IB Gateway
+                const jetztIso = new Date().toISOString();
                 const serviceRows = await dbQuery('SELECT service, status, last_change FROM service_health').then(r => r.rows).catch(() => []);
                 const services = serviceRows.map(r => ({
                     name: r.service,
-                    status: r.status,
+                    status: (r.status === 'up' || r.status === 'down') ? r.status : 'unknown',
+                    // Achtung: das ist das Alter der DB-Zeile, keine gemessene Laufzeit.
                     uptime_seconds: r.status === 'up' && r.last_change
                         ? Math.round((Date.now() - new Date(r.last_change).getTime()) / 1000) : 0,
+                    source: 'db',
+                    checked_at: r.last_change ? new Date(r.last_change).toISOString() : jetztIso,
+                    last_change: r.last_change ? new Date(r.last_change).toISOString() : null,
                 }));
+                function setzeLiveZustand(eintrag) {
+                    const i = services.findIndex(s => s.name === eintrag.name);
+                    if (i >= 0)
+                        services[i] = eintrag;
+                    else
+                        services.push(eintrag);
+                }
                 // Live-check Postgres
                 let pgOk = false;
                 try {
                     await dbQuery('SELECT 1');
                     pgOk = true;
                 }
-                catch { }
-                const pgEntry = services.find(s => s.name === 'Postgres');
-                if (!pgEntry)
-                    services.push({ name: 'Postgres', status: pgOk ? 'up' : 'down', uptime_seconds: pgOk ? Math.round(process.uptime()) : 0 });
-                // Live-check IB Gateway (port 7497)
-                let ibOk = false;
+                catch { /* nicht erreichbar */ }
+                setzeLiveZustand({
+                    name: 'Postgres',
+                    status: pgOk ? 'up' : 'down',
+                    uptime_seconds: pgOk ? Math.round(process.uptime()) : 0,
+                    source: 'live',
+                    checked_at: jetztIso,
+                });
+                // Live-check IB Gateway ueber den Trading-Service (18793).
+                //
+                // P1-1: Vorher wurde `data.ibkr?.connected` gelesen. Der Trading-Service
+                // liefert `connected` auf oberster Ebene (trading-agent/src/index.ts),
+                // ein `ibkr`-Objekt gibt es nicht — der Wert war damit immer `undefined`
+                // und der Status dauerhaft "down", obwohl die Verbindung stand.
+                //
+                // Drei unterscheidbare Ergebnisse, damit "unbekannt" nie als Erfolg
+                // erscheint (Spec §4 B):
+                //   erreichbar + verbunden        -> up
+                //   erreichbar + nicht verbunden  -> down
+                //   Trading-Service nicht erreichbar -> unknown
+                let ibStatus = 'unknown';
                 try {
                     const r = await fetch('http://127.0.0.1:18793/health', { signal: AbortSignal.timeout(3000) });
                     if (r.ok) {
                         const data = await r.json();
-                        ibOk = data.ibkr?.connected === true;
+                        ibStatus = data.connected === true ? 'up' : 'down';
                     }
                 }
-                catch { }
-                const ibEntry = services.find(s => s.name === 'IB Gateway');
-                if (!ibEntry)
-                    services.push({ name: 'IB Gateway', status: ibOk ? 'up' : 'down', uptime_seconds: 0 });
+                catch { /* ibStatus bleibt 'unknown' */ }
+                setzeLiveZustand({
+                    name: 'IB Gateway',
+                    status: ibStatus,
+                    uptime_seconds: 0,
+                    source: 'live',
+                    checked_at: jetztIso,
+                });
                 // 2. Token expiry
                 const tokens = [];
                 try {

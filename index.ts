@@ -3430,35 +3430,86 @@ export default function (api: any) {
     path: '/api/system-status',
     handler: async (_req: any, res: any) => {
       try {
-        // 1. Service health from DB + live checks for Postgres and IB Gateway
+        // 1. Service health: gespeicherter Zustand aus der DB, ueberschrieben von
+        //    Live-Pruefungen fuer Postgres und IB Gateway.
+        //
+        //    P1-1: Vorher gewann die DB-Zeile, weil die Live-Pruefung nur bei
+        //    FEHLENDEM Eintrag angewandt wurde ("if (!entry) push"). Ein einmal
+        //    geschriebener Zustand blieb damit dauerhaft stehen. Jetzt setzt die
+        //    Live-Pruefung den Eintrag, egal ob er schon existiert.
+        //
+        //    Jeder Eintrag nennt zusaetzlich seine Herkunft (`source`) und den
+        //    Pruefzeitpunkt (`checked_at`), damit das Dashboard einen gespeicherten
+        //    Zustand nicht als frisch gemessen darstellt.
+        type ServiceEntry = {
+          name: string;
+          status: 'up' | 'down' | 'unknown';
+          uptime_seconds: number;
+          source: 'db' | 'live';
+          checked_at: string;
+          last_change?: string | null;
+        };
+
+        const jetztIso = new Date().toISOString();
+
         const serviceRows = await dbQuery<{
           service: string; status: string; last_change: Date | null;
         }>('SELECT service, status, last_change FROM service_health').then(r => r.rows).catch(() => []);
 
-        const services = serviceRows.map(r => ({
+        const services: ServiceEntry[] = serviceRows.map(r => ({
           name: r.service,
-          status: r.status,
+          status: (r.status === 'up' || r.status === 'down') ? r.status : 'unknown',
+          // Achtung: das ist das Alter der DB-Zeile, keine gemessene Laufzeit.
           uptime_seconds: r.status === 'up' && r.last_change
             ? Math.round((Date.now() - new Date(r.last_change).getTime()) / 1000) : 0,
+          source: 'db',
+          checked_at: r.last_change ? new Date(r.last_change).toISOString() : jetztIso,
+          last_change: r.last_change ? new Date(r.last_change).toISOString() : null,
         }));
+
+        function setzeLiveZustand(eintrag: ServiceEntry): void {
+          const i = services.findIndex(s => s.name === eintrag.name);
+          if (i >= 0) services[i] = eintrag; else services.push(eintrag);
+        }
 
         // Live-check Postgres
         let pgOk = false;
-        try { await dbQuery('SELECT 1'); pgOk = true; } catch {}
-        const pgEntry = services.find(s => s.name === 'Postgres');
-        if (!pgEntry) services.push({ name: 'Postgres', status: pgOk ? 'up' : 'down', uptime_seconds: pgOk ? Math.round(process.uptime()) : 0 });
+        try { await dbQuery('SELECT 1'); pgOk = true; } catch { /* nicht erreichbar */ }
+        setzeLiveZustand({
+          name: 'Postgres',
+          status: pgOk ? 'up' : 'down',
+          uptime_seconds: pgOk ? Math.round(process.uptime()) : 0,
+          source: 'live',
+          checked_at: jetztIso,
+        });
 
-        // Live-check IB Gateway (port 7497)
-        let ibOk = false;
+        // Live-check IB Gateway ueber den Trading-Service (18793).
+        //
+        // P1-1: Vorher wurde `data.ibkr?.connected` gelesen. Der Trading-Service
+        // liefert `connected` auf oberster Ebene (trading-agent/src/index.ts),
+        // ein `ibkr`-Objekt gibt es nicht — der Wert war damit immer `undefined`
+        // und der Status dauerhaft "down", obwohl die Verbindung stand.
+        //
+        // Drei unterscheidbare Ergebnisse, damit "unbekannt" nie als Erfolg
+        // erscheint (Spec §4 B):
+        //   erreichbar + verbunden        -> up
+        //   erreichbar + nicht verbunden  -> down
+        //   Trading-Service nicht erreichbar -> unknown
+        let ibStatus: 'up' | 'down' | 'unknown' = 'unknown';
         try {
           const r = await fetch('http://127.0.0.1:18793/health', { signal: AbortSignal.timeout(3000) });
           if (r.ok) {
-            const data = await r.json();
-            ibOk = data.ibkr?.connected === true;
+            const data = await r.json() as { connected?: boolean };
+            ibStatus = data.connected === true ? 'up' : 'down';
           }
-        } catch {}
-        const ibEntry = services.find(s => s.name === 'IB Gateway');
-        if (!ibEntry) services.push({ name: 'IB Gateway', status: ibOk ? 'up' : 'down', uptime_seconds: 0 });
+        } catch { /* ibStatus bleibt 'unknown' */ }
+        setzeLiveZustand({
+          name: 'IB Gateway',
+          status: ibStatus,
+          uptime_seconds: 0,
+          source: 'live',
+          checked_at: jetztIso,
+        });
 
         // 2. Token expiry
         const tokens: { name: string; days_remaining: number }[] = [];
