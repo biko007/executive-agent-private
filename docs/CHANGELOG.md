@@ -4,6 +4,38 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-04 — Dashboard-Überarbeitung P1-1: Statuszustände und Datenstand
+
+Core-Anteil von Paket P1-1 der Dashboard-Überarbeitung
+(`executive-dashboard/prompts/dashboard-ueberarbeitung/`, Owner-Spec vom 04.10.2026).
+Report: `~/bikosoc-spec/report-dashboard-p1-1-1846.md`.
+
+**Befund B1 behoben — `/api/system-status` (`index.ts`).** Zwei Ursachen:
+
+1. Der Handler las `data.ibkr?.connected` aus der Antwort des Trading-Service. Der liefert
+   `connected` auf oberster Ebene (`trading-agent/src/index.ts`), ein `ibkr`-Objekt existiert
+   nicht. Der Wert war damit immer `undefined` und das IB Gateway dauerhaft „down", während
+   der Trading-Bereich des Dashboards gleichzeitig „Verbunden" meldete.
+2. Die Live-Prüfung griff nur bei fehlendem Eintrag (`if (!entry) push`). Ein einmal in
+   `service_health` geschriebener Zustand hätte damit dauerhaft gewonnen. Jetzt setzt die
+   Live-Prüfung den Eintrag unabhängig davon — für Postgres ebenso wie für das IB Gateway.
+
+Der Zustand ist jetzt dreiwertig, damit „unbekannt" nie als Erfolg erscheint: verbunden →
+`up`, erreichbar aber nicht verbunden → `down`, Trading-Service nicht erreichbar → `unknown`.
+Jeder Diensteintrag trägt zusätzlich `source` (`live` | `db`) und `checked_at`. Der bisher
+gelieferte `uptime_seconds` ist bei DB-Zeilen nur das Alter der Zeile und keine gemessene
+Laufzeit — das steht jetzt im Code und die Oberfläche zeigt den Wert nur bei Live-Prüfung.
+
+**Neu: `GET /api/sharepoint/sync-status`** (`src/modules/sharepoint/routes.ts`, lesend).
+Liefert letzten Synchronisationslauf, letzten Erfolgszeitpunkt und Anzahl aktiver Dateien,
+damit das Dashboard den Datenstand der Dokumentenliste benennen kann. Bestand: ein einziger
+Lauf vom 16.05.2026 mit 12.089 Dateien.
+
+Gates: `npm run build` Exit 0, `npm test` 645 pass / 0 fail, `verify:commands` 118/118,
+`verify-schema` ohne Drift, Smoke-Test 31/31.
+
+---
+
 ## Stand 2026-10-03 (später) — Quellwiki bei Nuveon geleert
 
 Nach dem verifizierten Import wurde das Quellwiki auf Owner-Direktive geleert. Report:
