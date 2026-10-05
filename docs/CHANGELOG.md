@@ -4,6 +4,47 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-05 — Briefing-Kalender: Zeitzone und Ganztagstermine (P1-5)
+
+Core-Anteil von Paket P1-5 der Dashboard-Überarbeitung (Befund F).
+Report: `~/bikosoc-spec/report-dashboard-p1-5-0735.md`.
+
+**Befund.** Derselbe Termin erschien im Dashboard als „05.10. 22:00–21:30" und im
+Telegram-Briefing als „Di 06.10. 00:00 (23.5h)". Graph liefert dazu
+`start.dateTime = "2026-10-05T22:00:00.0000000"` mit `timeZone: "UTC"` — ein naiver
+String **ohne** Zonensuffix. `new Date(string)` interpretiert ihn in der Zone der
+Laufzeitumgebung: im Browser (Europe/Berlin) falsch, auf diesem Server (Etc/UTC)
+zufällig richtig. Das Briefing war also nur durch die Serverzone korrekt und genauso
+fehleranfällig.
+
+Richtig ist 06.10.2026, 00:00–23:30 Europe/Berlin (23,5 Std.). Der Termin ist
+**kein** Ganztagstermin — Graph meldet `isAllDay: false`.
+
+**Änderungen in `index.ts` (Abschnitt „Kalender-Zeitlogik").**
+- Neue Zeitlogik, die die mitgelieferte Zone auswertet; DST-fest über `Intl`
+  (am 25.10.2026 wechselt Europe/Berlin von +02:00 auf +01:00).
+- `kalenderZeitraum()` liefert Tagesschlüssel, Zeittext, Spanne, Dauer und ein
+  Kennzeichen für unplausible Zeiten. Ganztagstermine werden als „ganztägig"
+  ausgegeben, mit Graph-Semantik des **exklusiven** Endes.
+- Der Kalenderblock des Briefings nutzt diese Logik. Vorher rechnete er Dauer und
+  Uhrzeit aus naiv geparsten Strings und kannte keine Ganztagstermine.
+- `$select` um `isAllDay` ergänzt — das Feld wurde bisher nicht abgefragt,
+  Ganztagstermine waren im Briefing deshalb nicht erkennbar.
+- Abfragefenster beginnt um Mitternacht Europe/Berlin statt `setHours(0,0,0,0)` auf
+  der Serverzone. Damit verwenden Briefing und Dashboard dasselbe Fenster und sind
+  vergleichbar.
+
+Dieselbe Logik liegt im Dashboard in `public/js/zeit.js`. Ein Gleichheitstest
+vergleicht beide Umsetzungen gegen dieselbe Graph-Antwort: **12 Termine, 0
+Abweichungen** (vier echte plus acht Grenzfälle, darunter Ganztagstermine über
+mehrere Tage, Termine über Mitternacht, Ende vor Beginn und beide Seiten der
+Zeitumstellung).
+
+Gates: `npm run build` Exit 0, `npm test` 645 pass / 0 fail, `verify:commands`
+118/118, `verify-schema` ohne Drift, Smoke-Test 31/31.
+
+---
+
 ## Stand 2026-10-04 — Dashboard-Überarbeitung P1-1: Statuszustände und Datenstand
 
 Core-Anteil von Paket P1-1 der Dashboard-Überarbeitung

@@ -1001,6 +1001,143 @@ export default function (api) {
         const maxAgeMs = LOCATION_STALE_THRESHOLD_MS;
         return { loc, isStale: ageMs > maxAgeMs };
     }
+    // ── Kalender-Zeitlogik (P1-5, Befund F) ───────────────────────────────────
+    //
+    // Microsoft Graph liefert Termine so:
+    //   "start": { "dateTime": "2026-10-05T22:00:00.0000000", "timeZone": "UTC" }
+    // Der String hat KEIN Zonensuffix. `new Date(string)` interpretiert ihn in der
+    // Zone der Laufzeitumgebung. Dieser Server laeuft auf Etc/UTC, deshalb war das
+    // Ergebnis hier zufaellig richtig — im Dashboard-Browser (Europe/Berlin) war es
+    // falsch. Beide Pfade werten die Zone jetzt ausdruecklich aus.
+    //
+    // Dieselbe Logik liegt im Dashboard in public/js/zeit.js. Die Funktionsnamen
+    // und Rueckgabewerte sind absichtlich identisch; ein Gleichheitstest
+    // vergleicht beide Umsetzungen gegen dieselbe Graph-Antwort.
+    //
+    // Ganztagstermine: Graph setzt Mitternacht und ein EXKLUSIVES Ende (ein Tag am
+    // 20.10. hat end 21.10.T00:00). Die Datumsanteile sind woertlich zu nehmen,
+    // eine Umrechnung wuerde den Tag verschieben.
+    const KALENDER_ZONE = 'Europe/Berlin';
+    function zonenOffsetMs(utcMs, zone) {
+        const dtf = new Intl.DateTimeFormat('en-US', {
+            timeZone: zone, hour12: false,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+        });
+        const teile = {};
+        for (const t of dtf.formatToParts(new Date(utcMs)))
+            teile[t.type] = t.value;
+        const alsUtc = Date.UTC(Number(teile.year), Number(teile.month) - 1, Number(teile.day), Number(teile.hour) % 24, Number(teile.minute), Number(teile.second));
+        return alsUtc - utcMs;
+    }
+    function naivInZone(naiv, zone) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(naiv || ''));
+        if (!m)
+            return null;
+        const alsWaereUtc = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0));
+        let t = alsWaereUtc - zonenOffsetMs(alsWaereUtc, zone);
+        t = alsWaereUtc - zonenOffsetMs(t, zone);
+        return new Date(t);
+    }
+    function graphZeitpunkt(wert) {
+        if (!wert || !wert.dateTime)
+            return null;
+        return naivInZone(wert.dateTime, wert.timeZone || 'UTC');
+    }
+    function datumsteil(naiv) {
+        const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(naiv || ''));
+        return m ? m[1] : null;
+    }
+    function tagInZone(d, zone) {
+        return new Intl.DateTimeFormat('en-CA', {
+            timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(d);
+    }
+    function tagVerschieben(tag, tage) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(tag || ''));
+        if (!m)
+            return null;
+        const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+        d.setUTCDate(d.getUTCDate() + tage);
+        return d.toISOString().slice(0, 10);
+    }
+    function tageDifferenz(von, bis) {
+        const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(von || ''));
+        const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(bis || ''));
+        if (!a || !b)
+            return null;
+        return Math.round((Date.UTC(Number(b[1]), Number(b[2]) - 1, Number(b[3]))
+            - Date.UTC(Number(a[1]), Number(a[2]) - 1, Number(a[3]))) / 86400000);
+    }
+    function berlinerTagesbeginn(jetzt) {
+        const tag = tagInZone(jetzt, KALENDER_ZONE);
+        return naivInZone(tag + 'T00:00:00', KALENDER_ZONE) || jetzt;
+    }
+    function uhr(d) {
+        return new Intl.DateTimeFormat('de-DE', {
+            timeZone: KALENDER_ZONE, hour: '2-digit', minute: '2-digit', hour12: false,
+        }).format(d);
+    }
+    function tagMonat(tag) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(tag || ''));
+        return m ? `${m[3]}.${m[2]}.` : '–';
+    }
+    function dauerText(minuten) {
+        if (minuten == null)
+            return '';
+        if (minuten < 60)
+            return `${minuten} Min.`;
+        const gerundet = Math.round((minuten / 60) * 10) / 10;
+        const txt = Number.isInteger(gerundet) ? String(gerundet) : String(gerundet).replace('.', ',');
+        return `${txt} Std.`;
+    }
+    function kalenderZeitraum(ev) {
+        if (ev?.isAllDay === true) {
+            const startTag = datumsteil(ev.start?.dateTime);
+            const endeExklusiv = datumsteil(ev.end?.dateTime);
+            const endTag = endeExklusiv ? tagVerschieben(endeExklusiv, -1) : startTag;
+            const tage = startTag && endTag ? (tageDifferenz(startTag, endTag) ?? 0) + 1 : null;
+            return {
+                ganztags: true, startTag, endTag,
+                mehrtaegig: !!(startTag && endTag && startTag !== endTag),
+                tagesSchluessel: startTag,
+                zeitText: 'ganztägig',
+                spanneText: startTag && endTag && startTag !== endTag
+                    ? `${tagMonat(startTag)}–${tagMonat(endTag)}` : tagMonat(startTag || ''),
+                dauerMinuten: tage != null ? tage * 1440 : null,
+                dauerText: tage == null ? '' : (tage === 1 ? '1 Tag' : `${tage} Tage`),
+                unplausibel: tage != null && tage < 1,
+            };
+        }
+        const s = graphZeitpunkt(ev?.start);
+        const e = graphZeitpunkt(ev?.end);
+        if (!s) {
+            return { ganztags: false, startTag: null, endTag: null, mehrtaegig: false,
+                tagesSchluessel: null, zeitText: 'Zeit unbekannt', spanneText: '–',
+                dauerMinuten: null, dauerText: '', unplausibel: false };
+        }
+        const startTag = tagInZone(s, KALENDER_ZONE);
+        const endTag = e ? tagInZone(e, KALENDER_ZONE) : startTag;
+        const minuten = e ? Math.round((e.getTime() - s.getTime()) / 60000) : null;
+        const unplausibel = minuten != null && minuten < 0;
+        const mehrtaegig = !!(endTag && startTag !== endTag);
+        let zeitText;
+        if (!e)
+            zeitText = uhr(s);
+        else if (unplausibel)
+            zeitText = `${uhr(s)} – ${uhr(e)} (Ende vor Beginn)`;
+        else if (mehrtaegig)
+            zeitText = `${tagMonat(startTag)} ${uhr(s)} – ${tagMonat(endTag)} ${uhr(e)}`;
+        else
+            zeitText = `${uhr(s)}–${uhr(e)}`;
+        return {
+            ganztags: false, startTag, endTag, mehrtaegig, tagesSchluessel: startTag, zeitText,
+            spanneText: mehrtaegig ? `${tagMonat(startTag)}–${tagMonat(endTag)}` : tagMonat(startTag),
+            dauerMinuten: minuten,
+            dauerText: unplausibel ? '' : dauerText(minuten),
+            unplausibel,
+        };
+    }
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
@@ -1030,15 +1167,18 @@ export default function (api) {
         const moonTimeStr = moonTimeParts.length ? moonTimeParts.join('  ·  ') : 'nicht sichtbar';
         parts.push(`🌙 ${moonTimeStr}`);
         // ── WETTER + INBOX + KALENDER parallel fetchen ──
-        const rangeStart = new Date(now);
-        rangeStart.setHours(0, 0, 0, 0);
-        const rangeEnd = new Date(rangeStart);
-        rangeEnd.setDate(rangeEnd.getDate() + 7);
-        rangeEnd.setHours(23, 59, 59, 999);
+        // P1-5: Fenster ab Mitternacht Europe/Berlin — vorher setHours(0,0,0,0) auf
+        // der Serverzone (Etc/UTC), was gegenueber dem Dashboard um die
+        // Zonendifferenz verschoben war. Beide verwenden jetzt dasselbe Fenster,
+        // nur so sind Briefing und Dashboard vergleichbar.
+        // isAllDay wurde bisher NICHT abgefragt — Ganztagstermine waren im Briefing
+        // deshalb nicht als solche erkennbar.
+        const rangeStart = berlinerTagesbeginn(now);
+        const rangeEnd = new Date(rangeStart.getTime() + 8 * 24 * 3600_000);
         const calUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
             `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
             `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
-            `&$select=subject,start,end,location&$orderby=start/dateTime&$top=50`;
+            `&$select=subject,start,end,location,isAllDay&$orderby=start/dateTime&$top=50`;
         const perSource = 10;
         const [weatherResult, inboxResult, calendarResult] = await Promise.all([
             fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null),
@@ -1090,34 +1230,53 @@ export default function (api) {
         {
             const allEvs = calendarResult?.value || [];
             if (allEvs.length > 0) {
-                const fmtDayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-                const fmtWeekday = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'short' });
-                const fmtDayMonth = new Intl.DateTimeFormat('de-DE', { timeZone: tz, day: '2-digit', month: '2-digit' });
+                const fmtWeekday = new Intl.DateTimeFormat('de-DE', { timeZone: 'UTC', weekday: 'short' });
+                // Gruppierung ueber kalenderZeitraum(): Berliner Kalendertag bei
+                // zeitgebundenen Terminen, woertliches Datum bei Ganztagsterminen.
                 const byDay = new Map();
                 for (const ev of allEvs) {
-                    const evDate = new Date(ev.start.dateTime);
-                    const key = fmtDayKey.format(evDate);
+                    const z = kalenderZeitraum(ev);
+                    const key = z.tagesSchluessel || 'unbekannt';
                     if (!byDay.has(key))
                         byDay.set(key, []);
-                    byDay.get(key).push(ev);
+                    byDay.get(key).push({ ev, z });
                 }
                 parts.push('');
                 parts.push(SEP);
                 parts.push('📆 *KALENDER*');
                 parts.push(SEP);
-                for (const [dayKey, evs] of byDay) {
-                    const dayDate = new Date(dayKey + 'T12:00:00');
-                    const wd = fmtWeekday.format(dayDate);
-                    const dm = fmtDayMonth.format(dayDate);
-                    const dayLabel = `${wd} ${dm}.`;
-                    for (let i = 0; i < evs.length; i++) {
-                        const ev = evs[i];
-                        const s = new Date(ev.start.dateTime);
-                        const e = new Date(ev.end.dateTime);
-                        const diffH = Math.round((e.getTime() - s.getTime()) / 3600000 * 10) / 10;
-                        const dur = diffH >= 1 ? `(${diffH}h)` : `(${Math.round(diffH * 60)}min)`;
+                for (const dayKey of [...byDay.keys()].sort()) {
+                    const eintraege = byDay.get(dayKey).sort((a, b) => {
+                        if (a.z.ganztags !== b.z.ganztags)
+                            return a.z.ganztags ? -1 : 1;
+                        const sa = graphZeitpunkt(a.ev.start);
+                        const sb = graphZeitpunkt(b.ev.start);
+                        return (sa ? sa.getTime() : 0) - (sb ? sb.getTime() : 0);
+                    });
+                    let dayLabel;
+                    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey);
+                    if (!m) {
+                        dayLabel = 'Datum ?';
+                    }
+                    else {
+                        const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+                        dayLabel = `${fmtWeekday.format(d)} ${m[3]}.${m[2]}.`;
+                    }
+                    for (let i = 0; i < eintraege.length; i++) {
+                        const { ev, z } = eintraege[i];
                         const prefix = i === 0 ? dayLabel : ' '.repeat(dayLabel.length);
-                        parts.push(`${prefix}  ${fmtTime.format(s)} ${ev.subject || '(kein Titel)'} ${dur}`);
+                        const titel = ev.subject || '(kein Titel)';
+                        if (z.ganztags) {
+                            const spanne = z.mehrtaegig ? ` ${z.spanneText}` : '';
+                            parts.push(`${prefix}  ganztägig${spanne} ${titel} (${z.dauerText})`);
+                        }
+                        else if (z.unplausibel) {
+                            parts.push(`${prefix}  ${z.zeitText} ${titel} ⚠️`);
+                        }
+                        else {
+                            const dauer = z.dauerText ? ` (${z.dauerText})` : '';
+                            parts.push(`${prefix}  ${z.zeitText} ${titel}${dauer}`);
+                        }
                     }
                 }
             }
