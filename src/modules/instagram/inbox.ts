@@ -28,6 +28,7 @@ import { loadRawSession, saveRawSession, createRawSession, generateRawSessionId,
 import { withContext, generateId } from '../../shared/correlation/index.js';
 import { getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
+import { mimePasstZuBytes } from '../../shared/utils/bild-format.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -188,9 +189,28 @@ async function processMultipart(
             fileResolve();
             return;
           }
+          const daten = Buffer.concat(chunks);
+
+          /* Magic-Byte-Pruefung (07.10.2026): Bisher entschied allein der vom
+             Client gemeldete MIME-Typ. Der ist frei waehlbar — ein Upload, der
+             `image/jpeg` behauptet, konnte beliebigen Inhalt ins Rohmaterial
+             legen. Jetzt muessen die ersten Bytes zum gemeldeten Bild-MIME
+             passen. Videos bleiben unberuehrt: fuer die ist dieser Erkenner
+             nicht zustaendig, dort gilt weiter die MIME-Whitelist oben. */
+          if (mimeInfo.type === 'image' && !mimePasstZuBytes(mime, daten)) {
+            fileResults.push({
+              original_name: originalName,
+              status: 'rejected',
+              error: `Dateiinhalt passt nicht zum gemeldeten Typ ${mime}`,
+            });
+            chunks.length = 0;
+            fileResolve();
+            return;
+          }
+
           // Write collected data to disk
           try {
-            fs.writeFileSync(tmpPath, Buffer.concat(chunks));
+            fs.writeFileSync(tmpPath, daten);
           } catch {
             fileResults.push({
               original_name: originalName,

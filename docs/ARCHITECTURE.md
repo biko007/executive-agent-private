@@ -208,6 +208,37 @@ Nur echte Kontaktpunkte — HDCC-Interna in `hdcc/docs/ARCHITECTURE.md`.
 - Diagnose-First: cc-Selbstreport unbewiesen bis Artefakt.
 - Plan Mode Pflicht ab 3+ Dateien. `git add -A` je Etappe, working tree clean vor Push.
 
+### Bild-Uploads: erlaubte Formate (2026-10-07)
+
+Erlaubt sind **PNG, JPG/JPEG und HEIC/HEIF** — überall gleich, geprüft an den ersten
+Bytes (Magic Bytes), nicht am gemeldeten MIME-Typ und nicht an der Endung. Beides liefert
+der Client; Mobile Safari meldet für HEIC-Aufnahmen je nach iOS-Fassung `image/heic`,
+`image/heif` oder einen leeren MIME-Typ.
+
+| Stelle | Prüfung | HEIC-Behandlung |
+|---|---|---|
+| `POST /api/upload/image` (Dashboard, Objekt-/Fahrzeug-/Reisebilder) | `bildFormatErkennen()` in `server.mjs`, sonst HTTP 415 | serverseitig nach JPEG, Ablage weiter als `.jpg` (800x800, q82) |
+| `GET /api/instagram/raw/:id/thumb/:filename` (Dashboard) | dieselbe Weiche | vor dem Vorschaubild nach JPEG (Maß 200x200, q70 unverändert) |
+| `POST /api/instagram/inbox` (Core) | `mimePasstZuBytes()` aus `src/shared/utils/bild-format.ts` — der gemeldete Bild-MIME muss zu den Bytes passen; Videos unberührt | keine Umwandlung: Rohmaterial wird im Original archiviert |
+
+`accept` im Frontend ist deckungsgleich und nennt MIME-Typen **und** Endungen
+(`image/png,image/jpeg,image/heic,image/heif,.png,.jpg,.jpeg,.heic,.heif`) — ohne die
+Endungen bleiben HEIC-Dateien in der iOS-Auswahl ausgegraut.
+
+**HEIC-Decoder:** `heic-convert` (reines JS/WebAssembly, Abhängigkeit des Dashboards).
+sharps gebündeltes libvips bringt libheif mit, aber **ohne HEVC-Decoder**: `metadata()`
+liest Format, Maße und `compression: 'hevc'`, die Dekodierung bricht mit „Support for this
+compression format has not been built in" ab. Das System-libvips (8.15.1 mit
+`libheif-plugin-libde265`) kann es — sharps gebündeltes nicht. Kein Systempaket nötig.
+
+Der Erkenner existiert in zwei Fassungen (`server.mjs` und
+`src/shared/utils/bild-format.ts`), weil Dashboard und Core getrennte Prozesse in
+getrennten Repositories ohne gemeinsames Paket sind. Wer eine HEIF-Marke ergänzt, ergänzt
+sie an beiden Stellen; der Hinweis steht in beiden Dateien.
+
+Nicht betroffen, weil keine Bild-Uploads: `/api/documents/upload`,
+`/api/sharepoint/upload`, Wiki-Anhänge — die nehmen bewusst beliebige Dateitypen.
+
 ### Health-Monitor (Querschnitt)
 
 `src/modules/executive/health-monitor.ts` — pollt alle 5 min, Alerts via Telegram.
