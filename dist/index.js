@@ -2930,18 +2930,45 @@ export default function (api) {
          *
          * NUR fuer den bikosoc-Strang. HDCC-Plaene gehen in einen anderen Chat, und
          * "go bikosoc" waere dort falsch.
+         *
+         * DATEINAME IM BEFEHL (Aenderung 07.10.2026): Der Befehl lautet
+         * `go bikosoc <dateiname>`. Der Dateiname ist der Basename der Datei, die
+         * tatsaechlich nach Dropbox geladen wird — dieselbe Zeichenkette, die oben
+         * `dropboxPath` bildet (`/bikosoc-reports/<name>`, `/bikosoc-plans/<name>`).
+         * Keine Umschreibung, kein Pfad. Eine Stelle fuer alle Report-Typen:
+         * `reportGoBefehl()` baut den Befehl, `reportGoNachricht()` den Text und
+         * `reportGoMarkup()` den Kopierknopf — alle drei bekommen denselben Namen
+         * durchgereicht.
          */
         const REPORT_GO_COMMAND = 'go bikosoc';
         const REPORT_GO_URL = 'https://claude.ai/new';
-        /* Inline-Keyboard mit einem Kopierknopf. `copy_text` setzt Bot API >= 7.11
-           voraus; sendTelegramHtmlWithMarkup() sendet bei Ablehnung ohne Knopf erneut. */
-        const REPORT_GO_MARKUP = {
-            inline_keyboard: [[{ text: 'go bikosoc kopieren', copy_text: { text: REPORT_GO_COMMAND } }]],
-        };
+        /** Vollstaendiger Go-Befehl: Grundbefehl plus Basename der Dropbox-Datei. */
+        function reportGoBefehl(name) {
+            const basename = path.basename(String(name || '')).trim();
+            return basename ? `${REPORT_GO_COMMAND} ${basename}` : REPORT_GO_COMMAND;
+        }
+        /* Der Befehl steht in <code>; Telegram verlangt dort maskierte Sonderzeichen.
+           Dateinamen enthalten sie normalerweise nicht — die Maskierung verhindert nur,
+           dass ein ungewoehnlicher Name die Nachricht unzustellbar macht. */
+        function htmlText(roh) {
+            return roh.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        /* Inline-Keyboard mit einem Kopierknopf. `copy_text` tragt denselben Befehl wie
+           die Codezeile, also MIT Dateiname. `copy_text` setzt Bot API >= 7.11 voraus;
+           sendTelegramHtmlWithMarkup() sendet bei Ablehnung ohne Knopf erneut. */
+        function reportGoMarkup(name) {
+            return {
+                inline_keyboard: [[{
+                            text: 'go bikosoc kopieren',
+                            copy_text: { text: reportGoBefehl(name) },
+                        }]],
+            };
+        }
         /* HTML-Text der Folgenachricht. Der Befehl steht in <code>, damit Telegram ihn als
-           Codeblock zum Antippen darstellt. Der Link steht blank in eigener Zeile. */
-        function reportGoNachricht() {
-            return `<code>${REPORT_GO_COMMAND}</code>\n${REPORT_GO_URL}`;
+           Codeblock zum Antippen darstellt, und bleibt die eigene letzte Zeile VOR dem
+           Link. Der Link steht blank in eigener Zeile. */
+        function reportGoNachricht(name) {
+            return `<code>${htmlText(reportGoBefehl(name))}</code>\n${REPORT_GO_URL}`;
         }
         /**
          * Sendet die Folgenachricht an alle Ziele der Rolle "dev" und protokolliert das
@@ -2961,11 +2988,14 @@ export default function (api) {
                 api.logger.warn('[report-watcher] Go-Nachricht: kein aktives dev-Binding — nicht gesendet');
                 return;
             }
-            const text = reportGoNachricht();
+            const befehl = reportGoBefehl(name);
+            const text = reportGoNachricht(name);
+            const markup = reportGoMarkup(name);
             for (const chatId of targets) {
-                const r = await sendTelegramHtmlWithMarkup(chatId, text, REPORT_GO_MARKUP);
+                const r = await sendTelegramHtmlWithMarkup(chatId, text, markup);
                 api.logger.info(`[report-watcher] Go-Nachricht ${r.sent ? 'gesendet' : 'NICHT gesendet'} fuer ${name}`
-                    + ` (parse_mode HTML, Knopf ${r.withMarkup ? 'copy_text "' + REPORT_GO_COMMAND + '"' : 'nicht zugestellt'},`
+                    + ` (parse_mode HTML, Befehl "${befehl}",`
+                    + ` Knopf ${r.withMarkup ? 'copy_text "' + befehl + '"' : 'nicht zugestellt'},`
                     + ` Link ${REPORT_GO_URL}, message_id ${r.messageId ?? '-'}`
                     + `${r.error ? ', Hinweis: ' + r.error : ''})`);
             }

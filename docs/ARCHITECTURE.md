@@ -329,6 +329,13 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   Rate-Limit: 1 Datei/min. Dedupe-State: `~/bikosoc-spec/.report-sent.json`.
   Erstlauf-Seeding: existierende Dateien werden in Map geseeded, nicht gesendet.
   globalThis-Guard: `__ea_reportWatcherRegistered`. 5s Debounce.
+- **Go-Folgenachricht (2026-10-07):** Nach jeder Zustellung eine eigene HTML-Nachricht
+  `go bikosoc <dateiname>` als `<code>`-Zeile (letzte Zeile vor dem Link
+  `https://claude.ai/new`) plus Kopierknopf mit demselben Befehl. `<dateiname>` ist der
+  Basename der tatsächlich nach Dropbox geladenen Datei — 1:1 aus `file.name`, dieselbe
+  Zeichenkette, die `dropboxPath` bildet. Eine zentrale Stelle für alle Report-Typen
+  (`report-*`, `report-plan-*`): `reportGoBefehl()` / `reportGoNachricht()` /
+  `reportGoMarkup()` in `index.ts`. Nicht für HDCC-Pläne (anderer Chat).
 - **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
   (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
   Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).
