@@ -434,6 +434,76 @@ export default function (api: any) {
     return false;
   }
 
+  /**
+   * Sendet eine Nachricht mit parse_mode HTML und einem Inline-Keyboard.
+   *
+   * WARUM DIREKT UEBER DIE BOT-API: Der Plugin-Weg
+   * (api.runtime.channel.telegram.sendMessageTelegram) nimmt nur chatId und Text —
+   * fuer reply_markup und parse_mode gibt es dort keinen Parameter. Diese Funktion
+   * geht deshalb unmittelbar an api.telegram.org, wie sendTelegramWithKeyboard().
+   *
+   * Der Knopftyp `copy_text` setzt Bot API >= 7.11 voraus. Lehnt Telegram den Knopf
+   * ab (4xx), wird die Nachricht EIN ZWEITES MAL ohne reply_markup gesendet: die zwei
+   * Zeilen sind wichtiger als der Knopf. Der Rueckgabewert sagt, was zugestellt wurde.
+   */
+  async function sendTelegramHtmlWithMarkup(
+    chatId: string,
+    text: string,
+    replyMarkup: unknown,
+  ): Promise<{ sent: boolean; withMarkup: boolean; messageId?: number; error?: string }> {
+    if (!telegramBotToken) {
+      api.logger.error('[executive-agent] No bot token for HTML/markup message');
+      return { sent: false, withMarkup: false, error: 'no bot token' };
+    }
+
+    const post = async (body: Record<string, unknown>) => {
+      const res = await fetchWithTimeout(
+        `https://api.telegram.org/bot${telegramBotToken}/sendMessage`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        15000,
+      );
+      const raw = await res.text().catch(() => '');
+      return { status: res.status, ok: res.ok, raw };
+    };
+
+    const basis = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true };
+
+    for (let attempt = 0; attempt <= TELEGRAM_RETRY_DELAYS.length; attempt++) {
+      try {
+        const r = await post(replyMarkup ? { ...basis, reply_markup: replyMarkup } : basis);
+        if (r.ok) {
+          let messageId: number | undefined;
+          try { messageId = JSON.parse(r.raw)?.result?.message_id; } catch { /* egal */ }
+          return { sent: true, withMarkup: !!replyMarkup, messageId };
+        }
+        if (r.status >= 400 && r.status < 500 && r.status !== 429) {
+          // Knopf abgelehnt (z. B. zu alte Bot-API) → ohne Knopf erneut senden.
+          if (replyMarkup) {
+            api.logger.warn(
+              `[executive-agent] markup-send HTTP ${r.status}: ${r.raw} — erneuter Versuch ohne Knopf`,
+            );
+            const r2 = await post(basis);
+            if (r2.ok) {
+              let messageId: number | undefined;
+              try { messageId = JSON.parse(r2.raw)?.result?.message_id; } catch { /* egal */ }
+              return { sent: true, withMarkup: false, messageId, error: `markup abgelehnt: HTTP ${r.status}` };
+            }
+            api.logger.error(`[executive-agent] markup-send ohne Knopf HTTP ${r2.status}: ${r2.raw}`);
+            return { sent: false, withMarkup: false, error: `HTTP ${r2.status}` };
+          }
+          api.logger.error(`[executive-agent] markup-send HTTP ${r.status}: ${r.raw}`);
+          return { sent: false, withMarkup: false, error: `HTTP ${r.status}` };
+        }
+        api.logger.warn(`[executive-agent] markup-send HTTP ${r.status} (Versuch ${attempt + 1}): ${r.raw}`);
+      } catch (err: any) {
+        api.logger.warn(`[executive-agent] markup-send fehlgeschlagen (Versuch ${attempt + 1}): ${err.message}`);
+      }
+      if (attempt < TELEGRAM_RETRY_DELAYS.length) await sleep(TELEGRAM_RETRY_DELAYS[attempt]);
+    }
+    api.logger.error('[executive-agent] markup-send nach allen Versuchen fehlgeschlagen');
+    return { sent: false, withMarkup: false, error: 'alle Versuche fehlgeschlagen' };
+  }
+
   async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     if (!telegramBotToken) return;
     try {
@@ -3117,42 +3187,63 @@ export default function (api: any) {
     let reportLastAutoSendAt = 0;
 
     /**
-     * Zwei Abschlusszeilen unter jeder Textmeldung des Report-Watchers:
-     * der Weiterarbeits-Befehl und der Link zum Claude-Projekt.
+     * Folgenachricht nach jeder Report-Zustellung: der Befehl zum Weiterarbeiten und
+     * der Link, der am iPhone die Claude-App oeffnet.
      *
-     * PARSE-MODE: Die Zustellung laeuft ueber sendTelegram()/sendTelegramToRole() und
-     * setzt KEIN parse_mode — der Text geht als Plain-Text an Telegram. Deshalb steht
-     * der Befehl hier als eigene Zeile ohne Auszeichnung. Wuerde man <code> oder
-     * Backticks schreiben, erschienen die Zeichen woertlich. Fuer den Fall, dass die
-     * Zustellung spaeter auf HTML oder MarkdownV2 umgestellt wird, liegen beide Formen
-     * bereit; umzustellen ist dann nur REPORT_FOOTER_MODE.
+     * WARUM EIGENE NACHRICHT (Aenderung 07.10.2026): Die zwei Zeilen hingen vorher am
+     * Ende der Report-Textmeldung. Der Reporttext geht als Plain-Text raus — damit war
+     * weder <code> fuer den Befehl noch ein Inline-Keyboard moeglich. Als eigene, kurze
+     * Nachricht kann sie parse_mode HTML und einen Kopierknopf tragen, ohne dass der
+     * Reporttext angefasst oder maskiert werden muss.
+     *
+     * WARUM claude.ai/new UND NICHT DER PROJEKTLINK: Der Projektlink oeffnet am iPhone
+     * Safari. claude.ai/new oeffnet die Claude-App.
      *
      * NUR fuer den bikosoc-Strang. HDCC-Plaene gehen in einen anderen Chat, und
      * "go bikosoc" waere dort falsch.
      */
     const REPORT_GO_COMMAND = 'go bikosoc';
-    const REPORT_PROJECT_URL = 'https://claude.ai/project/019ca319-ddfa-714c-a57c-7597bc8465a4';
-    const REPORT_FOOTER_MODE: 'plain' | 'html' | 'markdownv2' = 'plain';
+    const REPORT_GO_URL = 'https://claude.ai/new';
 
-    function reportFooter(): string {
-      const befehl = REPORT_FOOTER_MODE === 'html'
-        ? `<code>${REPORT_GO_COMMAND}</code>`
-        : REPORT_FOOTER_MODE === 'markdownv2'
-          ? `\`${REPORT_GO_COMMAND}\``
-          : REPORT_GO_COMMAND;
-      return `\n\n${befehl}\n${REPORT_PROJECT_URL}`;
+    /* Inline-Keyboard mit einem Kopierknopf. `copy_text` setzt Bot API >= 7.11
+       voraus; sendTelegramHtmlWithMarkup() sendet bei Ablehnung ohne Knopf erneut. */
+    const REPORT_GO_MARKUP = {
+      inline_keyboard: [[{ text: 'go bikosoc kopieren', copy_text: { text: REPORT_GO_COMMAND } }]],
+    };
+
+    /* HTML-Text der Folgenachricht. Der Befehl steht in <code>, damit Telegram ihn als
+       Codeblock zum Antippen darstellt. Der Link steht blank in eigener Zeile. */
+    function reportGoNachricht(): string {
+      return `<code>${REPORT_GO_COMMAND}</code>\n${REPORT_GO_URL}`;
     }
 
     /**
-     * Belegt im Log, dass die beiden Abschlusszeilen Teil der gesendeten Nachricht
-     * waren — der ausgehende Nachrichtentext selbst wird nirgends protokolliert.
+     * Sendet die Folgenachricht an alle Ziele der Rolle "dev" und protokolliert das
+     * Ergebnis — der ausgehende Nachrichtentext selbst wird nirgends geloggt, deshalb
+     * hier die Message-ID aus der API-Antwort als Beleg.
      */
-    function logReportFooter(name: string, ok: boolean, laenge: number): void {
-      api.logger.info(
-        `[report-watcher] Abschlusszeilen ${ok ? 'gesendet' : 'NICHT gesendet'} fuer ${name}`
-        + ` (Modus ${REPORT_FOOTER_MODE}, Befehl "${REPORT_GO_COMMAND}", Link ${REPORT_PROJECT_URL},`
-        + ` Nachrichtenlaenge ${laenge})`,
-      );
+    async function sendReportGoNachricht(name: string): Promise<void> {
+      let targets: string[] = [];
+      try {
+        targets = await getTelegramTargets('dev', { fallbackToOperativ: true });
+      } catch (e: any) {
+        api.logger.warn(`[report-watcher] Go-Nachricht: Ziele nicht ermittelbar: ${e.message}`);
+        return;
+      }
+      if (targets.length === 0) {
+        api.logger.warn('[report-watcher] Go-Nachricht: kein aktives dev-Binding — nicht gesendet');
+        return;
+      }
+      const text = reportGoNachricht();
+      for (const chatId of targets) {
+        const r = await sendTelegramHtmlWithMarkup(chatId, text, REPORT_GO_MARKUP);
+        api.logger.info(
+          `[report-watcher] Go-Nachricht ${r.sent ? 'gesendet' : 'NICHT gesendet'} fuer ${name}`
+          + ` (parse_mode HTML, Knopf ${r.withMarkup ? 'copy_text "' + REPORT_GO_COMMAND + '"' : 'nicht zugestellt'},`
+          + ` Link ${REPORT_GO_URL}, message_id ${r.messageId ?? '-'}`
+          + `${r.error ? ', Hinweis: ' + r.error : ''})`,
+        );
+      }
     }
 
     // Liest die Sent-Map. Wirft bei unlesbarem/defektem Index, statt auf eine leere Map
@@ -3442,19 +3533,21 @@ export default function (api: any) {
             for (let i = 0; i < totalChunks; i++) {
               const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
               const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
-              // Die Abschlusszeilen stehen genau einmal, unter der LETZTEN Nachricht.
-              const footer = i === totalChunks - 1 ? reportFooter() : '';
-              const ok = await sendTelegramToRole('dev', header + chunk + footer, { fallbackToOperativ: true });
-              if (footer) logReportFooter(file.name, ok, header.length + chunk.length + footer.length);
+              await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
             }
           } else {
             // Langer Report: Digest bevorzugen, Fallback auf extractReportSummary
             const text = digestText || extractReportSummary(content);
-            const body = `${file.name}\n\n${text}${reportFooter()}`;
-            const ok = await sendTelegramToRole('dev', body, { fallbackToOperativ: true });
-            logReportFooter(file.name, ok, body.length);
+            await sendTelegramToRole('dev', `${file.name}\n\n${text}`, { fallbackToOperativ: true });
           }
         } catch { /* text preview best-effort */ }
+
+        // Folgenachricht mit Befehl, Link und Kopierknopf — eigene kurze Nachricht,
+        // damit sie parse_mode HTML und ein Inline-Keyboard tragen kann. Nicht fuer
+        // HDCC-Plaene: die gehen in einen anderen Chat.
+        if (!isHdccPlan) {
+          try { await sendReportGoNachricht(file.name); } catch { /* best-effort */ }
+        }
 
         sentMap.set(file.key, file.mtimeMs);
         if (file.hashKey && file.contentHash) sentMap.set(file.hashKey, file.contentHash);
