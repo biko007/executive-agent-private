@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseCallbackEvent } from '../index.js';
+import { parseCallbackEvent, unwrapCallbackContent } from '../index.js';
 
 describe('parseCallbackEvent', () => {
   // (a) Matches prefix, splits args
@@ -100,5 +100,54 @@ describe('parseCallbackEvent', () => {
     expect(result).not.toBeNull();
     expect(result!.prefix).toBe('segdel');
     expect(result!.args).toEqual(['abc', 'yes']);
+  });
+  /* ── Transporthuelle (Befund E1, 07.10.2026) ──────────────────────────────
+     Der Kanal liefert den Knopfinhalt als Satz `callback_data: <daten>`,
+     teils mit vorangestellter Hüllenklammer. Vorher gab der Parser dafuer
+     `null` zurueck, und jeder Knopf war folgenlos. */
+
+  test('erkennt die Form "callback_data: <daten>"', () => {
+    const event = {
+      content: 'callback_data: bweekly_start',
+      metadata: { senderId: '133260792' },
+    };
+    const result = parseCallbackEvent(event, 'bweekly');
+    expect(result).not.toBeNull();
+    expect(result!.payload).toBe('start');
+    expect(result!.content).toBe('bweekly_start');
+    expect(result!.senderId).toBe('133260792');
+  });
+
+  test('erkennt die Form mit Huellenklammer davor', () => {
+    const event = {
+      content: '[Telegram jb 12:00] callback_data: bsync_42',
+      metadata: { senderId: '1' },
+    };
+    const result = parseCallbackEvent(event, 'bsync');
+    expect(result).not.toBeNull();
+    expect(result!.payload).toBe('42');
+  });
+
+  test('erkennt die Huellenklammer ohne Schluesselwort', () => {
+    const event = {
+      content: '[Telegram jb 12:00] booking_abc::ignore',
+      metadata: { senderId: '1' },
+    };
+    const result = parseCallbackEvent(event, 'booking');
+    expect(result).not.toBeNull();
+    expect(result!.args).toEqual(['abc', 'ignore']);
+  });
+
+  test('ein echter Chatsatz bleibt kein Callback', () => {
+    const event = {
+      content: 'bitte bweekly_start ausloesen',
+      metadata: { senderId: '1' },
+    };
+    expect(parseCallbackEvent(event, 'bweekly')).toBeNull();
+  });
+
+  test('unwrapCallbackContent laesst blanke Daten unveraendert', () => {
+    expect(unwrapCallbackContent('bweekly_start')).toBe('bweekly_start');
+    expect(unwrapCallbackContent('  callback_data:bweekly_start  ')).toBe('bweekly_start');
   });
 });
