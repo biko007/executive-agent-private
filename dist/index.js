@@ -2813,6 +2813,40 @@ export default function (api) {
         const REPORT_CHUNK_SIZE = 3500;
         const HDCC_CHAT_ID = '-5178308220'; // HDCC-Dev-Gruppe
         let reportLastAutoSendAt = 0;
+        /**
+         * Zwei Abschlusszeilen unter jeder Textmeldung des Report-Watchers:
+         * der Weiterarbeits-Befehl und der Link zum Claude-Projekt.
+         *
+         * PARSE-MODE: Die Zustellung laeuft ueber sendTelegram()/sendTelegramToRole() und
+         * setzt KEIN parse_mode — der Text geht als Plain-Text an Telegram. Deshalb steht
+         * der Befehl hier als eigene Zeile ohne Auszeichnung. Wuerde man <code> oder
+         * Backticks schreiben, erschienen die Zeichen woertlich. Fuer den Fall, dass die
+         * Zustellung spaeter auf HTML oder MarkdownV2 umgestellt wird, liegen beide Formen
+         * bereit; umzustellen ist dann nur REPORT_FOOTER_MODE.
+         *
+         * NUR fuer den bikosoc-Strang. HDCC-Plaene gehen in einen anderen Chat, und
+         * "go bikosoc" waere dort falsch.
+         */
+        const REPORT_GO_COMMAND = 'go bikosoc';
+        const REPORT_PROJECT_URL = 'https://claude.ai/project/019ca319-ddfa-714c-a57c-7597bc8465a4';
+        const REPORT_FOOTER_MODE = 'plain';
+        function reportFooter() {
+            const befehl = REPORT_FOOTER_MODE === 'html'
+                ? `<code>${REPORT_GO_COMMAND}</code>`
+                : REPORT_FOOTER_MODE === 'markdownv2'
+                    ? `\`${REPORT_GO_COMMAND}\``
+                    : REPORT_GO_COMMAND;
+            return `\n\n${befehl}\n${REPORT_PROJECT_URL}`;
+        }
+        /**
+         * Belegt im Log, dass die beiden Abschlusszeilen Teil der gesendeten Nachricht
+         * waren — der ausgehende Nachrichtentext selbst wird nirgends protokolliert.
+         */
+        function logReportFooter(name, ok, laenge) {
+            api.logger.info(`[report-watcher] Abschlusszeilen ${ok ? 'gesendet' : 'NICHT gesendet'} fuer ${name}`
+                + ` (Modus ${REPORT_FOOTER_MODE}, Befehl "${REPORT_GO_COMMAND}", Link ${REPORT_PROJECT_URL},`
+                + ` Nachrichtenlaenge ${laenge})`);
+        }
         // Liest die Sent-Map. Wirft bei unlesbarem/defektem Index, statt auf eine leere Map
         // zurueckzufallen: ein Fail-open-auf-leer laesst den Scan den gesamten Bestand fuer
         // "nie zugestellt" halten und schreibt die leere Map anschliessend zurueck — genau die
@@ -3103,13 +3137,19 @@ export default function (api) {
                             for (let i = 0; i < totalChunks; i++) {
                                 const chunk = content.slice(i * REPORT_CHUNK_SIZE, (i + 1) * REPORT_CHUNK_SIZE);
                                 const header = totalChunks > 1 ? `[${i + 1}/${totalChunks}] ${file.name}\n\n` : `${file.name}\n\n`;
-                                await sendTelegramToRole('dev', header + chunk, { fallbackToOperativ: true });
+                                // Die Abschlusszeilen stehen genau einmal, unter der LETZTEN Nachricht.
+                                const footer = i === totalChunks - 1 ? reportFooter() : '';
+                                const ok = await sendTelegramToRole('dev', header + chunk + footer, { fallbackToOperativ: true });
+                                if (footer)
+                                    logReportFooter(file.name, ok, header.length + chunk.length + footer.length);
                             }
                         }
                         else {
                             // Langer Report: Digest bevorzugen, Fallback auf extractReportSummary
                             const text = digestText || extractReportSummary(content);
-                            await sendTelegramToRole('dev', `${file.name}\n\n${text}`, { fallbackToOperativ: true });
+                            const body = `${file.name}\n\n${text}${reportFooter()}`;
+                            const ok = await sendTelegramToRole('dev', body, { fallbackToOperativ: true });
+                            logReportFooter(file.name, ok, body.length);
                         }
                     }
                     catch { /* text preview best-effort */ }
