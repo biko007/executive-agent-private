@@ -716,10 +716,15 @@ export function registerInstagramCommands(api: any): void {
               return { text: `❌ Session "${sessionId}" nicht gefunden oder keine Dateien.` };
             }
 
-            // Find first video file
-            const videoRow = origRows.find(r =>
-              r.source_path.endsWith('.mp4') || r.source_path.endsWith('.mov'),
-            );
+            // Find first video file.
+            // Endung klein schreiben, bevor verglichen wird (07.10.2026): Vom iPhone
+            // exportierte Dateien tragen die Endung oft in Grossbuchstaben (IMG_3060.MOV),
+            // und dieser Vergleich war die letzte gross/klein-empfindliche Stelle im
+            // Medienpfad — alle anderen setzen die Endung schon auf Kleinschreibung.
+            const videoRow = origRows.find(r => {
+              const pfad = String(r.source_path || '').toLowerCase();
+              return pfad.endsWith('.mp4') || pfad.endsWith('.mov');
+            });
             if (!videoRow) {
               return { text: `❌ Keine Videodatei in Session "${sessionId}" gefunden.` };
             }
