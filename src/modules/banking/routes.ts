@@ -18,7 +18,7 @@ import {
 } from './store.js';
 import { getClient } from '../../shared/db/index.js';
 import { initiateConnect, completeTan } from './tan-bridge.js';
-import { getSyncStatus } from './sync-engine.js';
+import { getSyncStatus, runWeeklySyncWithReport } from './sync-engine.js';
 import * as sidecar from './sidecar-client.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -187,10 +187,56 @@ export function registerBankingHttpRoutes(api: any) {
             return true;
           }
 
-          // POST /api/banking/accounts/:id/sync — Skeleton
+          /* POST /api/banking/accounts/:id/sync — „Abgleich jetzt"
+             (Owner-Entscheidung 07.10.2026, loest den Skeleton ab)
+
+             Derselbe Weg wie der Montagslauf: `runWeeklySyncWithReport` holt
+             Salden UND Umsaetze aller aktiven Konten des Instituts und
+             protokolliert jeden Lauf in `banking_sync_runs`. Es gibt bewusst
+             keinen zweiten Abgleichspfad — ein Knopf, der etwas anderes tut als
+             der Zeitplan, waere eine zweite Fehlerquelle.
+
+             Die Kennung im Pfad bestimmt das Institut; der Abgleich laeuft
+             danach ueber alle aktiven Konten dieses Instituts. Das steht so im
+             Genehmigungsdialog.
+
+             Genehmigungspflichtig (`banking-accounts.sync`): der Aufruf nimmt
+             Bankkontakt auf und kann eine pushTAN-Anforderung ausloesen. */
           if (sub === 'sync' && req.method === 'POST') {
             await withContext({ requestId, actor, source: 'dashboard' }, async () => {
-              json(res, 501, { ok: false, error: 'Not implemented — waiting for Etappe d' });
+              try {
+                const body = await parseJsonBody(req).catch(() => ({}));
+                if (!(await checkApproval(req, res, 'banking-accounts.sync', sessionId, actor, 'POST', body))) return;
+
+                const accounts = await listAccounts({ status: 'active' });
+                const konto = accounts.find(a => Number(a.id) === accountId);
+                if (!konto) { err(res, 404, 'Aktives Konto nicht gefunden'); return; }
+
+                const report = await runWeeklySyncWithReport({
+                  runPhase: 'manual',
+                  triggerSource: 'dashboard',
+                  triggerId: String(accountId),
+                });
+
+                await audit.log({
+                  module: 'banking', action: 'account.sync_requested',
+                  entityType: 'banking_account', entityId: String(accountId),
+                  after: {
+                    institution_id: String(konto.institutionId),
+                    status: report.status,
+                    accounts_synced: report.accountsSynced,
+                    transactions_new: report.transactionsNew,
+                  },
+                });
+
+                json(res, 200, {
+                  ok: report.status === 'SUCCESS_FULL',
+                  status: report.status,
+                  meldung: report.telegram,
+                  konten_abgeglichen: report.accountsSynced,
+                  umsaetze_neu: report.transactionsNew,
+                });
+              } catch (e: any) { err(res, 500, e.message); }
             });
             return true;
           }

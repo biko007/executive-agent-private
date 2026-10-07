@@ -45,7 +45,8 @@ export { initTanBridge, initiateConnect, completeTan, cleanupExpiredChallenges }
 export { initBankingCommands, registerBankingCommands } from './commands.js';
 
 // Sync Engine (Etappe e + E1 + E2)
-export { initSyncEngine, startWeeklySync, getSyncStatus, eventResync, validateResyncRequest } from './sync-engine.js';
+export { initSyncEngine, startWeeklySync, runWeeklySyncWithReport, getSyncStatus, eventResync, validateResyncRequest } from './sync-engine.js';
+export type { WeeklySyncReport } from './sync-engine.js';
 export type { DailySyncResult, AccountSyncResult, ContractStatus, SyncStatus, SyncEngineDeps } from './sync-engine.js';
 
 // HTTP routes

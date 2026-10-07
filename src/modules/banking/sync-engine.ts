@@ -537,6 +537,99 @@ export async function startWeeklySync(options?: {
   }
 }
 
+// ── Wochenabgleich mit Meldungstext (E1, 07.10.2026) ────────────────────────
+
+export interface WeeklySyncReport {
+  status: ContractStatus;
+  /** Fertiger Telegram-Text: Erfolg kurz, Fehler mit Grund. */
+  telegram: string;
+  /** Zusammenzaehlung aus `banking_sync_runs` fuer diesen Lauf. */
+  accountsSynced: number;
+  transactionsNew: number;
+  /** Fehlergrund aus `banking_sync_runs.error_message`, falls vorhanden. */
+  errorMessage: string | null;
+}
+
+/** Erklaert einen Vertragsstatus in einem Satz, ohne Fachjargon. */
+function statusErklaerung(status: ContractStatus): string {
+  switch (status) {
+    case 'TAN_REQUIRED':
+      return 'Die Bank verlangt eine Freigabe per pushTAN. Das Institut ist bis dahin pausiert.';
+    case 'BANK_TIMEOUT_UNKNOWN':
+      return 'Die Bank hat nicht innerhalb der Wartezeit geantwortet. Ob sie den Abruf '
+        + 'ausgefuehrt hat, ist unbekannt.';
+    case 'IMPORT_FAILED':
+      return 'Der Abruf ist fehlgeschlagen.';
+    case 'AUTO_PAUSED_PENDING_TAN':
+      return 'Das Institut ist wegen einer offenen TAN-Freigabe pausiert — es wurde '
+        + 'kein Abruf versucht.';
+    case 'SKIPPED_ALREADY_RUNNING':
+      return 'Es laeuft bereits ein Abgleich. Dieser Lauf wurde uebersprungen.';
+    case 'SKIPPED_ALREADY_SYNCED':
+      return 'Fuer heute liegt bereits ein Abgleich vor.';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Fuehrt den Wochenabgleich aus und liefert zusaetzlich den fertigen
+ * Telegram-Text. Den Text baut diese Funktion und nicht der Aufrufer, damit der
+ * Montagslauf und die Schaltflaeche „Abgleich jetzt" im Dashboard dieselbe
+ * Meldung erzeugen.
+ *
+ * Die Zahlen kommen aus `banking_sync_runs` — also aus dem Protokoll, das auch
+ * das Dashboard liest, nicht aus einer zweiten Zaehlung im Speicher.
+ *
+ * Keine Kontonummern, keine IBAN, keine Namen im Text (C5).
+ */
+export async function runWeeklySyncWithReport(options?: {
+  runPhase?: 'scheduled' | 'manual';
+  triggerSource?: string;
+  triggerId?: string;
+}): Promise<WeeklySyncReport> {
+  const result = await startWeeklySync(options);
+
+  const { rows } = await dbQuery<{
+    accounts_synced: number | null;
+    transactions_new: number | null;
+    error_message: string | null;
+  }>(
+    `SELECT accounts_synced, transactions_new, error_message
+       FROM banking_sync_runs
+      WHERE run_phase = $1
+        AND started_at >= now() - interval '2 hours'
+      ORDER BY id DESC
+      LIMIT 10`,
+    [options?.runPhase ?? 'scheduled'],
+  );
+
+  const accountsSynced = rows.reduce((sum, r) => sum + Number(r.accounts_synced ?? 0), 0);
+  const transactionsNew = rows.reduce((sum, r) => sum + Number(r.transactions_new ?? 0), 0);
+  const errorMessage = rows.map(r => r.error_message).find(m => m) ?? null;
+
+  let telegram: string;
+  if (result.status === 'SUCCESS_FULL') {
+    const konten = accountsSynced === 1 ? '1 Konto' : `${accountsSynced} Konten`;
+    const umsaetze = transactionsNew === 1 ? '1 neuer Umsatz' : `${transactionsNew} neue Umsaetze`;
+    telegram = `\u2705 Bankabgleich erfolgreich \u2014 ${konten}, ${umsaetze}.`;
+  } else {
+    const teile = [`\uD83D\uDD34 Bankabgleich nicht erfolgreich \u2014 ${result.status}.`];
+    const erklaerung = statusErklaerung(result.status);
+    if (erklaerung) teile.push(erklaerung);
+    if (errorMessage) teile.push(`Grund: ${errorMessage}`);
+    telegram = teile.join(' ');
+  }
+
+  return {
+    status: result.status,
+    telegram,
+    accountsSynced,
+    transactionsNew,
+    errorMessage,
+  };
+}
+
 // ── Event Re-Sync (E2) ───────────────────────────────────────────────────────
 
 /**
@@ -919,9 +1012,16 @@ export async function checkExpiryReminders(
 // ── Sync status ───────────────────────────────────────────────────────────────
 
 export async function getSyncStatus(): Promise<SyncStatus> {
-  // Last sync from audit log
+  // Last sync from audit log.
+  // Befund E1 (07.10.2026): Die Abfrage suchte noch nach 'daily_sync.completed'.
+  // Geschrieben wird seit E3 (26.06.2026) 'weekly_sync.completed' — getSyncStatus
+  // meldete deshalb dauerhaft 'never_synced'. Beide Namen zaehlen, damit die
+  // Laeufe von vor der Umbenennung erhalten bleiben.
   const { rows: auditRows } = await dbQuery<{ ts: Date }>(
-    `SELECT ts FROM audit_log WHERE module = 'banking' AND action = 'daily_sync.completed' ORDER BY ts DESC LIMIT 1`,
+    `SELECT ts FROM audit_log
+      WHERE module = 'banking'
+        AND action IN ('weekly_sync.completed', 'daily_sync.completed')
+      ORDER BY ts DESC LIMIT 1`,
   );
 
   const lastSync = auditRows.length > 0 ? new Date(auditRows[0].ts).toISOString() : null;
