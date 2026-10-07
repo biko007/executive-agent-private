@@ -37,6 +37,16 @@ export interface DropboxUploadResult {
   readonly contentHash: string;
 }
 
+/** Eintrag aus listFolder — nur die Felder, die hier gebraucht werden. */
+export interface DropboxEntry {
+  readonly tag: "file" | "folder" | "deleted";
+  /** Pfad relativ zum App-Ordner, z. B. "/bikosoc-reports/inbox/a.txt". */
+  readonly pathLower: string;
+  readonly pathDisplay: string;
+  readonly name: string;
+  readonly size: number;
+}
+
 export interface DropboxAdapter {
   uploadFile(params: {
     path: string;
@@ -51,6 +61,15 @@ export interface DropboxAdapter {
   }): Promise<DropboxUploadResult>;
 
   createFolder(path: string): Promise<void>;
+
+  /** Inhalt eines Ordners. Ein fehlender Ordner liefert eine leere Liste. */
+  listFolder(path: string): Promise<DropboxEntry[]>;
+
+  /** Datei herunterladen. */
+  downloadFile(path: string): Promise<Buffer>;
+
+  /** Datei verschieben oder umbenennen. */
+  moveFile(fromPath: string, toPath: string): Promise<void>;
 
   healthCheck(): Promise<boolean>;
 }
@@ -386,6 +405,69 @@ export function createDropboxAdapter(params: {
         return;
       }
 
+      throw mapError(response.status, errorBody);
+    },
+
+    async listFolder(folderPath): Promise<DropboxEntry[]> {
+      const response = await apiCallWithRefresh(
+        `${API_BASE}/2/files/list_folder`,
+        {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: folderPath, recursive: false, limit: 200 }),
+        },
+      );
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        // Ein noch nicht angelegter Ordner ist kein Fehler fuer den Aufrufer.
+        if (response.status === 409 && errorBody.includes("not_found")) return [];
+        throw mapError(response.status, errorBody);
+      }
+
+      const data = (await response.json()) as Record<string, unknown>;
+      const entries = (data["entries"] as Record<string, unknown>[]) ?? [];
+      return entries.map((e) => ({
+        tag: (e[".tag"] as DropboxEntry["tag"]) ?? "file",
+        pathLower: (e["path_lower"] as string) ?? "",
+        pathDisplay: (e["path_display"] as string) ?? "",
+        name: (e["name"] as string) ?? "",
+        size: (e["size"] as number) ?? 0,
+      }));
+    },
+
+    async downloadFile(filePath): Promise<Buffer> {
+      const response = await apiCallWithRefresh(
+        `${CONTENT_BASE}/2/files/download`,
+        {
+          headers: { "Dropbox-API-Arg": JSON.stringify({ path: filePath }) },
+          body: null,
+        },
+      );
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw mapError(response.status, errorBody);
+      }
+
+      return Buffer.from(await response.arrayBuffer());
+    },
+
+    async moveFile(fromPath, toPath): Promise<void> {
+      const response = await apiCallWithRefresh(
+        `${API_BASE}/2/files/move_v2`,
+        {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from_path: fromPath,
+            to_path: toPath,
+            autorename: true,
+          }),
+        },
+      );
+
+      if (response.ok) return;
+
+      const errorBody = await response.text();
       throw mapError(response.status, errorBody);
     },
 

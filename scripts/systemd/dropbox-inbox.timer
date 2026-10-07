@@ -1,0 +1,10 @@
+[Unit]
+Description=bikosoc Dropbox-Inbox Poll Timer
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
