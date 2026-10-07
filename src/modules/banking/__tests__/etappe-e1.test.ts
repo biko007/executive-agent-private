@@ -91,7 +91,7 @@ describe('global 3955-stop (outer loop)', () => {
       `UPDATE banking_sessions SET session_expires_at = $1, last_success_at = NOW() WHERE id = $2`,
       [new Date(Date.now() + 90 * 86_400_000).toISOString(), sess1.id],
     );
-    await upsertAccount(inst1.id, 'DE89370400440532060021', 'Alpha Konto 1');
+    const acctAlpha = await upsertAccount(inst1.id, 'DE89370400440532060021', 'Alpha Konto 1');
 
     // Institution 2: should be skipped entirely
     const inst2 = await upsertInstitution('60000022', 'E1 Bank Beta', null, 'https://example.com/fints');
@@ -133,13 +133,24 @@ describe('global 3955-stop (outer loop)', () => {
 
     expect(result.status).toBe('TAN_REQUIRED');
 
-    // At most one institution contacted — second must NOT be contacted
-    expect(syncedIbans).not.toContain('DE89370400440532060022');
+    /* Geprueft wird der globale Stopp: das ERSTE 3955 beendet den ganzen Lauf,
+       das zweite Institut wird nicht mehr kontaktiert.
 
-    // Beta account skipped
-    const betaAcct = result.accounts.find(a => a.account_id === acctBeta.id);
-    expect(betaAcct).toBeDefined();
-    expect(betaAcct!.result).toBe('skipped_due_to_tan');
+       Welches der beiden das erste ist, legt der Test absichtlich NICHT fest.
+       Bis zum 07.10.2026 hing das an `ORDER BY id` in listActiveSessions —
+       die Reihenfolge ist jetzt „juengste Sitzung zuerst" (Befund E1: nach
+       einem „Bank verbinden" griff der Abgleich sonst zur alten Sitzung).
+       Der Test prueft deshalb die Eigenschaft, nicht die Kennungsfolge. */
+    expect(syncedIbans.length).toBe(1);
+
+    const kontaktiert = syncedIbans[0];
+    const uebersprungen = kontaktiert === 'DE89370400440532060021'
+      ? acctBeta.id
+      : acctAlpha.id;
+
+    const skippedAcct = result.accounts.find(a => a.account_id === uebersprungen);
+    expect(skippedAcct).toBeDefined();
+    expect(skippedAcct!.result).toBe('skipped_due_to_tan');
   });
 });
 

@@ -29,6 +29,7 @@ import {
   registerBankingHttpRoutes,
   initBankingCommands, registerBankingCommands,
   initTanBridge, initSyncEngine, cleanupExpiredChallenges,
+  runWeeklySyncWithReport as runWeeklyBankSync,
 } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
@@ -2809,17 +2810,19 @@ export default function (api: any) {
         const chatId = bweeklyCb.senderId;
         if (bweeklyCb.payload === 'start') {
           await sendTelegram(chatId, '\uD83D\uDD04 Umsatzabruf wird gestartet...');
-          const { startWeeklySync } = await import('./src/modules/banking/sync-engine.js');
-          const result = await startWeeklySync({ runPhase: 'manual' });
+          // Derselbe Weg und dieselbe Meldung wie beim Montagslauf und bei der
+          // Schaltflaeche „Abgleich jetzt" im Dashboard (E1, 07.10.2026).
+          const result = await runWeeklyBankSync({
+            runPhase: 'manual',
+            triggerSource: 'telegram',
+            triggerId: 'bweekly_start',
+          });
 
-          if (result.status === 'SUCCESS_FULL') {
-            const totalTx = result.accounts.reduce((s: number, a: any) => s + a.transactions_inserted, 0);
-            await sendTelegram(chatId, `\u2705 Sync erfolgreich! ${totalTx} neue Umsaetze.`);
-          } else if (result.status === 'TAN_REQUIRED') {
-            // Alert with bsync_ button was already sent by startWeeklySync
-            await sendTelegram(chatId, '\u23F3 Bank verlangt TAN. Bitte Button oben nutzen.');
+          if (result.status === 'TAN_REQUIRED') {
+            // Die Nachricht mit dem bsync_-Knopf hat startWeeklySync schon geschickt.
+            await sendTelegram(chatId, '\u23F3 Bank verlangt TAN. Bitte Knopf oben nutzen.');
           } else {
-            await sendTelegram(chatId, `\u2139\uFE0F Sync-Status: ${result.status}`);
+            await sendTelegram(chatId, result.telegram);
           }
         }
         return;
@@ -3045,17 +3048,34 @@ export default function (api: any) {
     }, 60_000);
   }
 
-  // ── Banking Reminder (Mo 12:00 Berlin, E3 — NO bank contact) ──────────────
+  // ── Wochen-Bankabgleich (Mo 13:00 Europe/Berlin) ──────────────────────────
+  //
+  // Owner-Entscheidung 07.10.2026: Montags um 13:00 Berliner Zeit laeuft ein
+  // ECHTER Abgleich — Salden UND Umsaetze aller aktiven Konten. Das ersetzt den
+  // Mo-12:00-Reminder aus E3 (26.06.2026), der nur eine Telegram-Nachricht mit
+  // Startknopf schickte und keinen Bankkontakt hatte.
+  //
+  // Warum das geaendert wurde: der Knopfweg war in der Praxis folgenlos. Der
+  // Owner hat ihn zwischen 13.07. und 31.08.2026 siebenmal gedrueckt; in
+  // `banking_sync_runs` steht als juengster Lauf unveraendert der 29.06.2026 und
+  // im Audit-Log kein einzelnes `weekly_sync.completed` nach diesem Datum.
+  // Ursache war der Knopf-Parser (siehe src/shared/telegram-callback), nicht der
+  // Abgleich. Der Knopfweg ist reparariert und bleibt fuer die TAN-Kette
+  // erhalten; der Montagslauf haengt nun aber nicht mehr an einem Tastendruck.
+  //
+  // Risiko, das der Owner ausdruecklich uebernimmt: Verlangt die Bank eine
+  // pushTAN (FinTS 3955), endet der Lauf mit TAN_REQUIRED. Dann pausiert das
+  // Institut (Circuit-Breaker) und es kommt eine Telegram-Nachricht mit dem
+  // Knopf „TAN bestaetigt → jetzt syncen". Die SCA-Obergrenze von 6 pro 30 Tagen
+  // bleibt die einzige Bremse — unveraendert aus E3.
+  const WEEKLY_BANK_SYNC_HHMM = '13:00';
 
-  if (!g.__ea_bankingReminderRegistered) {
-    g.__ea_bankingReminderRegistered = true;
-    let lastBankingReminderDate = '';
+  if (!g.__ea_bankingWeeklySyncRegistered) {
+    g.__ea_bankingWeeklySyncRegistered = true;
+    let lastBankingSyncDate = '';
 
     setInterval(async () => {
       try {
-        const chatId = getCachedTelegramTarget('operativ');
-        if (!chatId) return;
-
         const inBerlin = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
         const hh = String(inBerlin.getHours()).padStart(2, '0');
         const mm = String(inBerlin.getMinutes()).padStart(2, '0');
@@ -3063,19 +3083,36 @@ export default function (api: any) {
         const today = berlinDate(0);
 
         // Montag = getDay() === 1
-        if (nowHHMM === '12:00' && inBerlin.getDay() === 1 && lastBankingReminderDate !== today) {
-          lastBankingReminderDate = today;
+        if (nowHHMM !== WEEKLY_BANK_SYNC_HHMM) return;
+        if (inBerlin.getDay() !== 1) return;
+        if (lastBankingSyncDate === today) return;
 
-          await sendTelegramWithKeyboard(
-            chatId,
-            '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.',
-            [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]],
-          );
-        }
+        // Tagesmarke VOR dem Lauf setzen: ein hängender Lauf darf die Minute
+        // nicht ein zweites Mal auslösen.
+        lastBankingSyncDate = today;
+
+        api.logger.info('[banking-weekly] Montagsabgleich startet (13:00 Europe/Berlin)');
+        const result = await runWeeklyBankSync({
+          runPhase: 'scheduled',
+          triggerSource: 'scheduler',
+          triggerId: today,
+        });
+        api.logger.info(`[banking-weekly] Montagsabgleich beendet: ${result.status}`);
+
+        const chatId = getCachedTelegramTarget('operativ');
+        if (chatId) await sendTelegram(chatId, result.telegram);
       } catch (e: any) {
-        api.logger.error(`[banking-reminder] ${e.message}`);
+        api.logger.error(`[banking-weekly] ${e.message}`);
+        const chatId = getCachedTelegramTarget('operativ');
+        if (chatId) {
+          await sendTelegram(
+            chatId,
+            `\uD83D\uDD34 Bankabgleich abgebrochen \u2014 ${e.message}`,
+          ).catch(() => {});
+        }
       }
     }, 60_000);
+    api.logger.info('[banking-weekly] Montagsabgleich angemeldet (Mo 13:00 Europe/Berlin)');
   }
 
   // ── Wöchentlicher Health-Report → src/modules/health/commands.ts (Timer) ──

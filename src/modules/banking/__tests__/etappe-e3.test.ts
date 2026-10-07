@@ -332,58 +332,38 @@ describe('Chain linkage', () => {
   });
 });
 
-// ── E3-7: Reminder Mo 12:00 — Telegram-Nachricht, KEIN Sidecar-Call ────────
+// ── E3-7/E3-8 fortgeschrieben: Montagslauf 13:00 statt Reminder 12:00 ───────
+//
+// Owner-Entscheidung 07.10.2026: Der Mo-12:00-Reminder aus E3 (nur Telegram,
+// kein Bankkontakt) ist durch einen ECHTEN Abgleich montags 13:00 Europe/Berlin
+// ersetzt. Die beiden Tests pruefen deshalb jetzt die Ausloesebedingung des
+// Montagslaufs — dieselbe Form wie zuvor, nur gegen das geltende Zielmodell.
 
-describe('Banking Reminder', () => {
-  test('E3-7. Monday 12:00 reminder sends Telegram, no sidecar call', async () => {
-    // Test the reminder logic directly without setInterval.
-    // The scheduler uses: nowHHMM === '12:00' && getDay() === 1 && lastDate !== today
-    // We simulate this by testing the conditional logic.
+describe('Montagslauf (Mo 13:00 Europe/Berlin)', () => {
+  const WEEKLY_BANK_SYNC_HHMM = '13:00';
 
-    let telegramSent = false;
-    let sentKeyboard: any = null;
+  /** Dieselbe Bedingung wie im Scheduler in index.ts. */
+  function loeftAus(nowHHMM: string, dayOfWeek: number, lastDate: string, today: string): boolean {
+    if (nowHHMM !== WEEKLY_BANK_SYNC_HHMM) return false;
+    if (dayOfWeek !== 1) return false;
+    if (lastDate === today) return false;
+    return true;
+  }
 
-    const mockSendTelegramWithKeyboard = async (_chatId: string, _text: string, keyboard: any) => {
-      telegramSent = true;
-      sentKeyboard = keyboard;
-      return true;
-    };
-
-    // Simulate Monday 12:00 conditions
-    const nowHHMM = '12:00';
-    const dayOfWeek = 1; // Monday
-    const lastBankingReminderDate = '';
-    const today = '2026-06-29'; // A Monday
-    const chatId = 'test-chat-e3-7';
-
-    if (nowHHMM === '12:00' && dayOfWeek === 1 && lastBankingReminderDate !== today) {
-      await mockSendTelegramWithKeyboard(
-        chatId,
-        '\uD83C\uDFE6 W\u00f6chentlicher Umsatzabruf\n\nButton dr\u00fccken, um den Sync zu starten.',
-        [[{ text: '\uD83C\uDFE6 Umsatzabruf starten', callback_data: 'bweekly_start' }]],
-      );
-    }
-
-    expect(telegramSent).toBe(true);
-    expect(sentKeyboard).not.toBeNull();
-    expect(sentKeyboard[0][0].callback_data).toBe('bweekly_start');
-
-    // No sidecar call was made (verified by absence of sidecar mock invocation)
+  test('E3-7. Montag 13:00 loest den Abgleich aus', () => {
+    expect(loeftAus('13:00', 1, '', '2026-10-12')).toBe(true);
   });
 
-  test('E3-8. Reminder NOT sent on Tuesday (getDay !== 1)', async () => {
-    let telegramSent = false;
+  test('E3-8. Dienstag 13:00 loest NICHT aus', () => {
+    expect(loeftAus('13:00', 2, '', '2026-10-13')).toBe(false);
+  });
 
-    const nowHHMM = '12:00';
-    const dayOfWeek = 2; // Tuesday
-    const lastBankingReminderDate = '';
-    const today = '2026-06-30';
+  test('E3-7b. Montag 12:00 loest NICHT mehr aus (alte Reminder-Uhrzeit)', () => {
+    expect(loeftAus('12:00', 1, '', '2026-10-12')).toBe(false);
+  });
 
-    if (nowHHMM === '12:00' && dayOfWeek === 1 && lastBankingReminderDate !== today) {
-      telegramSent = true;
-    }
-
-    expect(telegramSent).toBe(false);
+  test('E3-7c. zweiter Versuch in derselben Minute wird uebersprungen', () => {
+    expect(loeftAus('13:00', 1, '2026-10-12', '2026-10-12')).toBe(false);
   });
 });
 
@@ -391,10 +371,6 @@ describe('Banking Reminder', () => {
 
 describe('Removed endpoint', () => {
   test('E3-9. POST /api/internal/banking/daily-sync route no longer exists', async () => {
-    // Verify the route handler does NOT match 'daily-sync' resource.
-    // We test this by checking the routes.ts source no longer contains the handler.
-    // Since routes.ts is a runtime module, we verify via import that startWeeklySync
-    // is NOT imported there (it was dailySync before, now removed entirely).
     const fs = await import('node:fs');
     const path = await import('node:path');
 
@@ -403,10 +379,29 @@ describe('Removed endpoint', () => {
     );
     const routesSrc = fs.readFileSync(routesPath, 'utf-8');
 
-    // The daily-sync endpoint should be completely gone
+    // Der ungeschuetzte Auto-Trigger-Endpoint bleibt entfernt. Die internen
+    // Routen gibt es weiter (GET sync-status), aber keine davon loest einen
+    // Abgleich aus: der einzige Abgleichspfad ist POST accounts/:id/sync und
+    // der ist genehmigungspflichtig (E3-9b).
     expect(routesSrc).not.toContain("'daily-sync'");
     expect(routesSrc).not.toContain('dailySync');
-    expect(routesSrc).not.toContain('startWeeklySync');
+    expect(routesSrc).not.toContain("internal/banking/daily");
+  });
+
+  /* E3-9b (07.10.2026): E3 verbot jeden Abgleichspfad in routes.ts. Der Owner
+     hat am 07.10.2026 eine Schaltflaeche „Abgleich jetzt" im Dashboard
+     beauftragt; damit gibt es wieder einen Pfad. Die Schutzabsicht von E3 bleibt
+     erhalten und wird hier festgehalten: dieser Pfad ist genehmigungspflichtig.
+     Ohne gueltiges Genehmigungstoken darf er keinen Bankkontakt ausloesen. */
+  test('E3-9b. der Abgleichspfad in routes.ts ist genehmigungspflichtig', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { requiresApproval } = await import('../../../middleware/approval-registry.js');
+
+    const routesSrc = fs.readFileSync(path.join(import.meta.dir, '..', 'routes.ts'), 'utf-8');
+
+    expect(routesSrc).toContain("checkApproval(req, res, 'banking-accounts.sync'");
+    expect(requiresApproval('banking-accounts.sync')).toBe(true);
   });
 });
 

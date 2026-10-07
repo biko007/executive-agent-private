@@ -646,12 +646,26 @@ export async function expireOldPendingChallenges(maxAgeMinutes = 10): Promise<nu
 /**
  * List active sessions — excludes sessions in pending-TAN state.
  */
+/**
+ * Sitzungen, die fuer einen Abgleich in Frage kommen — juengste zuerst.
+ *
+ * Befund E1 (07.10.2026): Die Reihenfolge war `ORDER BY id`, also AELTESTE
+ * zuerst. Der Sync verarbeitet pro Institut nur die erste Sitzung
+ * (`processedInstitutions`). Nach einem „Bank verbinden" lagen zwei Sitzungen
+ * fuer dasselbe Institut vor: die alte mit dem Sitzungsstand des letzten
+ * Abgleichs und die frische aus dem FinTS-Dialog. Der Abgleich griff immer zur
+ * ALTEN und liess die gueltige liegen.
+ *
+ * Reihenfolge jetzt: letzter erfolgreicher Verbindungsaufbau, sonst letzte
+ * Aenderung, zuletzt die Kennung — dieselbe Reihenfolge, die die Anzeige
+ * „Verbindungsstand" im Dashboard verwendet.
+ */
 export async function listActiveSessions(): Promise<Session[]> {
   const { rows } = await dbQuery<SessionRow>(
     `SELECT * FROM banking_sessions
      WHERE institution_id IS NOT NULL
        AND pending_challenge_type IS NULL
-     ORDER BY id`,
+     ORDER BY COALESCE(last_success_at, updated_at) DESC NULLS LAST, id DESC`,
   );
   return rows.map(mapSession);
 }
