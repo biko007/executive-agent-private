@@ -3251,6 +3251,43 @@ export default function (api: any) {
     const REPORT_GO_COMMAND = 'go bikosoc';
     const REPORT_GO_URL = 'https://claude.ai/new';
 
+    /**
+     * Reine Quittungen und Statusmeldungen — fuer die entfaellt die Go-Folgenachricht.
+     *
+     * WARUM (Aenderung 07.10.2026): Der Watcher schickte die Go-Nachricht nach JEDER
+     * Zustellung, also auch nach den Quittungen des Prompt-Inbox-Watchers
+     * (`report-prompt-inbox-*.md`). Die melden nur „Prompt uebergeben" — es gibt nichts
+     * zu bewerten und nichts weiterzuarbeiten. Je uebergebenem Prompt kam so ein
+     * zusaetzliches Nachrichtenpaar mit Kopierknopf.
+     *
+     * Diese Liste ist die EINZIGE Stelle, an der entschieden wird. Die Quittung selbst
+     * wird unveraendert zugestellt — nur die Folgenachricht entfaellt.
+     *
+     * Bestandsaufnahme vom 07.10.2026 ueber alle Dateinamen in `~/bikosoc-spec`:
+     * `report-prompt-inbox-` ist der einzige maschinell erzeugte Typ, der wiederkehrt
+     * (zehn Dateien, geschrieben von `src/modules/prompt-inbox`). Alle anderen
+     * Namensfamilien sind cc-Berichte oder Plaene und damit bewertbar — die behalten die
+     * Go-Zeile, `report-plan-*` ausdruecklich eingeschlossen.
+     *
+     * `report-selbsttest-` ist reserviert: Testreports, die ein Lauf nur zum Nachweis
+     * erzeugt und danach wieder entfernt, brauchen keine Go-Zeile. Wer einen solchen
+     * Report anlegt, nennt ihn so.
+     *
+     * Leerlauf- und Wait-Meldungen sind hier bewusst NICHT aufgefuehrt: die gehen direkt
+     * per Telegram raus und laufen nie ueber den Report-Watcher — es gibt also keine
+     * Datei, die man ausschliessen koennte.
+     */
+    const REPORT_GO_AUSGESCHLOSSEN = [
+      'report-prompt-inbox-',
+      'report-selbsttest-',
+    ];
+
+    /** Traegt dieser Dateiname eine reine Quittung? */
+    function istQuittung(name: string): boolean {
+      const basename = path.basename(String(name || ''));
+      return REPORT_GO_AUSGESCHLOSSEN.some(praefix => basename.startsWith(praefix));
+    }
+
     /** Vollstaendiger Go-Befehl: Grundbefehl plus Basename der Dropbox-Datei. */
     function reportGoBefehl(name: string): string {
       const basename = path.basename(String(name || '')).trim();
@@ -3289,6 +3326,12 @@ export default function (api: any) {
      * hier die Message-ID aus der API-Antwort als Beleg.
      */
     async function sendReportGoNachricht(name: string): Promise<void> {
+      // Einziges Gate: reine Quittungen bekommen keine Folgenachricht.
+      if (istQuittung(name)) {
+        api.logger.info(`[report-watcher] Go-Nachricht entfaellt (Quittung): ${name}`);
+        return;
+      }
+
       let targets: string[] = [];
       try {
         targets = await getTelegramTargets('dev', { fallbackToOperativ: true });

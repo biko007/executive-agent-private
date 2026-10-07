@@ -336,6 +336,13 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   Zeichenkette, die `dropboxPath` bildet. Eine zentrale Stelle für alle Report-Typen
   (`report-*`, `report-plan-*`): `reportGoBefehl()` / `reportGoNachricht()` /
   `reportGoMarkup()` in `index.ts`. Nicht für HDCC-Pläne (anderer Chat).
+  **Ausschlussliste (2026-10-07):** `REPORT_GO_AUSGESCHLOSSEN` + `istQuittung()` — reine
+  Quittungen ohne Bewertungsbedarf bekommen KEINE Go-Folgenachricht. Enthalten:
+  `report-prompt-inbox-` (Quittung des Prompt-Inbox-Watchers) und das reservierte
+  `report-selbsttest-` (Nachweis-Reports eines Laufs). Einziges Gate, geprüft in
+  `sendReportGoNachricht()`; die Zustellung der Quittung selbst bleibt unverändert.
+  Leerlauf-/Wait-Meldungen stehen nicht in der Liste — sie gehen direkt per Telegram
+  raus und laufen nie über den Watcher.
 - **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
   (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
   Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).
