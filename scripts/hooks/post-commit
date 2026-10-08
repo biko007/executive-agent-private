@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# post-commit hook: Repo-Docs nach Dropbox spiegeln (docs-mirror).
+#
+# Laeuft in executive-agent, executive-dashboard und workspace — in den beiden
+# letzteren ueber core.hooksPath, gesetzt von scripts/install-docs-mirror.sh.
+#
+# Der Upload laeuft ABGEKOPPELT im Hintergrund: ein Commit darf nicht auf das
+# Netz warten, und ein Dropbox-Fehler darf ihn nicht beeinflussen. Der
+# Exit-Code eines post-commit-Hooks wird von git ohnehin ignoriert; hier wird
+# zusaetzlich nichts auf stdout/stderr des Commits geschrieben.
+#
+# Fehlt der Dropbox-Zugang (EA_DROPBOX_*), endet das Spiegel-Skript still.
+
+set -uo pipefail
+
+EA_DIR="${HOME}/.openclaw/workspace/.openclaw/extensions/executive-agent"
+BUN="${HOME}/.bun/bin/bun"
+LOG="${HOME}/.cache/docs-mirror.log"
+ENV_FILE="${HOME}/.config/openclaw/env"
+
+[ -x "$BUN" ] || exit 0
+[ -f "$EA_DIR/scripts/docs-mirror.ts" ] || exit 0
+
+mkdir -p "$(dirname "$LOG")"
+
+# Secrets kommen aus derselben Datei wie fuer die systemd-Units. Sie wird nur
+# in der Subshell eingelesen und nie protokolliert.
+(
+  if [ -r "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+  fi
+  cd "$EA_DIR" || exit 0
+  printf '[%s] post-commit (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${PWD##*/}" >> "$LOG"
+  "$BUN" scripts/docs-mirror.ts >> "$LOG" 2>&1
+) < /dev/null > /dev/null 2>&1 &
+
+exit 0

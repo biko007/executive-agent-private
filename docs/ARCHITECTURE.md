@@ -384,6 +384,30 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   Whitespace am Nachrichtenende. U+2800 ist kein Whitespace, bleibt stehen und ist
   unsichtbar — live belegt (`sendMessage` gab den Text samt Füllzeile unverändert zurück). Gilt über `reportGoNachricht()` für alle Report-Typen
   einschließlich `report-plan-*`.
+- **Docs-Mirror (2026-10-08):** Spiegelt die Markdown-Dokumentation der drei bikosoc-Repos
+  nach Dropbox, Ziel `/bikosoc-reports/docs/repo/<repo>/<unterpfad>` im App-Ordner
+  (`Apps/bikosoc-reports/bikosoc-reports/docs/repo/`). Zugang: derselbe wie beim
+  Report-Watcher (`EA_DROPBOX_*`); fehlt er, endet der Lauf still.
+  Code: `src/modules/docs-mirror/` (reine Logik) + `scripts/docs-mirror.ts` (Runner).
+  **Umfang (Whitelist, NICHT rekursiv):** `executive-agent` → `CLAUDE.md`, `README.md`,
+  `docs/*.md`, `governance/*.md`; `executive-dashboard` → `CLAUDE.md`, `README.md`,
+  `docs/*.md`; `workspace` → `CLAUDE.md`, `README.md`. Damit bleiben `docs/workpackages/`,
+  `prompts/**`, `memory/**`, `DREAMS.md` und alle Laufzeitdateien draußen.
+  **Drei Schranken:** (1) nur `*.md` aus der Whitelist, keine Punktdateien;
+  (2) Dokumente mit Datenklassifizierung `sensitive` werden übersprungen (C5);
+  (3) Inhalte, die wie ein echter Zugangsschlüssel aussehen (`sk-…`, `ghp_…`, `xox…`,
+  Bot-Token, PRIVATE KEY, `AKIA…`), werden übersprungen und **warnend** protokolliert —
+  Platzhalter wie `<DASHBOARD_TOKEN>` oder `KEY=CHANGEME` sind bewusst kein Treffer.
+  **Sparsamkeit:** Upload nur bei geändertem Inhalt. Index `~/bikosoc-spec/.docs-mirror-index.json`
+  (SHA-256 je Dropbox-Pfad, Modus 0600, analog `.report-sent.json`); Dropbox-Modus `overwrite`.
+  Einträge ohne Quelldatei verlassen den Index — in Dropbox wird **nichts** gelöscht.
+  **Zwei Auslöser:** (a) `git post-commit` in allen drei Repos (`scripts/hooks/post-commit`,
+  abgekoppelt im Hintergrund, Log `~/.cache/docs-mirror.log`; für Dashboard und Workspace
+  per `core.hooksPath` auf dieses Verzeichnis gesetzt); (b) Sicherheitsnetz
+  `docs-mirror.timer`, täglich **04:30 Europe/Berlin** (die Zeitzone steht im
+  `OnCalendar`-Ausdruck, weil die Systemuhr auf UTC läuft).
+  Einrichtung idempotent: `bash scripts/install-docs-mirror.sh`.
+  Von Hand prüfen: `bun scripts/docs-mirror.ts --dry-run --json`.
 - **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
   (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
   Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).

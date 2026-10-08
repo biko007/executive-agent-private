@@ -167,6 +167,14 @@ oder `~/.config/openclaw/env`. MinIO ist **ausschließlich HDCC**.
   vorhanden). borg **1.2.8**. Units `openclaw-backup-{daily,weekly,monthly}`.
 - Hetzner VPS-Snapshots (täglich, 7 Tage Retention). Borg-Repo auf Hetzner Storage Box.
 - Git: drei OpenClaw-Repos + `biko007/hdcc` auf GitHub.
+- **Docs-Mirror (bikosoc, 2026-10-08):** die Markdown-Dokumentation der drei bikosoc-Repos
+  liegt zusätzlich in Dropbox unter `/bikosoc-reports/docs/repo/<repo>/` — Auslöser
+  `git post-commit` plus Timer 04:30 Europe/Berlin, Upload nur bei geändertem Inhalt.
+  Details: `docs/ARCHITECTURE.md`, Abschnitt Betriebsautomatisierung.
+  **Für HDCC ist dasselbe Muster vorgesehen**, Ziel
+  `Apps/HDCC-reports/hdcc-reports/docs/repo/` mit dem HDCC-eigenen Dropbox-Zugang.
+  Hier bewusst **nicht** mitumgesetzt — getrennte Secrets, getrennte App-Ordner,
+  eigener Auftrag im HDCC-Strang.
 - Timer aktiv (verifiziert): `openclaw-backup-daily` (03:02 UTC, zuletzt 2026-06-26),
   `-weekly` (So), `-monthly` (1. d. Monats). ⏳ letzter Restore-Drill operativ bestätigen
   (zuletzt bekannt: 2026-05-11 passed).

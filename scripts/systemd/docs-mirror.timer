@@ -1,0 +1,12 @@
+[Unit]
+Description=bikosoc Docs-Mirror Timer (Sicherheitsnetz)
+
+[Timer]
+# Die Systemuhr laeuft auf UTC — die Zeitzone steht deshalb ausdruecklich im
+# Kalenderausdruck, damit es wirklich 04:30 Berliner Zeit ist.
+OnCalendar=*-*-* 04:30:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
