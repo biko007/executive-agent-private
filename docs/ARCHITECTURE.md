@@ -374,11 +374,16 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   `sendReportGoNachricht()`; die Zustellung der Quittung selbst bleibt unverändert.
   Leerlauf-/Wait-Meldungen stehen nicht in der Liste — sie gehen direkt per Telegram
   raus und laufen nie über den Watcher.
-  **Abstand zum Link (2026-10-08):** Zwischen `<code>`-Zeile und Link stehen ZWEI
-  Leerzeilen (`REPORT_GO_ABSTAND = '\n\n\n'`). Grund: Telegram legt nach dem Antippen
-  der Codezeile den „Kopiert"-Toast über den unteren Rand der Nachricht — ein direkt
-  anschließender Link war bis zum Verschwinden des Toasts nicht tappbar. Gilt über
-  `reportGoNachricht()` für alle Report-Typen einschließlich `report-plan-*`.
+  **Abstand UNTER dem Link (2026-10-08, 2. Fassung):** Hinter dem Link folgen drei Zeilen
+  mit je einem U+2800 (BRAILLE PATTERN BLANK) — `REPORT_GO_FUELLZEICHEN` /
+  `REPORT_GO_NACHLAUF`. Grund: Der „Kopiert"-Toast erscheint nach dem Antippen des
+  **Kopierknopfes** und liegt über dem unteren Rand der Nachricht; der Abstand muss
+  deshalb zwischen Link und Knopf liegen. Die erste Fassung setzte ihn zwischen
+  `<code>`-Zeile und Link und half nicht. Leerzeilen taugen nicht: Telegram trimmt
+  Whitespace am Nachrichtenende. U+2800 ist kein Whitespace, bleibt stehen und ist
+  unsichtbar — live belegt (`sendMessage` gab den Text samt aller drei Füllzeilen
+  unverändert zurück). Gilt über `reportGoNachricht()` für alle Report-Typen
+  einschließlich `report-plan-*`.
 - **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
   (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
   Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).

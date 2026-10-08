@@ -3058,14 +3058,22 @@ export default function (api) {
            Codeblock zum Antippen darstellt, und bleibt die eigene letzte Zeile VOR dem
            Link. Der Link steht blank in eigener Zeile.
     
-           ABSTAND ZUM LINK (Aenderung 08.10.2026, Owner-UX): Zwischen Codezeile und Link
-           stehen ZWEI Leerzeilen. Tippt der Owner die Codezeile an, legt Telegram den
-           "Kopiert"-Toast ueber den unteren Rand der Nachricht — klebte der Link direkt
-           unter der Codezeile, war er bis zum Verschwinden des Toasts nicht tappbar. Mit
-           den beiden Leerzeilen liegt er ausserhalb des Toast-Bereichs. */
-        const REPORT_GO_ABSTAND = '\n\n\n'; // Codezeile, zwei Leerzeilen, Link
+           ABSTAND UNTER DEM LINK (Aenderung 08.10.2026, Owner-UX, 2. Fassung):
+           Der "Kopiert"-Toast erscheint nach dem Antippen des Kopierknopfes und liegt
+           ueber dem UNTEREN Rand der Nachricht. Der Abstand muss deshalb UNTER den Link,
+           zum Knopf hin — nicht zwischen Codezeile und Link (so die erste Fassung, die
+           nichts half: der Link klebte weiterhin direkt ueber dem Knopf).
+    
+           WARUM FUELLZEICHEN UND KEINE LEERZEILEN: Telegram trimmt Whitespace am
+           Nachrichtenende, leere Zeilen hinter dem Link verschwinden also. U+2800
+           (BRAILLE PATTERN BLANK) ist kein Whitespace, bleibt stehen und ist unsichtbar.
+           Live belegt am 08.10.2026: die API-Antwort von sendMessage gab den Text samt
+           aller drei Fuellzeilen unveraendert zurueck (Report
+           report-golink-spacing2-20261008.md). */
+        const REPORT_GO_FUELLZEICHEN = '\u2800';
+        const REPORT_GO_NACHLAUF = `\n${REPORT_GO_FUELLZEICHEN}\n${REPORT_GO_FUELLZEICHEN}\n${REPORT_GO_FUELLZEICHEN}`;
         function reportGoNachricht(name) {
-            return `<code>${htmlText(reportGoBefehl(name))}</code>${REPORT_GO_ABSTAND}${REPORT_GO_URL}`;
+            return `<code>${htmlText(reportGoBefehl(name))}</code>\n${REPORT_GO_URL}${REPORT_GO_NACHLAUF}`;
         }
         /**
          * Sendet die Folgenachricht an alle Ziele der Rolle "dev" und protokolliert das
