@@ -14,7 +14,9 @@ import path from 'node:path';
 import {
   cueEnvPath, parseEnvFile, readCueEnvFile, resetCueEnvCache, loadCueConfig, cueStatus,
 } from '../config.js';
-import { lastInboundMessageId, noteInboundMessageId, resetInboundStore } from '../commands.js';
+import {
+  lastInboundMessageId, noteInboundMessageId, resetInboundStore, stripCommandPrefix,
+} from '../commands.js';
 
 const verzeichnisse: string[] = [];
 
@@ -152,5 +154,27 @@ describe('Nachrichten-ID-Speicher', () => {
     // Deckel 20 — der jeweils neueste Eintrag bleibt in jedem Fall erhalten.
     expect(lastInboundMessageId('chat-49', 1_000)).toBe('49');
     expect(lastInboundMessageId('chat-0', 1_000)).toBeUndefined();
+  });
+});
+
+describe('stripCommandPrefix', () => {
+  test('entfernt ein fuehrendes Befehlswort, falls der Host es mitliefert', () => {
+    // Live-Befund 08.10.2026, 09:13: in ctx.args stand der komplette
+    // Nachrichtentext einschliesslich "/cue ".
+    expect(stripCommandPrefix('/cue Recherchiere drei Quellen')).toBe('Recherchiere drei Quellen');
+    expect(stripCommandPrefix('  /CUE   Text  ')).toBe('Text');
+    expect(stripCommandPrefix('/cue_setup sk-abcdefghijklmnop')).toBe('sk-abcdefghijklmnop');
+    expect(stripCommandPrefix('/cue-setup sk-abcdefghijklmnop')).toBe('sk-abcdefghijklmnop');
+    expect(stripCommandPrefix('/cue')).toBe('');
+  });
+
+  test('laesst normalen Text unberuehrt', () => {
+    expect(stripCommandPrefix('Recherchiere drei Quellen')).toBe('Recherchiere drei Quellen');
+    // Kein Teilwort-Treffer: /cuesetup ist ein anderer Befehl.
+    expect(stripCommandPrefix('/cuesetup abc')).toBe('/cuesetup abc');
+    // Ein /cue mitten im Text bleibt stehen.
+    expect(stripCommandPrefix('Erklaere mir /cue bitte')).toBe('Erklaere mir /cue bitte');
+    // Nur das erste Befehlswort wird entfernt.
+    expect(stripCommandPrefix('/cue /cue doppelt')).toBe('/cue doppelt');
   });
 });

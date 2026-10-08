@@ -339,3 +339,57 @@ Nachricht gelöscht. Bleibt ein Zweifel: Key in Manus rotieren und `/cue_setup` 
 Der Command-Kontext von OpenClaw 2026.9.1 führt keine Nachrichten-ID; sie kommt aus dem
 Hook `message_received` und wird je Chat kurz vorgehalten (nur Chat-ID, Nachrichten-ID,
 Zeitpunkt — kein Inhalt, TTL 2 Minuten, maximal 20 Einträge).
+
+### Abschluss-Erkennung (gehärtet 2026-10-08)
+
+`agent_status: stopped` allein heißt **nicht** fertig. Live belegt (Delegation 09:13,
+Report `report-cue-completion-fix-20261008.md`): Hans meldete nach dem Eröffnungssatz
+`stopped`, arbeitete im Hintergrund weiter und lieferte das echte Ergebnis 7,5 Minuten
+später. Der alte Poller hatte den Eröffnungssatz als Ergebnis zugestellt.
+
+Die Doku beschreibt genau das: „Independent of `status`: the main agent can be stopped while
+background work continues"; Abschlusskriterium ist `status === stopped` **und**
+`has_running_background_jobs === false` (`components.schemas.Task`, task-lifecycle).
+
+Ein `stopped` gilt deshalb nur als Kandidat:
+
+| Lage | Verhalten |
+|---|---|
+| `has_running_background_jobs === true` | Kandidat verworfen, weiterpollen |
+| `=== false` | Abschluss nach kurzem Bestätigungsfenster (30 s) |
+| Feld fehlt oder `task.detail` nicht lesbar | laut Doku **nicht** wie `false` lesen → langes Fenster (3 min) |
+| Agent kehrt auf `running` zurück | Kandidat verworfen |
+| `error`, `error_message`, `waiting` | wie bisher sofortiger Abschluss |
+| 15-Minuten-Deckel | Zeitüberschreitungs-Meldung samt letztem Zwischenstand |
+
+Jeder Ausgang erzeugt eine Telegram-Nachricht. Stille ist nie ein Ergebnis. Die Zahl der
+verworfenen Abschlüsse steht als `discarded_stops` im `audit_log`.
+
+**Zwei Signale bewusst nicht verwendet**, weil im Live-Befund nicht verfügbar:
+`delivery_kind` der `assistant_message` ist in allen 82 Ereignissen des Main-Tasks
+`undefined`; `task.list?scope=agent_subtask&agent_id=…` antwortet für den konfigurierten
+Agenten mit HTTP 404 `not_found: agent not found`.
+
+### Agent-Name statt Task-ID
+
+Quittung und Ergebnis führen den Namen des konfigurierten Agenten (aus `agent.detail`,
+`nickname`, im Prozess gecacht). Die Task-ID erscheint nur noch im `audit_log` und in
+Logzeilen.
+
+```
+An Hans uebergeben — Ergebnis folgt als eigene Nachricht.
+Ergebnis von Hans:  …
+Hans fragt zurueck: …
+Hans meldet einen Fehler: …
+Zeitueberschreitung bei Hans: nach 15 min keine Abschlussmeldung.
+```
+
+Ist der Name nicht auflösbar, steht neutral „Cue".
+
+### Normalisierung der Argumente
+
+`stripCommandPrefix()` entfernt ein führendes `/cue` bzw. `/cue_setup` aus `ctx.args`.
+Anlass: bei der Delegation 09:13 stand dort der komplette Nachrichtentext einschließlich
+`/cue ` — belegt im Manus-Verlauf (gesendeter Text 347 Zeichen, beginnend mit `/cue `).
+Beim `/cue_setup` desselben Tages trat das nicht auf. Die Ursache im Host ist offen; die
+Normalisierung macht beide Commands davon unabhängig.

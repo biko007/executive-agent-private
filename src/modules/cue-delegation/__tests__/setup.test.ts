@@ -66,6 +66,9 @@ function fakeClient(opts: {
         if (!gefunden) throw new ManusError('not_found', `Agent ${id} nicht gefunden`);
         return gefunden;
       },
+      getTask: async (taskId) => ({
+        id: taskId, status: 'stopped', hasRunningBackgroundJobs: false, taskType: 'standard', title: null,
+      }),
       sendMessage: async (taskId) => ({ taskId, requestId: null }),
       listMessages: async (taskId) => ({ taskId, messages: [], hasMore: false, nextCursor: null }),
     };
@@ -273,6 +276,9 @@ describe('runCueSetup — Key erscheint in keiner Meldung', () => {
       createClient: () => ({
         listAgents: async () => { throw new ManusError('invalid_argument', 'bad key *** supplied'); },
         getAgent: async () => { throw new ManusError('invalid_argument', 'bad key *** supplied'); },
+        getTask: async (t) => ({
+          id: t, status: 'stopped', hasRunningBackgroundJobs: false, taskType: 'standard', title: null,
+        }),
         sendMessage: async (t) => ({ taskId: t, requestId: null }),
         listMessages: async (t) => ({ taskId: t, messages: [], hasMore: false, nextCursor: null }),
       }),

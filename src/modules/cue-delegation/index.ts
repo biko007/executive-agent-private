@@ -22,14 +22,14 @@
 export {
   initCueCommands, registerCueCommands, buildCueStatusText,
   noteInboundMessageId, lastInboundMessageId, resetInboundStore,
-  CUE_SETUP_TEST_PROMPT,
+  stripCommandPrefix, CUE_SETUP_TEST_PROMPT,
 } from './commands.js';
 export {
   initCueDelegation, startCueDelegation, activeCueDelegation, resetCueState,
-  writeCueAuditEntry, evaluateEvents, describeError, shortTaskRef,
+  writeCueAuditEntry, evaluateEvents, describeError, shortTaskRef, cachedAgentName,
 } from './delegation.js';
 export type { CueCommandDeps } from './commands.js';
-export type { CueDelegationDeps, CueOutcome, CueStartResult } from './delegation.js';
+export type { CueDelegationDeps, CueOutcome, CueStartResult, PollVerdict } from './delegation.js';
 export {
   loadCueConfig, cueStatus, cueStatusText, cueEnvPath, parseEnvFile,
   readCueEnvFile, resetCueEnvCache, applyCueEnvToProcess,
@@ -43,4 +43,4 @@ export {
 } from './setup.js';
 export type { CueSetupResult, CueSetupStatus, CueSetupDeps } from './setup.js';
 export { createManusClient, ManusError, MANUS_BASE_URL } from './manus-client.js';
-export type { ManusClient, ManusAgent, ManusTaskEvent } from './manus-client.js';
+export type { ManusClient, ManusAgent, ManusTaskEvent, ManusTaskDetail } from './manus-client.js';

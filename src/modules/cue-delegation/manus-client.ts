@@ -89,6 +89,23 @@ export interface ManusTaskEvent {
   };
 }
 
+/**
+ * Auszug aus task.detail (https://open.manus.ai/docs/v2/task.detail,
+ * components.schemas.Task). `hasRunningBackgroundJobs` ist das dokumentierte
+ * Abschlusskriterium neben `status`: der Haupt-Agent kann `stopped` melden,
+ * waehrend Hintergrundarbeit weiterlaeuft.
+ *
+ * `null` bedeutet "Feld fehlte" — laut Doku ausdruecklich **nicht** wie `false`
+ * zu behandeln.
+ */
+export interface ManusTaskDetail {
+  id: string;
+  status: ManusAgentStatus | null;
+  hasRunningBackgroundJobs: boolean | null;
+  taskType: string | null;
+  title: string | null;
+}
+
 export interface ManusListMessagesResult {
   taskId: string;
   messages: ManusTaskEvent[];
@@ -110,6 +127,7 @@ export interface ManusClientOptions {
 
 export interface ManusClient {
   getAgent(agentId: string): Promise<ManusAgent>;
+  getTask(taskId: string): Promise<ManusTaskDetail>;
   listAgents(): Promise<ManusAgent[]>;
   sendMessage(taskId: string, text: string): Promise<{ taskId: string; requestId: string | null }>;
   listMessages(
@@ -220,6 +238,22 @@ export function createManusClient(options: ManusClientOptions): ManusClient {
         fail('invalid_response', `Agent ${agentId} hat keinen Main-Task (task_id fehlt)`);
       }
       return agent;
+    },
+
+    async getTask(taskId: string): Promise<ManusTaskDetail> {
+      const q = new URLSearchParams({ task_id: taskId });
+      const body = await request(`/v2/task.detail?${q}`, { method: 'GET' });
+      const task = (body.task ?? {}) as Record<string, unknown>;
+      return {
+        id: typeof task.id === 'string' ? task.id : taskId,
+        status: typeof task.status === 'string' ? (task.status as ManusAgentStatus) : null,
+        // Fehlt das Feld, bleibt es null — die Doku verlangt ausdruecklich,
+        // ein Fehlen nicht als false zu lesen.
+        hasRunningBackgroundJobs:
+          typeof task.has_running_background_jobs === 'boolean' ? task.has_running_background_jobs : null,
+        taskType: typeof task.task_type === 'string' ? task.task_type : null,
+        title: typeof task.title === 'string' ? task.title : null,
+      };
     },
 
     async listAgents(): Promise<ManusAgent[]> {

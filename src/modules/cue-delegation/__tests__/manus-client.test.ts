@@ -190,6 +190,32 @@ describe('manus-client — Endpunktform laut Doku', () => {
     expect(res.hasMore).toBe(false);
   });
 
+  test('getTask liest status und has_running_background_jobs', async () => {
+    const { c, aufrufe } = client([antwort(200, {
+      ok: true, task: { id: 'T1', status: 'stopped', has_running_background_jobs: true, task_type: 'standard' },
+    })]);
+    const t = await c.getTask('T1');
+    expect(aufrufe[0].url).toBe(`${MANUS_BASE_URL}/v2/task.detail?task_id=T1`);
+    expect(t.status).toBe('stopped');
+    expect(t.hasRunningBackgroundJobs).toBe(true);
+  });
+
+  test('fehlt has_running_background_jobs, ist es null — nicht false', async () => {
+    // Die Doku verlangt ausdruecklich, ein Fehlen nicht als false zu lesen.
+    const { c } = client([antwort(200, { ok: true, task: { id: 'T1', status: 'stopped' } })]);
+    const t = await c.getTask('T1');
+    expect(t.hasRunningBackgroundJobs).toBeNull();
+    expect(t.status).toBe('stopped');
+  });
+
+  test('getTask verkraftet eine Antwort ohne task-Feld', async () => {
+    const { c } = client([antwort(200, { ok: true })]);
+    const t = await c.getTask('T1');
+    expect(t.id).toBe('T1');
+    expect(t.status).toBeNull();
+    expect(t.hasRunningBackgroundJobs).toBeNull();
+  });
+
   test('listMessages verkraftet eine Antwort ohne messages-Feld', async () => {
     const { c } = client([antwort(200, { ok: true })]);
     const res = await c.listMessages('T1');

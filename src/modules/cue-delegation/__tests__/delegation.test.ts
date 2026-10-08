@@ -1,7 +1,9 @@
 /**
  * cue-delegation — Konfiguration, Abschluss-Erkennung, Mutex und Meldewege.
  *
- * Alles mit injizierten Abhaengigkeiten; keine DB, kein Netz, keine Zeitgeber.
+ * Alles mit injizierten Abhaengigkeiten; keine DB, kein Netz, keine echten
+ * Zeitgeber. Die Uhr laeuft mit der Wartezeit mit, damit die
+ * Bestaetigungsfenster und der Laufzeitdeckel pruefbar sind.
  */
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { cueStatus, cueStatusText, loadCueConfig } from '../config.js';
@@ -9,6 +11,7 @@ import {
   activeCueDelegation, evaluateEvents, initCueDelegation, resetCueState,
   shortTaskRef, startCueDelegation,
 } from '../delegation.js';
+import { ManusError } from '../manus-client.js';
 import type { ManusClient, ManusTaskEvent } from '../manus-client.js';
 
 // ── Konfiguration ──────────────────────────────────────────────────────────
@@ -62,10 +65,16 @@ describe('cue-config', () => {
   });
 });
 
-// ── Abschluss-Erkennung ───────────────────────────────────────────────────
+// ── Ereignisauswertung ────────────────────────────────────────────────────
 
 function ev(id: string, type: string, extra: Partial<ManusTaskEvent> = {}): ManusTaskEvent {
   return { id, type, ...extra };
+}
+function status(id: string, agent_status: 'running' | 'stopped' | 'waiting' | 'error', rest: Record<string, unknown> = {}) {
+  return ev(id, 'status_update', { status_update: { agent_status, ...rest } });
+}
+function antwort(id: string, content: string) {
+  return ev(id, 'assistant_message', { assistant_message: { content } });
 }
 
 /** Die API liefert order=desc, also neueste zuerst. */
@@ -75,37 +84,45 @@ function desc(...events: ManusTaskEvent[]): ManusTaskEvent[] {
 
 describe('evaluateEvents', () => {
   test('nur running bedeutet: noch nicht fertig', () => {
-    const v = evaluateEvents(desc(ev('1', 'status_update', { status_update: { agent_status: 'running' } })), new Set());
+    const v = evaluateEvents(desc(status('1', 'running')), new Set());
     expect(v.outcome).toBeNull();
     expect(v.answers).toEqual([]);
+    expect(v.lastStatus).toBe('running');
   });
 
-  test('stopped schliesst ab und liefert die Antworten chronologisch', () => {
+  test('stopped setzt den Kandidaten und liefert die Antworten chronologisch', () => {
     const v = evaluateEvents(desc(
-      ev('1', 'assistant_message', { assistant_message: { content: 'erstens' } }),
-      ev('2', 'assistant_message', { assistant_message: { content: 'zweitens' } }),
-      ev('3', 'status_update', { status_update: { agent_status: 'stopped' } }),
+      antwort('1', 'erstens'), antwort('2', 'zweitens'), status('3', 'stopped'),
     ), new Set());
     expect(v.outcome).toBe('ok');
     expect(v.answers).toEqual(['erstens', 'zweitens']);
+    expect(v.lastStatus).toBe('stopped');
+    expect(v.newEventCount).toBe(3);
+  });
+
+  test('stopped gefolgt von running: lastStatus ist running', () => {
+    // Genau dieser Stapel darf nicht als Abschluss gelten.
+    const v = evaluateEvents(desc(status('1', 'stopped'), status('2', 'running')), new Set());
+    expect(v.outcome).toBe('ok');
+    expect(v.lastStatus).toBe('running');
   });
 
   test('bereits bekannte Ereignisse zaehlen nicht als Antwort', () => {
     const bekannt = new Set(['alt']);
     const v = evaluateEvents(desc(
-      ev('alt', 'assistant_message', { assistant_message: { content: 'frueherer Verlauf' } }),
-      ev('neu', 'assistant_message', { assistant_message: { content: 'unsere Antwort' } }),
-      ev('end', 'status_update', { status_update: { agent_status: 'stopped' } }),
+      antwort('alt', 'frueherer Verlauf'), antwort('neu', 'unsere Antwort'), status('end', 'stopped'),
     ), bekannt);
     expect(v.answers).toEqual(['unsere Antwort']);
-    expect(v.outcome).toBe('ok');
+    expect(v.newEventCount).toBe(2);
   });
 
   test('bearbeitete Ereignisse werden gemerkt und nicht doppelt gezaehlt', () => {
     const bekannt = new Set<string>();
-    const events = desc(ev('1', 'assistant_message', { assistant_message: { content: 'a' } }));
+    const events = desc(antwort('1', 'a'));
     expect(evaluateEvents(events, bekannt).answers).toEqual(['a']);
-    expect(evaluateEvents(events, bekannt).answers).toEqual([]);
+    const zweiter = evaluateEvents(events, bekannt);
+    expect(zweiter.answers).toEqual([]);
+    expect(zweiter.newEventCount).toBe(0);
   });
 
   test('error_message ergibt Fehler mit Text', () => {
@@ -117,21 +134,16 @@ describe('evaluateEvents', () => {
   });
 
   test('agent_status error ergibt Fehler', () => {
-    const v = evaluateEvents(desc(
-      ev('1', 'status_update', { status_update: { agent_status: 'error', description: 'Kontingent erschoepft' } }),
-    ), new Set());
+    const v = evaluateEvents(desc(status('1', 'error', { description: 'Kontingent erschoepft' })), new Set());
     expect(v.outcome).toBe('error');
     expect(v.errorText).toBe('Kontingent erschoepft');
   });
 
   test('waiting wird als Rueckfrage erkannt, nicht als Abschluss', () => {
     const v = evaluateEvents(desc(
-      ev('1', 'assistant_message', { assistant_message: { content: 'Welches Baujahr?' } }),
-      ev('2', 'status_update', {
-        status_update: {
-          agent_status: 'waiting',
-          status_detail: { waiting_for_event_type: 'messageAskUser', waiting_description: 'Welches Baujahr?' },
-        },
+      antwort('1', 'Welches Baujahr?'),
+      status('2', 'waiting', {
+        status_detail: { waiting_for_event_type: 'messageAskUser', waiting_description: 'Welches Baujahr?' },
       }),
     ), new Set());
     expect(v.outcome).toBe('waiting');
@@ -139,10 +151,7 @@ describe('evaluateEvents', () => {
   });
 
   test('leere assistant_message-Inhalte werden uebersprungen', () => {
-    const v = evaluateEvents(desc(
-      ev('1', 'assistant_message', { assistant_message: { content: '   ' } }),
-      ev('2', 'status_update', { status_update: { agent_status: 'stopped' } }),
-    ), new Set());
+    const v = evaluateEvents(desc(antwort('1', '   '), status('2', 'stopped')), new Set());
     expect(v.outcome).toBe('ok');
     expect(v.answers).toEqual([]);
   });
@@ -153,28 +162,51 @@ describe('evaluateEvents', () => {
   });
 });
 
-// ── Delegation: Ablauf, Mutex, Meldewege ──────────────────────────────────
+// ── Delegation: Ablauf, Haertung, Mutex, Meldewege ────────────────────────
+
+const TASK = 'TASK-123456789012';
+
+/** Hintergrundarbeit je getTask-Aufruf: true/false/null oder Fehler. */
+type BgWert = boolean | null | 'throw';
 
 interface Protokoll {
   telegram: string[];
   audit: Array<{ action: string; after: Record<string, unknown> }>;
   gesendet: Array<{ taskId: string; text: string }>;
   fehler: string[];
+  getTaskAufrufe: number;
+  uhr: { ms: number };
 }
 
 function bauAufbau(opts: {
+  /** Eine Seite je Abfrage (order=desc). Der erste Aufruf ist der Anker. */
   seiten?: ManusTaskEvent[][];
+  bg?: BgWert[];
   env?: Record<string, string>;
   sendFehler?: Error;
   parken?: boolean;
-}) {
-  const p: Protokoll = { telegram: [], audit: [], gesendet: [], fehler: [] };
+  nickname?: string;
+  pollIntervalMs?: number;
+  confirmWindowMs?: number;
+  unknownConfirmWindowMs?: number;
+  maxRuntimeMs?: number;
+}): Protokoll {
+  const p: Protokoll = {
+    telegram: [], audit: [], gesendet: [], fehler: [], getTaskAufrufe: 0, uhr: { ms: 1_000 },
+  };
   const seiten = opts.seiten ?? [];
+  const bg = opts.bg ?? [false];
   let abfrage = -1; // erster Aufruf ist der Anker
 
   const client: ManusClient = {
-    getAgent: async (agentId) => ({ id: agentId, task_id: 'TASK-123456789012', nickname: 'Hans' }),
-    listAgents: async () => [{ id: 'A1', task_id: 'T1', nickname: 'Hans' }],
+    getAgent: async (agentId) => ({ id: agentId, task_id: TASK, nickname: opts.nickname ?? 'Hans' }),
+    listAgents: async () => [{ id: 'A1', task_id: TASK, nickname: 'Hans' }],
+    getTask: async (taskId) => {
+      const wert = bg[Math.min(p.getTaskAufrufe, bg.length - 1)];
+      p.getTaskAufrufe++;
+      if (wert === 'throw') throw new ManusError('rate_limited', 'Rate limit exceeded');
+      return { id: taskId, status: 'stopped', hasRunningBackgroundJobs: wert, taskType: 'standard', title: null };
+    },
     sendMessage: async (taskId, text) => {
       if (opts.sendFehler) throw opts.sendFehler;
       p.gesendet.push({ taskId, text });
@@ -183,24 +215,25 @@ function bauAufbau(opts: {
     listMessages: async () => {
       const seite = abfrage < 0 ? [] : (seiten[abfrage] ?? []);
       abfrage++;
-      return { taskId: 'TASK-123456789012', messages: seite, hasMore: false, nextCursor: null };
+      return { taskId: TASK, messages: seite, hasMore: false, nextCursor: null };
     },
   };
 
   initCueDelegation({
     notifyOperativ: async (t) => { p.telegram.push(t); return true; },
-    logger: {
-      info: () => {}, warn: () => {},
-      error: (m) => { p.fehler.push(m); },
-    },
+    logger: { info: () => {}, warn: () => {}, error: (m) => { p.fehler.push(m); } },
     auditLog: async (e) => { p.audit.push({ action: e.action, after: e.after ?? {} }); },
     createClient: () => client,
     // Geparkt: die Wartezeit loest nie auf — der Hintergrundlauf bleibt stehen
     // und haelt den Mutex, so wird "genau einer gleichzeitig" pruefbar.
-    sleepImpl: opts.parken ? () => new Promise<void>(() => {}) : async () => {},
-    now: () => 1_000,
-    pollIntervalMs: 0,
-    maxRuntimeMs: 60_000,
+    sleepImpl: opts.parken
+      ? () => new Promise<void>(() => {})
+      : async (ms) => { p.uhr.ms += ms; },
+    now: () => p.uhr.ms,
+    pollIntervalMs: opts.pollIntervalMs ?? 15_000,
+    confirmWindowMs: opts.confirmWindowMs ?? 0,
+    unknownConfirmWindowMs: opts.unknownConfirmWindowMs ?? 0,
+    maxRuntimeMs: opts.maxRuntimeMs ?? 15 * 60_000,
     env: {
       CUE_DELEGATION_ENABLED: 'true',
       MANUS_API_KEY: 'test-key',
@@ -214,7 +247,11 @@ function bauAufbau(opts: {
 
 /** Hintergrundlauf (Mikrotask-Kette) zu Ende laufen lassen. */
 async function abwarten(): Promise<void> {
-  for (let i = 0; i < 50; i++) await Promise.resolve();
+  for (let i = 0; i < 2_000; i++) await Promise.resolve();
+}
+
+function fertig(p: Protokoll) {
+  return p.audit.find((a) => a.action === 'cue.delegation.finished');
 }
 
 describe('startCueDelegation', () => {
@@ -231,86 +268,174 @@ describe('startCueDelegation', () => {
     expect(activeCueDelegation()).toBeNull();
   });
 
-  test('sendet ausschliesslich den getippten Text und quittiert mit Task-Referenz', async () => {
-    const p = bauAufbau({
-      seiten: [[{ id: 's', type: 'status_update', status_update: { agent_status: 'stopped' } }]],
-    });
+  test('Quittung nennt den Agentennamen, nicht die Task-ID', async () => {
+    const p = bauAufbau({ seiten: [desc(status('s', 'stopped'))] });
     const res = await startCueDelegation('Nenne drei Primaerquellen');
     expect(res.ok).toBe(true);
-    expect(res.message).toContain('An Cue uebergeben');
-    expect(res.message).toContain('TASK-123…9012');
-    expect(p.gesendet).toEqual([{ taskId: 'TASK-123456789012', text: 'Nenne drei Primaerquellen' }]);
+    expect(res.message).toBe('An Hans uebergeben — Ergebnis folgt als eigene Nachricht.');
+    expect(res.message).not.toContain(TASK);
+    expect(res.agentName).toBe('Hans');
+    expect(p.gesendet).toEqual([{ taskId: TASK, text: 'Nenne drei Primaerquellen' }]);
     await abwarten();
+    // Die Task-ID bleibt im audit_log erhalten.
     expect(p.audit[0].action).toBe('cue.delegation.sent');
     expect(p.audit[0].after.notes).toBe('Nenne drei Primaerquellen');
+    expect(p.audit[0].after.label).toBe('Hans');
   });
 
-  test('Ergebnis wird als eigene Telegram-Nachricht nachgeliefert', async () => {
+  test('Ergebnis-Nachricht nennt den Agentennamen und keine Task-ID', async () => {
     const p = bauAufbau({
-      seiten: [[
-        { id: 'b', type: 'status_update', status_update: { agent_status: 'stopped' } },
-        { id: 'a', type: 'assistant_message', assistant_message: { content: 'Drei Quellen: …' } },
-      ]],
+      seiten: [desc(antwort('a', 'Drei Quellen: …'), status('b', 'stopped'))],
     });
     await startCueDelegation('Frage');
     await abwarten();
     expect(p.telegram.length).toBe(1);
-    expect(p.telegram[0]).toContain('Cue-Ergebnis');
-    expect(p.telegram[0]).toContain('Drei Quellen: …');
-    const fertig = p.audit.find((a) => a.action === 'cue.delegation.finished');
-    expect(fertig?.after.status).toBe('ok');
+    expect(p.telegram[0]).toBe('Ergebnis von Hans:\n\nDrei Quellen: …');
+    expect(p.telegram[0]).not.toContain(TASK);
+    expect(fertig(p)?.after.status).toBe('ok');
     expect(activeCueDelegation()).toBeNull();
   });
 
-  test('Fehler des Agenten endet mit klarer Meldung, nicht mit Stille', async () => {
+  test('ohne aufgeloesten Namen bleibt ein neutraler Ersatz stehen', async () => {
+    const p = bauAufbau({ nickname: '  ', seiten: [desc(status('s', 'stopped'))] });
+    const res = await startCueDelegation('Frage');
+    expect(res.message).toBe('An Cue uebergeben — Ergebnis folgt als eigene Nachricht.');
+    await abwarten();
+    expect(p.telegram[0]).toContain('Cue hat den Auftrag beendet');
+  });
+
+  // ── Haertung der Abschluss-Erkennung ────────────────────────────────────
+
+  test('stopped mit laufender Hintergrundarbeit schliesst NICHT ab', async () => {
+    // Genau der Live-Fall vom 08.10.2026, 09:13: Eroeffnungssatz, stopped,
+    // 7,5 Minuten Pause, dann das echte Ergebnis.
     const p = bauAufbau({
-      seiten: [[{ id: 'e', type: 'error_message', error_message: { content: 'Quelle nicht erreichbar' } }]],
+      seiten: [
+        desc(antwort('a1', 'Ich recherchiere drei Angebote …'), status('s1', 'stopped')),
+        [],
+        desc(status('r1', 'running'), antwort('a2', 'Das echte Ergebnis'), status('s2', 'stopped')),
+      ],
+      // Erster stopped: Hintergrundarbeit laeuft → verworfen.
+      // Zweiter stopped: keine Arbeit mehr → Abschluss.
+      bg: [true, false],
+      confirmWindowMs: 0,
     });
     await startCueDelegation('Frage');
     await abwarten();
-    expect(p.telegram[0]).toContain('Cue-Fehler');
-    expect(p.telegram[0]).toContain('Quelle nicht erreichbar');
-    expect(p.audit.find((a) => a.action === 'cue.delegation.finished')?.after.status).toBe('error');
+
+    expect(p.telegram.length).toBe(1);
+    expect(p.telegram[0]).toContain('Ergebnis von Hans:');
+    expect(p.telegram[0]).toContain('Ich recherchiere drei Angebote …');
+    expect(p.telegram[0]).toContain('Das echte Ergebnis');
+    expect(fertig(p)?.after.status).toBe('ok');
+    // Mindestens ein stopped wurde verworfen.
+    expect(Number(fertig(p)?.after.discarded_stops)).toBeGreaterThan(0);
+  });
+
+  test('stopped ohne Hintergrundarbeit schliesst nach dem Bestaetigungsfenster ab', async () => {
+    const p = bauAufbau({
+      seiten: [desc(antwort('a1', 'Fertige Antwort'), status('s1', 'stopped')), [], []],
+      bg: [false],
+      pollIntervalMs: 15_000,
+      confirmWindowMs: 30_000,
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(p.telegram[0]).toContain('Fertige Antwort');
+    // Start 1000, erste Abfrage 16000, Fenster 30 s → Abschluss ab 46000.
+    expect(Number(fertig(p)?.after.duration_ms)).toBeGreaterThanOrEqual(45_000);
+  });
+
+  test('kehrt der Agent auf running zurueck, wird der Kandidat verworfen', async () => {
+    const p = bauAufbau({
+      seiten: [
+        desc(antwort('a1', 'Eroeffnung'), status('s1', 'stopped')),
+        desc(status('r1', 'running')),
+        desc(antwort('a2', 'Echtes Ergebnis'), status('s2', 'stopped')),
+        [], [],
+      ],
+      bg: [false],
+      pollIntervalMs: 15_000,
+      confirmWindowMs: 30_000,
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(p.telegram[0]).toContain('Eroeffnung');
+    expect(p.telegram[0]).toContain('Echtes Ergebnis');
+  });
+
+  test('unbekannte Hintergrundarbeit wartet laenger als der bestaetigte Fall', async () => {
+    // task.detail nicht lesbar → laut Doku nicht wie "keine Arbeit" behandeln.
+    const p = bauAufbau({
+      seiten: [desc(antwort('a1', 'Antwort'), status('s1', 'stopped'))],
+      bg: ['throw'],
+      pollIntervalMs: 15_000,
+      confirmWindowMs: 0,
+      unknownConfirmWindowMs: 60_000,
+      maxRuntimeMs: 10 * 60_000,
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(p.telegram[0]).toContain('Antwort');
+    // Erste Abfrage 16000 + 60 s Fenster → nicht vor 76000.
+    expect(Number(fertig(p)?.after.duration_ms)).toBeGreaterThanOrEqual(75_000);
+    expect(p.getTaskAufrufe).toBeGreaterThan(1);
+  });
+
+  test('fehlendes Feld gilt nicht als "keine Hintergrundarbeit"', async () => {
+    const p = bauAufbau({
+      seiten: [desc(antwort('a1', 'Antwort'), status('s1', 'stopped'))],
+      bg: [null],
+      pollIntervalMs: 15_000,
+      confirmWindowMs: 0,
+      unknownConfirmWindowMs: 45_000,
+      maxRuntimeMs: 10 * 60_000,
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(Number(fertig(p)?.after.duration_ms)).toBeGreaterThanOrEqual(45_000);
+  });
+
+  test('der Laufzeitdeckel greift auch bei dauerhafter Hintergrundarbeit', async () => {
+    const p = bauAufbau({
+      seiten: [desc(antwort('a1', 'Zwischenstand'), status('s1', 'stopped'))],
+      bg: [true],
+      pollIntervalMs: 15_000,
+      maxRuntimeMs: 60_000,
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(p.telegram.length).toBe(1);
+    expect(p.telegram[0]).toContain('Zeitueberschreitung bei Hans');
+    expect(p.telegram[0]).toContain('Zwischenstand');
+    expect(fertig(p)?.after.status).toBe('timeout');
+    expect(activeCueDelegation()).toBeNull();
+  });
+
+  // ── Fehler- und Rueckfragepfade bleiben unveraendert ────────────────────
+
+  test('Fehler des Agenten endet sofort mit klarer Meldung', async () => {
+    const p = bauAufbau({
+      seiten: [desc(ev('e', 'error_message', { error_message: { content: 'Quelle nicht erreichbar' } }))],
+    });
+    await startCueDelegation('Frage');
+    await abwarten();
+    expect(p.telegram[0]).toBe('Hans meldet einen Fehler: Quelle nicht erreichbar');
+    expect(fertig(p)?.after.status).toBe('error');
+    // Kein task.detail noetig — Fehler schliessen unmittelbar ab.
+    expect(p.getTaskAufrufe).toBe(0);
   });
 
   test('Rueckfrage des Agenten wird gemeldet und beendet Phase 1', async () => {
     const p = bauAufbau({
-      seiten: [[{
-        id: 'w', type: 'status_update',
-        status_update: { agent_status: 'waiting', status_detail: { waiting_description: 'Welches Baujahr?' } },
-      }]],
+      seiten: [desc(status('w', 'waiting', { status_detail: { waiting_description: 'Welches Baujahr?' } }))],
     });
     await startCueDelegation('Frage');
     await abwarten();
-    expect(p.telegram[0]).toContain('Cue fragt zurueck');
+    expect(p.telegram[0]).toContain('Hans fragt zurueck:');
     expect(p.telegram[0]).toContain('antwortet nicht automatisch');
-    expect(p.audit.find((a) => a.action === 'cue.delegation.finished')?.after.status).toBe('waiting');
-  });
-
-  test('Laufzeitgrenze endet im Timeout mit Meldung', async () => {
-    // now() ist konstant 1000, maxRuntimeMs 0 → Schleife laeuft nicht an.
-    const p = bauAufbau({ seiten: [] });
-    initCueDelegation({
-      notifyOperativ: async (t) => { p.telegram.push(t); return true; },
-      logger: { info: () => {}, warn: () => {}, error: (m) => { p.fehler.push(m); } },
-      auditLog: async (e) => { p.audit.push({ action: e.action, after: e.after ?? {} }); },
-      createClient: () => ({
-        getAgent: async (id) => ({ id, task_id: 'T-TIMEOUT' }),
-        listAgents: async () => [],
-        sendMessage: async (taskId, text) => { p.gesendet.push({ taskId, text }); return { taskId, requestId: null }; },
-        listMessages: async () => ({ taskId: 'T-TIMEOUT', messages: [], hasMore: false, nextCursor: null }),
-      }),
-      sleepImpl: async () => {},
-      now: () => 1_000,
-      maxRuntimeMs: 0,
-      env: {
-        CUE_DELEGATION_ENABLED: 'true', MANUS_API_KEY: 'k', MANUS_CUE_AGENT_ID: 'A1',
-      } as NodeJS.ProcessEnv,
-    });
-    await startCueDelegation('Frage');
-    await abwarten();
-    expect(p.telegram[0]).toContain('Cue-Timeout');
-    expect(p.audit.find((a) => a.action === 'cue.delegation.finished')?.after.status).toBe('timeout');
+    expect(fertig(p)?.after.status).toBe('waiting');
+    expect(p.getTaskAufrufe).toBe(0);
   });
 
   test('fehlgeschlagene Uebergabe gibt den Mutex sofort frei', async () => {
@@ -333,35 +458,37 @@ describe('startCueDelegation', () => {
     const zweiter = await startCueDelegation('Auftrag B');
     expect(zweiter.ok).toBe(false);
     expect(zweiter.kind).toBe('busy');
-    expect(zweiter.message).toContain('bereits ein Cue-Auftrag');
+    expect(zweiter.message).toContain('bereits ein Auftrag bei Hans');
     resetCueState();
   });
 
   test('ein fehlgeschlagener audit_log-Eintrag bricht die Delegation nicht ab', async () => {
     const telegram: string[] = [];
     const fehler: string[] = [];
+    const uhr = { ms: 1_000 };
+    let abfrage = -1;
     initCueDelegation({
       notifyOperativ: async (t) => { telegram.push(t); return true; },
       logger: { info: () => {}, warn: () => {}, error: (m) => { fehler.push(m); } },
       auditLog: async () => { throw new Error('DB weg'); },
-      createClient: () => {
-        // Erster Aufruf ist der Anker (leer), ab dem zweiten liegt der Abschluss vor.
-        let aufruf = 0;
-        return {
-          getAgent: async (id) => ({ id, task_id: 'T-AUDIT' }),
-          listAgents: async () => [],
-          sendMessage: async (taskId) => ({ taskId, requestId: null }),
-          listMessages: async () => ({
-            taskId: 'T-AUDIT',
-            messages: aufruf++ === 0
-              ? []
-              : [{ id: 'x', type: 'status_update', status_update: { agent_status: 'stopped' as const } }],
-            hasMore: false, nextCursor: null,
-          }),
-        };
-      },
-      sleepImpl: async () => {},
-      now: () => 1_000,
+      createClient: () => ({
+        getAgent: async (id) => ({ id, task_id: 'T-AUDIT', nickname: 'Hans' }),
+        listAgents: async () => [],
+        getTask: async (taskId) => ({
+          id: taskId, status: 'stopped' as const, hasRunningBackgroundJobs: false,
+          taskType: 'standard', title: null,
+        }),
+        sendMessage: async (taskId) => ({ taskId, requestId: null }),
+        listMessages: async () => {
+          const seite = abfrage < 0 ? [] : desc(status('x', 'stopped'));
+          abfrage++;
+          return { taskId: 'T-AUDIT', messages: seite, hasMore: false, nextCursor: null };
+        },
+      }),
+      sleepImpl: async (ms) => { uhr.ms += ms; },
+      now: () => uhr.ms,
+      pollIntervalMs: 15_000,
+      confirmWindowMs: 0,
       maxRuntimeMs: 60_000,
       env: {
         CUE_DELEGATION_ENABLED: 'true', MANUS_API_KEY: 'k', MANUS_CUE_AGENT_ID: 'A1',

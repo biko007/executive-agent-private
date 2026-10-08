@@ -6,17 +6,42 @@
  * Manus-Agenten, die Antwort kommt als Telegram-Nachricht zurueck. Nichts
  * anderes wird gesendet — keine Kontexte, kein Verlauf, keine internen Daten.
  *
- * Abschluss-Erkennung laut verifizierter Doku
- * (https://open.manus.ai/docs/v2/task.listMessages, openapi_v2.json):
- *   status_update.agent_status === 'stopped'  → fertig
- *   status_update.agent_status === 'error'    → Fehlerzustand
- *   status_update.agent_status === 'waiting'  → Agent braucht eine Antwort
- *   error_message                             → Fehler im Auftrag
- *
  * Neue Ereignisse werden ueber ihre Event-ID erkannt, nicht ueber Zeitstempel:
  * vor dem Senden wird einmal der aktuelle Stand gelesen und die bekannten IDs
  * gemerkt. Damit ist das Verfahren unabhaengig von einer Uhr-Abweichung
  * zwischen VPS und Manus.
+ *
+ * ── Abschluss-Erkennung (gehaertet am 08.10.2026) ────────────────────────────
+ *
+ * `agent_status: 'stopped'` allein bedeutet **nicht** fertig. Belegt im
+ * Live-Betrieb (Delegation 09:13, Report report-cue-completion-fix-20261008.md):
+ *
+ *   09:13:33  status_update     running
+ *   09:13:35  assistant_message Eroeffnungssatz (144 Zeichen)
+ *   09:13:42  tool_used         Recherche angestossen
+ *   09:13:51  status_update     stopped      ← hier schloss der alte Poller ab
+ *   09:21:20  status_update     running      ← 7,5 Minuten spaeter
+ *   09:21:40  assistant_message echtes Ergebnis (1508 Zeichen)
+ *   09:21:43  status_update     stopped
+ *
+ * Die Doku beschreibt genau das: „Independent of `status`: the main agent can be
+ * stopped while background work continues" und als Abschlusskriterium
+ * `status === 'stopped'` **und** `has_running_background_jobs === false`
+ * (components.schemas.Task in openapi_v2.json, task-lifecycle).
+ *
+ * Deshalb gilt ein `stopped` nur als **Kandidat**:
+ *   - `has_running_background_jobs === true`  → Kandidat verworfen, weiterpollen
+ *   - `=== false` → Abschluss nach einem kurzen Bestaetigungsfenster (30 s)
+ *   - fehlt das Feld → laut Doku nicht wie `false` lesen: langes Fenster (3 min)
+ *   - kehrt der Agent auf `running` zurueck → Kandidat verworfen
+ * In jedem Fall endet es spaetestens am 15-Minuten-Deckel, und dann mit einer
+ * Meldung. Stille ist nie ein Ergebnis.
+ *
+ * Nicht verwendet, weil im Live-Befund nicht verfuegbar (beide verifiziert):
+ *   - `delivery_kind` der assistant_messages: in allen 82 Ereignissen des
+ *     Main-Tasks `undefined` — als Signal unbrauchbar.
+ *   - `task.list?scope=agent_subtask&agent_id=…`: antwortet fuer den
+ *     konfigurierten Agenten mit HTTP 404 `not_found: agent not found`.
  *
  * Genau eine Delegation darf gleichzeitig laufen (einfacher Mutex auf
  * globalThis, multi-load-sicher wie der uebrige Shared State in index.ts).
@@ -24,7 +49,7 @@
  * Auftrag ohne Ergebnis. Fuer einen Machbarkeitstest bewusst akzeptiert.
  */
 import { createManusClient, ManusError } from './manus-client.js';
-import type { ManusClient, ManusTaskEvent } from './manus-client.js';
+import type { ManusAgentStatus, ManusClient, ManusTaskEvent } from './manus-client.js';
 import { cueStatus, cueStatusText, loadCueConfig } from './config.js';
 import type { CueConfig } from './config.js';
 import { sleep } from '../../shared/utils/index.js';
@@ -33,10 +58,16 @@ import { sleep } from '../../shared/utils/index.js';
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 /** Harte Obergrenze je Auftrag. */
 const DEFAULT_MAX_RUNTIME_MS = 15 * 60_000;
+/** Bestaetigungsfenster, wenn Manus ausdruecklich keine Hintergrundarbeit meldet. */
+const DEFAULT_CONFIRM_WINDOW_MS = 30_000;
+/** Bestaetigungsfenster, wenn das Feld fehlt — laut Doku nicht wie `false` lesen. */
+const DEFAULT_UNKNOWN_CONFIRM_WINDOW_MS = 3 * 60_000;
 /** Telegram erlaubt 4096 Zeichen; Rest ist Platz fuer die Kopfzeile. */
 const MAX_RESULT_CHARS = 3_500;
 /** Obergrenze fuer den im audit_log festgehaltenen Prompt-Text. */
 const MAX_AUDIT_PROMPT_CHARS = 2_000;
+/** Ersatzname, solange der Agentenname noch nicht aufgeloest ist. */
+const FALLBACK_AGENT_NAME = 'Cue';
 
 export type CueOutcome = 'ok' | 'waiting' | 'error' | 'timeout';
 
@@ -55,12 +86,14 @@ export interface CueDelegationDeps {
   logger: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
   /** Schreibt in audit_log (src/shared/audit). */
   auditLog: (entry: CueAuditEntry) => Promise<void>;
-  /** Nur fuer Tests: Client-Fabrik, Wartezeit, Uhr und Takt ersetzen. */
+  /** Nur fuer Tests: Client-Fabrik, Wartezeit, Uhr und Takte ersetzen. */
   createClient?: (cfg: CueConfig) => ManusClient;
   sleepImpl?: (ms: number) => Promise<void>;
   now?: () => number;
   pollIntervalMs?: number;
   maxRuntimeMs?: number;
+  confirmWindowMs?: number;
+  unknownConfirmWindowMs?: number;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -68,6 +101,7 @@ interface ActiveDelegation {
   startedAtMs: number;
   startedAtIso: string;
   taskId: string | null;
+  agentName: string | null;
 }
 
 let deps: CueDelegationDeps | null = null;
@@ -83,15 +117,20 @@ function requireDeps(): CueDelegationDeps {
 
 // ── Prozessweiter Zustand (multi-load-sicher) ──────────────────────────────
 
+interface AgentIdentity {
+  taskId: string;
+  name: string;
+}
+
 interface CueGlobals {
   __ea_cueActive?: ActiveDelegation | null;
-  __ea_cueTaskIdByAgent?: Record<string, string>;
+  __ea_cueAgentByIdentity?: Record<string, AgentIdentity>;
 }
 
 function globals(): CueGlobals {
   const g = globalThis as unknown as CueGlobals;
   g.__ea_cueActive ??= null;
-  g.__ea_cueTaskIdByAgent ??= {};
+  g.__ea_cueAgentByIdentity ??= {};
   return g;
 }
 
@@ -104,12 +143,20 @@ export function activeCueDelegation(): ActiveDelegation | null {
 export function resetCueState(): void {
   const g = globals();
   g.__ea_cueActive = null;
-  g.__ea_cueTaskIdByAgent = {};
+  g.__ea_cueAgentByIdentity = {};
+}
+
+/**
+ * Name des konfigurierten Agenten, sofern im Prozess bereits aufgeloest.
+ * Fuer Statusmeldungen, die keine Delegation starten sollen.
+ */
+export function cachedAgentName(agentId: string): string | undefined {
+  return globals().__ea_cueAgentByIdentity?.[agentId]?.name;
 }
 
 // ── Hilfsfunktionen ───────────────────────────────────────────────────────
 
-/** Kurzform der Task-ID fuer owner-sichtbare Meldungen. */
+/** Kurzform der Task-ID — nur noch fuer Logzeilen und das audit_log. */
 export function shortTaskRef(taskId: string): string {
   return taskId.length > 12 ? `${taskId.slice(0, 8)}…${taskId.slice(-4)}` : taskId;
 }
@@ -123,6 +170,7 @@ export interface CueStartResult {
   kind: 'started' | 'disabled' | 'busy' | 'error';
   message: string;
   taskId?: string;
+  agentName?: string;
 }
 
 /**
@@ -141,13 +189,13 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
   const g = globals();
   const running = g.__ea_cueActive;
   if (running) {
+    const name = running.agentName ?? FALLBACK_AGENT_NAME;
     return {
       ok: false,
       kind: 'busy',
       message:
-        `Es laeuft bereits ein Cue-Auftrag (seit ${running.startedAtIso}` +
-        `${running.taskId ? `, Task ${shortTaskRef(running.taskId)}` : ''}). ` +
-        'Phase 1 erlaubt genau einen gleichzeitig — bitte Ergebnis abwarten.',
+        `Es laeuft bereits ein Auftrag bei ${name} (seit ${running.startedAtIso}). `
+        + 'Phase 1 erlaubt genau einen gleichzeitig — bitte Ergebnis abwarten.',
     };
   }
 
@@ -156,38 +204,43 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
     startedAtMs: nowMs,
     startedAtIso: new Date(nowMs).toISOString(),
     taskId: null,
+    agentName: null,
   };
   g.__ea_cueActive = active;
 
   try {
     const client = (d.createClient ?? defaultClientFactory)(cfg);
 
-    // 1. Main-Task des Agenten bestimmen (nach erstem Erfolg im Prozess gemerkt).
-    let taskId = g.__ea_cueTaskIdByAgent![cfg.agentId];
-    if (!taskId) {
+    // 1. Main-Task und Name des Agenten bestimmen (nach erstem Erfolg gemerkt).
+    let identity = g.__ea_cueAgentByIdentity![cfg.agentId];
+    if (!identity) {
       const agent = await client.getAgent(cfg.agentId);
-      taskId = agent.task_id;
-      g.__ea_cueTaskIdByAgent![cfg.agentId] = taskId;
+      identity = { taskId: agent.task_id, name: (agent.nickname ?? '').trim() || FALLBACK_AGENT_NAME };
+      g.__ea_cueAgentByIdentity![cfg.agentId] = identity;
     }
-    active.taskId = taskId;
+    active.taskId = identity.taskId;
+    active.agentName = identity.name;
 
     // 2. Anker: alles, was jetzt schon im Strang steht, ist nicht unsere Antwort.
-    const anchor = await client.listMessages(taskId, { limit: 50, order: 'desc' });
+    const anchor = await client.listMessages(identity.taskId, { limit: 50, order: 'desc' });
     const known = new Set(anchor.messages.map((m) => m.id));
 
     // 3. Ausschliesslich den getippten Text uebergeben.
-    await client.sendMessage(taskId, text);
+    await client.sendMessage(identity.taskId, text);
 
-    d.logger.info(`[cue] Delegation gestartet (Task ${shortTaskRef(taskId)}, ${text.length} Zeichen)`);
-    void writeAudit(d, 'cue.delegation.sent', taskId, {
+    d.logger.info(
+      `[cue] Delegation gestartet (${identity.name}, Task ${shortTaskRef(identity.taskId)}, ${text.length} Zeichen)`,
+    );
+    void writeAudit(d, 'cue.delegation.sent', identity.taskId, {
       // `notes` ist im Audit-Whitelist-Filter freigegeben, damit der Prompt des
       // Owners lesbar erhalten bleibt (src/shared/audit/index.ts).
       notes: cut(text, MAX_AUDIT_PROMPT_CHARS),
       prompt_chars: text.length,
+      label: identity.name,
     });
 
     // 4. Antwort im Hintergrund einsammeln. Fehler landen in Telegram, nie im Aufrufer.
-    void collectResult(d, client, taskId, known, active).catch((e: any) => {
+    void collectResult(d, client, identity, known, active).catch((e: any) => {
       d.logger.error(`[cue] Hintergrundlauf abgebrochen: ${e?.message}`);
       globals().__ea_cueActive = null;
     });
@@ -195,8 +248,9 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
     return {
       ok: true,
       kind: 'started',
-      taskId,
-      message: `An Cue uebergeben (Task ${shortTaskRef(taskId)}). Ergebnis kommt als eigene Nachricht.`,
+      taskId: identity.taskId,
+      agentName: identity.name,
+      message: `An ${identity.name} uebergeben — Ergebnis folgt als eigene Nachricht.`,
     };
   } catch (e: any) {
     g.__ea_cueActive = null;
@@ -208,7 +262,7 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
       prompt_chars: text.length,
       label: msg,
     });
-    return { ok: false, kind: 'error', message: `Cue-Uebergabe fehlgeschlagen: ${msg}` };
+    return { ok: false, kind: 'error', message: `Uebergabe an Cue fehlgeschlagen: ${msg}` };
   }
 }
 
@@ -261,11 +315,20 @@ export async function writeCueAuditEntry(
   await writeAudit(deps, action, entityId, after);
 }
 
-interface PollVerdict {
+export interface PollVerdict {
+  /**
+   * Sofort-Ausgang: `error` und `waiting` beenden die Delegation unmittelbar.
+   * `ok` heisst nur „ein stopped war dabei" — ob das der Abschluss ist,
+   * entscheidet erst die Pruefung in `collectResult`.
+   */
   outcome: CueOutcome | null;
   answers: string[];
   errorText: string | null;
   waitingText: string | null;
+  /** Letztes status_update dieses Stapels in chronologischer Reihenfolge. */
+  lastStatus: ManusAgentStatus | null;
+  /** Wie viele bisher unbekannte Ereignisse verarbeitet wurden. */
+  newEventCount: number;
 }
 
 /**
@@ -274,11 +337,15 @@ interface PollVerdict {
  * wird hier chronologisch verarbeitet.
  */
 export function evaluateEvents(events: ManusTaskEvent[], known: Set<string>): PollVerdict {
-  const verdict: PollVerdict = { outcome: null, answers: [], errorText: null, waitingText: null };
+  const verdict: PollVerdict = {
+    outcome: null, answers: [], errorText: null, waitingText: null,
+    lastStatus: null, newEventCount: 0,
+  };
   const chronological = events.filter((e) => e?.id && !known.has(e.id)).reverse();
 
   for (const ev of chronological) {
     known.add(ev.id);
+    verdict.newEventCount++;
 
     if (ev.type === 'assistant_message') {
       const content = (ev.assistant_message?.content ?? '').trim();
@@ -295,6 +362,7 @@ export function evaluateEvents(events: ManusTaskEvent[], known: Set<string>): Po
 
     if (ev.type === 'status_update') {
       const st = ev.status_update?.agent_status;
+      if (st) verdict.lastStatus = st;
       if (st === 'stopped') {
         verdict.outcome = 'ok';
       } else if (st === 'error') {
@@ -321,13 +389,17 @@ export function evaluateEvents(events: ManusTaskEvent[], known: Set<string>): Po
 async function collectResult(
   d: CueDelegationDeps,
   client: ManusClient,
-  taskId: string,
+  identity: AgentIdentity,
   known: Set<string>,
   active: ActiveDelegation,
 ): Promise<void> {
+  const taskId = identity.taskId;
+  const name = identity.name;
   const wait = d.sleepImpl ?? sleep;
   const now = d.now ?? Date.now;
   const interval = d.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const confirmWindow = d.confirmWindowMs ?? DEFAULT_CONFIRM_WINDOW_MS;
+  const unknownWindow = d.unknownConfirmWindowMs ?? DEFAULT_UNKNOWN_CONFIRM_WINDOW_MS;
   const deadline = active.startedAtMs + (d.maxRuntimeMs ?? DEFAULT_MAX_RUNTIME_MS);
 
   const answers: string[] = [];
@@ -335,6 +407,10 @@ async function collectResult(
   let errorText: string | null = null;
   let waitingText: string | null = null;
   let consecutiveFailures = 0;
+  /** Zeitpunkt des ersten unbestaetigten `stopped`, oder null. */
+  let candidateSinceMs: number | null = null;
+  /** Nur fuer Report und Audit: wie oft ein `stopped` verworfen wurde. */
+  let verworfeneAbschluesse = 0;
 
   try {
     while (now() < deadline) {
@@ -358,47 +434,86 @@ async function collectResult(
 
       const verdict = evaluateEvents(page.messages, known);
       answers.push(...verdict.answers);
-      if (verdict.outcome) {
+
+      // Fehler und Rueckfrage beenden sofort — daran aendert die Haertung nichts.
+      if (verdict.outcome === 'error' || verdict.outcome === 'waiting') {
         outcome = verdict.outcome;
         errorText = verdict.errorText;
         waitingText = verdict.waitingText;
         break;
       }
+
+      // Kandidat pflegen: ein `stopped` eroeffnet ihn, jede andere neue
+      // Aktivitaet verwirft ihn wieder.
+      if (verdict.lastStatus === 'stopped') {
+        candidateSinceMs ??= now();
+      } else if (verdict.lastStatus === 'running' || verdict.newEventCount > 0) {
+        if (candidateSinceMs !== null) verworfeneAbschluesse++;
+        candidateSinceMs = null;
+      }
+
+      if (candidateSinceMs === null) continue;
+
+      // Dokumentiertes Abschlusskriterium: stopped UND keine Hintergrundarbeit.
+      let backgroundJobs: boolean | null = null;
+      try {
+        backgroundJobs = (await client.getTask(taskId)).hasRunningBackgroundJobs;
+      } catch (e: any) {
+        // Unbekannt ist nicht „fertig" — es gilt das lange Fenster.
+        d.logger.warn(`[cue] task.detail nicht lesbar: ${describeError(e)}`);
+        backgroundJobs = null;
+      }
+
+      if (backgroundJobs === true) {
+        verworfeneAbschluesse++;
+        candidateSinceMs = null;
+        d.logger.info(`[cue] stopped verworfen — Hintergrundarbeit laeuft (Task ${shortTaskRef(taskId)})`);
+        continue;
+      }
+
+      const fenster = backgroundJobs === false ? confirmWindow : unknownWindow;
+      if (now() - candidateSinceMs >= fenster) {
+        outcome = 'ok';
+        break;
+      }
     }
 
-    const ref = shortTaskRef(taskId);
     const durationMs = now() - active.startedAtMs;
     let message: string;
 
     if (outcome === 'ok') {
       const body = answers.join('\n\n').trim();
       message = body
-        ? `Cue-Ergebnis (Task ${ref}):\n\n${cut(body, MAX_RESULT_CHARS)}`
-        : `Cue hat den Auftrag beendet (Task ${ref}), aber keinen Antworttext geliefert.`;
+        ? `Ergebnis von ${name}:\n\n${cut(body, MAX_RESULT_CHARS)}`
+        : `${name} hat den Auftrag beendet, aber keinen Antworttext geliefert.`;
     } else if (outcome === 'waiting') {
       const frage = [waitingText, ...answers].filter(Boolean).join('\n\n').trim();
       message =
-        `Cue fragt zurueck (Task ${ref}):\n\n${cut(frage, MAX_RESULT_CHARS)}\n\n` +
-        'Phase 1 antwortet nicht automatisch — der Auftrag ist damit beendet.';
+        `${name} fragt zurueck:\n\n${cut(frage, MAX_RESULT_CHARS)}\n\n`
+        + 'Phase 1 antwortet nicht automatisch — der Auftrag ist damit beendet.';
     } else if (outcome === 'error') {
-      message = `Cue-Fehler (Task ${ref}): ${errorText ?? 'unbekannter Fehler'}`;
+      message = `${name} meldet einen Fehler: ${errorText ?? 'unbekannter Fehler'}`;
     } else {
       const zwischenstand = answers.join('\n\n').trim();
       message =
-        `Cue-Timeout (Task ${ref}): nach ${Math.round(durationMs / 60_000)} min keine Abschlussmeldung.` +
-        (zwischenstand ? `\n\nLetzter Zwischenstand:\n\n${cut(zwischenstand, MAX_RESULT_CHARS)}` : '');
+        `Zeitueberschreitung bei ${name}: nach ${Math.round(durationMs / 60_000)} min keine Abschlussmeldung.`
+        + (zwischenstand ? `\n\nLetzter Zwischenstand:\n\n${cut(zwischenstand, MAX_RESULT_CHARS)}` : '');
     }
 
-    d.logger.info(`[cue] Delegation beendet: ${outcome} (Task ${ref}, ${durationMs} ms)`);
+    d.logger.info(
+      `[cue] Delegation beendet: ${outcome} (${name}, Task ${shortTaskRef(taskId)}, ${durationMs} ms,`
+      + ` ${verworfeneAbschluesse} verworfene Abschluesse)`,
+    );
     await writeAudit(d, 'cue.delegation.finished', taskId, {
       status: outcome,
       duration_ms: durationMs,
       answer_chars: answers.join('\n\n').length,
-      label: errorText ?? waitingText ?? null,
+      label: errorText ?? waitingText ?? name,
+      discarded_stops: verworfeneAbschluesse,
     });
 
     const sent = await d.notifyOperativ(message);
-    if (!sent) d.logger.error(`[cue] Ergebnis konnte nicht zugestellt werden (Task ${ref})`);
+    if (!sent) d.logger.error(`[cue] Ergebnis konnte nicht zugestellt werden (Task ${shortTaskRef(taskId)})`);
   } finally {
     globals().__ea_cueActive = null;
   }

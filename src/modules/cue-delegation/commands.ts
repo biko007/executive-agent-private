@@ -16,7 +16,7 @@
 import { createManusClient } from './manus-client.js';
 import { cueStatus, cueStatusText, loadCueConfig } from './config.js';
 import {
-  activeCueDelegation, describeError, shortTaskRef, startCueDelegation, writeCueAuditEntry,
+  activeCueDelegation, cachedAgentName, describeError, startCueDelegation, writeCueAuditEntry,
 } from './delegation.js';
 import { formatAgentList, runCueSetup } from './setup.js';
 
@@ -41,6 +41,22 @@ export function initCueCommands(d: CueCommandDeps): void {
 }
 
 const USAGE_CUE = 'Nutzung: /cue <text> — der Text geht unveraendert an den Cue-Agenten.';
+
+/**
+ * Die Argumente vom Befehlswort befreien.
+ *
+ * Normalerweise liefert der Host in `ctx.args` schon den reinen Text. Im
+ * Live-Betrieb vom 08.10.2026 (Delegation 09:13) kam dort aber der komplette
+ * Nachrichtentext einschliesslich `/cue ` an — belegt im Manus-Verlauf: der
+ * gesendete Text war 347 Zeichen lang und begann mit `/cue `. Woran das im
+ * Host liegt, ist offen (Report report-cue-completion-fix-20261008.md).
+ * Diese Normalisierung macht den Aufruf unabhaengig davon: ein fuehrendes
+ * `/cue` oder `/cue_setup` wird entfernt, alles andere bleibt unberuehrt.
+ */
+export function stripCommandPrefix(raw: string): string {
+  return raw.replace(/^\s*\/(?:cue_setup|cue-setup|cue)(?=\s|$)\s*/i, '').trim();
+}
+
 const USAGE_SETUP = 'Nutzung: /cue_setup <api-key>   oder   /cue_setup <api-key> <agent_id>';
 
 // ── Nachrichten-IDs eingehender Nachrichten ────────────────────────────────
@@ -113,12 +129,10 @@ export async function buildCueStatusText(): Promise<string> {
   }
 
   if (laufend) {
-    zeilen.push(
-      `Laufender Auftrag seit ${laufend.startedAtIso}` +
-        (laufend.taskId ? ` (Task ${shortTaskRef(laufend.taskId)})` : ''),
-    );
+    zeilen.push(`Laufender Auftrag bei ${laufend.agentName ?? 'Cue'} seit ${laufend.startedAtIso}.`);
   } else if (status.ready) {
-    zeilen.push('Kein Auftrag aktiv.');
+    const name = cachedAgentName(cfg.agentId);
+    zeilen.push(name ? `Kein Auftrag aktiv (Agent ${name}).` : 'Kein Auftrag aktiv.');
   }
 
   zeilen.push(USAGE_CUE);
@@ -153,7 +167,7 @@ export function registerCueCommands(api: any): void {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
       }
 
-      const text = String(ctx?.args || '').trim();
+      const text = stripCommandPrefix(String(ctx?.args || ''));
       if (!text) {
         try {
           return { text: await buildCueStatusText() };
@@ -189,7 +203,7 @@ export function registerCueCommands(api: any): void {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
       }
 
-      const teile = String(ctx?.args || '').trim().split(/\s+/).filter(Boolean);
+      const teile = stripCommandPrefix(String(ctx?.args || '')).split(/\s+/).filter(Boolean);
       if (teile.length === 0) {
         return { text: USAGE_SETUP };
       }
