@@ -3068,10 +3068,13 @@ export default function (api) {
            Nachrichtenende, leere Zeilen hinter dem Link verschwinden also. U+2800
            (BRAILLE PATTERN BLANK) ist kein Whitespace, bleibt stehen und ist unsichtbar.
            Live belegt am 08.10.2026: die API-Antwort von sendMessage gab den Text samt
-           aller drei Fuellzeilen unveraendert zurueck (Report
-           report-golink-spacing2-20261008.md). */
+           Fuellzeile unveraendert zurueck (Report report-golink-spacing2-20261008.md).
+    
+           EINE ZEILE, NICHT DREI (Owner-Feintuning 08.10.2026): Drei Fuellzeilen trugen,
+           waren aber zu viel Luft. Eine genuegt, um den Link aus dem Toast-Bereich zu
+           heben. */
         const REPORT_GO_FUELLZEICHEN = '\u2800';
-        const REPORT_GO_NACHLAUF = `\n${REPORT_GO_FUELLZEICHEN}\n${REPORT_GO_FUELLZEICHEN}\n${REPORT_GO_FUELLZEICHEN}`;
+        const REPORT_GO_NACHLAUF = `\n${REPORT_GO_FUELLZEICHEN}`;
         function reportGoNachricht(name) {
             return `<code>${htmlText(reportGoBefehl(name))}</code>\n${REPORT_GO_URL}${REPORT_GO_NACHLAUF}`;
         }
