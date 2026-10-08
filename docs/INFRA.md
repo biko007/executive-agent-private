@@ -221,3 +221,65 @@ lib-File, weil der Drift-Check #15 auf genau zwei Hook-Dateien fixiert ist
 (Gate-Änderung wäre REVIEW-pflichtig, C8) und ein fehlendes lib-File in
 `deny-destructive.sh` unter `set -e` die Fail-Closed-Sperre aushebeln würde.
 Bei Änderung **beide** Dateien anpassen, dann `scripts/install-hooks.sh`.
+
+---
+
+## Manus-Cue-Delegation (Phase 1, experimentell)
+
+Stand 2026-10-08. Code: `src/modules/cue-delegation/`. Zweck: einen vom Owner getippten
+Text an einen externen Manus-Cue-Agenten („Hans") delegieren und die Antwort als
+Telegram-Nachricht zurückholen. **Machbarkeitstest** — bewusst minimal und vollständig
+abschaltbar.
+
+### Bedienung
+
+```
+/cue <text>     Text delegieren (Owner-only via Binding-Guard assertBoundOwner)
+/cue            Status: aktiv/deaktiviert, laufender Auftrag, fehlende env-Schlüssel;
+                ist nur MANUS_CUE_AGENT_ID offen, werden die verfügbaren Agenten
+                gelistet (agent_id — Name), damit die ID ohne Umweg auffindbar ist
+```
+
+Ablauf: Quittung sofort („An Cue uebergeben (Task …)"), Ergebnis später als eigene
+Nachricht im operativen Chat. Bei Fehler, Rückfrage des Agenten oder Zeitablauf kommt
+eine Meldung — nie Stille.
+
+### env-Variablen (`~/.config/openclaw/env`)
+
+| Schlüssel | Default | Wirkung |
+|---|---|---|
+| `CUE_DELEGATION_ENABLED` | `false` | Hauptschalter. Nur der exakte Wert `true` schaltet ein |
+| `MANUS_API_KEY` | `CHANGEME` | Manus API-Key, geht als Header `x-manus-api-key` |
+| `MANUS_CUE_AGENT_ID` | `CHANGEME` | `agent_id` des Cue-Agenten; daraus wird per `agent.detail` der Main-Task ermittelt |
+
+`CHANGEME` (und leer) gilt als „nicht eingetragen" → `/cue` meldet „deaktiviert" und macht
+**keinen** externen Aufruf. Nach Änderung: `systemctl --user restart openclaw-gateway.service`.
+Abschalten = Flag auf `false` + Restart; vollständige Rücknahme = `git revert` des
+Commits + `scripts/deploy.sh openclaw-gateway`.
+
+### Externe Schnittstelle
+
+Manus API v2, `https://api.manus.ai`, kein SDK (nur `fetch`). Genutzte Endpunkte:
+`agent.detail`, `agent.list`, `task.sendMessage`, `task.listMessages`.
+Antwort-Hülle `{ok, request_id, …}` wird immer ausgewertet — HTTP 200 allein gilt nicht als
+Erfolg. 429 (`rate_limited`), 5xx und Netzwerkfehler: bis zu 3 Versuche mit exponentiellem
+Backoff plus Streuung (Doku-Vorgabe); 4xx außer 429 ohne Wiederholung.
+Abschluss-Erkennung über `status_update.agent_status`: `stopped` = fertig, `error` = Fehler,
+`waiting` = Rückfrage. Doku: `https://open.manus.ai/docs/llms.txt`.
+
+### Grenzen von Phase 1 (bewusst)
+
+- Gesendet wird **ausschließlich** der getippte Owner-Text. Keine Datenanreicherung, kein
+  Gesprächsverlauf, kein Owner-Profil, keine internen Daten.
+- Kein Zugriff auf fachliche Stores, Tabellen oder Dateien. Einziger DB-Kontakt ist der
+  Pflicht-Eintrag in `audit_log` (Modul `cue-delegation`, Aktionen `cue.delegation.sent`
+  und `cue.delegation.finished`, mit Prompt-Text, Task-Referenz und Ausgang — ohne
+  Key-Material).
+- Genau **ein** Auftrag gleichzeitig (Mutex im Prozess); weitere `/cue` werden mit Hinweis
+  abgewiesen.
+- Abfragetakt 15 s, harte Laufzeitgrenze 15 min, Ergebnis auf 3.500 Zeichen gekürzt.
+- Der Zustand lebt nur im Gateway-Prozess: ein Restart beendet einen laufenden Auftrag
+  ohne Ergebnis. Für einen Machbarkeitstest akzeptiert; Persistenz wäre Phase 2.
+- Kein Webhook, kein systemd-Timer, keine neue Abhängigkeit, keine neue Infrastruktur.
+- Der API-Key erscheint nie in Log, Report, Telegram oder Fehlermeldung (Prüfung durch
+  Unit-Test).

@@ -107,6 +107,9 @@ import {
   type TelegramBindingRole,
 } from './src/modules/telegram-binding/index.js';
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
+import {
+  initCueCommands, registerCueCommands, initCueDelegation,
+} from './src/modules/cue-delegation/index.js';
 import { createDropboxAdapter } from './src/adapters/dropbox.js';
 import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import path from "node:path";
@@ -722,6 +725,7 @@ export default function (api: any) {
     'banking', 'tan',
     'memory',
     'bind', 'report', 'ccstop', 'ccgo', 'do', 'arm',
+    'cue',
   ]);
 
   /** Set of runIds already persisted — guards against multi-load duplicate writes */
@@ -1202,6 +1206,20 @@ export default function (api: any) {
   });
   bootstrapInstagramToken(api).catch(() => {});
   registerInstagramCommands(api);
+
+  // ── Cue-Delegation → src/modules/cue-delegation/ ──────────────────────────
+  // Phase 1 (Machbarkeitstest): /cue <text> an einen Manus-Agenten delegieren.
+  // Still inaktiv, solange CUE_DELEGATION_ENABLED/MANUS_* nicht gesetzt sind.
+  initCueDelegation({
+    notifyOperativ: (text: string) => sendTelegramToRole('operativ', text),
+    logger: api.logger,
+    auditLog: (entry) => audit.log(entry),
+  });
+  initCueCommands({
+    assertOwner: async (ctx: any) => (await assertBoundOwner(ctx)).ok,
+    logger: api.logger,
+  });
+  registerCueCommands(api);
 
   // ── Briefing ───────────────────────────────────────────────────────────────
   // syncWithingsForBriefing → src/modules/health/commands.ts (imported)
