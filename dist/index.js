@@ -3056,9 +3056,16 @@ export default function (api) {
         }
         /* HTML-Text der Folgenachricht. Der Befehl steht in <code>, damit Telegram ihn als
            Codeblock zum Antippen darstellt, und bleibt die eigene letzte Zeile VOR dem
-           Link. Der Link steht blank in eigener Zeile. */
+           Link. Der Link steht blank in eigener Zeile.
+    
+           ABSTAND ZUM LINK (Aenderung 08.10.2026, Owner-UX): Zwischen Codezeile und Link
+           stehen ZWEI Leerzeilen. Tippt der Owner die Codezeile an, legt Telegram den
+           "Kopiert"-Toast ueber den unteren Rand der Nachricht — klebte der Link direkt
+           unter der Codezeile, war er bis zum Verschwinden des Toasts nicht tappbar. Mit
+           den beiden Leerzeilen liegt er ausserhalb des Toast-Bereichs. */
+        const REPORT_GO_ABSTAND = '\n\n\n'; // Codezeile, zwei Leerzeilen, Link
         function reportGoNachricht(name) {
-            return `<code>${htmlText(reportGoBefehl(name))}</code>\n${REPORT_GO_URL}`;
+            return `<code>${htmlText(reportGoBefehl(name))}</code>${REPORT_GO_ABSTAND}${REPORT_GO_URL}`;
         }
         /**
          * Sendet die Folgenachricht an alle Ziele der Rolle "dev" und protokolliert das
