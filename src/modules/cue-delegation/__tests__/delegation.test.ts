@@ -8,7 +8,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { cueStatus, cueStatusText, loadCueConfig } from '../config.js';
 import {
-  activeCueDelegation, evaluateEvents, initCueDelegation, resetCueState,
+  activeCueDelegation, agentLabel, evaluateEvents, initCueDelegation, resetCueState,
   shortTaskRef, startCueDelegation,
 } from '../delegation.js';
 import { ManusError } from '../manus-client.js';
@@ -156,6 +156,16 @@ describe('evaluateEvents', () => {
     expect(v.answers).toEqual([]);
   });
 
+  test('agentLabel stellt immer "Agent" voran', () => {
+    expect(agentLabel('Hans')).toBe('Agent Hans');
+    expect(agentLabel('  Hans  ')).toBe('Agent Hans');
+    // Ohne Namen bleibt der neutrale Ersatz.
+    expect(agentLabel('')).toBe('Agent Cue');
+    expect(agentLabel('   ')).toBe('Agent Cue');
+    expect(agentLabel(null)).toBe('Agent Cue');
+    expect(agentLabel(undefined)).toBe('Agent Cue');
+  });
+
   test('shortTaskRef kuerzt lange IDs und laesst kurze unberuehrt', () => {
     expect(shortTaskRef('kurz')).toBe('kurz');
     expect(shortTaskRef('abcdefghijklmnopqrst')).toBe('abcdefgh…qrst');
@@ -272,7 +282,7 @@ describe('startCueDelegation', () => {
     const p = bauAufbau({ seiten: [desc(status('s', 'stopped'))] });
     const res = await startCueDelegation('Nenne drei Primaerquellen');
     expect(res.ok).toBe(true);
-    expect(res.message).toBe('An Hans uebergeben — Ergebnis folgt als eigene Nachricht.');
+    expect(res.message).toBe('An Agent Hans uebergeben — Ergebnis folgt als eigene Nachricht.');
     expect(res.message).not.toContain(TASK);
     expect(res.agentName).toBe('Hans');
     expect(p.gesendet).toEqual([{ taskId: TASK, text: 'Nenne drei Primaerquellen' }]);
@@ -280,6 +290,7 @@ describe('startCueDelegation', () => {
     // Die Task-ID bleibt im audit_log erhalten.
     expect(p.audit[0].action).toBe('cue.delegation.sent');
     expect(p.audit[0].after.notes).toBe('Nenne drei Primaerquellen');
+    // Im audit_log bleibt der rohe Name stehen, nicht das Anzeigelabel.
     expect(p.audit[0].after.label).toBe('Hans');
   });
 
@@ -290,7 +301,7 @@ describe('startCueDelegation', () => {
     await startCueDelegation('Frage');
     await abwarten();
     expect(p.telegram.length).toBe(1);
-    expect(p.telegram[0]).toBe('Ergebnis von Hans:\n\nDrei Quellen: …');
+    expect(p.telegram[0]).toBe('Ergebnis von Agent Hans:\n\nDrei Quellen: …');
     expect(p.telegram[0]).not.toContain(TASK);
     expect(fertig(p)?.after.status).toBe('ok');
     expect(activeCueDelegation()).toBeNull();
@@ -299,9 +310,9 @@ describe('startCueDelegation', () => {
   test('ohne aufgeloesten Namen bleibt ein neutraler Ersatz stehen', async () => {
     const p = bauAufbau({ nickname: '  ', seiten: [desc(status('s', 'stopped'))] });
     const res = await startCueDelegation('Frage');
-    expect(res.message).toBe('An Cue uebergeben — Ergebnis folgt als eigene Nachricht.');
+    expect(res.message).toBe('An Agent Cue uebergeben — Ergebnis folgt als eigene Nachricht.');
     await abwarten();
-    expect(p.telegram[0]).toContain('Cue hat den Auftrag beendet');
+    expect(p.telegram[0]).toContain('Agent Cue hat den Auftrag beendet');
   });
 
   // ── Haertung der Abschluss-Erkennung ────────────────────────────────────
@@ -324,7 +335,7 @@ describe('startCueDelegation', () => {
     await abwarten();
 
     expect(p.telegram.length).toBe(1);
-    expect(p.telegram[0]).toContain('Ergebnis von Hans:');
+    expect(p.telegram[0]).toContain('Ergebnis von Agent Hans:');
     expect(p.telegram[0]).toContain('Ich recherchiere drei Angebote …');
     expect(p.telegram[0]).toContain('Das echte Ergebnis');
     expect(fertig(p)?.after.status).toBe('ok');
@@ -406,7 +417,7 @@ describe('startCueDelegation', () => {
     await startCueDelegation('Frage');
     await abwarten();
     expect(p.telegram.length).toBe(1);
-    expect(p.telegram[0]).toContain('Zeitueberschreitung bei Hans');
+    expect(p.telegram[0]).toContain('Zeitueberschreitung bei Agent Hans');
     expect(p.telegram[0]).toContain('Zwischenstand');
     expect(fertig(p)?.after.status).toBe('timeout');
     expect(activeCueDelegation()).toBeNull();
@@ -420,7 +431,7 @@ describe('startCueDelegation', () => {
     });
     await startCueDelegation('Frage');
     await abwarten();
-    expect(p.telegram[0]).toBe('Hans meldet einen Fehler: Quelle nicht erreichbar');
+    expect(p.telegram[0]).toBe('Agent Hans meldet einen Fehler: Quelle nicht erreichbar');
     expect(fertig(p)?.after.status).toBe('error');
     // Kein task.detail noetig — Fehler schliessen unmittelbar ab.
     expect(p.getTaskAufrufe).toBe(0);
@@ -432,7 +443,7 @@ describe('startCueDelegation', () => {
     });
     await startCueDelegation('Frage');
     await abwarten();
-    expect(p.telegram[0]).toContain('Hans fragt zurueck:');
+    expect(p.telegram[0]).toContain('Agent Hans fragt zurueck:');
     expect(p.telegram[0]).toContain('antwortet nicht automatisch');
     expect(fertig(p)?.after.status).toBe('waiting');
     expect(p.getTaskAufrufe).toBe(0);
@@ -458,7 +469,7 @@ describe('startCueDelegation', () => {
     const zweiter = await startCueDelegation('Auftrag B');
     expect(zweiter.ok).toBe(false);
     expect(zweiter.kind).toBe('busy');
-    expect(zweiter.message).toContain('bereits ein Auftrag bei Hans');
+    expect(zweiter.message).toContain('bereits ein Auftrag bei Agent Hans');
     resetCueState();
   });
 

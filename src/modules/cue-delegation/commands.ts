@@ -16,7 +16,8 @@
 import { createManusClient } from './manus-client.js';
 import { cueStatus, cueStatusText, loadCueConfig } from './config.js';
 import {
-  activeCueDelegation, cachedAgentName, describeError, startCueDelegation, writeCueAuditEntry,
+  activeCueDelegation, agentLabel, cachedAgentName, describeError, startCueDelegation,
+  writeCueAuditEntry,
 } from './delegation.js';
 import { formatAgentList, runCueSetup } from './setup.js';
 
@@ -129,10 +130,10 @@ export async function buildCueStatusText(): Promise<string> {
   }
 
   if (laufend) {
-    zeilen.push(`Laufender Auftrag bei ${laufend.agentName ?? 'Cue'} seit ${laufend.startedAtIso}.`);
+    zeilen.push(`Laufender Auftrag bei ${agentLabel(laufend.agentName)} seit ${laufend.startedAtIso}.`);
   } else if (status.ready) {
     const name = cachedAgentName(cfg.agentId);
-    zeilen.push(name ? `Kein Auftrag aktiv (Agent ${name}).` : 'Kein Auftrag aktiv.');
+    zeilen.push(name ? `Kein Auftrag aktiv (${agentLabel(name)}).` : 'Kein Auftrag aktiv.');
   }
 
   zeilen.push(USAGE_CUE);

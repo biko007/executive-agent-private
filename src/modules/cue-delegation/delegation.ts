@@ -69,6 +69,14 @@ const MAX_AUDIT_PROMPT_CHARS = 2_000;
 /** Ersatzname, solange der Agentenname noch nicht aufgeloest ist. */
 const FALLBACK_AGENT_NAME = 'Cue';
 
+/**
+ * Anzeigename fuer Owner-Nachrichten: immer mit vorangestelltem "Agent"
+ * (Owner-Vorgabe 08.10.2026). Im audit_log steht weiterhin der rohe Name.
+ */
+export function agentLabel(name: string | null | undefined): string {
+  return `Agent ${(name ?? '').trim() || FALLBACK_AGENT_NAME}`;
+}
+
 export type CueOutcome = 'ok' | 'waiting' | 'error' | 'timeout';
 
 export interface CueAuditEntry {
@@ -189,12 +197,11 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
   const g = globals();
   const running = g.__ea_cueActive;
   if (running) {
-    const name = running.agentName ?? FALLBACK_AGENT_NAME;
     return {
       ok: false,
       kind: 'busy',
       message:
-        `Es laeuft bereits ein Auftrag bei ${name} (seit ${running.startedAtIso}). `
+        `Es laeuft bereits ein Auftrag bei ${agentLabel(running.agentName)} (seit ${running.startedAtIso}). `
         + 'Phase 1 erlaubt genau einen gleichzeitig — bitte Ergebnis abwarten.',
     };
   }
@@ -250,7 +257,7 @@ export async function startCueDelegation(text: string): Promise<CueStartResult> 
       kind: 'started',
       taskId: identity.taskId,
       agentName: identity.name,
-      message: `An ${identity.name} uebergeben — Ergebnis folgt als eigene Nachricht.`,
+      message: `An ${agentLabel(identity.name)} uebergeben — Ergebnis folgt als eigene Nachricht.`,
     };
   } catch (e: any) {
     g.__ea_cueActive = null;
@@ -394,7 +401,7 @@ async function collectResult(
   active: ActiveDelegation,
 ): Promise<void> {
   const taskId = identity.taskId;
-  const name = identity.name;
+  const name = agentLabel(identity.name);
   const wait = d.sleepImpl ?? sleep;
   const now = d.now ?? Date.now;
   const interval = d.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -508,7 +515,7 @@ async function collectResult(
       status: outcome,
       duration_ms: durationMs,
       answer_chars: answers.join('\n\n').length,
-      label: errorText ?? waitingText ?? name,
+      label: errorText ?? waitingText ?? identity.name,
       discarded_stops: verworfeneAbschluesse,
     });
 

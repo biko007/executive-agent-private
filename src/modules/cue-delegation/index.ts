@@ -26,7 +26,7 @@ export {
 } from './commands.js';
 export {
   initCueDelegation, startCueDelegation, activeCueDelegation, resetCueState,
-  writeCueAuditEntry, evaluateEvents, describeError, shortTaskRef, cachedAgentName,
+  writeCueAuditEntry, evaluateEvents, describeError, shortTaskRef, cachedAgentName, agentLabel,
 } from './delegation.js';
 export type { CueCommandDeps } from './commands.js';
 export type { CueDelegationDeps, CueOutcome, CueStartResult, PollVerdict } from './delegation.js';
