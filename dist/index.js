@@ -40,7 +40,7 @@ import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
-import { initCueCommands, registerCueCommands, initCueDelegation, } from './src/modules/cue-delegation/index.js';
+import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
 import { createDropboxAdapter } from './src/adapters/dropbox.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -426,6 +426,28 @@ export default function (api) {
         }
         catch { }
     }
+    /**
+     * Eine Nachricht aus einem Telegram-Chat entfernen.
+     * Gebraucht von /cue_setup, damit die Nachricht mit dem API-Key nicht im
+     * Chatverlauf stehen bleibt. Best effort — scheitert der Aufruf (zu alt,
+     * fehlendes Recht), bekommt der Owner einen Hinweis.
+     */
+    async function deleteTelegramMessage(chatId, messageId) {
+        if (!telegramBotToken || !chatId || !messageId)
+            return false;
+        try {
+            const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/deleteMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, message_id: Number(messageId) }),
+            }, 10000);
+            return res.ok;
+        }
+        catch (e) {
+            api.logger.warn(`[executive-agent] deleteMessage fehlgeschlagen: ${e?.message}`);
+            return false;
+        }
+    }
     async function sendTelegramPhoto(chatId, photoPath, caption) {
         if (!telegramBotToken)
             return false;
@@ -612,7 +634,7 @@ export default function (api) {
         'banking', 'tan',
         'memory',
         'bind', 'report', 'ccstop', 'ccgo', 'do', 'arm',
-        'cue',
+        'cue', 'cue_setup',
     ]);
     /** Set of runIds already persisted — guards against multi-load duplicate writes */
     const persistedRuns = new Set();
@@ -1063,10 +1085,28 @@ export default function (api) {
         auditLog: (entry) => audit.log(entry),
     });
     initCueCommands({
-        assertOwner: async (ctx) => (await assertBoundOwner(ctx)).ok,
+        assertOwner: async (ctx) => {
+            const guard = await assertBoundOwner(ctx);
+            return { ok: guard.ok, chatId: guard.chatId };
+        },
         logger: api.logger,
+        deleteTelegramMessage,
     });
     registerCueCommands(api);
+    // Nachrichten-ID der letzten eingehenden Nachricht je Chat merken. Der
+    // Command-Kontext fuehrt sie nicht (PluginCommandContext), message_received
+    // schon — /cue_setup braucht sie, um die Nachricht mit dem API-Key zu
+    // loeschen. Gespeichert werden nur Chat-ID, Nachrichten-ID und Zeitpunkt,
+    // kein Inhalt.
+    api.on('message_received', async (event) => {
+        try {
+            const chatId = String(event?.metadata?.senderId || event?.senderId || '');
+            const messageId = String(event?.messageId || '');
+            if (chatId && messageId)
+                noteInboundMessageId(chatId, messageId);
+        }
+        catch { /* darf den Nachrichtenweg nie stoeren */ }
+    });
     // ── Briefing ───────────────────────────────────────────────────────────────
     // syncWithingsForBriefing → src/modules/health/commands.ts (imported)
     async function getBestEffortLocationForBriefing(now) {

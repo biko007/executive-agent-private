@@ -131,7 +131,8 @@ export interface CueStartResult {
  */
 export async function startCueDelegation(text: string): Promise<CueStartResult> {
   const d = requireDeps();
-  const cfg = loadCueConfig(d.env ?? process.env);
+  // Ohne injiziertes env gilt der Dateivorrang aus config.ts (kein Restart noetig).
+  const cfg = loadCueConfig(d.env);
   const status = cueStatus(cfg);
   if (!status.ready) {
     return { ok: false, kind: 'disabled', message: cueStatusText(status) };
@@ -244,6 +245,20 @@ async function writeAudit(
     // abbrechen — er wird aber sichtbar protokolliert.
     d.logger.error(`[cue] audit_log-Eintrag fehlgeschlagen (${action}): ${e?.message}`);
   }
+}
+
+/**
+ * Einen Audit-Eintrag des Moduls schreiben — auch aus /cue_setup heraus.
+ * Ist das Modul noch nicht verdrahtet, bleibt es ohne Eintrag statt zu werfen:
+ * ein fehlender Audit-Schreibweg darf keinen Owner-Befehl abbrechen.
+ */
+export async function writeCueAuditEntry(
+  action: string,
+  entityId: string,
+  after: Record<string, unknown>,
+): Promise<void> {
+  if (!deps) return;
+  await writeAudit(deps, action, entityId, after);
 }
 
 interface PollVerdict {

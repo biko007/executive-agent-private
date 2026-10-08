@@ -283,3 +283,59 @@ Abschluss-Erkennung über `status_update.agent_status`: `stopped` = fertig, `err
 - Kein Webhook, kein systemd-Timer, keine neue Abhängigkeit, keine neue Infrastruktur.
 - Der API-Key erscheint nie in Log, Report, Telegram oder Fehlermeldung (Prüfung durch
   Unit-Test).
+
+### Einrichtung in einer Nachricht: `/cue_setup`
+
+```
+/cue_setup <api-key>               Key speichern, Agent "Hans" suchen, einschalten,
+                                   Testauftrag starten — alles in einem Zug
+/cue_setup <api-key> <agent_id>    Zweitform, wenn "Hans" nicht eindeutig war
+```
+
+Ablauf des Commands (Owner-only, derselbe Binding-Guard wie `/cue`):
+
+1. Key grob prüfen. Ungültig → **es wird nichts geschrieben**.
+2. `MANUS_API_KEY` und `CUE_DELEGATION_ENABLED=true` in `~/.config/openclaw/env` schreiben.
+3. Agent bestimmen: mitgegebene `agent_id` wird per `agent.detail` geprüft; sonst `agent.list`
+   und exakter Nickname-Treffer auf „hans" (getrimmt, ohne Groß-/Kleinschreibung). Kein
+   exakter Treffer → **ein einziger** Name, der „hans" enthält, gilt ebenfalls als eindeutig.
+   Null oder mehrere Kandidaten → Antwort mit der Liste `agent_id — Name` und Hinweis auf die
+   Zweitform; der Key ist dann schon gesichert.
+4. `MANUS_CUE_AGENT_ID` schreiben.
+5. Die Owner-Nachricht mit dem Key per Telegram `deleteMessage` aus dem Chat entfernen
+   (best effort — klappt es nicht, steht ein Hinweis in der Antwort).
+6. `audit_log`-Eintrag `cue.setup` (Ausgang, Agent-Name, ob die Nachricht gelöscht wurde) —
+   **ohne** Key.
+7. Testauftrag starten: „Nenne drei Primärquellen zur Geschichte des Mercedes 560 SL".
+   Antwort: `Eingerichtet: Agent <Name> (<id>). Testauftrag laeuft — Ergebnis folgt als eigene Nachricht.`
+
+**Kein Gateway-Restart nötig.** `loadCueConfig()` liest zur Laufzeit die env-Datei (2-Sekunden-
+Cache) und nutzt `process.env` nur als Rückfall für Schlüssel, die die Datei nicht führt.
+`readEnvKey()` aus `src/shared/utils` taugt dafür nicht — es gibt `process.env` den Vorrang,
+und dort stünde noch der Startwert. `/cue_setup` setzt die Werte zusätzlich direkt in
+`process.env` des laufenden Prozesses.
+
+**env-Schreiber (`src/modules/cue-delegation/env-writer.ts`).** Die Secret-Datei hält alle
+Zugänge des Systems, deshalb:
+
+- Whitelist, technisch erzwungen: **nur** `CUE_DELEGATION_ENABLED`, `MANUS_API_KEY`,
+  `MANUS_CUE_AGENT_ID`. Jeder andere Schlüssel → `Error`. Werte mit Zeilenumbruch → `Error`.
+- Alle übrigen Zeilen bleiben byte-identisch (Kommentare, Leerzeilen, Reihenfolge, CRLF).
+  Durch Unit-Tests gegen Fixture und Temp-Datei abgesichert — nie gegen die echte env.
+- Von einem Schlüssel werden **alle** Zeilen ersetzt, nicht nur die erste: bei
+  `EnvironmentFile` gewinnt die letzte, ein stehengelassener Zweitwert würde den neuen
+  aushebeln.
+- Vor dem Schreiben eine Sicherung `env.bak-cuesetup-<YYYYMMDD-HHMMSS>`; geschrieben wird
+  atomar über eine Temp-Datei mit Modus `0600` plus `rename`.
+- Eine fehlende env-Datei wird nie neu angelegt.
+
+**Secret-Wege des Keys.** Er steht nur in der env-Datei. Nicht im Repo, nicht im Log (der
+Command-Guard protokolliert nur den Befehlsnamen), nicht im `audit_log`, nicht in
+Fehlermeldungen (Redaktion im Manus-Client, durch Tests belegt). Im Conversation-Store
+landet er nicht, weil der Message-Sink unterdrückte Turns verwirft und `/cue_setup` in
+`REGISTERED_COMMANDS` steht (die KI antwortet `NO_REPLY`). Im Telegram-Chat wird die
+Nachricht gelöscht. Bleibt ein Zweifel: Key in Manus rotieren und `/cue_setup` erneut senden.
+
+Der Command-Kontext von OpenClaw 2026.9.1 führt keine Nachrichten-ID; sie kommt aus dem
+Hook `message_received` und wird je Chat kurz vorgehalten (nur Chat-ID, Nachrichten-ID,
+Zeitpunkt — kein Inhalt, TTL 2 Minuten, maximal 20 Einträge).
