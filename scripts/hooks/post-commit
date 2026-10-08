@@ -23,6 +23,10 @@ ENV_FILE="${HOME}/.config/openclaw/env"
 
 mkdir -p "$(dirname "$LOG")"
 
+# Auslesendes Repo JETZT bestimmen — die Subshell wechselt spaeter ins
+# EA-Verzeichnis, danach waere der Name immer "executive-agent".
+TRIGGER_REPO="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+
 # Secrets kommen aus derselben Datei wie fuer die systemd-Units. Sie wird nur
 # in der Subshell eingelesen und nie protokolliert.
 (
@@ -33,7 +37,7 @@ mkdir -p "$(dirname "$LOG")"
     set +a
   fi
   cd "$EA_DIR" || exit 0
-  printf '[%s] post-commit (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${PWD##*/}" >> "$LOG"
+  printf '[%s] post-commit (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TRIGGER_REPO" >> "$LOG"
   "$BUN" scripts/docs-mirror.ts >> "$LOG" 2>&1
 ) < /dev/null > /dev/null 2>&1 &
 
