@@ -12,13 +12,19 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 - **Withings OAuth-Callback-Route (F-009):** nginx `/withings/callback` → Gateway, aber kein Handler.
   Zurückgestellt ~1 Jahr. Fix: analog Oura-Pattern (Port 8080 direkt) oder Gateway-Route registrieren.
 - **Meta-Token rotieren:** Optional. Owner-Entscheidung ausstehend.
-- **Sprint-6-Cleanup (uebernommen aus REMINDERS.md, 2026-10-10):** Status **unklar, zu pruefen**.
-  Die Merkliste lag seit 2026-05-15 im Workspace-Root, war faellig am 2026-05-22 und wurde von
-  keinem Prozess gelesen; ob die Punkte erledigt sind, ist nicht dokumentiert.
-  - [ ] Original-Fleet-JSONs in `artifacts/personal/fleet/` loeschen, sofern bis dahin keine
-        Anomalien aufgetreten sind
-  - [ ] Archiv in `artifacts/.archive/fleet-pre-S6-20260515/` bleibt als Backup erhalten
-  - [ ] Backlog-Check: Migration-Summary-Audit-Eintrag auf sensitive Daten pruefen
+- **Sprint-6-Cleanup (uebernommen aus REMINDERS.md, 2026-10-10):** am 10.10.2026 geprueft;
+  zwei von drei Punkten sind damit geklaert, einer ist eine Owner-Entscheidung.
+  - [x] Archiv `artifacts/.archive/fleet-pre-S6-20260515/` ist vorhanden
+        (`vehicles.json` + `manifest.json`) — Backup erfuellt.
+  - [x] Migration-Summary-Audit-Eintrag geprueft (`audit_log` #23,
+        `fleet/system.sprint6_migration`): enthaelt ausschliesslich Zeilenzahlen je Tabelle,
+        keine Fahrzeug-, Personen- oder Vertragsdaten. Keine Beanstandung.
+  - [ ] **Owner-Entscheidung:** `artifacts/personal/fleet/vehicles.json` loeschen.
+        Faktenlage: Produktivquelle ist seit Sprint 6 die Tabelle `vehicles` (7 Fahrzeuge);
+        die Datei enthaelt den alten Stand mit 5 Fahrzeugen und wird von keinem Lesepfad mehr
+        verwendet (nur `src/modules/fleet/migrate-v025.ts` liest sie, und nur beim Migrieren).
+        Anomalien sind seit 15.05.2026 keine aufgetreten. Loeschen ist eine Datenloeschung und
+        bleibt deshalb Owner-Sache.
 - **cc-pre-backup.sh in AUTO-Konvention:** Skript vorhanden (`scripts/cc-pre-backup.sh`),
   Konvention dokumentiert, aber noch nicht in allen AUTO-Lauf-Checklisten als Pflicht-Erstschritt.
 
@@ -28,9 +34,11 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 
 1. **/ccgo Slug-Match-Prüfung (E3-Code):** /ccgo soll Plan-Prompt NUR bestätigen wenn Plan via
    Watcher zugestellt wurde UND Slug/Dateiname passt. Aktuell: kein Slug-Match implementiert.
-2. **Deny-Hook + telegram-notify ins Repo versionieren:** `~/.claude/hooks/deny-destructive.sh` und
-   `~/.claude/hooks/telegram-notify.sh` sind nicht im Repo versioniert. Folgeauftrag: ins Repo +
-   Existenz- und Ausführbarkeits-Check im Smoke-Test.
+2. ~~**Deny-Hook + telegram-notify ins Repo versionieren:**~~ Erledigt (nachgeprueft 10.10.2026) —
+   beide Hooks liegen versioniert unter `hooks/` im Repo, `scripts/install-hooks.sh` spielt sie
+   nach `~/.claude/hooks/` aus, und `scripts/smoke-test.ts` prueft je Hook Existenz,
+   Ausfuehrbarkeit UND Drift gegen die Repo-Fassung (SHA-Vergleich). Die Hinweise auf diesen
+   Folgeauftrag in `CLAUDE.md` §4 C6 und §8 sind damit ueberholt.
 3. ~~**Deploy-Skript mit SHA-Erfassung + Auto-Rollback:**~~ Erledigt 2026-07-20 — `scripts/deploy.sh` implementiert (Dirty-Tree-Guard, SHA-Capture, Health-Check, Auto-Rollback auf LAST_GOOD, Telegram-Notify). Manifest 10 erfüllt.
 4. ~~**Test-DB-Guard (C1) technisch implementieren:**~~ Erledigt 2026-07-20 — `src/core/db-guard.ts` (OPENCLAW_TEST=1).
 

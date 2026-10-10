@@ -121,7 +121,8 @@ Der PreToolUse-Deny-Hook ist zweite Verteidigungslinie — semantisch destruktiv
 (DELETE mit formalem WHERE, ALTER…DROP, Object-Store-Löschung, Datei-Ersetzung via Write/Edit,
 indirekte Skriptaufrufe) unterliegen denselben Freigabe-, Backup- und Dry-Run-Regeln. Vor Arbeitsbeginn:
 Hook-Existenz + Ausführbarkeit prüfen; fehlt er → STOP für produktive Schreibaktionen.
-Hook-Versionierung ins Repo: Folgeauftrag (docs/TODO.md #2).
+Hook-Versionierung ins Repo: **erledigt** — `hooks/` im Repo, `scripts/install-hooks.sh`
+spielt aus, `scripts/smoke-test.ts` prueft Existenz, Ausfuehrbarkeit und Drift (10.10.2026).
 
 **C7 — Kontrollflächen-Schutz:**
 Jede Änderung an /do, /ccgo, /ccstop, Prompt-Inbox, Report-Watcher oder Telegram-Binding ist
@@ -330,7 +331,7 @@ Systempfade, `curl|sh`, Dateisystem-Formatierung, `dd`, Fork-Bomb — diese Rege
 und **nicht** über `/arm` umgehbar. Die Rote Zone aus `red-zone.conf` ist der zusätzliche,
 armbare Layer; Muster dort ohne `(?i)` schreiben (der Hook vergleicht seit 2026-10-10 mit
 `grep -qiE`).
-Armed-Flag: `~/.armed-bikosoc` (one-shot). Hook-Versionierung: Folgeauftrag (docs/TODO.md #2).
+Armed-Flag: `~/.armed-bikosoc` (one-shot). Hook-Versionierung: erledigt (siehe §4 C6).
 
 **Schema-Migration-Namespace:**
 Schema-Version ist **PER MODUL**, nicht global. Kollisionen bei V037 (Fleet+Instagram) und 043

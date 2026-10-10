@@ -4,6 +4,37 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — Einmalige Auswertung des Montagslaufs (Paket 1, Teil D)
+
+Der echte Montagsabgleich um 13:00 Berliner Zeit ist seit dem 07.10.2026 im Core
+umgesetzt (`70c4f05`), aber noch nie gelaufen: `banking_sync_runs` endet am
+29.06.2026, der Buchungsbestand ebenfalls. Der 12.10.2026 ist die erste Probe.
+Damit das Ergebnis nicht von Hand zusammengesucht werden muss, wertet ein
+**einmaliger** systemd-user-Timer den Tag automatisch aus.
+
+**Neu**
+- `scripts/montagslauf-auswertung.ts` — liest `banking_sync_runs`,
+  `banking_sessions`, `banking_transactions` und die gefilterten Journalzeilen des
+  Gateways und schreibt EINEN Report nach
+  `~/bikosoc-spec/report-montagslauf-<YYYYMMDD>.md`. Der Report-Watcher stellt ihn zu.
+- `scripts/systemd/montagslauf-auswertung.{service,timer}` —
+  `OnCalendar=2026-10-12 15:00:00 Europe/Berlin` (der Server laeuft auf UTC, die Zone
+  steht deshalb ausdruecklich im Ausdruck). `RemainAfterElapse=no` plus
+  `ExecStartPost=systemctl --user disable …` — der Timer raeumt sich selbst ab.
+
+**Grenzen, bewusst gesetzt**
+- Rein lesend: kein FinTS-Aufruf, kein Abgleich, keine TAN. Ein ausgebliebener Lauf
+  wird gemeldet, nicht nachgeholt.
+- C5: Der Report nennt nur Zaehlungen, Status und Zeitpunkte. Konten erscheinen mit
+  den letzten vier Stellen, Gegenparteien und Verwendungszwecke gar nicht. Der
+  Journalfilter hat eine Ausschlussliste (Standort-, Gesundheits- und Kontodaten) —
+  ein erster Entwurf mit dem Suchbegriff `tan` traf „S**tan**dort" und haette
+  Standortdaten in den Report geschrieben.
+
+**Rueckweg:** `systemctl --user disable --now montagslauf-auswertung.timer`.
+
+---
+
 ## Stand 2026-10-05 — Briefing-Kalender: Zeitzone und Ganztagstermine (P1-5)
 
 Core-Anteil von Paket P1-5 der Dashboard-Überarbeitung (Befund F).

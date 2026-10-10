@@ -1,0 +1,14 @@
+[Unit]
+Description=Auswertung des Montags-Bankabgleichs (einmalig, rein lesend)
+Documentation=file:///home/biko/bikosoc-spec/doku-ablaeufe-20261007.md
+After=openclaw-gateway.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.openclaw/workspace/.openclaw/extensions/executive-agent
+EnvironmentFile=-%h/.config/openclaw/env
+ExecStart=/home/biko/.bun/bin/bun scripts/montagslauf-auswertung.ts
+# Einmaliger Auftrag: nach dem Lauf schaltet sich der Timer selbst ab, damit
+# kein Zeitplan zurueckbleibt, den spaeter niemand mehr zuordnen kann.
+ExecStartPost=-/usr/bin/systemctl --user disable montagslauf-auswertung.timer
+TimeoutStartSec=300

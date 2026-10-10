@@ -1,0 +1,17 @@
+[Unit]
+Description=Einmalige Auswertung des Montagslaufs am 12.10.2026, 15:00 Berliner Zeit
+
+[Timer]
+# Der Server laeuft auf UTC; die Zeitzone steht deshalb ausdruecklich im
+# Ausdruck (systemd >= 252). 15:00 Berlin = 13:00 UTC an diesem Tag.
+# 15:00 liegt zwei Stunden nach dem Bankabgleich um 13:00 — genug Abstand,
+# damit ein Lauf mit TAN-Nachfrage noch in den Tabellen steht.
+OnCalendar=2026-10-12 15:00:00 Europe/Berlin
+AccuracySec=1min
+# Verpasst (Server aus, Timer spaeter aktiviert) → trotzdem einmal nachholen.
+Persistent=true
+# Einmaliger Auftrag: nach dem Ablauf bleibt der Timer nicht aktiv stehen.
+RemainAfterElapse=no
+
+[Install]
+WantedBy=timers.target
