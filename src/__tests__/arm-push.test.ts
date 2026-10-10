@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sendPromptToBikosocTmux, type TmuxRunner } from '../modules/cc-prompt-dispatch/index.js';
+import { targetsWithoutOrigin } from '../shared/utils/index.js';
 
 /**
  * /arm push — armt die Rote Zone (one-shot) UND dispatcht "push" + Enter in die
@@ -16,7 +17,7 @@ import { sendPromptToBikosocTmux, type TmuxRunner } from '../modules/cc-prompt-d
  * halten die Spiegelung an die echte Quelle gebunden.
  */
 
-interface Sent { role: string; text: string }
+interface Sent { role: string; text: string; chatId: string }
 interface Dispatched { text: string }
 
 interface Deps {
@@ -27,6 +28,22 @@ interface Deps {
   logs: string[];
   dispatchThrows?: string;
   order: string[];
+  /** Chat, aus dem der Befehl kam. */
+  originChatId: string;
+  /** Aktive Ziele der Rolle "operativ". */
+  operativTargets: string[];
+}
+
+/**
+ * Spiegel von notifyRoleUnlessOrigin aus index.ts: meldet an die Rolle, aber
+ * nicht in den Chat, aus dem der Befehl kam. Grund (Befund 2026-10-10): das
+ * Framework stellt den Rueckgabetext in den Ursprungschat zu — eine
+ * Eigensendung an dieselbe Stelle ergab eine zweite, bei /arm push wortgleiche
+ * Nachricht.
+ */
+function notifyRoleUnlessOrigin(d: Deps, role: string, text: string): void {
+  const rest = targetsWithoutOrigin(d.operativTargets, d.originChatId);
+  for (const chatId of rest) d.telegram.push({ role, text, chatId });
 }
 
 // ── Spiegel des /arm-Handlers aus index.ts ─────────────────────────────────
@@ -45,9 +62,9 @@ async function armHandler(args: string | undefined, d: Deps): Promise<{ text: st
     d.order.push('armed');
 
     if (mode !== 'push') {
-      d.telegram.push({ role: 'operativ', text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' });
+      notifyRoleUnlessOrigin(d, 'operativ', 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
       d.logs.push('[arm] Red Zone armed (one-shot)');
-      return { text: 'Red Zone scharfgestellt (one-shot).' };
+      return { text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' };
     }
 
     try {
@@ -56,11 +73,11 @@ async function armHandler(args: string | undefined, d: Deps): Promise<{ text: st
       d.order.push('dispatched');
     } catch (e: any) {
       d.logs.push(`[arm] push-Dispatch fehlgeschlagen: ${e.message}`);
-      d.telegram.push({ role: 'operativ', text: `Armed — push-Dispatch fehlgeschlagen: ${e.message}` });
+      notifyRoleUnlessOrigin(d, 'operativ', `Armed — push-Dispatch fehlgeschlagen: ${e.message}`);
       return { text: `Armed — push-Dispatch fehlgeschlagen: ${e.message}` };
     }
 
-    d.telegram.push({ role: 'operativ', text: 'Armed + push dispatched.' });
+    notifyRoleUnlessOrigin(d, 'operativ', 'Armed + push dispatched.');
     d.logs.push('[arm] Red Zone armed (one-shot) + push an tmux bikosoc uebergeben');
     return { text: 'Armed + push dispatched.' };
   } catch (e: any) {
@@ -77,6 +94,10 @@ function makeDeps(dir: string, over: Partial<Deps> = {}): Deps {
     dispatched: [],
     logs: [],
     order: [],
+    // Standardfall und Live-Lage: der Owner schickt den Befehl in seiner DM,
+    // und die DM IST der operative Chat.
+    originChatId: 'owner-dm',
+    operativTargets: ['owner-dm'],
     ...over,
   };
 }
@@ -88,13 +109,13 @@ describe('/arm ohne Argument — unveraendert', () => {
 
     const res = await armHandler(undefined, d);
 
-    expect(res.text).toBe('Red Zone scharfgestellt (one-shot).');
+    expect(res.text).toBe('Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
     expect(fs.existsSync(d.flagPath)).toBe(true);
     expect(fs.readFileSync(d.flagPath, 'utf-8')).toContain('armed by owner at ');
     expect(d.dispatched).toEqual([]);
-    expect(d.telegram).toEqual([
-      { role: 'operativ', text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' },
-    ]);
+    // Befehl kam aus dem operativen Chat -> keine Eigensendung, nur der
+    // Rueckgabetext. Genau EINE Nachricht beim Owner.
+    expect(d.telegram).toEqual([]);
     expect(d.logs).toEqual(['[arm] Red Zone armed (one-shot)']);
   });
 
@@ -103,7 +124,7 @@ describe('/arm ohne Argument — unveraendert', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arm-push-'));
       const d = makeDeps(dir);
       const res = await armHandler(args, d);
-      expect(res.text, JSON.stringify(args)).toBe('Red Zone scharfgestellt (one-shot).');
+      expect(res.text, JSON.stringify(args)).toBe('Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
       expect(d.dispatched, JSON.stringify(args)).toEqual([]);
     }
   });
@@ -119,7 +140,22 @@ describe('/arm push — armt und dispatcht', () => {
     expect(res.text).toBe('Armed + push dispatched.');
     expect(fs.existsSync(d.flagPath)).toBe(true);
     expect(d.dispatched).toEqual([{ text: 'push' }]);
-    expect(d.telegram).toEqual([{ role: 'operativ', text: 'Armed + push dispatched.' }]);
+    // GENAU EINE Antwort: der Befehl kam aus dem operativen Chat, also
+    // entfaellt die Eigensendung. Vorher standen hier zwei wortgleiche
+    // Nachrichten — der Owner-Befund vom 2026-10-10.
+    expect(d.telegram).toEqual([]);
+  });
+
+  test('aus einem anderen Chat: Rolle wird informiert, Ursprungschat bekommt die Quittung', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arm-push-'));
+    const d = makeDeps(dir, { originChatId: 'dev-gruppe' });
+
+    const res = await armHandler('push', d);
+
+    expect(res.text).toBe('Armed + push dispatched.');
+    // Eine Meldung in den operativen Chat, die Quittung in die dev-Gruppe —
+    // je Chat genau eine Nachricht.
+    expect(d.telegram).toEqual([{ role: 'operativ', text: 'Armed + push dispatched.', chatId: 'owner-dm' }]);
   });
 
   test('Reihenfolge: erst armen, dann dispatchen', async () => {
@@ -149,7 +185,8 @@ describe('/arm push — armt und dispatcht', () => {
     expect(d.dispatched).toEqual([]);
     expect(res.text).toContain('push-Dispatch fehlgeschlagen');
     expect(res.text).not.toContain('Armed + push dispatched.');
-    expect(d.telegram[0].text).toContain('push-Dispatch fehlgeschlagen');
+    // Aus dem operativen Chat: keine Eigensendung, die Quittung traegt den Grund.
+    expect(d.telegram).toEqual([]);
     expect(d.logs.some(l => l.includes('[arm] push-Dispatch fehlgeschlagen'))).toBe(true);
   });
 });
@@ -226,9 +263,19 @@ describe('statische Guards gegen index.ts (Drift-Schutz fuer die Spiegelung oben
     expect(armBlock.indexOf('writeFileSync')).toBeLessThan(armBlock.indexOf("sendPromptToBikosocTmux('push')"));
   });
 
-  test('der Pfad ohne Argument ist unveraendert', () => {
+  test('der Pfad ohne Argument armt und meldet', () => {
     expect(armBlock).toContain('Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
-    expect(armBlock).toContain("return { text: 'Red Zone scharfgestellt (one-shot).' };");
+    expect(armBlock).toContain("return { text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' };");
+  });
+
+  test('alle drei Zweige melden ueber notifyRoleUnlessOrigin — keine doppelte Quittung', () => {
+    // Befund 2026-10-10: sendTelegramToRole ignorierte den Ursprungschat, der
+    // Owner sah "Armed + push dispatched." zweimal. Dieser Guard haelt den Fix
+    // fest: kein Zweig darf wieder direkt an die Rolle senden.
+    const treffer = armBlock.match(/notifyRoleUnlessOrigin\(/g) ?? [];
+    expect(treffer.length).toBe(3);
+    expect(armBlock).not.toContain("sendTelegramToRole('operativ'");
+    expect(armBlock).toContain('guard.chatId');
   });
 
   test('der Dispatch-Helfer wird nicht neu implementiert, sondern importiert', () => {

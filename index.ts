@@ -86,7 +86,7 @@ import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import {
   nowIso, makeId, sleep, fetchWithTimeout, parseRetryAfterMs,
-  berlinDate,
+  berlinDate, targetsWithoutOrigin,
 } from "./src/shared/utils/index.js";
 import {
   loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION,
@@ -645,6 +645,42 @@ export default function (api: any) {
     }
     const results = await Promise.all(targets.map((chatId) => sendTelegram(chatId, text)));
     return results.some(Boolean);
+  }
+
+  /**
+   * Meldung an eine Rolle — aber NICHT in den Chat, aus dem der Befehl kam.
+   *
+   * Befund 2026-10-10: Handler, die selbst an die Rolle senden UND einen
+   * Antworttext zurueckgeben, erzeugten zwei Nachrichten. Das Framework stellt
+   * den Rueckgabetext in den Ursprungschat zu; beim Owner IST der operative
+   * Chat seine eigene DM, also landeten beide dort. Bei `/arm push` war der
+   * Text identisch — der Owner sah zweimal "Armed + push dispatched.".
+   *
+   * Kam der Befehl aus einem anderen Chat (etwa der dev-Gruppe), wird die Rolle
+   * weiterhin informiert; nur die Dopplung im Ursprungschat entfaellt.
+   *
+   * Rueckgabe: true, wenn nichts zu senden war oder alles gesendet wurde.
+   */
+  async function notifyRoleUnlessOrigin(
+    roleTag: TelegramBindingRole,
+    originChatId: string,
+    text: string,
+    opts: { fallbackToOperativ?: boolean } = {},
+  ): Promise<boolean> {
+    let targets: string[] = [];
+    try {
+      targets = await getTelegramTargets(roleTag, opts);
+    } catch (e: any) {
+      api.logger.warn(`[telegram-routing] ${roleTag}-Ziele nicht ermittelbar: ${e.message}`);
+      return false;
+    }
+    const rest = targetsWithoutOrigin(targets, originChatId);
+    if (rest.length === 0) {
+      // Ursprungschat ist das einzige Rollenziel — der Rueckgabetext genuegt.
+      return true;
+    }
+    const results = await Promise.all(rest.map((chatId) => sendTelegram(chatId, text)));
+    return results.every(Boolean);
   }
 
   async function sendTelegramDocumentToRole(
@@ -2348,9 +2384,10 @@ export default function (api: any) {
           }
         } catch { /* best-effort */ }
 
-        await sendTelegramToRole('operativ', '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
+        await notifyRoleUnlessOrigin('operativ', guard.chatId,
+          '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
         api.logger.info('[ccstop] Kill-Switch ausgefuehrt');
-        return { text: 'cc-stop ausgefuehrt.' };
+        return { text: '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.' };
       } catch (e: any) {
         api.logger.error(`[ccstop] Fehler: ${e.message}`);
         return { text: `cc-stop Fehler: ${e.message}` };
@@ -2399,22 +2436,25 @@ export default function (api: any) {
         const hasPlanPrompt = lastLines.some(l => /[❯>]?\s*\d+\.\s*Yes/i.test(l));
 
         if (!hasPlanPrompt) {
-          await sendTelegramToRole('operativ', 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
-          return { text: 'Kein wartender Plan-Prompt erkannt.' };
+          await notifyRoleUnlessOrigin('operativ', guard.chatId,
+            'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
+          return { text: 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.' };
         }
 
         if (!bypassOptionNum) {
-          await sendTelegramToRole('operativ', 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
-          return { text: 'Plan-Prompt erkannt, aber bypass permissions nicht verfuegbar.' };
+          await notifyRoleUnlessOrigin('operativ', guard.chatId,
+            'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
+          return { text: 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.' };
         }
 
         // Send the detected option number + Enter
         execSync(`tmux send-keys -t bikosoc ${bypassOptionNum} 2>/dev/null`, { timeout: 5000 });
         execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
 
-        await sendTelegramToRole('operativ', `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
+        await notifyRoleUnlessOrigin('operativ', guard.chatId,
+          `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
         api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
-        return { text: `Plan-Approval gesendet (Option ${bypassOptionNum}).` };
+        return { text: `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
       } catch (e: any) {
         api.logger.error(`[ccgo] Fehler: ${e.message}`);
         return { text: `ccgo Fehler: ${e.message}` };
@@ -2475,9 +2515,10 @@ export default function (api: any) {
         fs.writeFileSync(flagPath, `armed by owner at ${new Date().toISOString()}\n`);
 
         if (mode !== 'push') {
-          await sendTelegramToRole('operativ', 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
+          await notifyRoleUnlessOrigin('operativ', guard.chatId,
+            'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
           api.logger.info('[arm] Red Zone armed (one-shot)');
-          return { text: 'Red Zone scharfgestellt (one-shot).' };
+          return { text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' };
         }
 
         // Reihenfolge: erst armen, dann dispatchen. Schlaegt der Dispatch fehl, ist das
@@ -2487,11 +2528,12 @@ export default function (api: any) {
           sendPromptToBikosocTmux('push');
         } catch (e: any) {
           api.logger.error(`[arm] push-Dispatch fehlgeschlagen: ${e.message}`);
-          await sendTelegramToRole('operativ', `Armed — push-Dispatch fehlgeschlagen: ${e.message}`);
+          await notifyRoleUnlessOrigin('operativ', guard.chatId,
+            `Armed — push-Dispatch fehlgeschlagen: ${e.message}`);
           return { text: `Armed — push-Dispatch fehlgeschlagen: ${e.message}` };
         }
 
-        await sendTelegramToRole('operativ', 'Armed + push dispatched.');
+        await notifyRoleUnlessOrigin('operativ', guard.chatId, 'Armed + push dispatched.');
         api.logger.info('[arm] Red Zone armed (one-shot) + push an tmux bikosoc uebergeben');
         return { text: 'Armed + push dispatched.' };
       } catch (e: any) {

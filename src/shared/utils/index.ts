@@ -47,6 +47,29 @@ export async function fetchWithTimeout(
   }
 }
 
+/**
+ * Telegram-Ziele ohne den Ursprungschat.
+ *
+ * Hintergrund (Befund 2026-10-10): Ein Command-Handler, der selbst eine
+ * Nachricht an eine Rolle sendet UND einen Antworttext zurueckgibt, erzeugt
+ * zwei Nachrichten — das Framework stellt den Rueckgabetext in den
+ * Ursprungschat zu. Ist der Ursprungschat zugleich das Rollenziel (beim Owner
+ * ist der operative Chat seine eigene DM), sieht der Owner dieselbe Meldung
+ * zweimal. Bei `/arm push` war es wortgleich.
+ *
+ * Diese Funktion filtert den Ursprungschat heraus: bleibt nichts uebrig, genuegt
+ * der Rueckgabetext und die Eigensendung entfaellt. Kam der Befehl aus einem
+ * anderen Chat (z. B. der dev-Gruppe), wird die Rolle weiterhin informiert.
+ *
+ * Vergleich als getrimmte Zeichenkette — Telegram-IDs sind je nach Quelle
+ * number oder string.
+ */
+export function targetsWithoutOrigin(targets: string[], originChatId: string): string[] {
+  const origin = String(originChatId ?? '').trim();
+  if (!origin) return targets;
+  return targets.filter((t) => String(t ?? '').trim() !== origin);
+}
+
 /** YYYY-MM-DD in Europe/Berlin, with optional day offset */
 export function berlinDate(offsetDays = 0): string {
   return new Intl.DateTimeFormat('en-CA', {
