@@ -25,6 +25,17 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
         verwendet (nur `src/modules/fleet/migrate-v025.ts` liest sie, und nur beim Migrieren).
         Anomalien sind seit 15.05.2026 keine aufgetreten. Loeschen ist eine Datenloeschung und
         bleibt deshalb Owner-Sache.
+- **Dropbox-Vollzugriff des Servers (geparkt, Owner-Entscheidung 10.10.2026):**
+  Der Auftrag `dropbox-vollzugriff-20261010.txt` ist vom Owner am 10.10.2026 zurueckgezogen
+  worden — keine Diagnose, kein Plan, keine Umsetzung. Sachstand: Das Server-Token ist auf
+  einen App-Ordner beschraenkt (`/Apps/bikosoc-reports`), Dateien ausserhalb davon sind fuer
+  den Agenten nicht erreichbar. Statt den Zugang zu erweitern, verschiebt der Owner seinen
+  Austauschordner selbst in den App-Bereich; Zielpfad aus Agentensicht:
+  `/bikosoc-reports/transfer/` (Unterordner `SWT-Rechnungen`, `Screenshots`, Umsatz-PDFs,
+  weitere folgen). Damit ist der Vollzugriff fuer den laufenden Betrieb nicht erforderlich.
+  Kein Codebezug: kein Transfer-Pfad ist im Repo verdrahtet (geprueft 10.10.2026).
+  Wieder aufgreifen nur, wenn der Owner Dateien ausserhalb des App-Ordners freigeben will;
+  dann erneut als REVIEW-Auftrag (Rote Zone: Token/env).
 - **cc-pre-backup.sh in AUTO-Konvention:** Skript vorhanden (`scripts/cc-pre-backup.sh`),
   Konvention dokumentiert, aber noch nicht in allen AUTO-Lauf-Checklisten als Pflicht-Erstschritt.
 
