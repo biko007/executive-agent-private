@@ -18,7 +18,8 @@
 import { describe, it, expect } from 'bun:test';
 import {
   trifft, leistungszeitraum, anteiligerBetrag, muster, REGELN_START,
-  type AusgabenRegel, type UmsatzZeile,
+  ordneSammelueberweisungZu, istRechnungsregel,
+  type AusgabenRegel, type UmsatzZeile, type Rechnung,
 } from '../expense-rules.js';
 
 function umsatz(extra: Partial<UmsatzZeile> = {}): UmsatzZeile {
@@ -246,5 +247,176 @@ describe('Startbestand der Regeln', () => {
       reference: '00/0000-00730-48030/001/009/440 Abfallgebuehren 2025',
     });
     expect(REGELN_START.filter(r => trifft(r, fremd)).length).toBe(0);
+  });
+});
+
+
+// ── Rechnungsabgleich bei Sammelüberweisungen ──────────────────────────────
+//
+// Der größte Nebenkostenposten von MG24 sind die Pellets, und genau diese
+// Rechnungen werden über Sammelüberweisungen bezahlt: Die Bank liefert dort
+// weder Gegenpartei noch Verwendungszweck, nur den Buchungsschlüssel
+// SAMMELUEBERWEISUNG und bei mehreren Posten „ANZAHL n". Eine Regel auf die
+// Gegenpartei kann dort grundsätzlich nicht greifen — ohne diesen Abgleich
+// bliebe der Posten dauerhaft ohne Vorschlag.
+
+function sammel(betrag: number, extra: Partial<UmsatzZeile> = {}): UmsatzZeile {
+  return {
+    id: 1,
+    booking_date: '2025-10-09',
+    value_date: '2025-10-09',
+    amount: -betrag,
+    counterparty_name: null,
+    reference: null,
+    transaction_code: 'SAMMELUEBERWEISUNG',
+    ...extra,
+  };
+}
+
+const KOCH: { regelId: string; rechnung: Rechnung }[] = [
+  { regelId: 'mg24-pellets', rechnung: { nr: '101657', betrag: 2173.79, lieferdatum: '2025-03-11' } },
+  { regelId: 'mg24-pellets', rechnung: { nr: '106971', betrag: 1502.39, lieferdatum: '2025-09-25' } },
+];
+const REIZNER: { regelId: string; rechnung: Rechnung }[] = [
+  { regelId: 'reizner-rechnungen', rechnung: { betrag: 128.46 } },
+];
+
+describe('ordneSammelueberweisungZu', () => {
+  it('erklärt eine Zahlung aus einer einzelnen Rechnung', () => {
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(sammel(2173.79), KOCH);
+    expect(mehrdeutig).toBe(false);
+    expect(treffer.length).toBe(1);
+    expect(treffer[0].rechnung.nr).toBe('101657');
+    expect(treffer[0].posten).toBe(1);
+  });
+
+  it('erklärt eine Zahlung aus zwei Rechnungen verschiedener Lieferanten', () => {
+    // Der echte Fall: 1.630,85 = 1.502,39 Pellets + 128,46 Elektro.
+    const { treffer } = ordneSammelueberweisungZu(sammel(1630.85), [...KOCH, ...REIZNER]);
+    expect(treffer.length).toBe(2);
+    expect(treffer.map(t => t.regelId).sort()).toEqual(['mg24-pellets', 'reizner-rechnungen']);
+    expect(treffer.every(t => t.posten === 2)).toBe(true);
+    expect(treffer.find(t => t.regelId === 'mg24-pellets')!.rechnung.nr).toBe('106971');
+  });
+
+  it('greift nicht, wenn keine Zusammenstellung passt', () => {
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(sammel(1695.84), [...KOCH, ...REIZNER]);
+    expect(treffer.length).toBe(0);
+    expect(mehrdeutig).toBe(false);
+  });
+
+  it('rät NICHT, wenn zwei Rechnungen denselben Betrag haben', () => {
+    // Zwei gleich hohe Rechnungen: Welche bezahlt wurde, ist nicht bestimmbar.
+    // Ein geratener Beleg wäre schlimmer als keiner.
+    const pool = [
+      { regelId: 'a', rechnung: { nr: '1', betrag: 500 } },
+      { regelId: 'b', rechnung: { nr: '2', betrag: 500 } },
+    ];
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(sammel(500), pool);
+    expect(treffer.length).toBe(0);
+    expect(mehrdeutig).toBe(true);
+  });
+
+  it('rät NICHT, wenn mehrere Paare denselben Betrag ergeben', () => {
+    const pool = [
+      { regelId: 'a', rechnung: { nr: '1', betrag: 100 } },
+      { regelId: 'b', rechnung: { nr: '2', betrag: 200 } },
+      { regelId: 'c', rechnung: { nr: '3', betrag: 120 } },
+      { regelId: 'd', rechnung: { nr: '4', betrag: 180 } },
+    ];
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(sammel(300), pool);
+    expect(treffer.length).toBe(0);
+    expect(mehrdeutig).toBe(true);
+  });
+
+  it('greift nur bei Sammelüberweisungen', () => {
+    // Eine normale Lastschrift über denselben Betrag darf NICHT über den
+    // Rechnungsabgleich laufen — dafür sind die Musterregeln da.
+    const { treffer } = ordneSammelueberweisungZu(
+      sammel(2173.79, { transaction_code: 'FOLGELASTSCHRIFT' }), KOCH);
+    expect(treffer.length).toBe(0);
+  });
+
+  it('greift nicht bei einem Zahlungseingang', () => {
+    const { treffer } = ordneSammelueberweisungZu(
+      { ...sammel(2173.79), amount: 2173.79 }, KOCH);
+    expect(treffer.length).toBe(0);
+  });
+
+  it('kommt mit leerem Rechnungspool zurecht', () => {
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(sammel(2173.79), []);
+    expect(treffer.length).toBe(0);
+    expect(mehrdeutig).toBe(false);
+  });
+
+  it('vergleicht auf den Cent', () => {
+    const { treffer } = ordneSammelueberweisungZu(sammel(2173.78), KOCH);
+    expect(treffer.length).toBe(0);
+  });
+});
+
+describe('Rechnungsregeln im Startbestand', () => {
+  it('erkennt die Pelletregel als Rechnungsregel', () => {
+    const pellets = REGELN_START.find(r => r.id === 'mg24-pellets')!;
+    expect(istRechnungsregel(pellets)).toBe(true);
+    expect((pellets.rechnungen || []).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('lässt Rechnungsregeln nicht über den Musterabgleich laufen', () => {
+    // Sonst träfe eine Rechnungsregel mit leerem match jeden Zahlungsausgang.
+    for (const r of REGELN_START.filter(istRechnungsregel)) {
+      expect(trifft(r, sammel(2173.79))).toBe(false);
+    }
+  });
+
+  it('erklärt die fünf bekannten Pelletzahlungen', () => {
+    const pool = REGELN_START.filter(istRechnungsregel)
+      .flatMap(r => (r.rechnungen || []).map(rg => ({ regelId: r.id, rechnung: rg })));
+    // Die echten Zahlbeträge der Sammelüberweisungen aus dem Bestand.
+    const zahlungen = [2173.79, 1630.85, 1758.95, 1844.98, 1707.61];
+    for (const z of zahlungen) {
+      const { treffer } = ordneSammelueberweisungZu(sammel(z), pool);
+      expect(treffer.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('trägt bei jedem Pellet-Treffer das Lieferdatum, nicht den Zahltag', () => {
+    const pool = REGELN_START.filter(istRechnungsregel)
+      .flatMap(r => (r.rechnungen || []).map(rg => ({ regelId: r.id, rechnung: rg })));
+    const { treffer } = ordneSammelueberweisungZu(
+      sammel(1758.95, { booking_date: '2025-12-18' }), pool);
+    const pellet = treffer.find(t => t.regelId === 'mg24-pellets')!;
+    expect(pellet.rechnung.lieferdatum).toBe('2025-12-15');
+    expect(leistungszeitraum('lieferdatum', { ...sammel(0), booking_date: pellet.rechnung.lieferdatum! }))
+      .toEqual({ start: '2025-12-15', ende: '2025-12-15' });
+  });
+});
+
+describe('Nachtrag 10.10.2026 — korrigierte Einstufungen', () => {
+  it('ordnet SWT 387849 der Wasserversorgung zu und hält sie umlagefähig', () => {
+    const r = REGELN_START.find(x => x.id === 'mg24-swt-387849')!;
+    expect(r.cost_category).toBe('wasser');
+    expect(r.umlagefaehig).toBe(true);
+    expect(r.service_period).toBe('rechnungsmonat');
+  });
+
+  it('hat eine Gegenstückregel für den Abwasservertrag 387847', () => {
+    const r = REGELN_START.find(x => x.id === 'mg24-swt-387847-abwasser')!;
+    expect(r.cost_category).toBe('entwaesserung');
+    expect(r.umlagefaehig).toBe(true);
+  });
+
+  it('führt Energiekonzept als Mieterstrom-Abrechnungsdienst und nicht umlagefähig', () => {
+    expect(REGELN_START.find(x => x.id === 'mg24-energiekonzept-waerme')).toBeUndefined();
+    const r = REGELN_START.find(x => x.id === 'mg24-energiekonzept-mieterstrom-abrechnungsdienst')!;
+    expect(r.cost_category).toBe('sonstige_betrkv');
+    expect(r.umlagefaehig).toBe(false);
+  });
+
+  it('trennt die Wasserverträge 307008 und 387849 sauber', () => {
+    // Beide sind Wasser, aber verschiedene Verträge — ein Umsatz darf nie
+    // beide treffen, sonst entstehen zwei Vorschläge für eine Zahlung.
+    const u = umsatz({ amount: -9, reference: '133224 DTAUS Rechnung 387849/Marktgasse 24' });
+    expect(REGELN_START.filter(r => trifft(r, u)).length).toBe(1);
   });
 });

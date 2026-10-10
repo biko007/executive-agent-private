@@ -16,7 +16,8 @@ import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import {
   ladeRegeln, trifft, leistungszeitraum, anteiligerBetrag,
-  type AusgabenRegel, type UmsatzZeile,
+  istRechnungsregel, ordneSammelueberweisungZu,
+  type AusgabenRegel, type UmsatzZeile, type Rechnung,
 } from './expense-rules.js';
 
 export interface ErzeugungsErgebnis {
@@ -30,6 +31,8 @@ export interface ErzeugungsErgebnis {
   zurueckgezogen: number;
   /** Regel traf zu, aber Objekt oder Kostenart ist im Stammdatenbestand unbekannt. */
   uebersprungen: number;
+  /** Vorschlag zurueckgezogen, weil fuer dieselbe Zahlung schon eine Buchung besteht. */
+  bereits_gebucht: number;
   hinweise: string[];
 }
 
@@ -57,6 +60,24 @@ function begruendung(regel: AusgabenRegel, u: UmsatzZeile): string {
   return teile.join(' · ');
 }
 
+/** Begründung für einen Treffer über den Rechnungsabgleich. */
+function begruendungRechnung(
+  regel: AusgabenRegel, r: Rechnung, posten: number, u: UmsatzZeile,
+): string {
+  const teile = [
+    `Regel ${regel.id} (Rechnungsabgleich)`,
+    posten > 1
+      ? `Sammelüberweisung über ${Math.abs(u.amount).toFixed(2)} Euro aus ${posten} Rechnungen`
+      : `Sammelüberweisung über ${Math.abs(u.amount).toFixed(2)} Euro`,
+    r.nr ? `Rechnung ${r.nr} über ${r.betrag.toFixed(2)} Euro` : `Rechnung über ${r.betrag.toFixed(2)} Euro`,
+  ];
+  if (r.lieferdatum) teile.push(`Leistung am ${r.lieferdatum}`);
+  else teile.push('Leistungsdatum unbekannt — Zahltag angesetzt');
+  if (r.hinweis) teile.push(r.hinweis);
+  if (regel.hinweis) teile.push(regel.hinweis);
+  return teile.join(' · ');
+}
+
 /**
  * Wendet die Regeln auf Umsätze an und legt Vorschläge an.
  *
@@ -69,7 +90,8 @@ export async function erzeugeVorschlaege(
 ): Promise<ErzeugungsErgebnis> {
   const ergebnis: ErzeugungsErgebnis = {
     geprueft: 0, angelegt: 0, bereits_vorhanden: 0,
-    aktualisiert: 0, zurueckgezogen: 0, uebersprungen: 0, hinweise: [],
+    aktualisiert: 0, zurueckgezogen: 0, uebersprungen: 0, bereits_gebucht: 0,
+    hinweise: [],
   };
 
   const regeln = await ladeRegeln();
@@ -87,8 +109,17 @@ export async function erzeugeVorschlaege(
   const objektId = new Map(objekte.map(o => [o.code, o.id]));
   const artId = new Map(arten.map(a => [a.code, a.id]));
 
+  // Rechnungspool fuer den Abgleich von Sammelueberweisungen. Er geht ueber ALLE
+  // Regeln, weil eine Ueberweisung Rechnungen verschiedener Lieferanten
+  // zusammenfassen kann — jede erzeugt dann ihren eigenen Vorschlag.
+  const rechnungsPool = regeln
+    .filter(istRechnungsregel)
+    .flatMap(r => (r.rechnungen || []).map(rg => ({ regelId: r.id, rechnung: rg })));
+  const regelNachId = new Map(regeln.map(r => [r.id, r]));
+
   const params: unknown[] = [];
-  let sql = `SELECT id, booking_date, value_date, amount, counterparty_name, reference
+  let sql = `SELECT id, booking_date, value_date, amount, counterparty_name, reference,
+                    transaction_code
                FROM banking_transactions WHERE amount < 0`;
   if (opts.seit) { params.push(opts.seit); sql += ` AND booking_date >= $${params.length}`; }
   if (opts.accountIds && opts.accountIds.length > 0) {
@@ -99,6 +130,7 @@ export async function erzeugeVorschlaege(
   const { rows } = await dbQuery<{
     id: number; booking_date: Date; value_date: Date | null;
     amount: string; counterparty_name: string | null; reference: string | null;
+    transaction_code: string | null;
   }>(sql, params);
 
   for (const r of rows) {
@@ -109,6 +141,7 @@ export async function erzeugeVorschlaege(
       amount: parseFloat(r.amount),
       counterparty_name: r.counterparty_name,
       reference: r.reference,
+      transaction_code: r.transaction_code,
     };
     ergebnis.geprueft++;
 
@@ -147,6 +180,54 @@ export async function erzeugeVorschlaege(
       if (angelegt.length > 0) ergebnis.angelegt++;
       else ergebnis.bereits_vorhanden++;
     }
+
+    // ── Rechnungsabgleich fuer Sammelueberweisungen ────────────────────────
+    const { treffer, mehrdeutig } = ordneSammelueberweisungZu(u, rechnungsPool);
+    if (mehrdeutig) {
+      const text = `Sammelüberweisung ${u.booking_date} über ${Math.abs(u.amount).toFixed(2)} Euro: `
+        + 'mehrere Rechnungszusammenstellungen ergeben denselben Betrag — kein Vorschlag, '
+        + 'bitte von Hand zuordnen.';
+      if (!ergebnis.hinweise.includes(text)) ergebnis.hinweise.push(text);
+    }
+
+    for (const tr of treffer) {
+      const regel = regelNachId.get(tr.regelId);
+      if (!regel) continue;
+      const pid = objektId.get(regel.property);
+      const cid = artId.get(regel.cost_category);
+      if (!pid || !cid) {
+        ergebnis.uebersprungen++;
+        const text = `Regel ${regel.id}: ${!pid ? `Objekt ${regel.property}` : `Kostenart ${regel.cost_category}`} unbekannt`;
+        if (!ergebnis.hinweise.includes(text)) ergebnis.hinweise.push(text);
+        continue;
+      }
+
+      // Der Leistungszeitraum richtet sich nach dem Lieferdatum der RECHNUNG,
+      // nicht nach dem Zahltag — das ist der Kern des Leistungsprinzips.
+      const stichtag = tr.rechnung.lieferdatum || u.booking_date;
+      const zeitraum = leistungszeitraum(regel.service_period, { ...u, booking_date: stichtag });
+
+      const { rows: angelegtR } = await dbQuery<{ id: number }>(
+        `INSERT INTO expense_booking_proposals
+           (property_id, transaction_id, rule_id, cost_category_id, vendor_name,
+            booking_date, amount_gross, anteil, service_period_start, service_period_end,
+            umlagefaehig, sicherheit, begruendung, reference)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (transaction_id, rule_id) WHERE transaction_id IS NOT NULL
+           DO NOTHING
+         RETURNING id`,
+        [
+          pid, u.id, regel.id, cid, null,
+          u.booking_date, Math.round(tr.rechnung.betrag * 100) / 100, 1,
+          zeitraum.start, zeitraum.ende,
+          regel.umlagefaehig, regel.sicherheit,
+          begruendungRechnung(regel, tr.rechnung, tr.posten, u),
+          tr.rechnung.nr ? `Rechnung ${tr.rechnung.nr}` : 'Sammelüberweisung',
+        ],
+      );
+      if (angelegtR.length > 0) ergebnis.angelegt++;
+      else ergebnis.bereits_vorhanden++;
+    }
   }
 
   // ── Offene Vorschlaege gegen den aktuellen Regelstand halten ─────────────
@@ -160,7 +241,7 @@ export async function erzeugeVorschlaege(
   const { rows: offene } = await dbQuery<any>(
     `SELECT p.*, t.booking_date AS tx_booking_date, t.value_date AS tx_value_date,
             t.amount AS tx_amount, t.counterparty_name AS tx_counterparty,
-            t.reference AS tx_reference
+            t.reference AS tx_reference, t.transaction_code AS tx_code
        FROM expense_booking_proposals p
        JOIN banking_transactions t ON t.id = p.transaction_id
       WHERE p.status = 'offen'`);
@@ -174,17 +255,57 @@ export async function erzeugeVorschlaege(
       amount: parseFloat(o.tx_amount),
       counterparty_name: o.tx_counterparty,
       reference: o.tx_reference,
+      transaction_code: o.tx_code,
     };
 
-    if (!regel || !trifft(regel, u)) {
+    // Rechnungsregeln laufen nicht ueber trifft(). Ohne diesen Zweig wuerde die
+    // Pruefung unten jeden Rechnungsvorschlag sofort wieder zurueckziehen.
+    let rechnung: Rechnung | null = null;
+    if (regel && istRechnungsregel(regel)) {
+      const { treffer } = ordneSammelueberweisungZu(u, rechnungsPool);
+      rechnung = treffer.find(x => x.regelId === regel.id)?.rechnung ?? null;
+      if (rechnung) {
+        const stichtag = rechnung.lieferdatum || u.booking_date;
+        const z = leistungszeitraum(regel.service_period, { ...u, booking_date: stichtag });
+        const pidR = objektId.get(regel.property);
+        const cidR = artId.get(regel.cost_category);
+        if (!pidR || !cidR) continue;
+        const betragR = Math.round(rechnung.betrag * 100) / 100;
+        const gleichR =
+          Number(o.property_id) === pidR &&
+          Number(o.cost_category_id) === cidR &&
+          Math.abs(parseFloat(o.amount_gross) - betragR) < 0.005 &&
+          isoTag(o.service_period_start) === z.start &&
+          isoTag(o.service_period_end) === z.ende &&
+          o.umlagefaehig === regel.umlagefaehig &&
+          o.sicherheit === regel.sicherheit;
+        if (!gleichR) {
+          await dbQuery(
+            `UPDATE expense_booking_proposals
+                SET property_id = $2, cost_category_id = $3, amount_gross = $4, anteil = 1,
+                    service_period_start = $5, service_period_end = $6,
+                    umlagefaehig = $7, sicherheit = $8, begruendung = $9
+              WHERE id = $1 AND status = 'offen'`,
+            [o.id, pidR, cidR, betragR, z.start, z.ende,
+              regel.umlagefaehig, regel.sicherheit,
+              begruendungRechnung(regel, rechnung, 1, u)]);
+          ergebnis.aktualisiert++;
+        }
+        continue;
+      }
+    }
+
+    if (!regel || (istRechnungsregel(regel) ? !rechnung : !trifft(regel, u))) {
       await dbQuery(
         `UPDATE expense_booking_proposals
             SET status = 'verworfen', entschieden_am = now(), entschieden_von = 'system',
                 notiz = $2
           WHERE id = $1 AND status = 'offen'`,
-        [o.id, regel
-          ? `Regel ${o.rule_id} trifft auf diesen Umsatz nicht mehr zu (Regelstand geaendert).`
-          : `Regel ${o.rule_id} ist nicht mehr hinterlegt.`]);
+        [o.id, !regel
+          ? `Regel ${o.rule_id} ist nicht mehr hinterlegt.`
+          : istRechnungsregel(regel)
+            ? `Regel ${o.rule_id}: keine Rechnung erklaert diese Zahlung mehr (Rechnungsliste geaendert).`
+            : `Regel ${o.rule_id} trifft auf diesen Umsatz nicht mehr zu (Regelstand geaendert).`]);
       ergebnis.zurueckgezogen++;
       continue;
     }
@@ -217,6 +338,91 @@ export async function erzeugeVorschlaege(
     ergebnis.aktualisiert++;
   }
 
+  // ── Abgleich gegen bereits vorhandene Kostenbuchungen ────────────────────
+  //
+  // In Paket 2 sind 16 Buchungen von Hand angelegt worden. Ein Vorschlag, der
+  // dieselbe Zahlung noch einmal anbietet, wuerde bei einem Klick dieselbe
+  // Rechnung zweimal in die Abrechnung geben.
+  //
+  // Zwei Stufen, weil die Datenlage zwei Faelle kennt:
+  //
+  //   1. ZAHLUNGSGENAU: gleiches Objekt, gleicher Betrag, Zahltag der Buchung
+  //      im Abstand von hoechstens drei Tagen zum Umsatz. Das ist eindeutig —
+  //      der Vorschlag wird zurueckgezogen und nennt die Buchung.
+  //   2. ZEITRAUM-UEBERSCHNEIDUNG: gleiches Objekt, gleiche Kostenart,
+  //      ueberschneidender Leistungszeitraum, aber kein zahlungsgenauer
+  //      Treffer. Das trifft die drei Sammelbuchungen aus Paket 2, die mehrere
+  //      Zahlungen zusammenfassen (Wasserabschlaege 210,00; Allgemeinstrom
+  //      1.086,60; NEW 584,00). Hier wird NICHT zurueckgezogen — die Zuordnung
+  //      ist nicht eindeutig, und ein stilles Unterdruecken koennte einen
+  //      echten Posten verschlucken. Stattdessen bekommt der Vorschlag eine
+  //      ausdrueckliche Warnung in die Begruendung.
+  //
+  // Ein eigener Status "bereits gebucht" waere eine Schemaaenderung und damit
+  // Rote Zone; der Nachtrag verlangt ausdruecklich keine. Stufe 1 nutzt deshalb
+  // 'verworfen' mit sprechender Notiz — fuer den Owner ist es damit wie
+  // gefordert nicht mehr offen, und der Grund steht dabei.
+  const { rows: buchungen } = await dbQuery<any>(
+    `SELECT id, property_id, cost_category_id, amount_gross, payment_date,
+            service_period_start, service_period_end
+       FROM expense_bookings WHERE archived_at IS NULL`);
+
+  const { rows: nochOffen } = await dbQuery<any>(
+    `SELECT id, property_id, cost_category_id, amount_gross, booking_date,
+            service_period_start, service_period_end, begruendung
+       FROM expense_booking_proposals WHERE status = 'offen'`);
+
+  const tageAbstand = (a: string, b: string) =>
+    Math.abs(new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000;
+
+  for (const v of nochOffen) {
+    const vTag = isoTag(v.booking_date)!;
+    const vBetrag = parseFloat(v.amount_gross);
+
+    const genau = buchungen.find(b =>
+      Number(b.property_id) === Number(v.property_id) &&
+      Math.abs(parseFloat(b.amount_gross) - vBetrag) < 0.005 &&
+      b.payment_date && tageAbstand(isoTag(b.payment_date)!, vTag) <= 3);
+
+    if (genau) {
+      await dbQuery(
+        `UPDATE expense_booking_proposals
+            SET status = 'verworfen', entschieden_am = now(), entschieden_von = 'system',
+                notiz = $2
+          WHERE id = $1 AND status = 'offen'`,
+        [v.id, `Bereits gebucht: Kostenbuchung #${genau.id} über `
+          + `${parseFloat(genau.amount_gross).toFixed(2)} Euro, bezahlt am `
+          + `${isoTag(genau.payment_date)}. Automatisch zurückgezogen, damit dieselbe `
+          + 'Rechnung nicht zweimal in die Abrechnung geht.']);
+      ergebnis.bereits_gebucht++;
+      continue;
+    }
+
+    const ueberschneidung = buchungen.find(b =>
+      Number(b.property_id) === Number(v.property_id) &&
+      Number(b.cost_category_id) === Number(v.cost_category_id) &&
+      b.service_period_start && b.service_period_end &&
+      v.service_period_start && v.service_period_end &&
+      isoTag(b.service_period_start)! <= isoTag(v.service_period_end)! &&
+      isoTag(b.service_period_end)! >= isoTag(v.service_period_start)!);
+
+    if (ueberschneidung) {
+      const warnung = `ACHTUNG: Für dieses Objekt, diese Kostenart und diesen Zeitraum `
+        + `besteht bereits die Kostenbuchung #${ueberschneidung.id} über `
+        + `${parseFloat(ueberschneidung.amount_gross).toFixed(2)} Euro `
+        + `(${isoTag(ueberschneidung.service_period_start)} bis `
+        + `${isoTag(ueberschneidung.service_period_end)}). Vor dem Übernehmen prüfen, `
+        + 'ob die Zahlung dort schon enthalten ist.';
+      if (!String(v.begruendung || '').includes('ACHTUNG: Für dieses Objekt')) {
+        await dbQuery(
+          `UPDATE expense_booking_proposals SET begruendung = $2
+            WHERE id = $1 AND status = 'offen'`,
+          [v.id, `${v.begruendung || ''} · ${warnung}`]);
+        ergebnis.aktualisiert++;
+      }
+    }
+  }
+
   await audit.log({
     actor: opts.actor,
     module: 'assets', action: 'expense_proposal.generate',
@@ -225,7 +431,8 @@ export async function erzeugeVorschlaege(
       geprueft: ergebnis.geprueft, angelegt: ergebnis.angelegt,
       bereits_vorhanden: ergebnis.bereits_vorhanden,
       aktualisiert: ergebnis.aktualisiert, zurueckgezogen: ergebnis.zurueckgezogen,
-      uebersprungen: ergebnis.uebersprungen, regeln: regeln.length,
+      uebersprungen: ergebnis.uebersprungen, bereits_gebucht: ergebnis.bereits_gebucht,
+      regeln: regeln.length,
       seit: opts.seit ?? null,
     },
   });

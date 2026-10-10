@@ -4,6 +4,76 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — Nachtrag zu Paket 3: Einstufungen und Rechnungsabgleich
+
+Owner-Entscheidungen zu den drei Vorschlagsgruppen, dazu zwei Erweiterungen am
+Vorschlagswesen. Keine Migration, keine Rote Zone — die Regeln sind Daten, das
+Buchungs-Update läuft über eine neue Core-Route mit Audit.
+
+**Einstufungen korrigiert.** SWT-Vertrag 387849 ist laut Kundenportal
+„Marktgasse 24 (Wasser)" — Kostenart `wasser`, umlagefähig; dazu die
+Gegenstückregel für 387847 (Abwasser) aus der Spartentrennung ab 2026.
+Energiekonzept KNr 11142 ist **kein Wärmeposten**, sondern der Abrechnungsdienst
+der Mieterstrom-Kundenanlage einschließlich 600 € Einrichtung: Betreiberkosten
+des Mieterstrommodells, kein BetrKV-Posten. Regel umbenannt, Kostenart
+`sonstige_betrkv`, vorerst nicht umlagefähig; die in Paket 2 angelegte Buchung
+über 2.841,22 € ebenfalls. Allgemeinstrom 348661 bleibt gesperrt, bis Paket 3b
+die Schlussrechnung nach den drei Zeiträumen aufteilt.
+
+**Neue Core-Route** `PATCH /api/assets/properties/:code/expense-bookings/:id`
+für Umlagefähigkeit, Leistungszeitraum und Notiz. Betrag, Objekt und Kostenart
+bleiben außen vor — das wäre eine andere Buchung.
+
+**Rechnungsabgleich für Sammelüberweisungen.** Die Pelletrechnungen werden über
+Sammelüberweisungen bezahlt; dort liefert die Bank weder Gegenpartei noch
+Verwendungszweck, nur den Buchungsschlüssel `SAMMELUEBERWEISUNG` und bei
+mehreren Posten „ANZAHL n". Eine Regel auf die Gegenpartei kann dort
+grundsätzlich nicht greifen — der größte Nebenkostenposten von MG24 wäre
+dauerhaft ohne Vorschlag geblieben.
+
+Eine Regel kann deshalb statt Mustern eine Liste `rechnungen` tragen (Nummer,
+Betrag, Lieferdatum). Der Abgleich erklärt den Zahlbetrag aus einer Rechnung
+oder aus einem Paar — und das Paar darf aus **verschiedenen Regeln** stammen:
+Die Überweisung über 1.630,85 € bestand tatsächlich aus einer Pelletrechnung
+über 1.502,39 € (MG24) und einer Elektrorechnung über 128,46 € (N24). Jede
+beteiligte Rechnung erzeugt ihren eigenen Vorschlag mit eigener Kostenart und
+eigenem Objekt. Der Leistungszeitraum ist das **Lieferdatum der Rechnung**, nicht
+der Zahltag.
+
+**Mehrdeutigkeit führt zu keinem Treffer.** Lassen sich mehrere
+Zusammenstellungen auf denselben Betrag bringen, wird nicht geraten — die
+Zahlung bleibt ohne Vorschlag und das steht in der Meldung. Ein geratener Beleg
+wäre schlimmer als keiner.
+
+**Abgleich gegen vorhandene Buchungen.** Die 16 Buchungen aus Paket 2 dürfen
+nicht doppelt entstehen. Zwei Stufen, weil die Datenlage zwei Fälle kennt:
+
+- **zahlungsgenau** (gleiches Objekt, gleicher Betrag, Zahltag im Abstand von
+  höchstens drei Tagen) → der Vorschlag wird zurückgezogen und nennt die
+  Buchung. 11 Vorschläge über 24.747 € sind so stillgelegt worden, darunter alle
+  fünf Pelletrechnungen.
+- **nur Zeitraum-Überschneidung** (gleiche Kostenart, überschneidender
+  Leistungszeitraum) → **nicht** zurückgezogen, sondern mit einer ausdrücklichen
+  Warnung in der Begründung versehen. Das betrifft die drei Sammelbuchungen aus
+  Paket 2, die mehrere Zahlungen zusammenfassen; still unterdrücken könnte einen
+  echten zusätzlichen Posten verschlucken. 46 von 60 offenen Vorschlägen tragen
+  diese Warnung.
+
+Ein eigener Status „bereits gebucht" wäre eine Schemaänderung und damit Rote
+Zone gewesen; Stufe 1 nutzt deshalb `verworfen` mit sprechender Notiz. Für den
+Owner ist der Vorschlag damit wie gefordert nicht mehr offen, und der Grund
+steht dabei.
+
+**Wirkung auf die Probe-Abrechnung 2025** (Energiekonzept nicht mehr
+umlagefähig): Saldo W1 1.100,98 → 372,60 € · W2 998,03 → 391,79 € · W3
+1.449,67 → 616,95 € · Eigentümer 2.021,72 → 1.347,84 €. Die Summe der
+Entlastungen ist exakt 2.841,22 €.
+
+**Tests:** 27 neue (Rechnungsabgleich, Buchungsabgleich, korrigierte
+Einstufungen). Gesamt 920/0/0.
+
+---
+
 ## Stand 2026-10-10 — Umsatz-Nachtrag und Buchungsvorschläge (Paket 3, Teile 3 und 5)
 
 Migration **V040** (Rote Zone, Owner-Freigabe): `banking_transactions.source`

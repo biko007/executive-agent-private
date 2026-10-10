@@ -213,7 +213,7 @@ export function registerAssetsHttpRoutes(api: any) {
             if (sub === 'heating-config') { await handleHeatingConfig(req, res, propertyId); return; }
             if (sub === 'units') { await handlePropertyUnits(req, res, propertyId, segments[3]); return; }
             if (sub === 'leases') { await handlePropertyLeases(req, res, propertyId); return; }
-            if (sub === 'expense-bookings') { await handleExpenseBookings(req, res, propertyId); return; }
+            if (sub === 'expense-bookings') { await handleExpenseBookings(req, res, propertyId, segments[3]); return; }
             if (sub === 'allocation-rules') { await handleAllocationRules(req, res, propertyId, segments[3]); return; }
             if (sub === 'meters') { await handlePropertyMeters(req, res, propertyId); return; }
             if (sub === 'nk-readiness') {
@@ -1063,11 +1063,65 @@ async function handleLeaseCharges(req: IncomingMessage, res: ServerResponse, lea
   }
 }
 
-async function handleExpenseBookings(req: IncomingMessage, res: ServerResponse, propertyCode: string) {
+async function handleExpenseBookings(
+  req: IncomingMessage, res: ServerResponse, propertyCode: string, bookingId?: string,
+) {
   const { rows: propRows } = await dbQuery('SELECT id FROM properties WHERE code = $1 AND active = true', [propertyCode]);
   if (propRows.length === 0) { err(res, 404, 'Property not found'); return; }
   const propId = propRows[0].id;
   const { query } = parseUrl(req.url || '');
+
+  // PATCH /api/assets/properties/:code/expense-bookings/:id
+  //
+  // Nur die Felder, die sich nach dem Anlegen fachlich noch aendern: die
+  // Umlagefaehigkeit (Einstufung nach BetrKV kann sich durch einen Beleg
+  // aendern), der Leistungszeitraum und die Notiz. Betrag, Objekt und
+  // Kostenart bleiben aussen vor — das waere eine andere Buchung.
+  if (bookingId && req.method === 'PATCH') {
+    const id = parseInt(bookingId, 10);
+    if (!Number.isInteger(id) || id <= 0) { err(res, 400, 'Buchungs-ID ist ungueltig'); return; }
+    const body = await parseJsonBody<any>(req);
+
+    const { rows: vorher } = await dbQuery(
+      'SELECT * FROM expense_bookings WHERE id = $1 AND property_id = $2', [id, propId]);
+    if (vorher.length === 0) { err(res, 404, 'Buchung nicht gefunden'); return; }
+
+    const felder: string[] = [];
+    const werte: unknown[] = [id];
+    const setze = (spalte: string, wert: unknown) => {
+      werte.push(wert); felder.push(`${spalte} = $${werte.length}`);
+    };
+    if (typeof body?.umlagefaehig === 'boolean') setze('umlagefaehig', body.umlagefaehig);
+    if (typeof body?.notes === 'string') setze('notes', body.notes);
+    if (typeof body?.service_period_start === 'string') setze('service_period_start', body.service_period_start);
+    if (typeof body?.service_period_end === 'string') setze('service_period_end', body.service_period_end);
+    if (felder.length === 0) {
+      err(res, 400, 'umlagefaehig, notes, service_period_start oder service_period_end erforderlich');
+      return;
+    }
+
+    const { rows } = await dbQuery(
+      `UPDATE expense_bookings SET ${felder.join(', ')}, updated_at = now()
+        WHERE id = $1 RETURNING *`, werte);
+
+    await audit.log({
+      module: 'assets', action: 'expense_booking.update',
+      entityType: 'expense_booking', entityId: String(id),
+      before: {
+        umlagefaehig: vorher[0].umlagefaehig, notes: vorher[0].notes,
+        service_period_start: vorher[0].service_period_start,
+        service_period_end: vorher[0].service_period_end,
+      },
+      after: {
+        umlagefaehig: rows[0].umlagefaehig, notes: rows[0].notes,
+        service_period_start: rows[0].service_period_start,
+        service_period_end: rows[0].service_period_end,
+      },
+    });
+
+    json(res, 200, rows[0]);
+    return;
+  }
 
   if (req.method === 'GET') {
     let sql = `SELECT eb.*, cc.code AS cost_category_code, cc.name AS cost_category_name

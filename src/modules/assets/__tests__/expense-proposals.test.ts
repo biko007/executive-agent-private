@@ -105,14 +105,32 @@ async function setzeRegeln(regeln: unknown[]) {
 }
 
 async function seedUmsatz(
-  betrag: number, datum: string, gegenpartei: string, zweck: string,
+  betrag: number, datum: string, gegenpartei: string, zweck: string, code = 'FOLGELASTSCHRIFT',
 ): Promise<number> {
   const { rows } = await testPool.query(
     `INSERT INTO banking_transactions
        (account_id, bank_transaction_id, booking_date, value_date, amount, currency,
-        counterparty_name, reference, raw_payload, source)
-     VALUES (1, $1, $2, $2, $3, 'EUR', $4, $5, '{}'::jsonb, 'pdf_import') RETURNING id`,
-    [`tx_${Math.random().toString(36).slice(2, 12)}`, datum, betrag, gegenpartei, zweck]);
+        counterparty_name, reference, transaction_code, raw_payload, source)
+     VALUES (1, $1, $2, $2, $3, 'EUR', $4, $5, $6, '{}'::jsonb, 'pdf_import') RETURNING id`,
+    [`tx_${Math.random().toString(36).slice(2, 12)}`, datum, betrag, gegenpartei, zweck, code]);
+  return rows[0].id;
+}
+
+async function seedBuchung(
+  kostenartCode: string, betrag: number,
+  opts: { zahltag?: string; von?: string; bis?: string; umlagefaehig?: boolean } = {},
+): Promise<number> {
+  const { rows: art } = await testPool.query(
+    'SELECT id FROM cost_categories WHERE code = $1', [kostenartCode]);
+  const { rows: prop } = await testPool.query(
+    `SELECT id FROM properties WHERE code = 'tp24'`);
+  const { rows } = await testPool.query(
+    `INSERT INTO expense_bookings
+       (source_key, property_id, cost_category_id, amount_gross, umlagefaehig,
+        payment_date, service_period_start, service_period_end)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [`test_${Math.random().toString(36).slice(2, 10)}`, prop[0].id, art[0].id, betrag,
+      opts.umlagefaehig ?? true, opts.zahltag || null, opts.von || null, opts.bis || null]);
   return rows[0].id;
 }
 
@@ -343,6 +361,178 @@ describe('Regeländerung zieht offene Vorschläge nach', () => {
       expect(Number(rows[0].amount_gross)).toBe(Number(v.amount_gross));
       expect(Number(rows[0].cost_category_id)).toBe(Number(v.cost_category_id));
     }
+    await setzeRegeln([TESTREGEL]);
+  });
+});
+
+
+// ── Abgleich gegen vorhandene Buchungen (Nachtrag 10.10.2026, Punkt 5) ──────
+//
+// In Paket 2 sind 16 Kostenbuchungen von Hand angelegt worden. Bietet ein
+// Vorschlag dieselbe Zahlung erneut an, gibt ein Klick dieselbe Rechnung
+// zweimal in die Abrechnung.
+
+describe('Abgleich gegen vorhandene Kostenbuchungen', () => {
+  it('zieht einen Vorschlag zurück, dessen Zahlung schon gebucht ist', async () => {
+    await setzeRegeln([TESTREGEL]);
+    const txId = await seedUmsatz(-25, '2026-10-15', 'Stadtwerke Tuttlingen GmbH',
+      '133224 DTAUS Rechnung 307008/Marktgasse 24');
+    const buchungId = await seedBuchung('wasser', 25, { zahltag: '2026-10-15' });
+
+    const e = await proposals.erzeugeVorschlaege({ actor: 'test' });
+    expect(e.bereits_gebucht).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await testPool.query(
+      'SELECT status, notiz, expense_booking_id FROM expense_booking_proposals WHERE transaction_id = $1',
+      [txId]);
+    expect(rows[0].status).toBe('verworfen');
+    expect(rows[0].notiz).toContain(`#${buchungId}`);
+    // Es entsteht KEINE Buchung — der Vorschlag wird nur stillgelegt.
+    expect(rows[0].expense_booking_id).toBeNull();
+  });
+
+  it('erkennt die Buchung auch bei drei Tagen Abstand zum Zahltag', async () => {
+    const txId = await seedUmsatz(-26, '2026-10-16', 'Stadtwerke Tuttlingen GmbH',
+      '133224 DTAUS Rechnung 307008/Marktgasse 24');
+    await seedBuchung('wasser', 26, { zahltag: '2026-10-19' });
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows } = await testPool.query(
+      'SELECT status FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(rows[0].status).toBe('verworfen');
+  });
+
+  it('lässt einen Vorschlag offen, wenn Betrag oder Zahltag nicht passen', async () => {
+    const txId = await seedUmsatz(-27, '2026-10-20', 'Stadtwerke Tuttlingen GmbH',
+      '133224 DTAUS Rechnung 307008/Marktgasse 24');
+    await seedBuchung('wasser', 27, { zahltag: '2026-11-30' });
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows } = await testPool.query(
+      'SELECT status FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(rows[0].status).toBe('offen');
+  });
+
+  it('warnt statt zurückzuziehen, wenn nur der Zeitraum überschneidet', async () => {
+    // Der Fall der Sammelbuchungen aus Paket 2: eine Buchung über mehrere
+    // Monatsabschläge. Zahlungsgenau passt nichts, aber der Zeitraum
+    // überschneidet. Still unterdrücken wäre falsch — es könnte ein echter
+    // zusätzlicher Posten sein.
+    const txId = await seedUmsatz(-28, '2026-11-16', 'Stadtwerke Tuttlingen GmbH',
+      '133224 DTAUS Rechnung 307008/Marktgasse 24');
+    const buchungId = await seedBuchung('wasser', 300,
+      { zahltag: '2026-12-31', von: '2026-11-01', bis: '2026-12-31' });
+
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows } = await testPool.query(
+      'SELECT status, begruendung FROM expense_booking_proposals WHERE transaction_id = $1',
+      [txId]);
+    expect(rows[0].status).toBe('offen');
+    expect(rows[0].begruendung).toContain('ACHTUNG');
+    expect(rows[0].begruendung).toContain(`#${buchungId}`);
+  });
+
+  it('hängt die Warnung bei wiederholtem Lauf nicht mehrfach an', async () => {
+    const { rows: vorher } = await testPool.query(
+      `SELECT id, begruendung FROM expense_booking_proposals
+        WHERE status = 'offen' AND begruendung LIKE '%ACHTUNG%' LIMIT 1`);
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows: nachher } = await testPool.query(
+      'SELECT begruendung FROM expense_booking_proposals WHERE id = $1', [vorher[0].id]);
+    expect(nachher[0].begruendung).toBe(vorher[0].begruendung);
+  });
+});
+
+// ── Rechnungsabgleich bei Sammelüberweisungen (Punkt 4) ────────────────────
+
+describe('Rechnungsabgleich über Sammelüberweisungen', () => {
+  const PELLETREGEL = {
+    id: 'test-pellets',
+    property: 'tp24',
+    match: {},
+    rechnungen: [
+      { nr: 'R-1', betrag: 1502.39, lieferdatum: '2026-03-25' },
+      { nr: 'R-2', betrag: 900.00, lieferdatum: '2026-04-10' },
+    ],
+    cost_category: 'heizung',
+    umlagefaehig: true,
+    service_period: 'lieferdatum',
+    anteil: 1,
+    sicherheit: 'hoch',
+    hinweis: 'Testpellets',
+  };
+  const ELEKTROREGEL = {
+    id: 'test-elektro',
+    property: 'tp24',
+    match: {},
+    rechnungen: [{ nr: 'E-1', betrag: 128.46 }],
+    cost_category: 'instandhaltung',
+    umlagefaehig: false,
+    service_period: 'lieferdatum',
+    anteil: 1,
+    sicherheit: 'niedrig',
+    hinweis: 'Testelektro',
+  };
+
+  it('legt für eine Sammelüberweisung einen Vorschlag mit dem Lieferdatum an', async () => {
+    await setzeRegeln([PELLETREGEL]);
+    const txId = await seedUmsatz(-1502.39, '2026-04-08', '', '', 'SAMMELUEBERWEISUNG');
+    const e = await proposals.erzeugeVorschlaege({ actor: 'test' });
+    expect(e.angelegt).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await testPool.query(
+      'SELECT * FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(rows.length).toBe(1);
+    expect(Number(rows[0].amount_gross)).toBe(1502.39);
+    // Leistungsprinzip: der Zeitraum ist die Lieferung, nicht die Zahlung.
+    expect(String(rows[0].service_period_start).slice(0, 10)).not.toBe('2026-04-08');
+    expect(rows[0].reference).toBe('Rechnung R-1');
+    expect(rows[0].begruendung).toContain('Rechnungsabgleich');
+  });
+
+  it('teilt eine Sammelüberweisung auf zwei Belege mit eigenen Kostenarten auf', async () => {
+    await setzeRegeln([PELLETREGEL, ELEKTROREGEL]);
+    const txId = await seedUmsatz(-1630.85, '2026-04-20', '', 'ANZAHL 00000002', 'SAMMELUEBERWEISUNG');
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+
+    const { rows } = await testPool.query(
+      `SELECT p.rule_id, p.amount_gross, p.umlagefaehig, cc.code
+         FROM expense_booking_proposals p JOIN cost_categories cc ON cc.id = p.cost_category_id
+        WHERE p.transaction_id = $1 ORDER BY p.rule_id`, [txId]);
+    expect(rows.length).toBe(2);
+    expect(rows.map(r => r.code).sort()).toEqual(['heizung', 'instandhaltung']);
+    expect(rows.reduce((n, r) => n + parseFloat(r.amount_gross), 0)).toBeCloseTo(1630.85, 2);
+  });
+
+  it('lässt eine normale Lastschrift nicht über den Rechnungsabgleich laufen', async () => {
+    const txId = await seedUmsatz(-900, '2026-05-02', 'Irgendwer GmbH', 'Rechnung X');
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows } = await testPool.query(
+      'SELECT count(*)::int AS n FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('zieht einen Rechnungsvorschlag zurück, wenn die Rechnung aus der Liste fällt', async () => {
+    const txId = await seedUmsatz(-900, '2026-05-10', '', '', 'SAMMELUEBERWEISUNG');
+    await proposals.erzeugeVorschlaege({ actor: 'test' });
+    const { rows: vorher } = await testPool.query(
+      'SELECT status FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(vorher[0].status).toBe('offen');
+
+    await setzeRegeln([{ ...PELLETREGEL, rechnungen: [PELLETREGEL.rechnungen[0]] }, ELEKTROREGEL]);
+    const e = await proposals.erzeugeVorschlaege({ actor: 'test' });
+    expect(e.zurueckgezogen).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await testPool.query(
+      'SELECT status, notiz FROM expense_booking_proposals WHERE transaction_id = $1', [txId]);
+    expect(rows[0].status).toBe('verworfen');
+    expect(rows[0].notiz).toContain('keine Rechnung');
+  });
+
+  it('bleibt bei wiederholtem Lauf ruhig', async () => {
+    const e = await proposals.erzeugeVorschlaege({ actor: 'test' });
+    expect(e.angelegt).toBe(0);
+    expect(e.aktualisiert).toBe(0);
+    expect(e.zurueckgezogen).toBe(0);
+    expect(e.bereits_gebucht).toBe(0);
     await setzeRegeln([TESTREGEL]);
   });
 });

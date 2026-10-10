@@ -24,6 +24,24 @@ export type Leistungszeitraum =
   | 'referenzzeitraum'   // zwei Datumsangaben im Verwendungszweck
   | 'lieferdatum';       // Buchungstag (einmalige Lieferung)
 
+/**
+ * Ein Beleg, der über eine Sammelüberweisung bezahlt wird.
+ *
+ * Bei Sammelüberweisungen liefert die Bank weder Gegenpartei noch
+ * Verwendungszweck — nur den Buchungsschlüssel SAMMELUEBERWEISUNG und bei
+ * mehreren Posten „ANZAHL n". Eine Regel auf die Gegenpartei kann dort
+ * grundsätzlich nicht greifen. Erkennbar ist eine solche Zahlung allein am
+ * Betrag, und zwar gegen die bekannten Rechnungen.
+ */
+export interface Rechnung {
+  /** Rechnungsnummer, soweit bekannt. */
+  nr?: string;
+  betrag: number;
+  /** Leistungsdatum (Lieferung, Leistung). Fehlt es, gilt der Zahltag. */
+  lieferdatum?: string;
+  hinweis?: string;
+}
+
 export interface AusgabenRegel {
   id: string;
   /** `properties.code`, z. B. 'mg24'. */
@@ -56,6 +74,20 @@ export interface AusgabenRegel {
   sicherheit: 'hoch' | 'mittel' | 'niedrig';
   hinweis?: string;
   aktiv?: boolean;
+  /**
+   * Rechnungsabgleich statt Musterabgleich. Trägt eine Regel diese Liste,
+   * werden ihre Muster NICHT ausgewertet; stattdessen wird versucht, den Betrag
+   * einer Sammelüberweisung aus diesen Rechnungen zu erklären.
+   */
+  rechnungen?: Rechnung[];
+}
+
+/** Buchungsschlüssel, unter dem die Bank Sammelüberweisungen führt. */
+export const SAMMEL_CODE = /sammel/i;
+
+/** Arbeitet die Regel über den Rechnungsabgleich? */
+export function istRechnungsregel(regel: AusgabenRegel): boolean {
+  return Array.isArray(regel.rechnungen);
 }
 
 /**
@@ -110,21 +142,37 @@ export const REGELN_START: AusgabenRegel[] = [
     anteil: 1,
     sicherheit: 'niedrig',
     hinweis: 'SWT Vertrag 348661 (Allgemeinstrom), Belieferung endete 02.09.2025. '
-      + 'Umlagefähigkeit bewusst auf nein voreingestellt: Der Anteil für Bauphase bis zur '
-      + 'Schlussabnahme 04.11.2024 und für Leerstand ist ohne Schlussrechnung nicht abgrenzbar. '
-      + 'Beim Bestätigen prüfen und gegebenenfalls umstellen.',
+      + 'Umlagefähigkeit bleibt auf nein, bis die Schlussrechnung nach Zeiträumen '
+      + 'aufgeteilt ist: 16.11.–31.12.2024 Bauphase, 01.01.–16.06.2025 Allgemeinstrom, '
+      + '17.06.–20.08.2025 Bezug über die Kundenanlage. Diese Aufteilung macht Paket 3b '
+      + 'aus der Schlussrechnung; danach werden die Vorschläge je Zeitraum neu erzeugt. '
+      + 'Vorher nicht übernehmen.',
   },
   {
     id: 'mg24-swt-387849',
     property: 'mg24',
     match: { counterparty: 'stadtwerke', reference: '387849', date_min: '2024-11-05' },
-    cost_category: 'sonstige_betrkv',
-    umlagefaehig: false,
+    cost_category: 'wasser',
+    umlagefaehig: true,
     service_period: 'rechnungsmonat',
     anteil: 1,
-    sicherheit: 'niedrig',
-    hinweis: 'SWT Vertrag 387849 Marktgasse 24 — Zweck des Vertrags ist nicht belegt '
-      + '(Kleinbeträge 9 bis 15 Euro monatlich). Kostenart vor dem Bestätigen prüfen.',
+    sicherheit: 'hoch',
+    hinweis: 'SWT Vertrag 387849 = Marktgasse 24 (Wasser), laut Kundenportal. SWT trennt '
+      + 'ab 2026 die Sparten: je Sparte eine eigene Rechnung, Wasser und Fernwärme mit '
+      + 'Jahresrechnung zum 31.12. Der Abschlag deckt den Zahlungsmonat.',
+  },
+  {
+    id: 'mg24-swt-387847-abwasser',
+    property: 'mg24',
+    match: { counterparty: 'stadtwerke', reference: '387847', date_min: '2024-11-05' },
+    cost_category: 'entwaesserung',
+    umlagefaehig: true,
+    service_period: 'rechnungsmonat',
+    anteil: 1,
+    sicherheit: 'hoch',
+    hinweis: 'SWT Vertrag 387847 = Marktgasse 24 (Abwasser), Gegenstück zu 387849 aus der '
+      + 'Spartentrennung ab 2026. Im heutigen Bestand noch ohne Zahlung — die Regel greift '
+      + 'ab der ersten Abbuchung auf diesen Vertrag.',
   },
   {
     id: 'mg24-swt-baustrom-328879',
@@ -180,21 +228,22 @@ export const REGELN_START: AusgabenRegel[] = [
       + 'sind die drei Garagen Marktgasse 22.',
   },
   {
-    id: 'mg24-energiekonzept-waerme',
+    id: 'mg24-energiekonzept-mieterstrom-abrechnungsdienst',
     property: 'mg24',
     match: { counterparty: 'energiekonzept', reference: '11142', amount_min: 100, date_min: '2024-11-05' },
-    cost_category: 'heizung',
-    umlagefaehig: true,
+    cost_category: 'sonstige_betrkv',
+    umlagefaehig: false,
     service_period: 'jahresabrechnung',
     anteil: 1,
     sicherheit: 'mittel',
-    hinweis: 'Energiekonzept Ortenau, KNr 11142, Vertrag 390-A01-001. Sicherheit mittel, '
-      + 'weil die benachbarte Kundennummer 11042 zu N24 gehört — Kundennummer vor dem '
-      + 'Bestätigen gegen die Rechnung halten. Einmalige Einrichtungsgebühren sind '
-      + 'Herstellungsaufwand und gehören nicht hierher. Das Abrechnungsjahr wird aus dem '
-      + 'Verwendungszweck gelesen; steht dort nur ein zweistelliges Datum, gilt bei Zahlung '
-      + 'im ersten Halbjahr das Vorjahr — bei einer laufenden Rechnung statt einer '
-      + 'Jahresabrechnung ist der Zeitraum deshalb zu prüfen.',
+    hinweis: 'Energiekonzept Ortenau, KNr 11142, Vertrag 390-A01-001 — Objekt MG24 ist '
+      + 'belegt (11042 gehört zu N24). Das ist KEIN Wärmeposten, sondern der '
+      + 'Abrechnungsdienst der Mieterstrom-Kundenanlage einschliesslich 600 Euro '
+      + 'Einrichtung: Betreiberkosten des Mieterstrommodells und damit kein BetrKV-Posten. '
+      + 'Deshalb vorerst nicht umlagefähig; die endgültige Einstufung fällt in Paket 3c '
+      + 'Teil C (denkbar bleibt ein anteiliger Messstellenbetrieb des Allgemeinzählers). '
+      + 'Das Abrechnungsjahr wird aus dem Verwendungszweck gelesen; steht dort nur ein '
+      + 'zweistelliges Datum, gilt bei Zahlung im ersten Halbjahr das Vorjahr.',
   },
   {
     id: 'mg24-landkreis-abfall',
@@ -212,15 +261,86 @@ export const REGELN_START: AusgabenRegel[] = [
   {
     id: 'mg24-pellets',
     property: 'mg24',
-    match: { counterparty: 'koch|brennstoff|pellet', amount_min: 200, date_min: '2024-11-05' },
+    // Rechnungsabgleich statt Gegenpartei-Muster: Die Pelletrechnungen werden
+    // über Sammelüberweisungen bezahlt, bei denen die Bank weder Gegenpartei
+    // noch Verwendungszweck liefert. Eine Regel auf "koch" könnte dort nie
+    // greifen — und Pellets sind der groesste Nebenkostenposten von MG24.
+    match: {},
+    rechnungen: [
+      { nr: '101657', betrag: 2173.79, lieferdatum: '2025-03-11' },
+      { nr: '106971', betrag: 1502.39, lieferdatum: '2025-09-25' },
+      { nr: '109505', betrag: 1758.95, lieferdatum: '2025-12-15' },
+      { nr: '201056', betrag: 1844.98, lieferdatum: '2026-02-09' },
+      { nr: '202625', betrag: 1707.61, lieferdatum: '2026-04-22' },
+    ],
     cost_category: 'heizung',
     umlagefaehig: true,
     service_period: 'lieferdatum',
     anteil: 1,
     sicherheit: 'hoch',
-    hinweis: 'Pelletlieferung für die Zentralheizung MG24. Leistungszeitraum ist das '
-      + 'Lieferdatum. Im heutigen Umsatzbestand kommt keine Pelletlieferung vor — die '
-      + 'Regel greift ab der ersten Lieferung, die über dieses Konto bezahlt wird.',
+    hinweis: 'Pelletlieferungen Matthias Koch Brennstoffe für die Zentralheizung MG24. '
+      + 'Leistungszeitraum ist das Lieferdatum, nicht der Zahltag. Die fünf Rechnungen '
+      + 'stammen aus der Belegauswertung von Paket 1 und 2; eine neue Lieferung wird hier '
+      + 'als Rechnung ergänzt (Einstellungen, kein Deployment). Die Zahlung vom 03.01.2025 '
+      + 'über 1.695,84 Euro ist noch keiner Rechnung zugeordnet — sie gehört nach dem '
+      + 'Leistungsprinzip vermutlich in 2024 und ist in Paket 3b zu klären.',
+  },
+  {
+    id: 'reizner-rechnungen',
+    property: 'n24',
+    // Objektzuordnung laut Paket 2: Reizner, Maurer und Energiekonzept KD 11042
+    // gehören zu N24. Die Rechnungsliste ist deshalb bewusst leer, bis die
+    // Belege vorliegen — eine geratene Zuordnung würde Kosten dem falschen
+    // Haus zuweisen.
+    match: {},
+    rechnungen: [
+      {
+        betrag: 128.46,
+        hinweis: 'Rechnungsnummer und Leistungsdatum noch nicht belegt — Betrag aus der '
+          + 'Überweisung vom 09.10.2025 (ANZAHL 2) abgeleitet, der zweite Posten ist '
+          + 'Koch-Rechnung 106971 über 1.502,39 Euro. Beleg aus Postfach/SharePoint '
+          + 'nachtragen; bis dahin gilt der Zahltag als Leistungsdatum.',
+      },
+    ],
+    cost_category: 'instandhaltung',
+    umlagefaehig: false,
+    service_period: 'lieferdatum',
+    anteil: 1,
+    sicherheit: 'niedrig',
+    hinweis: 'Reizner (Elektro) — wird über Sammelüberweisungen bezahlt. Objekt N24 laut '
+      + 'Paket 2; Sicherheit niedrig, weil weder Rechnungsnummer noch Objektzuordnung '
+      + 'dieser einen Rechnung belegt sind. Der Betrag ist nur deshalb bekannt, weil er '
+      + 'die Differenz der Sammelüberweisung zur Koch-Rechnung ist.',
+  },
+  {
+    id: 'maurer-rechnungen',
+    property: 'n24',
+    match: {},
+    rechnungen: [],
+    cost_category: 'instandhaltung',
+    umlagefaehig: false,
+    service_period: 'lieferdatum',
+    anteil: 1,
+    sicherheit: 'mittel',
+    hinweis: 'H. Maurer (Heizung-Klima-Sanitär) — Sammelüberweisungen, Rechnungsliste noch '
+      + 'leer. Achtung bei der Objektzuordnung: Paket 2 ordnet Maurer N24 zu, für MG24 ist '
+      + 'aber ein Heizungs-Wartungsvertrag über 1.650 Euro im Jahr bekannt (Wartung '
+      + '28.11.2025, Rechnung fehlt). Je Rechnung ist daher das Objekt zu prüfen; '
+      + 'MG24-Rechnungen brauchen eine eigene Regel mit property mg24.',
+  },
+  {
+    id: 'holzmanufaktur-rechnungen',
+    property: 'n24',
+    match: {},
+    rechnungen: [],
+    cost_category: 'instandhaltung',
+    umlagefaehig: false,
+    service_period: 'lieferdatum',
+    anteil: 1,
+    sicherheit: 'mittel',
+    hinweis: 'Holzmanufaktur Rottweil — Sammelüberweisungen, Rechnungsliste noch leer. '
+      + 'Im Bestand ist bisher nur eine Rückerstattung über 18,00 Euro zu Rechnung '
+      + 'R24.0348 sichtbar (Zahlungseingang, daher kein Kostenvorschlag).',
   },
 ];
 
@@ -255,12 +375,16 @@ export interface UmsatzZeile {
   amount: number;
   counterparty_name?: string | null;
   reference?: string | null;
+  /** Buchungsschlüssel der Bank, z. B. SAMMELUEBERWEISUNG oder FOLGELASTSCHRIFT. */
+  transaction_code?: string | null;
 }
 
 /** Trifft die Regel auf den Umsatz zu? Nur Zahlungsausgänge werden betrachtet. */
 export function trifft(regel: AusgabenRegel, u: UmsatzZeile): boolean {
   if (regel.aktiv === false) return false;
   if (!(u.amount < 0)) return false;
+  // Rechnungsregeln werden über ordneSammelueberweisungZu ausgewertet.
+  if (istRechnungsregel(regel)) return false;
 
   const betrag = Math.abs(u.amount);
   const m = regel.match || {};
@@ -349,6 +473,63 @@ export function leistungszeitraum(
       return { start: s, ende: e };
     }
   }
+}
+
+export interface RechnungsTreffer {
+  regelId: string;
+  rechnung: Rechnung;
+  /** Wie viele Rechnungen die Zahlung zusammen erklären. */
+  posten: number;
+}
+
+/**
+ * Erklärt den Betrag einer Sammelüberweisung aus bekannten Rechnungen.
+ *
+ * Geprüft werden eine Rechnung und — weil die Bank bei zwei Posten
+ * „ANZAHL 2" ausweist — Paare aus zwei Rechnungen. Die Paare dürfen aus
+ * verschiedenen Regeln stammen: Eine Überweisung von 1.630,85 Euro bestand
+ * tatsächlich aus einer Pelletrechnung über 1.502,39 und einer Handwerker-
+ * rechnung über 128,46 Euro. Jede beteiligte Rechnung erzeugt dann einen
+ * eigenen Vorschlag mit ihrer eigenen Kostenart.
+ *
+ * **Mehrdeutigkeit führt zu keinem Treffer.** Lassen sich mehrere
+ * Zusammenstellungen auf denselben Betrag bringen, wird nicht geraten — dann
+ * bleibt die Zahlung ohne Vorschlag und das gehört in die Meldung. Ein
+ * geratener Beleg wäre schlimmer als keiner.
+ */
+export function ordneSammelueberweisungZu(
+  u: UmsatzZeile,
+  pool: { regelId: string; rechnung: Rechnung }[],
+): { treffer: RechnungsTreffer[]; mehrdeutig: boolean } {
+  if (!(u.amount < 0) || pool.length === 0) return { treffer: [], mehrdeutig: false };
+  if (!SAMMEL_CODE.test(u.transaction_code || '')) return { treffer: [], mehrdeutig: false };
+
+  const ziel = Math.round(Math.abs(u.amount) * 100);
+  const cent = (n: number) => Math.round(n * 100);
+
+  const einzel = pool.filter(e => cent(e.rechnung.betrag) === ziel);
+  if (einzel.length === 1) {
+    return { treffer: [{ regelId: einzel[0].regelId, rechnung: einzel[0].rechnung, posten: 1 }], mehrdeutig: false };
+  }
+  if (einzel.length > 1) return { treffer: [], mehrdeutig: true };
+
+  const paare: [number, number][] = [];
+  for (let i = 0; i < pool.length; i++) {
+    for (let j = i + 1; j < pool.length; j++) {
+      if (cent(pool[i].rechnung.betrag) + cent(pool[j].rechnung.betrag) === ziel) paare.push([i, j]);
+    }
+  }
+  if (paare.length === 1) {
+    const [i, j] = paare[0];
+    return {
+      treffer: [
+        { regelId: pool[i].regelId, rechnung: pool[i].rechnung, posten: 2 },
+        { regelId: pool[j].regelId, rechnung: pool[j].rechnung, posten: 2 },
+      ],
+      mehrdeutig: false,
+    };
+  }
+  return { treffer: [], mehrdeutig: paare.length > 1 };
 }
 
 /** Betrag der Buchung: Zahlbetrag als positiver Wert mal Anteil, auf Cent gerundet. */
