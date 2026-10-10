@@ -156,6 +156,14 @@ oder `~/.config/openclaw/env`. MinIO ist **ausschließlich HDCC**.
 - Secrets je System getrennt: `~/.config/openclaw/env` (2933 B, chmod 600) und
   `~/.config/hdcc/env` (1460 B, chmod 600). 1Password als Master.
 - Secrets nie nach stdout. Fail-closed-Defaults.
+- **Rote-Zone-Zuschnitt (bikosoc, 2026-10-10):** `index.ts`, `dist/**` und `CLAUDE.md` sind
+  keine roten Pfade mehr; rot bleiben Migrations/Rollbacks, Telegram-Binding, Hooks und
+  deren Konfiguration, `.github/workflows/**` und Secret-Dateien. Dazu rote Befehle für
+  Löschoperationen gegen die Produktiv-DB. Details: `docs/ARCHITECTURE.md`, Abschnitt
+  „Rote Zone". **HDCC soll denselben Zuschnitt übernehmen** — eigene
+  `red-zone.conf` im HDCC-Strang, gleiche Zweiteilung (harte Hook-Regeln nicht armbar,
+  Rote Zone armbar) und dieselbe Reportpflicht (`Rote Zone berührt:` + `Rückweg:`).
+  Hier bewusst **nicht** mitumgesetzt — getrennte Konfiguration, eigener Auftrag.
 
 ---
 

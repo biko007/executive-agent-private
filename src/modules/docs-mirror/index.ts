@@ -76,7 +76,14 @@ export function defaultDocsMirrorRepos(workspaceRoot: string): DocsMirrorRepo[] 
       key: 'workspace',
       root: workspaceRoot,
       files: ['CLAUDE.md', 'README.md'],
-      dirs: [],
+      // `codex/` aufgenommen am 2026-10-10 (Owner-Entscheidung nach der Diagnose
+      // report-workspace-agentendocs-20261010.md): die elf Dateien sind echte
+      // Dokumentation fuer OpenAI Codex als read-only Auditor und werden vom
+      // Gateway nicht geladen. Die Bootstrap-Dateien des Workspace-Roots
+      // (AGENTS/SOUL/IDENTITY/USER/MEMORY) bleiben bewusst draussen — sie sind
+      // wirksame Prompt-Konfiguration, keine Doku, und eine Zweitfassung in
+      // Dropbox wuerde davon wegdriften.
+      dirs: ['codex'],
     },
   ];
 }

@@ -123,8 +123,14 @@ describe('collectDocFiles', () => {
     expect(repos.map((r) => r.key)).toEqual(['executive-agent', 'executive-dashboard', 'workspace']);
     expect(repos[0].root).toBe('/ws/.openclaw/extensions/executive-agent');
     expect(repos[2].root).toBe('/ws');
-    // Das Elternrepo bekommt bewusst keine Verzeichnisse mitgegeben.
-    expect(repos[2].dirs).toEqual([]);
+    // Das Elternrepo spiegelt seit 2026-10-10 das codex/-Verzeichnis (Doku fuer
+    // den Codex-Auditor) — und ausdruecklich NICHT die Bootstrap-Dateien des
+    // Workspace-Roots, die das Gateway als Prompt-Konfiguration laedt.
+    expect(repos[2].dirs).toEqual(['codex']);
+    expect(repos[2].files).toEqual(['CLAUDE.md', 'README.md']);
+    for (const verboten of ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'MEMORY.md']) {
+      expect(repos[2].files).not.toContain(verboten);
+    }
   });
 });
 

@@ -408,6 +408,54 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   `OnCalendar`-Ausdruck, weil die Systemuhr auf UTC läuft).
   Einrichtung idempotent: `bash scripts/install-docs-mirror.sh`.
   Von Hand prüfen: `bun scripts/docs-mirror.ts --dry-run --json`.
+### Rote Zone (Zuschnitt 2026-10-10)
+
+Die Rote Zone ist das armbare Gate vor `git push`: trifft der Diff einen roten Pfad oder der
+Befehl ein rotes Muster, blockt `~/.claude/hooks/deny-destructive.sh` fail-closed, bis der
+Owner einmalig `/arm push` im Chat Hans_Dampf gesetzt hat (`~/.armed-bikosoc`, one-shot).
+Der Agent setzt `/arm` nie selbst.
+
+**Einzige Quelle der Pfad- und Befehlslisten:** `~/.config/openclaw/red-zone.conf`
+(owner-editierbar, wirkt sofort, kein Restart). Der Hook führt **keine** eigene Liste —
+er liest die Datei bei jedem Aufruf.
+
+**Owner-Entscheidung 2026-10-10:** `index.ts`, `dist/**` und `CLAUDE.md` sind **keine** roten
+Pfade mehr. Begründung: für Routinepfade war `/arm` ein Durchwink-Gate — es kostete einen
+Handgriff, ohne eine Entscheidung zu erzwingen. Rot bleibt, was ohne Rückweg wirkt oder
+Zugänge berührt.
+
+| Rot bleibt | Warum |
+|---|---|
+| `*/migrations/*.sql`, `scripts/migrate-*.ts`, `src/modules/*/migrate-*.ts`, `scripts/rollback-*.ts` | Datenbank-Struktur und -Inhalt, wirkt ohne Rückweg |
+| `src/modules/telegram-binding/**` | entscheidet, wer als Owner gilt |
+| `hooks/**`, `.claude/hooks/**`, `.claude/settings.json`, `.claude/settings.local.json` | die Schutzmechanik selbst |
+| `.github/workflows/**` | Auslieferung außerhalb des eigenen Rechners |
+| `.env`, `.env.*`, `**/.env*`, `*secrets*.json`, `*credentials*.json` | Secret-Dateien (zweite Linie — normalerweise gitignored) |
+
+**Rote Befehle:** `migrate.*--apply`, `psql.*openclaw_core`, `npm publish`, `docker push`
+sowie — neu 2026-10-10 — Löschoperationen gegen die Produktiv-Datenbank
+(`(delete|drop|trunc)[a-z]*.*openclaw_core`, `psql.*-c.*(delete|drop|trunc)[a-z]*`,
+`docker\s+exec.*psql.*(delete|drop|trunc)[a-z]*`).
+
+**Zwei Ebenen, nicht verwechseln:** Die *harten* Regeln im Hook (rekursives Löschen,
+DROP TABLE/DATABASE, TRUNCATE, DELETE ohne WHERE, Force-Push, `reset --hard`,
+`curl|sh`, Dateisystem-Formatierung, `dd`, Fork-Bomb) blockieren **unabhängig** vom
+Armed-Flag und sind nicht armbar. Die Rote Zone ist der zusätzliche, armbare Layer.
+
+**Muster-Syntax:** Pfade sind Bash-Globs (`[[ "$f" == $pattern ]]`, `**` passt beliebig tief).
+Befehle sind POSIX-ERE für `grep -qiE` — **kein** `(?i)`-Prefix verwenden, das ist dort kein
+Schalter, sondern ein Syntaxfehler, und das Muster wäre unwirksam. Groß-/Kleinschreibung
+erledigt der Hook seit 2026-10-10 mit `-i`.
+
+**Nicht abbildbar:** Der Hook sieht die Befehlszeile, nicht den Inhalt einer Datei, die er
+ausführt. Eine Löschoperation, die in einem Skript steht und per `bun scripts/foo.ts`
+aufgerufen wird, wird von den roten Befehlen **nicht** erkannt. Deshalb sind die Skript-Pfade
+selbst rot (`scripts/migrate-*.ts`, `scripts/rollback-*.ts`): die Prüfung greift dann beim
+Push der Datei, nicht bei ihrem Aufruf.
+
+**Reportpflicht:** Jeder Report trägt die Zeile `Rote Zone berührt: ja/nein (Pfade)` und einen
+`Rückweg:` (CLAUDE.md §7).
+
 - **Wait-Notifier:** 30s-Polling via `tmux capture-pane -t bikosoc`. Erkennt Input-Prompts
   (❯, (y/n), Allow/Deny, nummerierte Optionen). Telegram-Notification mit Preview.
   Cooldown: 5min. Dedup auf Content-Hash (kein Re-Notify bei unverändertem Prompt).

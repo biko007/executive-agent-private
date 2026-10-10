@@ -12,6 +12,13 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 - **Withings OAuth-Callback-Route (F-009):** nginx `/withings/callback` → Gateway, aber kein Handler.
   Zurückgestellt ~1 Jahr. Fix: analog Oura-Pattern (Port 8080 direkt) oder Gateway-Route registrieren.
 - **Meta-Token rotieren:** Optional. Owner-Entscheidung ausstehend.
+- **Sprint-6-Cleanup (uebernommen aus REMINDERS.md, 2026-10-10):** Status **unklar, zu pruefen**.
+  Die Merkliste lag seit 2026-05-15 im Workspace-Root, war faellig am 2026-05-22 und wurde von
+  keinem Prozess gelesen; ob die Punkte erledigt sind, ist nicht dokumentiert.
+  - [ ] Original-Fleet-JSONs in `artifacts/personal/fleet/` loeschen, sofern bis dahin keine
+        Anomalien aufgetreten sind
+  - [ ] Archiv in `artifacts/.archive/fleet-pre-S6-20260515/` bleibt als Backup erhalten
+  - [ ] Backlog-Check: Migration-Summary-Audit-Eintrag auf sensitive Daten pruefen
 - **cc-pre-backup.sh in AUTO-Konvention:** Skript vorhanden (`scripts/cc-pre-backup.sh`),
   Konvention dokumentiert, aber noch nicht in allen AUTO-Lauf-Checklisten als Pflicht-Erstschritt.
 

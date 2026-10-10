@@ -155,8 +155,14 @@ cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner p
 
 - Nur tatsächlich geänderte Repos committen — nie pauschal alle drei
 - Push-Reihenfolge: Submodule zuerst → dann Parent-Pointer
-- **Red-Zone-Pfade** (index.ts, CLAUDE.md, Hooks, Migrations, `.github/workflows/**`) brauchen
-  zusätzlich `/arm` im Chat Hans_Dampf — one-shot, Owner-only
+- **Red-Zone-Pfade** brauchen zusätzlich `/arm` im Chat Hans_Dampf — one-shot, Owner-only.
+  Maßgeblich ist allein `~/.config/openclaw/red-zone.conf`; der Hook führt keine eigene Liste.
+  **Zuschnitt 2026-10-10 (Owner-Entscheidung):** `index.ts`, `dist/**` und `CLAUDE.md` sind
+  KEINE roten Pfade mehr — für Routinepfade war `/arm` ein Durchwink-Gate ohne Einfluss.
+  Rot bleiben: Migrations und `scripts/rollback-*.ts`, `src/modules/telegram-binding/**`,
+  `hooks/**` und `.claude/hooks/**`, `.claude/settings*.json`, `.github/workflows/**`,
+  env-/Secret-Dateien. Rote Befehle zusätzlich um Löschoperationen gegen `openclaw_core`
+  erweitert. Details: `docs/ARCHITECTURE.md`, Abschnitt „Rote Zone".
 - **cc setzt `/arm` NIE selbst**
 - Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht)
 - Manifest 11 erfüllt durch: Gates + Evidence-Bundle im Report + Owner-Freigabe
@@ -240,6 +246,13 @@ aller betroffenen Repos prüfen. DONE nur bei vollständigen Gates; sonst PARTIA
 - Secrets, PII, Tokens: **NIE** in stdout, Logs, Reports, Telegram oder Dropbox (C5)
 - Als `sensitive` markierte Reports/Plans: Watcher lädt NICHT nach Dropbox hoch
 
+**Pflichtzeilen in jedem Report (ab 2026-10-10):**
+- `Rote Zone berührt: ja/nein (Pfade)` — bei `ja` die konkreten Pfade nennen und sagen,
+  ob `/arm push` nötig war oder noch ist. Bei `nein` genügt das Wort.
+- `Rückweg:` — der konkrete Befehl, mit dem die Änderung zurückgenommen wird
+  (z. B. `git revert <sha>` + `scripts/deploy.sh openclaw-gateway`), plus was dabei
+  NICHT zurückgedreht wird (Daten, Dropbox-Dateien, env-Werte, gelöschte Dateien).
+
 **Zustellung (Watcher):**
 - Reports → Telegram dev-Gruppe + Dropbox `/bikosoc-reports/<name>.md` (mit `## DIGEST`-Prefix)
 - Plans → Telegram dev-Gruppe + Dropbox `/bikosoc-plans/<name>.md` (Rohinhalt)
@@ -313,7 +326,10 @@ Bei neuem Prefix: CALLBACK_PREFIXES (index.ts) + diese Tabelle aktualisieren.
 **Deny-Hook (`~/.claude/hooks/deny-destructive.sh`):**
 Fail-closed PreToolUse-Hook. Blockiert: `rm -r/-rf`, SQL DROP/TRUNCATE/DELETE ohne WHERE,
 `git push --force`/`reset --hard`/`clean -f`, `git checkout .`/`restore .`, chmod/chown auf
-Systempfade, `curl|sh`, mkfs, dd, Fork-Bomb. Red-Zone-Pfade: zusätzlicher Layer.
+Systempfade, `curl|sh`, Dateisystem-Formatierung, `dd`, Fork-Bomb — diese Regeln sind hart
+und **nicht** über `/arm` umgehbar. Die Rote Zone aus `red-zone.conf` ist der zusätzliche,
+armbare Layer; Muster dort ohne `(?i)` schreiben (der Hook vergleicht seit 2026-10-10 mit
+`grep -qiE`).
 Armed-Flag: `~/.armed-bikosoc` (one-shot). Hook-Versionierung: Folgeauftrag (docs/TODO.md #2).
 
 **Schema-Migration-Namespace:**

@@ -299,7 +299,10 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
       [ "$cfgline" = "[red-commands]" ] && IN_CMDS=true && continue
       [[ "$cfgline" == \[* ]] && IN_CMDS=false && continue
       if $IN_CMDS; then
-        if echo "$NORM" | grep -qE "$cfgline"; then
+        # -i seit 2026-10-10: die Muster in red-zone.conf duerfen kein
+        # (?i)-Prefix tragen (POSIX-ERE kennt das nicht und das Muster waere
+        # unwirksam). Gross-/Kleinschreibung wird deshalb hier erledigt.
+        if echo "$NORM" | grep -qiE "$cfgline"; then
           RED_ZONE_HIT="red command: $cfgline"
           break
         fi
