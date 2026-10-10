@@ -4,6 +4,55 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — Automatischer Zählerimport (Paket 3, Teil 2)
+
+Owner-Leitprinzip: Was dauerhaft anfällt, läuft ohne Handgriff; gemeldet wird
+nur, was abweicht. Neues Modul `src/modules/meter-import/`.
+
+**Was es tut.** Es holt die Monatsberichte von Fa. Fiehn aus dem Postfach,
+liest je Zähler den letzten Stand des Berichtsmonats und trägt ihn als
+`meter_readings` ein (Wh → kWh, `annual` zum Jahreswechsel, sonst `interim`,
+Quelle `automatic`, Mail-Kennung in `notes`). Je Zähler ein Audit-Eintrag
+`meter_reading.auto_import`.
+
+**Zuordnung als Daten.** `system_settings.meter_import_mapping` bildet
+Berichtsüberschrift → Objekt und Spaltenüberschrift → `meter_number` ab. Für
+N24, L19 und S28 kommt später ein Block dazu, kein Code. Fehlt die Zuordnung,
+wird nicht geraten: Der Bericht bleibt liegen und das wird gemeldet.
+
+**Vier Prüfungen**, alle mit Schwellen aus derselben Konfiguration:
+Monotonie · Bilanz Haupt- gegen Unterzähler · Verbrauchssprung · fehlender
+Monatsbericht. Eine Abweichung verhindert den Import NICHT — der Stand wird
+geschrieben und die Abweichung gemeldet, sonst entstünden Lücken in der
+Zeitreihe, die später niemand mehr schließt.
+
+**Drei Entscheidungen, die den Unterschied machen:**
+- Die Bilanz vergleicht **kumulierte Zählerstände**, keine Monatsdifferenzen.
+  Die Berichte protokollieren je Zähler unterschiedlich weit in den Monat
+  hinein; in der Heizperiode sind zwei Tage mehrere hundert Kilowattstunden,
+  und eine Monatsbilanz schlüge dauernd grundlos an.
+- Der Sprungtest gilt **nur für Wasser**. Heizung ist saisonal: zwei
+  Kilowattstunden im August, zweihundertsechzig im Oktober — das ist der
+  Normalfall, und eine Meldung darüber würde bald ignoriert.
+- Bekannte, bereits gemeldete Abweichungen stehen mit Stichtag und Begründung
+  in der Konfiguration (`bekannteAbweichungen`). Die Wasserbilanz von MG24 ist
+  so bis zur Antwort von Fa. Fiehn abgehakt — sonst käme bei jedem Lauf
+  dieselbe Nachricht.
+
+**Auslöser.** Der bestehende Mail-Intervall in `index.ts`, kein neuer Dienst
+und kein neuer Timer. Eigenes Flag `METER_IMPORT_ENABLED` (Vorgabe: an) —
+`MAIL_BOOKING_SCAN_ENABLED` schaltet die Buchungserkennung ab, und wer die
+pausiert, will nicht zugleich die Zählerstände verlieren.
+
+**Wochenbericht.** `buildWeeklySummary()` zeigt eine Zeile „Zählerstände
+importiert: n", gelesen aus dem Audit-Log. Ohne sie sähe man nie, DASS der
+Import läuft.
+
+**Erster Lauf gegen das echte Postfach:** 40 Mails, 56 neue Stände; der zweite
+Lauf 0 neue und 212 erkannte Doppel — idempotent und still.
+
+---
+
 ## Stand 2026-10-10 — NK-Engine: Verbrauchsschlüssel und Torwächter (Paket 3, Teil 1 und 4)
 
 Zwei Befunde aus Paket 2 behoben, beide geldrelevant und deshalb mit Tests.

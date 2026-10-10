@@ -129,6 +129,29 @@ async function fetchTradingWeekly(): Promise<TradingWeekly | null> {
  * Baut die Wochen-Zusammenfassung. `todayISO` ist der Montag (Berlin),
  * an dem gesendet wird; das Fenster umfasst die 7 Tage bis einschließlich heute.
  */
+/**
+ * Wie viele Zählerstände hat der automatische Import in diesem Fenster
+ * angelegt? Gelesen wird das Audit-Log — der Import fuehrt keinen eigenen
+ * Zaehler mit. Faellt die Abfrage aus, entfaellt die Zeile stillschweigend;
+ * sie ist eine Beigabe, kein Grund den Wochenbericht scheitern zu lassen.
+ */
+export async function zaehlerWoche(vonISO: string, bisISO: string): Promise<string | null> {
+  try {
+    const { query } = await import('./src/shared/db/index.js');
+    const { rows } = await query(
+      `SELECT coalesce(sum((after_jsonb->>'count')::int), 0)::int AS anzahl
+         FROM audit_log
+        WHERE action = 'meter_reading.auto_import'
+          AND ts >= $1::date AND ts < ($2::date + interval '1 day')`,
+      [vonISO, bisISO],
+    );
+    const n = rows[0]?.anzahl ?? 0;
+    return n > 0 ? `Zählerstände importiert: ${n}` : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function buildWeeklySummary(todayISO: string): Promise<string> {
   const week = healthWeek(todayISO);
   const trading = await fetchTradingWeekly();
@@ -165,6 +188,12 @@ export async function buildWeeklySummary(todayISO: string): Promise<string> {
   } else {
     lines.push('Trading: keine Daten (Trading-Agent nicht erreichbar)');
   }
+
+  /* Zaehlerimport: eine Zeile, wenn in der Woche Staende dazukamen. Der
+     Import selbst meldet nur bei Abweichung (Owner-Regel 10.10.2026) — ohne
+     diese Zeile saehe man nie, DASS er laeuft. */
+  const zaehler = await zaehlerWoche(from, todayISO);
+  if (zaehler) lines.push(zaehler);
 
   lines.push(`Anomalien: ${sysDeviations.length + tradingDeviations.length}`);
 

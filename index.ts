@@ -130,6 +130,12 @@ const __dirname = path.resolve(path.dirname(__filename), '..');
 const HEALTH_REPORT_MODE = (process.env.HEALTH_REPORT_MODE ?? 'exception').toLowerCase();
 const WEEKLY_SUMMARY_ENABLED = (process.env.WEEKLY_SUMMARY_ENABLED ?? 'true').toLowerCase() !== 'false';
 const MAIL_BOOKING_SCAN_ENABLED = (process.env.MAIL_BOOKING_SCAN_ENABLED ?? 'true').toLowerCase() !== 'false';
+/* Zaehlerimport aus den Monatsberichten der Gebaeudeautomation. Bewusst ein
+   EIGENES Flag: MAIL_BOOKING_SCAN_ENABLED pausiert die Buchungs- und
+   Terminerkennung — wer die abschaltet, will nicht zugleich die
+   Zaehlerstaende verlieren. Abschalten ohne Deployment:
+   METER_IMPORT_ENABLED=false in ~/.config/openclaw/env plus Neustart. */
+const METER_IMPORT_ENABLED = (process.env.METER_IMPORT_ENABLED ?? 'true').toLowerCase() !== 'false';
 
 /* ---------------- Settings + Helpers ---------------- */
 // Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
@@ -3005,6 +3011,29 @@ export default function (api: any) {
   if (!g.__ea_mailScannerRegistered) {
     g.__ea_mailScannerRegistered = true;
     setInterval(async () => {
+      /* Zaehlerimport zuerst und unabhaengig vom Buchungs-Scan. Meldet nur bei
+         Abweichung; im Normalfall bleibt er still (Owner-Regel 10.10.2026). */
+      if (METER_IMPORT_ENABLED && m365Enabled) {
+        try {
+          const { importiereZaehlerstaende, meldung } = await import('./src/modules/meter-import/index.js');
+          const ergebnis = await importiereZaehlerstaende({
+            tenantId, clientId, clientSecret: m365Secret,
+            m365User, logger: api.logger,
+          });
+          if (ergebnis.staendeNeu > 0) {
+            api.logger.info(`[executive-agent] Zaehlerimport: ${ergebnis.staendeNeu} neue Staende, `
+              + `${ergebnis.staendeDoppelt} bereits vorhanden`);
+          }
+          const text = meldung(ergebnis);
+          if (text) {
+            const ziel = getCachedTelegramTarget('operativ');
+            if (ziel) await sendTelegram(ziel, text);
+          }
+        } catch (e: any) {
+          api.logger.error(`[executive-agent] Zaehlerimport Fehler: ${e.message}`);
+        }
+      }
+
       try {
         // Meldungsdisziplin (2026-09-18): Buchungs-/Termin-Scan pausierbar.
         // MAIL_BOOKING_SCAN_ENABLED=false in ~/.config/openclaw/env → kein
