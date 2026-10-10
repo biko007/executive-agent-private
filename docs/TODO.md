@@ -32,15 +32,28 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 
 ## Folgeaufträge (REVIEW-pflichtig, nicht in laufendem Auftrag)
 
-1. **/ccgo Slug-Match-Prüfung (E3-Code):** /ccgo soll Plan-Prompt NUR bestätigen wenn Plan via
+0. **NK-Engine: `consumption` als Umlageschlüssel umsetzen (Paket 2, 10.10.2026).**
+   `allocateCosts()` in `src/modules/nk/engine.ts` kennt die Fälle `sqm`, `persons`,
+   `units`, `mea`, `fixed` und `direct`. Eine Regel mit `key_type = 'consumption'`
+   fällt in den Vorgabezweig und verteilt nach Fläche. Für Heizung und Warmwasser
+   fällt das nicht auf, die laufen über `heatingAllocation()`; für **Kaltwasser und
+   Entwässerung** schon — dort gibt es Zähler je Wohnung, und genau die werden
+   ignoriert. Bei MG24 sind die Regeln so angelegt, wie der Owner sie entschieden
+   hat; die Engine rechnet sie bis zur Umsetzung nach Fläche.
+   Geld-relevant → Tests zwingend (Manifest 5), eigener Auftrag.
+1. **NK-Engine: `MISSING_UNIT_RESIDENTS` nur blocken, wenn nach Personen verteilt wird
+   (Paket 2, 10.10.2026).** `computeNk()` stuft die Warnung immer zum Blocker hoch.
+   Rechnerisch nötig ist die Personenzahl aber nur bei `key_type = 'persons'`. Bei MG24
+   verhindert das die Probe-Abrechnung, obwohl keine einzige Regel nach Personen verteilt.
+2. **/ccgo Slug-Match-Prüfung (E3-Code):** /ccgo soll Plan-Prompt NUR bestätigen wenn Plan via
    Watcher zugestellt wurde UND Slug/Dateiname passt. Aktuell: kein Slug-Match implementiert.
-2. ~~**Deny-Hook + telegram-notify ins Repo versionieren:**~~ Erledigt (nachgeprueft 10.10.2026) —
+3. ~~**Deny-Hook + telegram-notify ins Repo versionieren:**~~ Erledigt (nachgeprueft 10.10.2026) —
    beide Hooks liegen versioniert unter `hooks/` im Repo, `scripts/install-hooks.sh` spielt sie
    nach `~/.claude/hooks/` aus, und `scripts/smoke-test.ts` prueft je Hook Existenz,
    Ausfuehrbarkeit UND Drift gegen die Repo-Fassung (SHA-Vergleich). Die Hinweise auf diesen
    Folgeauftrag in `CLAUDE.md` §4 C6 und §8 sind damit ueberholt.
-3. ~~**Deploy-Skript mit SHA-Erfassung + Auto-Rollback:**~~ Erledigt 2026-07-20 — `scripts/deploy.sh` implementiert (Dirty-Tree-Guard, SHA-Capture, Health-Check, Auto-Rollback auf LAST_GOOD, Telegram-Notify). Manifest 10 erfüllt.
-4. ~~**Test-DB-Guard (C1) technisch implementieren:**~~ Erledigt 2026-07-20 — `src/core/db-guard.ts` (OPENCLAW_TEST=1).
+4. ~~**Deploy-Skript mit SHA-Erfassung + Auto-Rollback:**~~ Erledigt 2026-07-20 — `scripts/deploy.sh` implementiert (Dirty-Tree-Guard, SHA-Capture, Health-Check, Auto-Rollback auf LAST_GOOD, Telegram-Notify). Manifest 10 erfüllt.
+5. ~~**Test-DB-Guard (C1) technisch implementieren:**~~ Erledigt 2026-07-20 — `src/core/db-guard.ts` (OPENCLAW_TEST=1).
 
 ---
 

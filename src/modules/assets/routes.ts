@@ -196,6 +196,12 @@ export function registerAssetsHttpRoutes(api: any) {
                 if (body.city !== undefined) { sets.push(`city = $${pi++}`); params.push(body.city); }
                 if (body.property_type !== undefined) { sets.push(`property_type = $${pi++}`); params.push(body.property_type); }
                 if (body.owner !== undefined) { sets.push(`owner = $${pi++}`); params.push(body.owner); }
+                /* ownership_start war bis 10.10.2026 nicht änderbar, obwohl das Feld
+                   existiert und die Liste es ausliefert. Aufgefallen bei MG24: dort stand
+                   01.04.2025 (Vermietungsbeginn) statt 31.03.2022 (Grundbucheintragung).
+                   Ohne diese Zeile bliebe als Korrekturweg nur ein Eingriff an der
+                   Datenbank vorbei an Route und Audit-Log. */
+                if (body.ownership_start !== undefined) { sets.push(`ownership_start = $${pi++}`); params.push(body.ownership_start); }
                 if (body.ownership_end !== undefined) { sets.push(`ownership_end = $${pi++}`); params.push(body.ownership_end); }
                 if (body.billing_period_start_month !== undefined) { sets.push(`billing_period_start_month = $${pi++}`); params.push(body.billing_period_start_month); }
                 if (body.heating_type !== undefined) { sets.push(`heating_type = $${pi++}`); params.push(body.heating_type); }

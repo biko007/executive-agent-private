@@ -4,6 +4,39 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — NK-Datenübernahme MG24 (Paket 2)
+
+Erste vollständige Befüllung der Nebenkosten-Fachdaten für ein Objekt. MG24 ist
+seitdem für 2025 und 2026 **abrechnungsreif** (`nk-readiness`: 0 Blocker).
+Report: `~/bikosoc-spec/report-paket2-nk-uebernahme-mg24-20261010.md`.
+
+**Angelegt** (ausschließlich über die Core-Routen, jede Anlage mit `audit_log`-Eintrag):
+`property_heating_config` 2025 + 2026 (central_pellets, 30/70) · 15 `meters` ·
+9 `allocation_rules` · 16 `expense_bookings` · 3 `lease_charges` ·
+168 `meter_readings` · `properties.ownership_start` korrigiert.
+
+**Codeänderung.** `PATCH /api/assets/properties/:code` akzeptierte `ownership_end`,
+aber nicht `ownership_start` — obwohl das Feld existiert und die Liste es ausliefert.
+Für MG24 stand dort der Vermietungsbeginn statt der Grundbucheintragung. Ohne diese
+Zeile bliebe als Korrekturweg nur ein Eingriff an der Datenbank vorbei an Route und
+Audit-Log. Ergänzt in `src/modules/assets/routes.ts`.
+
+**Drei Befunde an der NK-Engine, nicht in diesem Paket behoben:**
+1. `allocateCosts()` kennt keinen Fall `consumption`. Eine Umlageregel mit
+   `key_type = 'consumption'` fällt für NICHT-Heizkostenarten in den Vorgabezweig und
+   verteilt nach Fläche. Betroffen sind Kaltwasser und Entwässerung — genau die
+   Kostenarten, für die Zähler vorhanden sind. Heizung und Warmwasser sind nicht
+   betroffen, die laufen über `heatingAllocation()`.
+2. `MISSING_UNIT_RESIDENTS` ist in der Vorprüfung eine Warnung, wird in `computeNk()`
+   aber zum harten Blocker hochgestuft. Ohne `unit_residents` rechnet die Engine
+   nicht — auch dann nicht, wenn keine einzige Umlageregel nach Personen verteilt.
+3. Die Monatsberichte von Fa. Fiehn führen in der Spalte „Verbrauch Vormonat" nur
+   die Differenz über das protokollierte Fenster (oft wenige Tage), nicht über den
+   Monat. Für die Abrechnung sind allein die Zählerstände brauchbar; die Übernahme
+   arbeitet deshalb ausschließlich mit absoluten Ständen.
+
+---
+
 ## Stand 2026-10-10 — Einmalige Auswertung des Montagslaufs (Paket 1, Teil D)
 
 Der echte Montagsabgleich um 13:00 Berliner Zeit ist seit dem 07.10.2026 im Core
