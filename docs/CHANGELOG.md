@@ -4,6 +4,57 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — NK-Engine: Verbrauchsschlüssel und Torwächter (Paket 3, Teil 1 und 4)
+
+Zwei Befunde aus Paket 2 behoben, beide geldrelevant und deshalb mit Tests.
+Report: `~/bikosoc-spec/report-paket3-nk-automatisierung-20261010.md`.
+
+**`consumption` wird jetzt gerechnet.** `allocateCosts()` kannte die Fälle `sqm`,
+`persons`, `units`, `mea`, `fixed` und `direct`. Eine Regel mit
+`key_type = 'consumption'` fiel in den Vorgabezweig und verteilte nach Fläche —
+für Heizung und Warmwasser unauffällig (die laufen über `heatingAllocation()`),
+für **Kaltwasser und Entwässerung** aber genau an den Zählern vorbei. Bei MG24
+verschiebt der Unterschied rund 600 Euro zwischen den Wohnungen.
+
+Neu ist `allocateByConsumption()`. Die Medienzuordnung steht als Tabelle an einer
+Stelle (`wasser` → cold_water, `entwaesserung` → cold_water + warm_water,
+`warmwasser` → warm_water). Der Hauptzähler am Hausanschluss verteilt **nicht**
+mit — er dient dem Abgleich mit der Versorgerrechnung. Was kein Wohnungszähler
+erfasst, bleibt beim Eigentümer statt auf die Mieter verteilt zu werden; bei MG24
+ist das die bislang ungeklärte Differenz zwischen Stadtwerke-Abrechnung und
+Summe der Wohnungszähler.
+
+**Zwei neue Vorprüfungsbefunde.** `CONSUMPTION_READING_MISSING` (Blocker) greift,
+wenn ein Zählerstand fehlt — es wird NICHT mehr still auf Fläche ausgewichen.
+`CONSUMPTION_START_ASSUMED_ZERO` (Warnung) greift, wenn der Anfangsstand fehlt,
+am Zähler aber ein Anfangswert hinterlegt ist. Ohne diese Ausnahme wäre die
+Abrechnung 2025 für MG24 gesperrt: Die Protokollierung beginnt dort erst im Mai
+2025, der Nullstart zum 01.01.2025 ist über den Jahreszähler der
+Gebäudeleittechnik und die Brennstoffbilanz belegt.
+
+**`MISSING_UNIT_RESIDENTS` blockt nur noch, wenn es etwas bewirkt.** `computeNk()`
+stufte die Warnung immer zum Blocker hoch. Rechnerisch nötig ist die Personenzahl
+aber nur beim Schlüssel `persons`. Bei MG24 verteilt keine einzige Regel nach
+Personen — die Abrechnung scheiterte an einem Torwächter ohne Rechenbezug. Die
+Vorprüfung liefert dafür neu das Feld `uses_person_key`.
+
+**Ein Nebenbefund mit Wirkung auf alle Verbrauchsrechnungen.** `calculateConsumption()`
+las das Periodenende als Mitternacht: Eine Ablesung vom 31.12. um 22:41 Uhr fiel
+aus dem Zeitraum heraus und der Jahresverbrauch war zu klein. Genau so stehen die
+Stände aus den Monatsberichten in der Datenbank. Gerechnet wird jetzt bis zum
+Tagesende. Die sechs Goldfile-Szenarien bleiben unverändert grün.
+
+**Routen ergänzt.** `PATCH /api/assets/meters/:id` akzeptiert jetzt `active` und
+`initial_reading`. `active` wird gebraucht, um einen strittigen Zähler aus der
+Rechnung zu nehmen, ohne ihn über `/archive` als ausgebaut zu kennzeichnen.
+
+**Tests.** Neue Datei `consumption-allocation.test.ts` mit zwölf Fällen, darunter
+drei mit den echten Zählerständen von MG24 2025. `engine.test.ts`: B5 geändert
+(blockt jetzt mit Personenregel), B5b neu (blockt ohne Personenregel nicht).
+820 Tests grün.
+
+---
+
 ## Stand 2026-10-10 — NK-Datenübernahme MG24 (Paket 2)
 
 Erste vollständige Befüllung der Nebenkosten-Fachdaten für ein Objekt. MG24 ist

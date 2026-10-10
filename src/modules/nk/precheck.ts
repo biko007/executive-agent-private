@@ -19,6 +19,9 @@ export interface PreCheckResult {
   property_code: string;
   year: number;
   ready: boolean;
+  /** Verteilt mindestens eine Umlageregel nach Personen? Steuert, ob
+      MISSING_UNIT_RESIDENTS in der Engine zum Blocker wird. */
+  uses_person_key: boolean;
   blocking_count: number;
   warning_count: number;
   info_count: number;
@@ -257,6 +260,91 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
     }
   }
 
+  // 14b. CONSUMPTION_READING_MISSING / CONSUMPTION_START_ASSUMED_ZERO
+  //
+  // Eine Regel mit key_type 'consumption' verteilt nach gemessenem Verbrauch.
+  // Fehlt ein Zählerstand, darf NICHT stillschweigend nach Fläche verteilt
+  // werden (Owner-Entscheidung 10.10.2026) — dann ist die Abrechnung gesperrt,
+  // bis der Stand nachgetragen ist.
+  //
+  // Eine Ausnahme ist belegt und damit zulässig: Hat der Zähler im Zeitraum
+  // keinen Anfangsstand, ist aber in `meters.initial_reading` ein Startwert
+  // hinterlegt und war er zu Periodenbeginn bereits eingebaut, dann ist der
+  // Verbrauch bestimmbar. Das ist der Fall bei MG24 2025 — die Zähler standen
+  // am 01.01.2025 auf null, belegt durch den Jahreszähler der Gebäude-
+  // leittechnik und die Brennstoffbilanz. Dafür gibt es eine Warnung statt
+  // eines Blockers.
+  const VERBRAUCHSMEDIEN_CHECK: Record<string, string[]> = {
+    wasser: ['cold_water'],
+    entwaesserung: ['cold_water', 'warm_water'],
+    warmwasser: ['warm_water'],
+  };
+  /* Die Ablesungen oben sind erst ab Periodenbeginn geladen — ein Stand VOR
+     dem Zeitraum kann darin nicht vorkommen. Für diese Prüfung wird er
+     deshalb eigens ermittelt, statt die gemeinsame Abfrage zu verbreitern:
+     das würde MISSING_ANNUAL_READING stillschweigend aufweichen, weil dort
+     nicht nach Jahr gefiltert wird. */
+  const verbrauchsZaehlerIds = meters
+    .filter((m: any) => m.unit_id && !m.is_main_meter)
+    .map((m: any) => m.id);
+  const anfangsStaende = new Set<number>();
+  if (verbrauchsZaehlerIds.length > 0 && allocRules.some((r: any) => r.key_type === 'consumption')) {
+    const { rows: vorPeriode } = await dbQuery(
+      `SELECT DISTINCT meter_id FROM meter_readings
+        WHERE meter_id = ANY($1) AND read_at <= $2`,
+      [verbrauchsZaehlerIds, `${year}-01-01`],
+    );
+    for (const r of vorPeriode) anfangsStaende.add(r.meter_id);
+  }
+
+  for (const rule of allocRules) {
+    if (rule.key_type !== 'consumption') continue;
+    const medien = VERBRAUCHSMEDIEN_CHECK[rule.category_code];
+    if (!medien) continue; // Heizkostenarten laufen über heatingAllocation
+
+    const regelZaehler = meters.filter((m: any) =>
+      m.unit_id && !m.is_main_meter && medien.includes(m.medium));
+
+    for (const meter of regelZaehler) {
+      const eigene = readings
+        .filter((r: any) => r.meter_id === meter.id)
+        .sort((a: any, b: any) => new Date(a.read_at).getTime() - new Date(b.read_at).getTime());
+
+      const endStand = eigene.filter((r: any) => new Date(r.read_at) <= new Date(`${year}-12-31T23:59:59`));
+      if (endStand.length === 0) {
+        findings.push({
+          code: 'CONSUMPTION_READING_MISSING',
+          severity: 'blocker',
+          message: `Zähler ${meter.meter_number} hat keinen Stand bis zum Periodenende — `
+            + `Kostenart "${rule.category_code}" wird nach Verbrauch verteilt und ist ohne diesen Stand nicht rechenbar`,
+          details: { meter_id: meter.id, meter_number: meter.meter_number, category: rule.category_code },
+        });
+        continue;
+      }
+
+      if (anfangsStaende.has(meter.id)) continue;
+
+      const startBelegt = meter.initial_reading != null
+        && (!meter.installed_at || new Date(meter.installed_at) <= new Date(`${year}-01-01`));
+
+      findings.push(startBelegt
+        ? {
+          code: 'CONSUMPTION_START_ASSUMED_ZERO',
+          severity: 'warning',
+          message: `Zähler ${meter.meter_number} hat keinen Anfangsstand im Zeitraum; gerechnet wird `
+            + `mit dem hinterlegten Anfangswert ${meter.initial_reading}`,
+          details: { meter_id: meter.id, meter_number: meter.meter_number, initial_reading: meter.initial_reading },
+        }
+        : {
+          code: 'CONSUMPTION_READING_MISSING',
+          severity: 'blocker',
+          message: `Zähler ${meter.meter_number} hat weder einen Anfangsstand im Zeitraum noch einen `
+            + `hinterlegten Anfangswert — Kostenart "${rule.category_code}" ist nicht rechenbar`,
+          details: { meter_id: meter.id, meter_number: meter.meter_number, category: rule.category_code },
+        });
+    }
+  }
+
   // 15. MISSING_INTERIM_READING_FOR_CHANGEOVER
   // Check if any lease changeovers during the year lack interim readings
   const { rows: changeoverLeases } = await dbQuery(
@@ -381,10 +469,17 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
     });
   }
 
-  return makeResult(propertyId, prop.code, year, findings);
+  const usesPersonKey = allocRules.some((r: any) => r.key_type === 'persons');
+  return makeResult(propertyId, prop.code, year, findings, usesPersonKey);
 }
 
-function makeResult(propertyId: number, propertyCode: string, year: number, findings: PreCheckFinding[]): PreCheckResult {
+function makeResult(
+  propertyId: number,
+  propertyCode: string,
+  year: number,
+  findings: PreCheckFinding[],
+  usesPersonKey = false,
+): PreCheckResult {
   const blocking_count = findings.filter(f => f.severity === 'blocker').length;
   const warning_count = findings.filter(f => f.severity === 'warning').length;
   const info_count = findings.filter(f => f.severity === 'info').length;
@@ -394,6 +489,7 @@ function makeResult(propertyId: number, propertyCode: string, year: number, find
     property_code: propertyCode,
     year,
     ready: blocking_count === 0,
+    uses_person_key: usesPersonKey,
     blocking_count,
     warning_count,
     info_count,

@@ -32,7 +32,9 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
 
 ## Folgeaufträge (REVIEW-pflichtig, nicht in laufendem Auftrag)
 
-0. **NK-Engine: `consumption` als Umlageschlüssel umsetzen (Paket 2, 10.10.2026).**
+0. ~~**NK-Engine: `consumption` als Umlageschlüssel umsetzen:**~~ Erledigt 10.10.2026 (Paket 3,
+   Teil 1a) — `allocateByConsumption()` mit Medientabelle, Hauptzähler verteilt nicht mit,
+   ungemessener Rest bleibt beim Eigentümer; zwölf Tests. Ursprünglicher Befund:
    `allocateCosts()` in `src/modules/nk/engine.ts` kennt die Fälle `sqm`, `persons`,
    `units`, `mea`, `fixed` und `direct`. Eine Regel mit `key_type = 'consumption'`
    fällt in den Vorgabezweig und verteilt nach Fläche. Für Heizung und Warmwasser
@@ -41,8 +43,9 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
    ignoriert. Bei MG24 sind die Regeln so angelegt, wie der Owner sie entschieden
    hat; die Engine rechnet sie bis zur Umsetzung nach Fläche.
    Geld-relevant → Tests zwingend (Manifest 5), eigener Auftrag.
-1. **NK-Engine: `MISSING_UNIT_RESIDENTS` nur blocken, wenn nach Personen verteilt wird
-   (Paket 2, 10.10.2026).** `computeNk()` stuft die Warnung immer zum Blocker hoch.
+1. ~~**NK-Engine: `MISSING_UNIT_RESIDENTS` nur blocken, wenn nach Personen verteilt wird:**~~
+   Erledigt 10.10.2026 (Paket 3, Teil 1b) über `PreCheckResult.uses_person_key`.
+   Ursprünglicher Befund: `computeNk()` stuft die Warnung immer zum Blocker hoch.
    Rechnerisch nötig ist die Personenzahl aber nur bei `key_type = 'persons'`. Bei MG24
    verhindert das die Probe-Abrechnung, obwohl keine einzige Regel nach Personen verteilt.
 2. **/ccgo Slug-Match-Prüfung (E3-Code):** /ccgo soll Plan-Prompt NUR bestätigen wenn Plan via

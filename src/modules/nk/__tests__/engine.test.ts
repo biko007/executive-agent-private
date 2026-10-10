@@ -633,20 +633,47 @@ describe('Block tests', () => {
     }
   });
 
-  it('B5: MISSING_UNIT_RESIDENTS escalated to blocker', async () => {
+  /* B5 geaendert am 10.10.2026 (Owner-Entscheidung): MISSING_UNIT_RESIDENTS
+     wird nur noch zum Blocker, wenn mindestens eine Umlageregel nach Personen
+     verteilt. Vorher stufte die Engine IMMER hoch — bei MG24 scheiterte die
+     Abrechnung dadurch an einem Torwaechter ohne Rechenbezug. Der Test
+     behaelt seinen Zweck und bekommt dafuer die fehlende Personenregel;
+     B5b prueft die neue Gegenrichtung. */
+  it('B5: MISSING_UNIT_RESIDENTS blockt, wenn eine Regel nach Personen verteilt', async () => {
     const pid = await seedProperty('BLOCK5', 'Block Test 5');
     const u = await seedUnit(pid, 'BLOCK5-W1', 50);
     const t = await seedTenant('B5Tenant');
     const l = await seedLease(u, '2024-01-01', null);
     await seedLeaseTenant(l, t);
-    // NO resident entry → should be escalated to blocker
+    const cat = await seedCostCategory('wasser');
+    await seedAllocationRule(pid, cat, 'persons', '2024-01-01');
+    // KEIN Bewohnereintrag → Blocker, weil nach Personen verteilt wird
 
     try {
       await computeNk(pid, 2024);
       expect(true).toBe(false);
     } catch (e: any) {
       expect(e.code).toBe('NK_BLOCKED');
+      expect(String(e.message)).toContain('resident');
     }
+  });
+
+  it('B5b: MISSING_UNIT_RESIDENTS blockt NICHT ohne Personenregel', async () => {
+    const pid = await seedProperty('BLOCK5B', 'Block Test 5b');
+    const u = await seedUnit(pid, 'BLOCK5B-W1', 50);
+    const t = await seedTenant('B5bTenant');
+    const l = await seedLease(u, '2024-01-01', null);
+    await seedLeaseTenant(l, t);
+    const cat = await seedCostCategory('versicherung');
+    await seedExpenseBooking(pid, cat, 500, '2024-01-01', '2024-12-31');
+    await seedAllocationRule(pid, cat, 'sqm', '2024-01-01');
+    // KEIN Bewohnereintrag — darf die Rechnung nicht mehr verhindern
+
+    const out = await computeNk(pid, 2024);
+    expect(out.statements.length).toBeGreaterThan(0);
+    const w = out.warnings.find(x => x.code === 'MISSING_UNIT_RESIDENTS');
+    expect(w).toBeDefined();
+    expect(String(w?.message)).toContain('nicht rechenrelevant');
   });
 
   it('B6: HEATING_CONFIG_INCONSISTENT blocks', async () => {

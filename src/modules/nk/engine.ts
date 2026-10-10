@@ -5,7 +5,7 @@
 import { query as dbQuery } from '../../shared/db/index.js';
 import { canonicalHash } from '../../util/canonical.js';
 import { nkPreCheck } from './precheck.js';
-import { heatingAllocation } from './heating.js';
+import { heatingAllocation, calculateConsumption } from './heating.js';
 import type {
   EngineOutput, EngineInput, EngineWarning, ExcludedLease,
   StatementResult, ItemResult, RunMeta, TenantRecipient,
@@ -38,9 +38,22 @@ export async function computeNk(
   const escalatedBlockers: string[] = [];
 
   for (const finding of precheck.findings) {
-    // MISSING_UNIT_RESIDENTS → blocker (was warning)
+    /* MISSING_UNIT_RESIDENTS → Blocker, aber nur wenn er etwas bewirkt.
+       Bis 10.10.2026 stufte diese Stelle den Befund IMMER hoch. Die
+       Personenzahl braucht die Rechnung aber ausschliesslich beim Schlüssel
+       'persons'. Bei MG24 verteilt keine einzige Regel nach Personen — die
+       Abrechnung scheiterte dort an einem Torwächter ohne Rechenbezug. */
     if (finding.code === 'MISSING_UNIT_RESIDENTS') {
-      escalatedBlockers.push(finding.message);
+      if (precheck.uses_person_key) {
+        escalatedBlockers.push(finding.message);
+      } else {
+        warnings.push({
+          code: finding.code,
+          severity: 'warning',
+          message: finding.message + ' (keine Umlageregel verteilt nach Personen — nicht rechenrelevant)',
+          details: finding.details,
+        });
+      }
       continue;
     }
     // §9a: ESTIMATED_AREA_OVER_25_PERCENT → hard block (no override)
@@ -204,8 +217,13 @@ export async function computeNk(
     const allocation = allocateCosts(
       totalAmount, rule, activeLeases, input.units,
       input.unit_residents, input.allocation_shares.filter(s => s.allocation_rule_id === rule.id),
-      periodStart, periodEnd, year,
+      periodStart, periodEnd, year, input.meters, input.readings,
     );
+
+    /* Verbrauchsschlüssel: Was kein Wohnungszähler erfasst, bleibt beim
+       Eigentümer. Bei MG24 ist das der Unterschied zwischen dem, was die
+       Stadtwerke berechnen, und dem, was die Wohnungszähler zusammen messen. */
+    for (const w of allocation.warnings || []) warnings.push(w);
 
     for (const alloc of allocation.leaseAllocations) {
       const stmt = statementMap.get(alloc.lease_id);
@@ -523,7 +541,24 @@ interface AllocationResult {
   vacancyNumerator: number;
   vacancyDenominator: number;
   vacancyFraction: number;
+  /** Nur beim Verbrauchsschlüssel gesetzt: Hinweise zur Messgrundlage. */
+  warnings?: EngineWarning[];
 }
+
+/* ── Verbrauchsschlüssel ─────────────────────────────────────────────────────
+
+   Welche Zählermedien eine Kostenart verbraucht. Bewusst als Tabelle an einer
+   Stelle, nicht verstreut über die Verteilfunktion — eine neue Kostenart
+   braucht hier eine Zeile und sonst nichts.
+
+   `entwaesserung` zählt Kalt- UND Warmwasser: Was ins Haus fließt, fließt auch
+   wieder heraus, und das Warmwasser wird aus demselben Hausanschluss gespeist
+   (Owner-Entscheidung 10.10.2026). */
+const VERBRAUCHSMEDIEN: Record<string, string[]> = {
+  wasser: ['cold_water'],
+  entwaesserung: ['cold_water', 'warm_water'],
+  warmwasser: ['warm_water'],
+};
 
 export function allocateCosts(
   totalAmount: number,
@@ -535,6 +570,8 @@ export function allocateCosts(
   periodStart: string,
   periodEnd: string,
   year: number,
+  meters: MeterRow[] = [],
+  readings: MeterReadingRow[] = [],
 ): AllocationResult {
   const keyType = rule.key_type;
 
@@ -545,6 +582,10 @@ export function allocateCosts(
       return allocateByPersons(totalAmount, leases, units, residents, periodStart, periodEnd);
     case 'units':
       return allocateByUnits(totalAmount, leases, units, periodStart, periodEnd);
+    case 'consumption':
+      return allocateByConsumption(
+        totalAmount, rule, leases, units, meters, readings, periodStart, periodEnd,
+      );
     case 'mea':
     case 'fixed':
       return allocateByShares(totalAmount, leases, units, shares, periodStart, periodEnd);
@@ -554,6 +595,118 @@ export function allocateCosts(
       // Fallback to sqm
       return allocateBySqm(totalAmount, leases, units, periodStart, periodEnd);
   }
+}
+
+/* Verteilung nach gemessenem Verbrauch der Einheit.
+
+   Bis 10.10.2026 gab es diesen Zweig nicht: Eine Regel mit
+   `key_type = 'consumption'` fiel in den Vorgabezweig und wurde stillschweigend
+   nach Fläche verteilt. Für Heizung und Warmwasser fiel das nicht auf, die
+   laufen über `heatingAllocation()`. Für Kaltwasser und Entwässerung schon —
+   dort gibt es Zähler je Wohnung, und genau die wurden ignoriert. Bei MG24
+   verschiebt der Unterschied rund 600 Euro zwischen den Wohnungen.
+
+   Fehlt ein Zählerstand, wird NICHT auf Fläche ausgewichen. Die Vorprüfung
+   meldet das vorher als `CONSUMPTION_READING_MISSING` (Blocker); kommt die
+   Rechnung trotzdem hier an, bleibt der Betrag beim Eigentümer statt falsch
+   verteilt zu werden.
+
+   Was kein Wohnungszähler erfasst, bleibt ebenfalls beim Eigentümer. Das ist
+   kein Rundungsrest: Bei MG24 berechnen die Stadtwerke für 2025 437 m³,
+   während die Wohnungszähler zusammen deutlich weniger messen. Diese Differenz
+   gehört nicht auf die Mieter verteilt, solange sie ungeklärt ist. */
+function allocateByConsumption(
+  totalAmount: number,
+  rule: AllocationRuleRow,
+  leases: LeaseRow[],
+  units: UnitRow[],
+  meters: MeterRow[],
+  readings: MeterReadingRow[],
+  periodStart: string,
+  periodEnd: string,
+): AllocationResult {
+  const warnings: EngineWarning[] = [];
+  const medien = VERBRAUCHSMEDIEN[rule.category_code] || [];
+
+  if (medien.length === 0) {
+    warnings.push({
+      code: 'CONSUMPTION_MEDIUM_UNKNOWN',
+      severity: 'warning',
+      message: `Kostenart "${rule.category_code}" hat den Schlüssel "consumption", aber kein `
+        + 'zugeordnetes Zählermedium — der Betrag bleibt beim Eigentümer.',
+    });
+    return leerErgebnis(totalAmount, warnings);
+  }
+
+  /* Nur Wohnungszähler zählen. Der Hauptzähler am Hausanschluss dient dem
+     Abgleich mit der Versorgerrechnung, nicht der Verteilung. */
+  const einheitenZaehler = meters.filter(
+    m => m.unit_id && !m.is_main_meter && medien.includes(m.medium),
+  );
+
+  const verbrauchJeEinheit = new Map<number, number>();
+  for (const meter of einheitenZaehler) {
+    if (!meter.unit_id) continue;
+    const verbrauch = calculateConsumption(meter.id, periodStart, periodEnd, readings);
+    verbrauchJeEinheit.set(meter.unit_id, (verbrauchJeEinheit.get(meter.unit_id) || 0) + verbrauch);
+  }
+
+  const gesamtVerbrauch = Array.from(verbrauchJeEinheit.values()).reduce((s, v) => s + v, 0);
+  if (gesamtVerbrauch <= 0) {
+    warnings.push({
+      code: 'CONSUMPTION_DENOMINATOR_ZERO',
+      severity: 'warning',
+      message: `Kostenart "${rule.category_code}": kein gemessener Verbrauch im Zeitraum — `
+        + 'der Betrag bleibt beim Eigentümer.',
+    });
+    return leerErgebnis(totalAmount, warnings);
+  }
+
+  const allocations: LeaseAllocation[] = [];
+  let verteilt = 0;
+
+  for (const lease of leases) {
+    const verbrauch = verbrauchJeEinheit.get(lease.unit_id) || 0;
+    if (verbrauch <= 0) continue;
+
+    /* Zeitanteil: Ein unterjähriges Mietverhältnis trägt nur den Verbrauch
+       seiner Zeit. Gemessen wird ohnehin nur, was in dieser Zeit lief —
+       deshalb geht der Zeitanteil NICHT zusätzlich in den Nenner ein, sonst
+       würde doppelt gekürzt. */
+    const fraction = verbrauch / gesamtVerbrauch;
+    const amount = roundKaufmaennisch(totalAmount * fraction);
+    verteilt += amount;
+
+    allocations.push({
+      lease_id: lease.id,
+      numerator: verbrauch,
+      denominator: gesamtVerbrauch,
+      fraction,
+      amount,
+    });
+  }
+
+  const rest = roundKaufmaennisch(totalAmount - verteilt);
+  return {
+    leaseAllocations: allocations,
+    vacancyAmount: Math.max(0, rest),
+    vacancyNumerator: rest,
+    vacancyDenominator: totalAmount || 1,
+    vacancyFraction: totalAmount > 0 ? rest / totalAmount : 0,
+    warnings,
+  };
+}
+
+/** Nichts verteilt — der volle Betrag bleibt beim Eigentümer. */
+function leerErgebnis(totalAmount: number, warnings: EngineWarning[]): AllocationResult {
+  return {
+    leaseAllocations: [],
+    vacancyAmount: totalAmount,
+    vacancyNumerator: totalAmount,
+    vacancyDenominator: totalAmount || 1,
+    vacancyFraction: 1,
+    warnings,
+  };
 }
 
 function allocateBySqm(

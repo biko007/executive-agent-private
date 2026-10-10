@@ -188,6 +188,10 @@ export interface MeterRow {
   is_main_meter: boolean;
   submetering_purpose: string | null;
   active: boolean;
+  /** Stand bei Einbau. Dient als Anfangswert, wenn im Abrechnungszeitraum
+      keine Ablesung vor Periodenbeginn vorliegt (CONSUMPTION_START_ASSUMED_ZERO). */
+  initial_reading?: number | null;
+  installed_at?: string | null;
 }
 
 export interface MeterReadingRow {

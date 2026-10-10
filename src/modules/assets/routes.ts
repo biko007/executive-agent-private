@@ -488,8 +488,17 @@ export function registerAssetsHttpRoutes(api: any) {
               const sets: string[] = [];
               const params: unknown[] = [];
               let pi = 1;
+              /* `active` und `initial_reading` ergaenzt am 10.10.2026.
+                 `active`: Ein Zaehler, dessen Werte geklaert werden muessen, soll aus der
+                 Rechnung heraus, ohne ihn ueber /archive als AUSGEBAUT zu kennzeichnen —
+                 das waere falsch und setzte zusaetzlich removed_at.
+                 `initial_reading`: Anfangsstand bei Einbau. Die Vorpruefung nutzt ihn, wenn
+                 im Zeitraum keine Ablesung vor Periodenbeginn liegt
+                 (CONSUMPTION_START_ASSUMED_ZERO) — sonst waere die Abrechnung gesperrt,
+                 obwohl der Nullstart belegt ist. */
               for (const field of ['meter_number','provider','installed_at','removed_at',
-                'calibration_valid_until','is_main_meter','parent_meter_id','submetering_purpose','notes']) {
+                'calibration_valid_until','is_main_meter','parent_meter_id','submetering_purpose','notes',
+                'active','initial_reading']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }
               if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }

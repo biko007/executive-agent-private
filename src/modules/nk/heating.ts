@@ -199,7 +199,15 @@ export function calculateConsumption(
   if (meterReadings.length === 0) return 0;
 
   const startD = new Date(startDate);
-  const endD = new Date(endDate);
+  /* Das Periodenende ist ein TAG, kein Zeitpunkt. `new Date('2025-12-31')`
+     ergibt Mitternacht — eine Ablesung vom 31.12. um 22:41 Uhr fiele damit aus
+     dem Zeitraum heraus und der Jahresverbrauch waere zu klein. Genau so
+     stehen die Staende aus den Monatsberichten in der Datenbank. Deshalb wird
+     bis zum Tagesende gerechnet. Ein Zeitstempel im Eingabewert bleibt
+     unveraendert. (10.10.2026) */
+  const endD = /^\d{4}-\d{2}-\d{2}$/.test(endDate)
+    ? new Date(`${endDate}T23:59:59.999Z`)
+    : new Date(endDate);
 
   // Find latest reading before or at end
   const endReading = findLatestBefore(meterReadings, endD);
