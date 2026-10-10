@@ -98,6 +98,22 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
     await testPool.query(v039Sql);
   }
 
+  // V040 — aber nur der Banking-Teil.
+  //
+  // Die Migration enthaelt zwei Dinge: die Herkunftsspalte auf
+  // banking_transactions und die Tabelle expense_booking_proposals. Letztere
+  // haengt an properties, cost_categories und expense_bookings aus dem
+  // Assets-Modul; diese Test-Datenbank fuehrt bewusst nur Banking-Tabellen.
+  // Die vollstaendige Migration wird in
+  // assets/__tests__/expense-proposals.test.ts gegen ein Schema mit beiden
+  // Modulen angewendet.
+  await testPool.query(
+    `ALTER TABLE banking_transactions
+       ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'fints'`);
+  await testPool.query(
+    `CREATE INDEX IF NOT EXISTS idx_banking_transactions_source
+       ON banking_transactions(source) WHERE source <> 'fints'`);
+
   // approval_tokens table (needed by approval workflow tests)
   await testPool.query(`
     CREATE TABLE IF NOT EXISTS approval_tokens (

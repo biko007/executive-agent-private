@@ -4,6 +4,82 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-10 — Umsatz-Nachtrag und Buchungsvorschläge (Paket 3, Teile 3 und 5)
+
+Migration **V040** (Rote Zone, Owner-Freigabe): `banking_transactions.source`
+und die Tabelle `expense_booking_proposals`.
+
+**Warum die Herkunftsspalte.** Bis hierher konnten Umsätze ausschließlich aus
+der FinTS-Synchronisierung kommen; der Bestand endete deshalb am 29.06.2026,
+obwohl die Kontoauszüge als PDF vorlagen. Ohne `source` ließe sich ein
+nachgetragener Umsatz später nicht von einem synchronisierten unterscheiden —
+und damit auch nicht gezielt zurücknehmen.
+
+**Nachtrag aus Kontoauszügen** (`src/modules/banking/import.ts`,
+`POST /api/internal/banking/import-transactions`). Nachgetragen wurden
+1.722 Zeilen aus zwei Auszügen, davon **235 neu** (173 auf Konto …9268,
+62 auf …4295); der Bestand wuchs von 1.633 auf 1.868 Umsätze.
+
+Der Abgleich läuft in zwei Durchgängen, der strengere zuerst: gleicher Betrag
+am gleichen Buchungstag, danach ein Fenster von ±3 Tagen gegen Buchungs- UND
+Wertstellungsdatum — das fängt die Fälle, in denen FinTS die Wertstellung als
+Buchungsdatum geführt hat (47 Treffer). Entscheidend ist, dass die Zuordnung
+**eineindeutig** ist: Ein Bestandssatz kann nur eine Importzeile erklären.
+Ohne diese Regel gälten zwei gleich hohe Mietzahlungen innerhalb einer Woche
+beide als Dublette, und eine davon fehlte danach dauerhaft. Nachgewiesen über
+einen Monatsvergleich: In allen 24 überlappenden Monaten beider Konten hält
+der Bestand mindestens so viele Umsätze wie der Auszug.
+
+**Buchungsvorschläge** (`src/modules/assets/expense-rules.ts`,
+`proposals.ts`, `/api/assets/expense-proposals`, Dashboard-Unterbereich
+„Kostenvorschläge"). Nach jedem erfolgreichen Bankabgleich — an einer Stelle in
+`runWeeklySyncWithReport`, damit kein Aufrufweg vergessen wird — laufen die
+Regeln über die Umsätze und legen Vorschläge mit Status `offen` an. **Gebucht
+wird nichts.** Erst ein Klick des Owners macht aus einem Vorschlag genau eine
+`expense_booking`; ein zweiter Klick erzeugt keine zweite.
+
+Die **Regeln sind Daten** in `system_settings.expense_rules` — eine neue
+Gegenpartei oder Vertragsnummer kostet kein Deployment. Startbestand: elf
+Regeln für MG24, jede auf einem Beleg oder einer im Bestand nachgewiesenen
+Gegenpartei. Daraus 65 Vorschläge über 28.672,27 €.
+
+**Drei Entscheidungen, die den Unterschied machen:**
+- **Betriebsbeginn als Regelgrenze.** Alle MG24-Betriebskostenregeln beginnen
+  am 05.11.2024, dem Tag nach der Schlussabnahme (K8). Dieselbe Wasserrechnung
+  ist davor Herstellungsaufwand und danach umlagefähige Nebenkosten; ohne
+  diese Grenze schlug die erste Fassung Baukosten als Nebenkosten vor.
+- **Leistungsprinzip statt Zahlungszeitpunkt.** Eine Wasserjahresrechnung für
+  2025, abgebucht im März 2026, gehört in die Abrechnung 2025. Der Zeitraum
+  kommt aus dem Verwendungszweck; fehlt dort das Jahr, gilt bei Zahlung im
+  ersten Halbjahr das Vorjahr. Abschläge laufen dagegen über den
+  Zahlungsmonat — die erste Fassung gab ihnen das Vorjahr.
+- **Keine Regel auf eine ungeklärte Objektzuordnung.** Die drei
+  Abfall-Buchungszeichen im Bestand gehören NICHT zu MG24 (das trägt
+  73 058 488/001). Eine Regel darauf hätte Kosten dem falschen Haus
+  zugeordnet, und das fällt in einer fertigen Abrechnung niemandem mehr auf.
+
+**Selbstheilung.** Weil die Regeln änderbar sind, hält jeder Lauf die offenen
+Vorschläge gegen den aktuellen Regelstand: Trifft eine Regel nicht mehr, wird
+der Vorschlag zurückgezogen; haben sich Betrag, Kostenart oder Zeitraum
+geändert, wird er angepasst. Bestätigte und verworfene Vorschläge bleiben
+unberührt — sonst stünden nach einer Korrektur genau die Vorschläge da, die
+sie beheben sollte.
+
+**Kontonamen.** `PATCH /api/banking/accounts/:id` (eigener, protokollierter
+Weg, weil `upsertAccount` den Anzeigenamen bewusst per COALESCE erhält).
+Konto 4 → „La Perla GmbH — Geschäftsgiro", Konto 7 → „Immobilien Bickel —
+Mietkonto".
+
+**Tests:** 55 neue (15 Dublettenabgleich, 27 Regelauswertung, 13 Lebenszyklus
+gegen eine echte Datenbank). Gesamt 893/0/0.
+
+**Rückweg:** `bun run scripts/rollback-v040.ts --apply` (bricht ab, solange
+nachgetragene Umsätze oder bestätigte Vorschläge vorhanden sind) ·
+`pg_restore` aus `~/backups/openclaw-20261010-204811.dump` ·
+`git revert` je Commit.
+
+---
+
 ## Stand 2026-10-10 — Automatischer Zählerimport (Paket 3, Teil 2)
 
 Owner-Leitprinzip: Was dauerhaft anfällt, läuft ohne Handgriff; gemeldet wird

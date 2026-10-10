@@ -46,6 +46,8 @@ export interface Transaction {
   transactionCode: string | null;
   rawPayload: Record<string, unknown>;
   importedAt: string;
+  /** Herkunft: 'fints' = Synchronisierung mit der Bank, 'pdf_import' = aus einem Kontoauszug. */
+  source: string;
 }
 
 /**
@@ -136,6 +138,7 @@ export interface TransactionRow {
   transaction_code: string | null;
   raw_payload: Record<string, unknown>;
   imported_at: Date;
+  source: string;
 }
 
 export interface SessionRow {

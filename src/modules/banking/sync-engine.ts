@@ -621,9 +621,34 @@ export async function runWeeklySyncWithReport(options?: {
     telegram = teile.join(' ');
   }
 
+  // Nach einem erfolgreichen Abgleich die Buchungsvorschlaege nachziehen.
+  //
+  // Hier und nicht an den drei Aufrufstellen (Montagslauf, Dashboard-Knopf,
+  // Telegram), damit kein Weg vergessen wird. Der Import geht ueber
+  // assets/index.ts — Modulinnereien bleiben privat (Manifest 3).
+  //
+  // Ein Fehler hierbei darf den Abgleich NICHT scheitern lassen: Die Umsaetze
+  // sind dann schon geschrieben, und Vorschlaege lassen sich jederzeit
+  // nachtraeglich erzeugen. Er wird protokolliert und in der Meldung erwaehnt.
+  let vorschlagsZeile = '';
+  if (result.status === 'SUCCESS_FULL' && transactionsNew > 0) {
+    try {
+      const { erzeugeVorschlaege } = await import('../assets/index.js');
+      const v = await erzeugeVorschlaege({ actor: 'bank-sync' });
+      if (v.angelegt > 0) {
+        vorschlagsZeile = v.angelegt === 1
+          ? ' 1 neuer Buchungsvorschlag.'
+          : ` ${v.angelegt} neue Buchungsvorschlaege.`;
+      }
+    } catch (e: any) {
+      console.error('[banking] Buchungsvorschlaege nach Abgleich fehlgeschlagen:', e.message);
+      vorschlagsZeile = ' Buchungsvorschlaege konnten nicht erzeugt werden.';
+    }
+  }
+
   return {
     status: result.status,
-    telegram,
+    telegram: telegram + vorschlagsZeile,
     accountsSynced,
     transactionsNew,
     errorMessage,

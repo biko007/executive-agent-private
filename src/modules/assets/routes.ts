@@ -17,6 +17,7 @@ import {
   handleNkRerender, handleNkServe, handleNkRunList, handleNkRunDetail,
 } from '../nk/routes.js';
 import { handleObligationsAlert } from '../nk/alerts.js';
+import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,70 @@ export function registerAssetsHttpRoutes(api: any) {
     if (!resource) return false; // bare /api/assets — not handled
 
     try {
+      // ── Buchungsvorschlaege aus Bankumsaetzen ───────────────────────────
+      // Liste, Bestaetigen, Verwerfen. Das Dashboard leitet /api/assets/*
+      // pauschal an den Core weiter — dort ist nichts zu aendern.
+      if (resource === 'expense-proposals') {
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            const id = segments[1] ? parseInt(segments[1], 10) : null;
+            const aktion = segments[2];
+
+            if (!id && req.method === 'GET') {
+              const liste = await listeVorschlaege({
+                status: url.searchParams.get('status') || undefined,
+                property: url.searchParams.get('property') || undefined,
+                limit: parseInt(url.searchParams.get('limit') || '200', 10),
+              });
+              json(res, 200, liste);
+              return;
+            }
+
+            // POST /api/assets/expense-proposals/generate — erzeugt Vorschlaege
+            // aus den vorhandenen Umsaetzen. Legt KEINE Buchung an.
+            if (segments[1] === 'generate' && req.method === 'POST') {
+              const body = await parseJsonBody(req).catch(() => ({} as any));
+              const ergebnis = await erzeugeVorschlaege({
+                seit: typeof body?.since === 'string' ? body.since : undefined,
+                actor,
+              });
+              json(res, 200, ergebnis);
+              return;
+            }
+
+            if (!id || !Number.isInteger(id) || id <= 0) {
+              err(res, 400, 'Vorschlag-ID fehlt oder ist ungueltig'); return;
+            }
+
+            if (aktion === 'confirm' && req.method === 'POST') {
+              const body = await parseJsonBody(req).catch(() => ({} as any));
+              const ergebnis = await bestaetige(id, {
+                cost_category_id: Number.isInteger(body?.cost_category_id)
+                  ? body.cost_category_id : undefined,
+                umlagefaehig: typeof body?.umlagefaehig === 'boolean'
+                  ? body.umlagefaehig : undefined,
+                notiz: typeof body?.notiz === 'string' ? body.notiz : undefined,
+              }, actor);
+              if (!ergebnis) { err(res, 404, 'Vorschlag nicht gefunden'); return; }
+              json(res, 200, ergebnis);
+              return;
+            }
+
+            if (aktion === 'reject' && req.method === 'POST') {
+              const body = await parseJsonBody(req).catch(() => ({} as any));
+              const ergebnis = await verwirf(
+                id, typeof body?.grund === 'string' ? body.grund : undefined, actor);
+              if (!ergebnis) { err(res, 404, 'Vorschlag nicht gefunden'); return; }
+              json(res, 200, ergebnis);
+              return;
+            }
+
+            err(res, 404, 'Unbekannte Aktion auf expense-proposals');
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
       // ── Properties list and /:id sub-routes ─────────────────────────────
       if (resource === 'properties') {
         const propertyId = segments[1];

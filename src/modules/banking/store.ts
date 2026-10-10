@@ -82,6 +82,7 @@ function mapTransaction(row: TransactionRow): Transaction {
     transactionCode: row.transaction_code,
     rawPayload: row.raw_payload,
     importedAt: ts(row.imported_at),
+    source: row.source ?? 'fints',
   };
 }
 
@@ -339,6 +340,47 @@ export async function upsertAccount(
 }
 
 /**
+ * Benennt ein Konto um — Anzeigename und Inhaber.
+ *
+ * Eigene Funktion statt `upsertAccount`, weil dort `display_name` bewusst per
+ * COALESCE erhalten bleibt: Ein erneutes Verbinden mit der Bank darf einen vom
+ * Owner gesetzten Namen nicht wieder durch die IBAN ersetzen. Genau deshalb
+ * braucht das Umbenennen einen getrennten, protokollierten Weg.
+ *
+ * IBAN, Status und Salden bleiben unberührt.
+ */
+export async function renameAccount(
+  accountId: number,
+  felder: { displayName?: string; ownerName?: string },
+  actor?: string,
+): Promise<Account | null> {
+  const { rows: vorher } = await dbQuery<AccountRow>(
+    'SELECT * FROM banking_accounts WHERE id = $1', [accountId],
+  );
+  if (vorher.length === 0) return null;
+
+  const { rows } = await dbQuery<AccountRow>(
+    `UPDATE banking_accounts
+        SET display_name = COALESCE($2, display_name),
+            owner_name   = COALESCE($3, owner_name),
+            updated_at   = NOW()
+      WHERE id = $1
+      RETURNING *`,
+    [accountId, felder.displayName ?? null, felder.ownerName ?? null],
+  );
+
+  await audit.log({
+    actor,
+    module: 'banking', action: 'account.rename',
+    entityType: 'banking_account', entityId: String(accountId),
+    before: { display_name: vorher[0].display_name, owner_name: vorher[0].owner_name },
+    after: { display_name: rows[0].display_name, owner_name: rows[0].owner_name },
+  });
+
+  return mapAccount(rows[0]);
+}
+
+/**
  * Archive an account (soft delete).
  */
 export async function archiveAccount(accountId: number, actor?: string): Promise<Account | null> {
@@ -483,14 +525,16 @@ export async function insertTransaction(
     reference?: string;
     transaction_code?: string;
     raw_payload: Record<string, unknown>;
+    /** Herkunft. Vorgabe 'fints' — die Synchronisierung setzt sie nicht. */
+    source?: string;
   },
 ): Promise<Transaction | null> {
   const { rows } = await dbQuery<TransactionRow>(
     `INSERT INTO banking_transactions
        (account_id, bank_transaction_id, booking_date, value_date,
         amount, currency, counterparty_name, counterparty_iban,
-        reference, transaction_code, raw_payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        reference, transaction_code, raw_payload, source)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (account_id, bank_transaction_id) DO NOTHING
      RETURNING *`,
     [
@@ -499,7 +543,7 @@ export async function insertTransaction(
       txData.amount, txData.currency,
       txData.counterparty_name || null, txData.counterparty_iban || null,
       txData.reference || null, txData.transaction_code || null,
-      JSON.stringify(txData.raw_payload),
+      JSON.stringify(txData.raw_payload), txData.source || 'fints',
     ],
   );
 

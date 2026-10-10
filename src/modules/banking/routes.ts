@@ -14,11 +14,12 @@ import {
   listInstitutions, listAccounts, listTransactions,
   archiveAccount, deleteAccount,
   upsertInstitution, decideReuse,
-  getUniformInstitutionId, bulkArchiveAccounts,
+  getUniformInstitutionId, bulkArchiveAccounts, renameAccount,
 } from './store.js';
 import { getClient } from '../../shared/db/index.js';
 import { initiateConnect, completeTan } from './tan-bridge.js';
 import { getSyncStatus, runWeeklySyncWithReport } from './sync-engine.js';
+import { importiereUmsaetze } from './import.js';
 import * as sidecar from './sidecar-client.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -161,6 +162,33 @@ export function registerBankingHttpRoutes(api: any) {
               } finally {
                 client.release();
               }
+            } catch (e: any) { err(res, 500, e.message); }
+          });
+          return true;
+        }
+
+        // PATCH /api/banking/accounts/:id — Anzeigename und Inhaber setzen
+        if (resource === 'accounts' && segments[1] && !segments[2] && req.method === 'PATCH') {
+          await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+            try {
+              const accountId = parseInt(segments[1], 10);
+              if (!Number.isInteger(accountId) || accountId <= 0) {
+                err(res, 400, 'account id ist ungueltig'); return;
+              }
+              const body = await parseJsonBody<any>(req);
+              const felder: { displayName?: string; ownerName?: string } = {};
+              if (typeof body?.display_name === 'string' && body.display_name.trim()) {
+                felder.displayName = body.display_name.trim();
+              }
+              if (typeof body?.owner_name === 'string' && body.owner_name.trim()) {
+                felder.ownerName = body.owner_name.trim();
+              }
+              if (Object.keys(felder).length === 0) {
+                err(res, 400, 'display_name oder owner_name erforderlich'); return;
+              }
+              const konto = await renameAccount(accountId, felder, actor);
+              if (!konto) { err(res, 404, 'Konto nicht gefunden'); return; }
+              json(res, 200, konto);
             } catch (e: any) { err(res, 500, e.message); }
           });
           return true;
@@ -399,6 +427,30 @@ export function registerBankingHttpRoutes(api: any) {
         const rest = pathname.replace(/^\/api\/internal\/banking\/?/, '');
         const segments = rest.split('/').filter(Boolean);
         const resource = segments[0] || '';
+
+        // POST /api/internal/banking/import-transactions
+        // Traegt Umsaetze aus einem Kontoauszug nach. Nur ueber 127.0.0.1
+        // erreichbar (nginx-Whitelist fuer /api/internal/*), Bearer-geschuetzt.
+        if (resource === 'import-transactions' && req.method === 'POST') {
+          await withContext({ requestId, actor: actor || 'system', source: 'internal' }, async () => {
+            try {
+              const body = await parseJsonBody<any>(req);
+              const accountId = parseInt(String(body?.account_id ?? ''), 10);
+              if (!Number.isInteger(accountId) || accountId <= 0) {
+                err(res, 400, 'account_id fehlt oder ist ungueltig'); return;
+              }
+              if (!Array.isArray(body?.transactions) || body.transactions.length === 0) {
+                err(res, 400, 'transactions fehlt oder ist leer'); return;
+              }
+              const ergebnis = await importiereUmsaetze(accountId, body.transactions, {
+                quelle: typeof body.source === 'string' ? body.source : undefined,
+                probelauf: body.dry_run === true,
+              });
+              json(res, 200, ergebnis);
+            } catch (e: any) { err(res, 500, e.message); }
+          });
+          return true;
+        }
 
         // GET /api/internal/banking/sync-status
         if (resource === 'sync-status' && req.method === 'GET') {

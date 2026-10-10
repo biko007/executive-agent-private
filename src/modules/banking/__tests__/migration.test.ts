@@ -74,6 +74,8 @@ describe('V027 Banking Schema — Apply', () => {
       'idx_banking_sessions_institution',
       'idx_banking_sync_reminders_session',
       'idx_banking_transactions_account_date',
+      // V040: Teilindex auf die Herkunft, nur fuer nachgetragene Umsaetze.
+      'idx_banking_transactions_source',
     ]);
   });
 });

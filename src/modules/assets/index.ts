@@ -23,3 +23,10 @@ export {
 
 // Commands (Telegram registration)
 export { registerAssetsCommands } from './commands.js';
+
+// Buchungsvorschlaege aus Bankumsaetzen (Paket 3, Teil 3)
+export {
+  erzeugeVorschlaege, listeVorschlaege, bestaetige, verwirf,
+} from './proposals.js';
+export { ladeRegeln, REGEL_KEY, REGELN_START } from './expense-rules.js';
+export type { AusgabenRegel } from './expense-rules.js';
