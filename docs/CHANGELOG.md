@@ -4,6 +4,39 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — SWT-Wasserzähler abgelesen, Objektzähler in der Ansicht
+
+Der Eigentümer hat den Abrechnungszähler der Stadtwerke (8ZRI2316739802) vor Ort
+abgelesen: **884,9 m³ am 11.10.2026**. Damit ist der Endstand 451 m³ zum 31.12.2025
+bestätigt — die Alternative 151 m³ hätte 734 m³ Verbrauch in neun Monaten 2026 bedeutet.
+Die SWT-Wasserrechnung 2025 über 2.353,01 € ist richtig.
+
+**Der GLT-Zähler am Hausanschluss ist offenbar um den Faktor 10 falsch skaliert.** 2026
+bis zum 10.10.: GLT 43,11 m³, mit Faktor 10 also 431,1 m³ gegenüber 433,90 m³ beim
+Abrechnungszähler — **0,6 % Abweichung**. Das ist kein „misst woanders", sondern eine
+Skalierung. (Beleg, keine Gewissheit: ein zweiter Vergleichszeitraum fehlt.)
+
+**Wasserbilanz** — der ungemessene Anteil ist deutlich gefallen:
+
+| | abgerechnet | in Wohnungen gemessen | ungemessen |
+|---|---:|---:|---:|
+| 2025 | 437,00 m³ | 315,19 m³ | 121,81 m³ (**27,9 %**) |
+| 2026 bis 10.10. | 433,90 m³ | 382,81 m³ | 51,09 m³ (**11,8 %**) |
+
+2025 enthält Inbetriebnahme, Spülen und Leerstand; 11,8 % im laufenden Betrieb sind für
+ein Dreifamilienhaus immer noch viel, aber eine andere Größenordnung.
+
+**Neu in der Abrechnungsansicht:** ein Block „Zähler des Objekts" mit Versorgerzähler,
+Hausanschluss und den beiden Zählern der Heizzentrale — samt Wasserbilanz direkt darunter.
+Diese Zähler gehören keiner Wohnung und waren deshalb in der Ansicht bisher unsichtbar,
+obwohl sie die Kontrollwerte der ganzen Abrechnung sind.
+
+Der Befund „Teil des Verbrauchs ist keiner Wohnung zugeordnet" trägt jetzt den
+objektbezogenen Nachtrag, dass der Abrechnungszähler bestätigt ist. Die Zuordnung des
+Rests bleibt unverändert bei Variante A: beim Eigentümer.
+
+---
+
 ## Stand 2026-10-11 — Eingabeblatt: Zählertabelle und Ablageort
 
 Die Zählertabelle des Casameta-Eingabeblatts nennt jetzt je Zähler Kennung, Wohnung,

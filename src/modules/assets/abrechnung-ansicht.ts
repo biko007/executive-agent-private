@@ -105,6 +105,12 @@ export interface AbrechnungAnsicht {
   zeitraum: { von: string; bis: string; tage: number };
   heizung: { grundkosten_prozent: number | null; verbrauch_prozent: number | null } | null;
   einheiten: EinheitAbrechnung[];
+  /**
+   * Zähler des Objekts — Abrechnungszähler des Versorgers, Hausanschluss,
+   * Wärmemengenzähler der Heizzentrale. Sie gehören keiner Wohnung, sind aber
+   * die Kontrollwerte der ganzen Abrechnung.
+   */
+  objektzaehler: ZaehlerZeile[];
   eigentuemer: { kosten_summe: number; kosten: KostenZeile[] } | null;
   befunde: { code: string; schwere: string; text: string; details: Record<string, unknown> | null }[];
   summe_objekt: number;
@@ -382,6 +388,7 @@ export async function abrechnungAnsicht(
       zeitraum: { von, bis, tage: tageImJahr },
       heizung: null,
       einheiten: ausgabe,
+      objektzaehler: zaehlerZeilen(null, gesperrteZaehler),
       eigentuemer: null,
       befunde: [],
       summe_objekt: 0,
@@ -435,6 +442,7 @@ export async function abrechnungAnsicht(
       }
       : null,
     einheiten: ausgabe,
+    objektzaehler: zaehlerZeilen(null, gesperrteZaehler),
     eigentuemer: eigentuemerSatz
       ? { kosten_summe: eigentuemerSatz.costs_total, kosten: kostenZeilen(eigentuemerSatz.items) }
       : null,
