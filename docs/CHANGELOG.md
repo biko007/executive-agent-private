@@ -4,6 +4,50 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Brennstoff nach Lagerbestand (Entscheidungen zu Paket 3c)
+
+**Lagerbestandsrechnung statt Lieferdatum.** § 7 Abs. 2 HeizkostenV legt „die
+Kosten der verbrauchten Brennstoffe" um — nicht die Kosten der im
+Abrechnungsjahr gelieferten. Owner-Entscheidung 11.10.2026; sie ersetzt die
+Entscheidung „Pellets nach Lieferdatum" vom 10.10.2026.
+
+```
+Anfangsbestand 01.01.2025   5,00 t   1.695,84 EUR  (Preis Lieferung 910222)
+Zukauf 2025                12,94 t   5.435,13 EUR  (3 Lieferungen)
+Endbestand 31.12.2025      -5,00 t  -2.187,75 EUR  (Preis Lieferung 109505)
+                           ───────  ─────────────
+Verbrauch                  12,94 t   4.943,22 EUR  = 64.700 kWh bei Hi 5 kWh/kg
+```
+
+Die Differenz von −491,91 Euro kommt **nicht aus der Menge, sondern aus dem
+Preis**: Beide Bestände sind mit 5,00 t angesetzt, der Anfangsbestand aber zu
+339,17 EUR/t und der Endbestand zu 437,55 EUR/t. Verbraucht wurde das billige
+alte Lager, liegen blieb das teurere neue — genau das bildet die Rechnung ab.
+
+**Umsetzung über zwei zusätzliche Buchungen** statt über eine Änderung der
+Lieferbuchungen: Die drei Lieferungen bleiben als Zukauf stehen, dazu kommen
+der Anfangsbestand als Zugang und der Endbestand als Abgang (negativer Betrag).
+So bleibt jede Rechnung einzeln nachvollziehbar und die Bestandsrechnung ist an
+den Buchungen selbst ablesbar. `scripts/pelletbestand-mg24.ts` prüft nach dem
+Lauf, dass die Heizungskosten im Zeitraum genau dem errechneten Verbrauch
+entsprechen.
+
+**Beide Bestände sind Arbeitsannahmen** und als solche gekennzeichnet — in der
+Buchungsnotiz, in `system_settings.brennstoffbestand` und im Eingabeblatt. Der
+Endbestand ist eine offene Owner-Frage.
+
+**Weitere Entscheidungen eingearbeitet:** Die Casameta-Abrechnungsgebühr ist als
+umlagefähige Heizkosten-Nebenposition vorgesehen (Betrag nach der Abrechnung).
+Aus dem Allgemeinstrom wird KEIN Schätzanteil für den Betriebsstrom der Heizung
+abgespalten — der Posten bleibt „nicht getrennt erfasst". MG24 bleibt bei 30/70,
+bis die W3-Wärmemengenzähler geklärt sind; das Ziel 0/100 steht als offener
+Punkt in der Dashboard-Kachel und wartet auf Fa. Fiehn.
+
+**Probe 2025 danach:** W1 778,57 · W2 739,23 · W3 1.383,37 · Eigentümer
+2.097,61 Euro.
+
+---
+
 ## Stand 2026-10-11 — Prompt-Inbox stellt nur noch bei Bereitschaft zu (Teil Q)
 
 **REVIEW-pflichtig nach C7** — gebaut, getestet, NICHT gepusht.

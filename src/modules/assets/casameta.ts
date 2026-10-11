@@ -127,6 +127,12 @@ export async function erzeugeEingabeblatt(
     'SELECT * FROM property_heating_config WHERE property_id = $1 AND year = $2',
     [objekt.id, jahr]);
 
+  /* Brennstoffbestand. Casameta rechnet Energiekosten über Anfangsbestand +
+     Zukauf − Endbestand; ohne diese Werte bleibt das Portalfeld leer. */
+  const { rows: bestandRows } = await dbQuery<{ value: any }>(
+    `SELECT value FROM system_settings WHERE key = 'brennstoffbestand'`);
+  const bestand = bestandRows[0]?.value?.[objektCode]?.[String(jahr)] || null;
+
   // ── Hilfen ────────────────────────────────────────────────────────────────
   /** Stand möglichst nahe am Stichtag, höchstens 40 Tage daneben. */
   function standAm(meterId: number, stichtag: string): { tag: string; value: string } | null {
@@ -204,16 +210,42 @@ export async function erzeugeEingabeblatt(
     ['Warmwasser über die Heizung', h ? (h.hot_water_via_heating ? 'ja' : 'nein') : FEHLT],
     ['Grundkostenanteil', h?.base_share_percent != null ? `${h.base_share_percent} %` : FEHLT],
     ['Verbrauchsanteil', h?.consumption_share_percent != null ? `${h.consumption_share_percent} %` : FEHLT],
-    ['Anfangsbestand Brennstoff', FEHLT],
-    ['Endbestand Brennstoff', FEHLT],
+    ['Anfangsbestand Brennstoff', bestand?.anfangsbestand
+      ? `${bestand.anfangsbestand.menge.toFixed(2)} ${bestand.einheit} / `
+        + `${geld(bestand.anfangsbestand.wert)} EUR`
+      : FEHLT],
+    ['Zukauf Brennstoff', bestand?.zukauf
+      ? `${bestand.zukauf.reduce((s: number, z: any) => s + z.menge, 0).toFixed(2)} ${bestand.einheit} / `
+        + `${geld(bestand.zukauf.reduce((s: number, z: any) => s + z.wert, 0))} EUR`
+      : FEHLT],
+    ['Endbestand Brennstoff', bestand?.endbestand
+      ? `${bestand.endbestand.menge.toFixed(2)} ${bestand.einheit} / `
+        + `${geld(bestand.endbestand.wert)} EUR`
+      : FEHLT],
+    ['= Verbrauch Brennstoff', bestand?.verbrauch
+      ? `${bestand.verbrauch.menge.toFixed(2)} ${bestand.einheit} / `
+        + `${geld(bestand.verbrauch.wert)} EUR / ${bestand.verbrauch.energie_kwh} kWh`
+      : FEHLT],
   ];
   for (const [feld, w] of heizZeilen) {
     z.push(`| ${feld} | ${w} |`);
     csvZeile('heizung', feld, w);
   }
-  merkeLuecke('Anfangs- und Endbestand des Pelletlagers werden nicht geführt. Casameta rechnet '
-    + 'Brennstoff über Anfangsbestand + Zukauf − Endbestand; bikosoc bucht nach Lieferdatum. '
-    + 'Siehe docs/casameta-mapping.md, Abschnitt Lagerbestand.');
+  if (!bestand) {
+    merkeLuecke('Anfangs- und Endbestand des Brennstofflagers sind für dieses Objekt und Jahr '
+      + 'nicht hinterlegt (system_settings.brennstoffbestand). Casameta rechnet Brennstoff über '
+      + 'Anfangsbestand + Zukauf − Endbestand.');
+  } else {
+    // Eine Arbeitsannahme gehört in die Lückenliste, auch wenn das Feld
+    // gefüllt ist: Im Portal steht sonst eine Zahl, die wie gemessen aussieht.
+    for (const [feld, b] of [['Anfangsbestand', bestand.anfangsbestand],
+      ['Endbestand', bestand.endbestand]] as const) {
+      if (b?.arbeitsannahme) {
+        merkeLuecke(`${feld} Brennstoff ist eine ARBEITSANNAHME (${b.menge} ${bestand.einheit}, `
+          + `Grundlage: ${b.grundlage}). ${b.annahme_text || ''}`.trim());
+      }
+    }
+  }
   if (h && (Number(h.consumption_share_percent) < 50 || Number(h.consumption_share_percent) > 70)) {
     z.push('');
     z.push(`> **Hinweis:** Der Verbrauchsanteil von ${h.consumption_share_percent} % liegt außerhalb `

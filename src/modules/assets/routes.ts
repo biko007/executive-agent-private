@@ -1228,6 +1228,9 @@ async function handleBereitschaft(
   const { rows: bbRows } = await dbQuery<{ value: any }>(
     `SELECT value FROM system_settings WHERE key = 'belegbedarf'`);
   const bedarf: any[] = bbRows[0]?.value?.[propertyCode]?.[String(jahr)] || [];
+  // Offene Punkte, die keine Belege sind — etwa eine geplante Umstellung, die
+  // auf eine Antwort von aussen wartet.
+  const hinweise: string[] = bbRows[0]?.value?.[propertyCode]?.[`hinweise_${jahr}`] || [];
   const offeneBelege = bedarf.filter(
     b => b.status !== 'vorhanden' && b.status !== 'nicht_zutreffend');
 
@@ -1250,7 +1253,7 @@ async function handleBereitschaft(
   const blocker = vorpruefung.findings.filter((f: any) => f.severity === 'blocker');
   const warnungen = vorpruefung.findings.filter((f: any) => f.severity === 'warning');
   const ampel = blocker.length > 0 ? 'rot'
-    : (offeneBelege.length > 0 || warnungen.length > 0) ? 'gelb' : 'gruen';
+    : (offeneBelege.length > 0 || warnungen.length > 0 || hinweise.length > 0) ? 'gelb' : 'gruen';
 
   json(res, 200, {
     objekt: propertyCode,
@@ -1261,6 +1264,7 @@ async function handleBereitschaft(
     warnungen: warnungen.map((f: any) => ({ code: f.code, message: f.message })),
     belegbedarf: bedarf,
     offene_belege: offeneBelege.length,
+    hinweise,
     datenstand: {
       letzter_zaehlerstand: zaehlerStand[0]?.letzte ?? null,
       letzter_bankumsatz: bankStand[0]?.letzte ?? null,
