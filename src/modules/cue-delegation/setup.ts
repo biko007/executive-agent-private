@@ -20,7 +20,7 @@ import { createManusClient } from './manus-client.js';
 import type { ManusAgent, ManusClient } from './manus-client.js';
 import { applyCueEnvToProcess } from './config.js';
 import { writeCueEnv } from './env-writer.js';
-import { describeError } from './delegation.js';
+import { agentLabel, describeError } from './delegation.js';
 
 /** Nickname, unter dem der Cue-Agent gesucht wird. */
 export const CUE_AGENT_NICKNAME = 'hans';
@@ -201,7 +201,12 @@ export async function runCueSetup(
     }
     return {
       status: 'ok',
-      message: `Eingerichtet: Agent ${agent.nickname ?? '(ohne Namen)'} (${shortAgentRef(agent.id)}).`,
+      /* Anzeigename über agentLabel(), damit ein Agent ohne nickname hier
+         "Agent Cue" heißt wie in allen übrigen Owner-Nachrichten. Direkt
+         eingesetzt stand hier "Agent (ohne Namen)". In der Kandidatenliste
+         (formatAgentList) bleibt "(ohne Namen)" richtig: Dort stehen die
+         ROHEN Namen zur Auswahl, kein Anzeigelabel. */
+      message: `Eingerichtet: ${agentLabel(agent.nickname)} (${shortAgentRef(agent.id)}).`,
       agentId: agent.id,
       agentName: agent.nickname ?? '(ohne Namen)',
       envWritten: true,

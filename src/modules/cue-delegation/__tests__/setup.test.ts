@@ -150,6 +150,25 @@ describe('resolveHansAgent', () => {
 // ── Gesamtablauf ──────────────────────────────────────────────────────────
 
 describe('runCueSetup', () => {
+  test('Agent ohne Namen heisst in der Erfolgsmeldung "Agent Cue", nicht "Agent (ohne Namen)"', async () => {
+    /* Erreichbar ueber die Zweitform mit ausdruecklicher agent_id: Die
+       Namenssuche findet einen Agenten ohne nickname nie. Der Ersatzname muss
+       derselbe sein wie in allen uebrigen Owner-Nachrichten — sonst traegt
+       dieselbe Lage zwei verschiedene Namen. */
+    const envPath = tempEnv();
+    const res = await runCueSetup({ apiKey: KEY, agentId: 'a9' }, {
+      envPath,
+      createClient: fakeClient({ agents: [agent('a9')] }),
+      applyToProcess: () => {},
+    });
+
+    expect(res.status).toBe('ok');
+    expect(res.message).toContain('Eingerichtet: Agent Cue');
+    expect(res.message).not.toContain('ohne Namen');
+    // Im Ergebnisobjekt bleibt der ROHE Name stehen — es landet im audit_log.
+    expect(res.agentName).toBe('(ohne Namen)');
+  });
+
   test('Erfolg: beide Schluessel geschrieben, Hauptschalter an, fremde Zeilen unberuehrt', async () => {
     const envPath = tempEnv();
     const uebergabe: { key?: string } = {};

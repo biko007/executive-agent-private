@@ -4,6 +4,20 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Nachzug Cue-Anzeigename ohne nickname
+
+Der Auftrag „Anzeigename Agent <Name>" vom 08.10.2026 (`59db621`) hatte eine Stelle
+offen gelassen: Die Erfolgsmeldung von `/cue_setup` setzte den Namen direkt ein und
+meldete bei einem Agenten ohne `nickname` „Eingerichtet: Agent (ohne Namen)". Jetzt
+läuft auch sie über `agentLabel()` und sagt „Agent Cue" wie jede andere
+Owner-Nachricht des Moduls.
+
+In der Kandidatenliste (`formatAgentList`) bleibt „(ohne Namen)" stehen: Dort stehen
+die ROHEN Namen zur Auswahl, kein Anzeigelabel. Ebenso im Ergebnisobjekt, das ins
+`audit_log` fließt.
+
+---
+
 ## Stand 2026-10-11 — Abrechnung je Wohnung und Zwischenabrechnung (Teil C und D)
 
 **Teil C — Darstellung je Wohnung.** Neuer Unterbereich „Abrechnung je Wohnung"
