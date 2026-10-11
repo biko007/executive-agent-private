@@ -5,6 +5,7 @@ import {
 } from '../cc-prompt-dispatch/index.js';
 import {
   pruefeBereitschaft, grundText, auftragsKennung,
+  erkenneArmWartung, armMeldung,
   type Bereitschaft,
 } from './bereitschaft.js';
 
@@ -68,12 +69,18 @@ interface WaechterZustand {
   bereitSeit?: string;
   /** Je Auftragskennung die Zahl der Stupse und der letzte Zeitpunkt. */
   stupse: Record<string, { anzahl: number; zuletzt: string; gemeldet?: boolean }>;
+  /** Zeitpunkt der Blockade, zu der schon eine Armierungsmeldung raus ist. */
+  armGemeldetFuer?: string;
 }
 
 function ladeZustand(pfad: string): WaechterZustand {
   try {
     const z = JSON.parse(fs.readFileSync(pfad, 'utf-8'));
-    return { bereitSeit: z.bereitSeit, stupse: z.stupse || {} };
+    return {
+      bereitSeit: z.bereitSeit,
+      stupse: z.stupse || {},
+      armGemeldetFuer: z.armGemeldetFuer,
+    };
   } catch {
     return { stupse: {} };
   }
@@ -266,7 +273,10 @@ export function leerlaufWaechter(opts: {
   stupsAbstandMinuten?: number;
   maxStupse?: number;
   melde?: (text: string) => void;
-}): PromptInboxLauf['stups'] | { ruht: string } {
+  /** Hook-Protokoll. Nur für Tests — in Produktion wird ~/.claude/hooks.log gelesen. */
+  hookProtokoll?: string;
+  hookProtokollPfad?: string;
+}): PromptInboxLauf['stups'] | { ruht: string } | { armWartung: string } {
   const homeDir = opts.homeDir;
   const inboxDir = opts.inboxDir ?? path.join(homeDir, 'inbox');
   const reportDir = opts.reportDir ?? path.join(homeDir, 'bikosoc-spec');
@@ -289,6 +299,27 @@ export function leerlaufWaechter(opts: {
       speichereZustand(zustandPfad, zustand);
     }
     return { ruht: grundText(bereitschaft.grund) };
+  }
+
+  /* Wartet eine Armierung, ist ein Stups sinnlos: Claude Code kann den roten
+     Schritt nicht ausführen, und „weiter mit …" würde nur denselben
+     blockierten Versuch wiederholen. Gebraucht wird der Owner — einmal und
+     sofort, ohne die zehn Minuten Leerlauf abzuwarten. */
+  const protokollPfad = opts.hookProtokollPfad
+    ?? path.join(homeDir, '.claude', 'hooks.log');
+  let protokoll = opts.hookProtokoll;
+  if (protokoll === undefined) {
+    try { protokoll = fs.readFileSync(protokollPfad, 'utf-8'); } catch { protokoll = ''; }
+  }
+  const arm = erkenneArmWartung(protokoll, now);
+  if (arm.wartet) {
+    if (zustand.armGemeldetFuer === arm.zeitpunkt) {
+      return { ruht: 'Armierung wartet, bereits gemeldet' };
+    }
+    opts.melde?.(armMeldung(arm));
+    zustand.armGemeldetFuer = arm.zeitpunkt;
+    speichereZustand(zustandPfad, zustand);
+    return { armWartung: arm.gegenstand || 'roter Pfad' };
   }
 
   if (!zustand.bereitSeit) {

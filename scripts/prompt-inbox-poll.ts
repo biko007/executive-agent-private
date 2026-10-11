@@ -37,7 +37,9 @@ try {
   // Claude Code ohnehin gerade an der gerade uebergebenen Datei.
   if (lauf.zugestellt.length === 0) {
     const w = leerlaufWaechter({ homeDir, melde });
-    if (w && 'kennung' in w) {
+    if (w && 'armWartung' in w) {
+      process.stdout.write(`Prompt-Inbox: wartet auf /arm (${w.armWartung}) — gemeldet.\n`);
+    } else if (w && 'kennung' in w) {
       process.stdout.write(
         `Prompt-Inbox: Stups ${w.versuch} zu ${w.kennung}`
         + `${w.gemeldet ? ' (gemeldet, Waechter ruht jetzt)' : ''}\n`);

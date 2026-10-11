@@ -139,3 +139,84 @@ export function auftragsKennung(dateiname: string): string | null {
   name = name.trim().replace(/^-+|-+$/g, '');
   return name.length >= 3 ? name : null;
 }
+
+// ── Wartet cc auf eine Armierung? ──────────────────────────────────────────
+//
+// Ein Stups hilft hier nicht: Solange `/arm` nicht gesetzt ist, kann Claude
+// Code den roten Schritt nicht ausführen, und ein „weiter mit …" würde nur
+// denselben blockierten Versuch wiederholen. Gebraucht wird der Owner, und
+// zwar einmal und sofort.
+//
+// Erkannt wird das am Protokoll des Deny-Hooks. Er schreibt bei jedem
+// blockierten roten Pfad oder Befehl eine Zeile der Form
+//
+//   <ISO-Zeit> [BLOCK] [bikosoc] not armed (...): red command: <Muster>
+//   <ISO-Zeit> [BLOCK] [bikosoc] not armed (...): red path: <Datei> matches <Muster>
+//
+// Das ist ein Tatsachenbeleg und keine Textdeutung — deshalb hat es Vorrang
+// vor dem Durchsuchen von Berichten.
+
+/** Zeitfenster, in dem eine Blockade als „noch aktuell" gilt. */
+export const ARM_FENSTER_STUNDEN = 6;
+
+export interface ArmWartung {
+  wartet: boolean;
+  /** Was blockiert wurde — Pfad oder Befehl, für die Meldung. */
+  gegenstand?: string;
+  /** Zeitpunkt der Blockade. */
+  zeitpunkt?: string;
+}
+
+/**
+ * Liest das Hook-Protokoll und sagt, ob eine Armierung aussteht.
+ *
+ * Eine Blockade gilt nur als offen, wenn DANACH keine Armierung mehr
+ * verbraucht wurde: Der Hook schreibt beim Einlösen eine `[ARMED]`-Zeile.
+ * Ohne diese Prüfung würde eine längst erledigte Blockade weitergemeldet.
+ */
+export function erkenneArmWartung(hookProtokoll: string, jetzt: Date): ArmWartung {
+  const zeilen = (hookProtokoll || '').split('\n').filter(z => z.includes('[bikosoc]'));
+  const grenze = jetzt.getTime() - ARM_FENSTER_STUNDEN * 3600000;
+
+  let letzteBlockade: { gegenstand: string; zeit: number; iso: string } | null = null;
+  let letzteArmierung = 0;
+
+  for (const zeile of zeilen) {
+    const m = zeile.match(/^(\S+)\s+\[(BLOCK|ARMED)\]/);
+    if (!m) continue;
+    const zeit = new Date(m[1]).getTime();
+    if (!Number.isFinite(zeit)) continue;
+
+    if (m[2] === 'ARMED') {
+      letzteArmierung = Math.max(letzteArmierung, zeit);
+      continue;
+    }
+    if (!/not armed/.test(zeile)) continue;
+    const g = zeile.match(/:\s*(red (?:path|command):.*)$/);
+    letzteBlockade = { gegenstand: (g ? g[1] : zeile).trim(), zeit, iso: m[1] };
+  }
+
+  if (!letzteBlockade) return { wartet: false };
+  if (letzteBlockade.zeit < grenze) return { wartet: false };
+  // Nach der Blockade wurde armiert — dann ist sie erledigt.
+  if (letzteArmierung > letzteBlockade.zeit) return { wartet: false };
+
+  return {
+    wartet: true,
+    gegenstand: letzteBlockade.gegenstand,
+    zeitpunkt: letzteBlockade.iso,
+  };
+}
+
+/**
+ * Meldungstext mit antippbarem Link.
+ *
+ * `t.me/share/url` öffnet im Telegram-Client ein Eingabefeld mit dem
+ * vorbereiteten Text — der Owner muss nur noch den Chat wählen und senden.
+ * Ein echter Befehlslink ist in Telegram nicht möglich.
+ */
+export function armMeldung(w: ArmWartung): string {
+  return `cc wartet auf /arm für ${w.gegenstand || 'einen roten Pfad'}`
+    + `${w.zeitpunkt ? ` (blockiert ${w.zeitpunkt})` : ''}. `
+    + 'Antippen und senden: https://t.me/share/url?url=%2Farm%20push';
+}

@@ -18,7 +18,9 @@ import { describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pruefeBereitschaft, auftragsKennung } from '../bereitschaft.js';
+import {
+  pruefeBereitschaft, auftragsKennung, erkenneArmWartung, armMeldung,
+} from '../bereitschaft.js';
 import { processPromptInboxOnce, leerlaufWaechter, offeneAuftraege } from '../index.js';
 import type { TmuxRunner } from '../../cc-prompt-dispatch/index.js';
 
@@ -422,5 +424,140 @@ describe('leerlaufWaechter', () => {
     leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:00:00Z') });
     const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:11:00Z') });
     expect(w).toMatchObject({ versuch: 1 });
+  });
+});
+
+// ── Armierungs-Wartung (Ergänzung Owner-Freigabe 11.10.2026) ───────────────
+//
+// Wartet cc auf `/arm`, hilft kein Stups: Der rote Schritt lässt sich nicht
+// ausführen, und „weiter mit …" wiederholt nur den blockierten Versuch.
+// Gebraucht wird der Owner — einmal und sofort.
+
+/** Protokollzeilen in der Form, die der Deny-Hook schreibt. */
+function hookZeile(zeit: string, art: 'BLOCK' | 'ARMED', rest: string): string {
+  return art === 'BLOCK'
+    ? `${zeit} [BLOCK] [bikosoc] not armed (/home/biko/.armed-bikosoc fehlt): ${rest}`
+    : `${zeit} [ARMED] [bikosoc] Armed-Flag verbraucht (/home/biko/.armed-bikosoc) durch: ${rest}`;
+}
+
+const JETZT = new Date('2026-10-11T08:00:00Z');
+
+describe('erkenneArmWartung', () => {
+  it('erkennt eine frische Blockade auf einen roten Pfad', () => {
+    const log = hookZeile('2026-10-11T07:50:00Z', 'BLOCK',
+      'red path: src/modules/assets/migrations/V041__x.sql matches */migrations/*.sql');
+    const w = erkenneArmWartung(log, JETZT);
+    expect(w.wartet).toBe(true);
+    expect(w.gegenstand).toContain('V041');
+    expect(w.zeitpunkt).toBe('2026-10-11T07:50:00Z');
+  });
+
+  it('erkennt eine Blockade auf einen roten Befehl', () => {
+    const log = hookZeile('2026-10-11T07:55:00Z', 'BLOCK', 'red command: psql.*openclaw_core');
+    expect(erkenneArmWartung(log, JETZT).wartet).toBe(true);
+  });
+
+  it('meldet NICHT, wenn nach der Blockade armiert wurde', () => {
+    /* Der entscheidende Fall: Die Blockade ist erledigt, sobald das Flag
+       eingelöst wurde. Ohne diese Prüfung käme die Meldung noch Stunden
+       später. */
+    const log = [
+      hookZeile('2026-10-11T07:40:00Z', 'BLOCK', 'red path: …/V041__x.sql matches …'),
+      hookZeile('2026-10-11T07:45:00Z', 'ARMED', 'red path: …/V041__x.sql matches …'),
+    ].join('\n');
+    expect(erkenneArmWartung(log, JETZT).wartet).toBe(false);
+  });
+
+  it('meldet NICHT bei einer alten Blockade', () => {
+    const log = hookZeile('2026-10-10T20:00:00Z', 'BLOCK', 'red path: …/V040__x.sql matches …');
+    expect(erkenneArmWartung(log, JETZT).wartet).toBe(false);
+  });
+
+  it('meldet NICHT bei leerem oder fremdem Protokoll', () => {
+    expect(erkenneArmWartung('', JETZT).wartet).toBe(false);
+    expect(erkenneArmWartung('2026-10-11T07:50:00Z [BLOCK] [hdcc] not armed: red path: x',
+      JETZT).wartet).toBe(false);
+  });
+
+  it('nimmt die JÜNGSTE Blockade, wenn mehrere vorliegen', () => {
+    const log = [
+      hookZeile('2026-10-11T07:10:00Z', 'BLOCK', 'red path: alt.sql matches …'),
+      hookZeile('2026-10-11T07:50:00Z', 'BLOCK', 'red path: neu.sql matches …'),
+    ].join('\n');
+    expect(erkenneArmWartung(log, JETZT).gegenstand).toContain('neu.sql');
+  });
+
+  it('baut eine Meldung mit antippbarem Link', () => {
+    const text = armMeldung({ wartet: true, gegenstand: 'red path: V041__x.sql', zeitpunkt: '2026-10-11T07:50:00Z' });
+    expect(text).toContain('wartet auf /arm');
+    expect(text).toContain('V041__x.sql');
+    expect(text).toContain('t.me/share/url?url=%2Farm%20push');
+  });
+});
+
+describe('leerlaufWaechter — Armierung geht vor Stups', () => {
+  function aufbau() {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-arm-'));
+    const inboxDir = path.join(homeDir, 'inbox');
+    const doneDir = path.join(inboxDir, 'done');
+    const reportDir = path.join(homeDir, 'bikosoc-spec');
+    fs.mkdirSync(doneDir, { recursive: true });
+    fs.mkdirSync(reportDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(doneDir, '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-paket9-steht-20261011.txt'),
+      'AUTO — Paket 9.');
+    return { homeDir, inboxDir, reportDir, zustandPfad: path.join(homeDir, 'waechter.json') };
+  }
+
+  const PANE_RUHIG = '  Fertig.\n───────\n> \n───────\n  bypass permissions on · 1 shell\n';
+  const BLOCKADE = hookZeile('2026-10-11T07:50:00Z', 'BLOCK',
+    'red path: src/modules/assets/migrations/V041__x.sql matches */migrations/*.sql');
+
+  it('meldet sofort statt zu stupsen — ohne die zehn Minuten abzuwarten', () => {
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const getippt: string[] = [];
+    const runner = (_f: string, args: string[]) => { if (args.includes('--')) getippt.push(args[4]); };
+
+    const w = leerlaufWaechter({
+      ...a, runner, melde: (t) => meldungen.push(t),
+      paneText: PANE_RUHIG, hookProtokoll: BLOCKADE, now: JETZT,
+    });
+
+    expect(w).toMatchObject({ armWartung: expect.stringContaining('V041') });
+    expect(meldungen).toHaveLength(1);
+    expect(meldungen[0]).toContain('t.me/share/url');
+    // Kein Stups: Der wuerde nur den blockierten Versuch wiederholen.
+    expect(getippt).toHaveLength(0);
+  });
+
+  it('meldet dieselbe Blockade nur EINMAL', () => {
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const runner = () => {};
+    const opts = {
+      ...a, runner, melde: (t: string) => meldungen.push(t),
+      paneText: PANE_RUHIG, hookProtokoll: BLOCKADE,
+    };
+    leerlaufWaechter({ ...opts, now: JETZT });
+    const w = leerlaufWaechter({ ...opts, now: new Date('2026-10-11T08:30:00Z') });
+    expect(meldungen).toHaveLength(1);
+    expect(w).toMatchObject({ ruht: 'Armierung wartet, bereits gemeldet' });
+  });
+
+  it('stupst wieder normal, sobald armiert wurde', () => {
+    const a = aufbau();
+    const getippt: string[] = [];
+    const runner = (_f: string, args: string[]) => { if (args.includes('--')) getippt.push(args[4]); };
+    const erledigt = [
+      BLOCKADE,
+      hookZeile('2026-10-11T07:55:00Z', 'ARMED', 'red path: …/V041__x.sql matches …'),
+    ].join('\n');
+    const opts = { ...a, runner, paneText: PANE_RUHIG, hookProtokoll: erledigt };
+
+    leerlaufWaechter({ ...opts, now: JETZT });                                  // Uhr startet
+    const w = leerlaufWaechter({ ...opts, now: new Date('2026-10-11T08:11:00Z') });
+    expect(w).toMatchObject({ versuch: 1 });
+    expect(getippt[0]).toContain('weiter mit');
   });
 });

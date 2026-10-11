@@ -4,6 +4,33 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Wächter meldet eine wartende Armierung (Ergänzung Teil Q)
+
+Owner-Ergänzung zur C7-Freigabe von Teil Q.
+
+**Warum ein Stups hier nicht hilft:** Wartet Claude Code auf `/arm`, lässt sich
+der rote Schritt nicht ausführen. Ein „weiter mit …" würde nur denselben
+blockierten Versuch wiederholen. Gebraucht wird der Owner — einmal und sofort,
+ohne die zehn Minuten Leerlauf abzuwarten.
+
+**Erkannt am Protokoll des Deny-Hooks**, nicht an Textdeutung in Berichten: Der
+Hook schreibt bei jedem blockierten roten Pfad oder Befehl eine `[BLOCK]`-Zeile
+mit `not armed` und beim Einlösen eine `[ARMED]`-Zeile. Eine Blockade gilt nur
+als offen, wenn danach keine Armierung mehr verbraucht wurde — ohne diese
+Prüfung käme die Meldung noch Stunden nach dem Erledigen. Zeitfenster sechs
+Stunden, Meldung je Blockade genau einmal.
+
+**Die Meldung trägt einen antippbaren Link:**
+`https://t.me/share/url?url=%2Farm%20push` öffnet im Telegram-Client ein
+Eingabefeld mit dem vorbereiteten Befehl; der Owner wählt nur noch den Chat.
+Ein echter Befehlslink ist in Telegram nicht möglich.
+
+**Tests:** 10 neue, darunter der Fall „nach der Blockade wurde armiert" (darf
+nicht melden) und „dieselbe Blockade zweimal" (meldet nur einmal). Gesamt
+980/0/0.
+
+---
+
 ## Stand 2026-10-11 — Brennstoff nach Lagerbestand (Entscheidungen zu Paket 3c)
 
 **Lagerbestandsrechnung statt Lieferdatum.** § 7 Abs. 2 HeizkostenV legt „die
