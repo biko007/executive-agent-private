@@ -23,7 +23,7 @@ function melde(text: string): void {
   }
 }
 
-try {
+async function main() {
   const lauf = processPromptInboxOnce({ homeDir });
 
   if (lauf.zugestellt.length > 0) {
@@ -36,7 +36,7 @@ try {
   // Der Waechter laeuft nur, wenn nichts zugestellt wurde — sonst arbeitet
   // Claude Code ohnehin gerade an der gerade uebergebenen Datei.
   if (lauf.zugestellt.length === 0) {
-    const w = leerlaufWaechter({ homeDir, melde });
+    const w = await leerlaufWaechter({ homeDir, melde });
     if (w && 'armWartung' in w) {
       process.stdout.write(`Prompt-Inbox: wartet auf /arm (${w.armWartung}) — gemeldet.\n`);
     } else if (w && 'kennung' in w) {
@@ -45,7 +45,11 @@ try {
         + `${w.gemeldet ? ' (gemeldet, Waechter ruht jetzt)' : ''}\n`);
     }
   }
-} catch (e: any) {
-  process.stderr.write(`Prompt-Inbox Fehler: ${e.message}\n`);
-  process.exit(1);
 }
+
+main()
+  .then(() => process.exit(0))
+  .catch((e: any) => {
+    process.stderr.write(`Prompt-Inbox Fehler: ${e.message}\n`);
+    process.exit(1);
+  });

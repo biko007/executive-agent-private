@@ -4,6 +4,52 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — V041 angewendet, Armierungsbedarf über Tatsachen (Teil A und B)
+
+**V041 angewendet.** Der Verbrauchsanteil bei `heating_split` darf jetzt 0 bis
+100 Prozent betragen; `verify-schema` meldet kein Drift mehr. MG24 bleibt nach
+Owner-Entscheidung bei 30/70, bis die W3-Wärmemengenzähler geklärt sind — die
+Sperre ist weg, die Umstellung ist eine eigene Entscheidung.
+
+**Neues Modul `arm-status`.** Es schließt die Lücke, die der Protokollweg offen
+ließ: Hat Claude Code den roten Schritt nie versucht, steht nichts im
+Hook-Protokoll. Gefragt wird deshalb nach Tatsachen:
+
+1. Liegt in den noch nicht gepushten Commits ein roter Pfad?
+   (`git diff --name-only @{upstream}..HEAD` gegen die Muster aus
+   `red-zone.conf` — maßgeblich bleibt allein diese Datei, eine zweite Liste im
+   Code wäre der Weg, auf dem beide auseinanderlaufen.)
+2. Liegt eine Migrationsdatei vor, deren Version nicht in `schema_version`
+   steht?
+
+Das Modul liegt bewusst NICHT in der Prompt-Inbox: Ein statischer Guard
+verbietet ihr jeden eigenen Unterprozess, damit aller tmux-Zugriff an einer
+Stelle bleibt — Git-Aufrufe gehören nach derselben Logik dorthin, wo sie
+sichtbar sind.
+
+**Drei Entscheidungen, die den Unterschied machen:**
+
+- **Ohne Datenbankantwort wird geschwiegen** statt geraten. Sonst erzeugte
+  jeder Datenbankausfall eine Meldung.
+- **Boot-Zeit-Migrationen (`0xx_`-Vorsatz) zählen nicht** — die wendet der
+  Dienst beim Start selbst an; sie würden dauerhaft gemeldet.
+- **Versionen werden je MODUL verglichen.** V037 gibt es bei Fleet und bei
+  Instagram, V043 bei Memory und bei telegram-binding. Ein Vergleich nur über
+  die Zahl würde eine angewendete Migration für offen halten.
+
+**Ein Fehler, den der eigene Test gefunden hat:** Die Übersetzung der
+bash-Globs in reguläre Ausdrücke benutzte ein Leerzeichen als Platzhalter für
+`**`. Der Übersetzer machte daraus zwei verschiedene unsichtbare Zeichen,
+sodass kein einziges `**`-Muster mehr traf — `.claude/hooks/**` hätte also nie
+angeschlagen. Behoben, indem der Platzhalter entfällt: In bash überspannt schon
+ein einzelnes `*` auch Schrägstriche, `**` bedeutet dort nichts anderes.
+
+**Tests:** 33 neue, davon ein Drittel Fehlalarm-Fälle (gewöhnliche
+Quelldateien, Dateien mit „migration" im Namen außerhalb des Ordners, Tests zu
+Migrationen, leere Konfiguration, Datenbankfehler). Gesamt 1013/0/0.
+
+---
+
 ## Stand 2026-10-11 — Wächter meldet eine wartende Armierung (Ergänzung Teil Q)
 
 Owner-Ergänzung zur C7-Freigabe von Teil Q.

@@ -8,6 +8,8 @@ import {
   erkenneArmWartung, armMeldung,
   type Bereitschaft,
 } from './bereitschaft.js';
+import { pruefeArmBedarf } from '../arm-status/index.js';
+import { query as dbAbfrageStandard } from '../../shared/db/index.js';
 
 export interface PromptInboxResult {
   sourcePath: string;
@@ -260,7 +262,7 @@ export function processPromptInboxOnce(opts: {
  * Nachts gilt dasselbe — ein Stillstand um drei Uhr kostet genauso viel Zeit
  * wie einer um drei Uhr nachmittags.
  */
-export function leerlaufWaechter(opts: {
+export async function leerlaufWaechter(opts: {
   homeDir: string;
   inboxDir?: string;
   reportDir?: string;
@@ -276,7 +278,12 @@ export function leerlaufWaechter(opts: {
   /** Hook-Protokoll. Nur für Tests — in Produktion wird ~/.claude/hooks.log gelesen. */
   hookProtokoll?: string;
   hookProtokollPfad?: string;
-}): PromptInboxLauf['stups'] | { ruht: string } | { armWartung: string } {
+  /**
+   * Tatsachenprüfung auf eine wartende Armierung. Wird sie nicht übergeben,
+   * fragt der Wächter `arm-status` mit Git und Datenbank.
+   */
+  armBedarf?: () => Promise<{ wartet: boolean; gegenstand?: string; kennung?: string }>;
+}): Promise<PromptInboxLauf['stups'] | { ruht: string } | { armWartung: string }> {
   const homeDir = opts.homeDir;
   const inboxDir = opts.inboxDir ?? path.join(homeDir, 'inbox');
   const reportDir = opts.reportDir ?? path.join(homeDir, 'bikosoc-spec');
@@ -320,6 +327,33 @@ export function leerlaufWaechter(opts: {
     zustand.armGemeldetFuer = arm.zeitpunkt;
     speichereZustand(zustandPfad, zustand);
     return { armWartung: arm.gegenstand || 'roter Pfad' };
+  }
+
+  /* Zweiter Weg über TATSACHEN statt über das Protokoll: Hat Claude Code den
+     roten Schritt nie versucht, steht nichts im Protokoll. Dann zählt, ob
+     ungepushte Arbeit an einem roten Pfad liegt oder eine Migrationsdatei
+     ohne Eintrag in `schema_version`. Beides ist eine Abfrage mit eindeutiger
+     Antwort — anders als das Durchsuchen von Berichtstexten, das auf Prosa
+     anschlug und deshalb verworfen wurde. */
+  const pruefung = opts.armBedarf ?? (() => pruefeArmBedarf({
+    homeDir,
+    dbAbfrage: async (sql) => (await dbAbfrageStandard<{ modul: string; version: number }>(sql)).rows,
+  }));
+  let bedarf: { wartet: boolean; gegenstand?: string; kennung?: string };
+  try {
+    bedarf = await pruefung();
+  } catch {
+    bedarf = { wartet: false };
+  }
+  if (bedarf.wartet) {
+    const kennung = bedarf.kennung || bedarf.gegenstand || 'arm';
+    if (zustand.armGemeldetFuer === kennung) {
+      return { ruht: 'Armierung wartet, bereits gemeldet' };
+    }
+    opts.melde?.(armMeldung({ wartet: true, gegenstand: bedarf.gegenstand }));
+    zustand.armGemeldetFuer = kennung;
+    speichereZustand(zustandPfad, zustand);
+    return { armWartung: bedarf.gegenstand || 'roter Pfad' };
   }
 
   if (!zustand.bereitSeit) {

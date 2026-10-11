@@ -76,6 +76,12 @@ function lege(inboxDir: string, name: string, text: string, mtime?: Date): strin
   return p;
 }
 
+/* Die Tatsachenpruefung auf eine wartende Armierung fragt Git und die
+   Datenbank. In diesen Tests ist sie abgeschaltet: Geprueft wird hier die
+   Warteschlange, nicht die Armierungserkennung — die hat ihre eigenen Tests
+   in arm-status. */
+const KEIN_BEDARF = async () => ({ wartet: false });
+
 function sammler(): { calls: { args: string[] }[]; runner: TmuxRunner } {
   const calls: { args: string[] }[] = [];
   return { calls, runner: (_f, args) => { calls.push({ args }); } };
@@ -84,24 +90,24 @@ function sammler(): { calls: { args: string[] }[]; runner: TmuxRunner } {
 // ── Bereitschaftserkennung ─────────────────────────────────────────────────
 
 describe('pruefeBereitschaft', () => {
-  it('erkennt einen laufenden Durchgang an "esc to interrupt"', () => {
+  it('erkennt einen laufenden Durchgang an "esc to interrupt"', async () => {
     const b = pruefeBereitschaft(PANE_ARBEITET);
     expect(b.bereit).toBe(false);
     expect(b.grund).toBe('laufender_durchgang');
   });
 
-  it('erkennt ein ruhendes Pane als bereit', () => {
+  it('erkennt ein ruhendes Pane als bereit', async () => {
     expect(pruefeBereitschaft(PANE_RUHT).bereit).toBe(true);
   });
 
-  it('behandelt ein leeres Pane als NICHT bereit', () => {
+  it('behandelt ein leeres Pane als NICHT bereit', async () => {
     // Leer heisst: tmux nicht erreichbar oder Sitzung weg. Dann wird nicht
     // getippt — ins Leere zu tippen verliert den Auftrag still.
     expect(pruefeBereitschaft('').bereit).toBe(false);
     expect(pruefeBereitschaft('   \n  ').grund).toBe('pane_leer');
   });
 
-  it('erkennt die Laufzeitanzeige auch ohne "esc to interrupt"', () => {
+  it('erkennt die Laufzeitanzeige auch ohne "esc to interrupt"', async () => {
     const b = pruefeBereitschaft('✶ Denke nach… (3m 12s · ↓ 40k tokens)\n❯ ');
     expect(b.bereit).toBe(false);
     expect(b.grund).toBe('laufender_durchgang');
@@ -109,17 +115,17 @@ describe('pruefeBereitschaft', () => {
 });
 
 describe('pruefeBereitschaft — Missbrauchsfälle (C7)', () => {
-  it('sperrt bei offener Freigabefrage', () => {
+  it('sperrt bei offener Freigabefrage', async () => {
     const b = pruefeBereitschaft(PANE_DIALOG);
     expect(b.bereit).toBe(false);
     expect(b.grund).toBe('dialog_offen');
   });
 
-  it('sperrt bei offenem Plan-Gate', () => {
+  it('sperrt bei offenem Plan-Gate', async () => {
     expect(pruefeBereitschaft(PANE_PLAN_GATE).grund).toBe('dialog_offen');
   });
 
-  it('sperrt NICHT bei numerierten Zeilen aus einem Auftragstext', () => {
+  it('sperrt NICHT bei numerierten Zeilen aus einem Auftragstext', async () => {
     /* Der Gegenfall: Ein Auftrag im Scrollback enthält eine Liste. Würde das
        als Dialog gelten, stellte die Inbox nie wieder zu — eine Sperre, die
        immer greift, ist so schlimm wie keine. */
@@ -135,14 +141,14 @@ describe('pruefeBereitschaft — Missbrauchsfälle (C7)', () => {
     expect(pruefeBereitschaft(pane).bereit).toBe(true);
   });
 
-  it('sperrt NICHT bei einem Dialogtext weit oben im Scrollback', () => {
+  it('sperrt NICHT bei einem Dialogtext weit oben im Scrollback', async () => {
     /* Nur die letzten Zeilen zählen. Ein beantworteter Dialog von vor einer
        Stunde steht noch im Scrollback und darf nicht dauerhaft sperren. */
     const pane = [PANE_DIALOG, ...Array(30).fill('  ⎿  … Arbeit …'), '❯ '].join('\n');
     expect(pruefeBereitschaft(pane).bereit).toBe(true);
   });
 
-  it('sperrt bei einem Dialog, der unten steht und noch wartet', () => {
+  it('sperrt bei einem Dialog, der unten steht und noch wartet', async () => {
     const pane = [...Array(30).fill('  ⎿  … Arbeit …'), PANE_DIALOG].join('\n');
     expect(pruefeBereitschaft(pane).grund).toBe('dialog_offen');
   });
@@ -151,7 +157,7 @@ describe('pruefeBereitschaft — Missbrauchsfälle (C7)', () => {
 // ── Zustellung ─────────────────────────────────────────────────────────────
 
 describe('processPromptInboxOnce — Zustellung nur bei Bereitschaft', () => {
-  it('stellt NICHT zu, solange Claude Code arbeitet, und lässt die Datei liegen', () => {
+  it('stellt NICHT zu, solange Claude Code arbeitet, und lässt die Datei liegen', async () => {
     const homeDir = tempHome();
     const inboxDir = path.join(homeDir, 'inbox');
     const datei = lege(inboxDir, 'auftrag.txt', 'AUTO — irgendwas tun.');
@@ -167,7 +173,7 @@ describe('processPromptInboxOnce — Zustellung nur bei Bereitschaft', () => {
     expect(fs.existsSync(datei)).toBe(true);
   });
 
-  it('stellt NICHT zu, solange ein Dialog wartet', () => {
+  it('stellt NICHT zu, solange ein Dialog wartet', async () => {
     const homeDir = tempHome();
     const datei = lege(path.join(homeDir, 'inbox'), 'auftrag.txt', '1. Yes');
     const { calls, runner } = sammler();
@@ -179,7 +185,7 @@ describe('processPromptInboxOnce — Zustellung nur bei Bereitschaft', () => {
     expect(fs.existsSync(datei)).toBe(true);
   });
 
-  it('stellt zu, sobald das Pane ruht', () => {
+  it('stellt zu, sobald das Pane ruht', async () => {
     const homeDir = tempHome();
     const datei = lege(path.join(homeDir, 'inbox'), 'auftrag.txt', 'AUTO — weiter.');
     const { calls, runner } = sammler();
@@ -195,7 +201,7 @@ describe('processPromptInboxOnce — Zustellung nur bei Bereitschaft', () => {
 });
 
 describe('processPromptInboxOnce — Reihenfolge und Drosselung', () => {
-  it('stellt höchstens EINE Datei pro Lauf zu', () => {
+  it('stellt höchstens EINE Datei pro Lauf zu', async () => {
     /* Nach der Zustellung arbeitet Claude Code. Eine zweite Datei im selben
        Lauf träfe genau den Zustand, den die Pruefung verhindern soll. */
     const homeDir = tempHome();
@@ -211,7 +217,7 @@ describe('processPromptInboxOnce — Reihenfolge und Drosselung', () => {
     expect(fs.existsSync(path.join(inboxDir, 'b.txt'))).toBe(true);
   });
 
-  it('hält die Reihenfolge nach Dateizeit, nicht nach Name', () => {
+  it('hält die Reihenfolge nach Dateizeit, nicht nach Name', async () => {
     /* Der Dateiname traegt den Zeitstempel der Dropbox-Uebergabe, nicht den
        der Ablage. Wer eine Datei von Hand nachlegt, soll nicht vordraengeln. */
     const homeDir = tempHome();
@@ -225,7 +231,7 @@ describe('processPromptInboxOnce — Reihenfolge und Drosselung', () => {
     expect(calls[0].args[4]).toBe('ALT');
   });
 
-  it('arbeitet die Warteschlange über mehrere Läufe ab', () => {
+  it('arbeitet die Warteschlange über mehrere Läufe ab', async () => {
     const homeDir = tempHome();
     const inboxDir = path.join(homeDir, 'inbox');
     lege(inboxDir, 'a.txt', 'erster', new Date('2026-10-11T06:00:00Z'));
@@ -246,17 +252,17 @@ describe('processPromptInboxOnce — Reihenfolge und Drosselung', () => {
 // ── Auftragskennung und offene Aufträge ────────────────────────────────────
 
 describe('auftragsKennung', () => {
-  it('schält die Kennung aus einem Dropbox-Dateinamen', () => {
+  it('schält die Kennung aus einem Dropbox-Dateinamen', async () => {
     expect(auftragsKennung(
       '2026-10-10T21-18-20-906Z-dropbox-20261010-231720-paket3c-casameta-hybrid-20261010.txt'))
       .toBe('paket3c-casameta-hybrid');
   });
 
-  it('kommt mit einem von Hand abgelegten Namen zurecht', () => {
+  it('kommt mit einem von Hand abgelegten Namen zurecht', async () => {
     expect(auftragsKennung('meine-aufgabe.txt')).toBe('meine-aufgabe');
   });
 
-  it('gibt null bei zu kurzem Rest', () => {
+  it('gibt null bei zu kurzem Rest', async () => {
     expect(auftragsKennung('ab.txt')).toBeNull();
   });
 });
@@ -271,14 +277,14 @@ describe('offeneAuftraege', () => {
     return { homeDir, doneDir, reportDir };
   }
 
-  it('nennt einen Auftrag ohne Report', () => {
+  it('nennt einen Auftrag ohne Report', async () => {
     const { doneDir, reportDir } = aufbau();
     fs.writeFileSync(path.join(doneDir, '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-paket9-irgendwas-20261011.txt'), 'x');
     const offen = offeneAuftraege({ doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z') });
     expect(offen.map(o => o.kennung)).toEqual(['paket9-irgendwas']);
   });
 
-  it('nennt einen Auftrag mit Report NICHT', () => {
+  it('nennt einen Auftrag mit Report NICHT', async () => {
     const { doneDir, reportDir } = aufbau();
     fs.writeFileSync(path.join(doneDir, '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-paket9-irgendwas-20261011.txt'), 'x');
     fs.writeFileSync(path.join(reportDir, 'report-paket9-irgendwas-20261011.md'), '# fertig');
@@ -286,13 +292,13 @@ describe('offeneAuftraege', () => {
     expect(offen).toHaveLength(0);
   });
 
-  it('übergeht die eigenen Quittungen des Pollers', () => {
+  it('übergeht die eigenen Quittungen des Pollers', async () => {
     const { doneDir, reportDir } = aufbau();
     fs.writeFileSync(path.join(doneDir, '2026-10-11T06-00-00-000Z-prompt-inbox-20261011.txt'), 'x');
     expect(offeneAuftraege({ doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z') })).toHaveLength(0);
   });
 
-  it('übergeht alte Aufträge', () => {
+  it('übergeht alte Aufträge', async () => {
     const { doneDir, reportDir } = aufbau();
     const p = path.join(doneDir, '2026-10-01T06-00-00-000Z-dropbox-20261001-060000-altes-paket-20261001.txt');
     fs.writeFileSync(p, 'x');
@@ -325,27 +331,27 @@ describe('leerlaufWaechter', () => {
     };
   }
 
-  it('stupst nicht, solange Claude Code arbeitet', () => {
+  it('stupst nicht, solange Claude Code arbeitet', async () => {
     const a = aufbau();
     const { calls, runner } = sammler();
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_ARBEITET, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_ARBEITET, now: new Date('2026-10-11T07:00:00Z') });
     expect(w).toEqual({ ruht: 'Claude Code arbeitet gerade' });
     expect(calls).toHaveLength(0);
   });
 
-  it('stupst nicht beim ersten ruhenden Lauf — die Uhr beginnt erst', () => {
+  it('stupst nicht beim ersten ruhenden Lauf — die Uhr beginnt erst', async () => {
     const a = aufbau();
     const { calls, runner } = sammler();
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
     expect(w).toEqual({ ruht: 'Leerlauf beginnt gerade' });
     expect(calls).toHaveLength(0);
   });
 
-  it('stupst nach Ablauf der Leerlaufzeit mit "weiter mit <Datei>"', () => {
+  it('stupst nach Ablauf der Leerlaufzeit mit "weiter mit <Datei>"', async () => {
     const a = aufbau();
     const { calls, runner } = sammler();
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
-    const w = leerlaufWaechter({
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF,
       ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z'),
     });
     expect(w).toMatchObject({ kennung: 'paket9-steht', versuch: 1, gemeldet: false });
@@ -354,21 +360,21 @@ describe('leerlaufWaechter', () => {
     expect(text).toContain('paket9-steht');
   });
 
-  it('meldet nach dem zweiten erfolglosen Stups und ruht dann', () => {
+  it('meldet nach dem zweiten erfolglosen Stups und ruht dann', async () => {
     const a = aufbau();
     const { runner } = sammler();
     const meldungen: string[] = [];
     const melde = (t: string) => meldungen.push(t);
 
     // Uhr starten, erster Stups.
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
     // Uhr erneut starten, zweiter Stups.
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:12:00Z') });
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:23:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:12:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:23:00Z') });
     // Uhr erneut starten, jetzt muss gemeldet werden.
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:24:00Z') });
-    const w = leerlaufWaechter({
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:24:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF,
       ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T07:35:00Z'),
     });
 
@@ -378,51 +384,51 @@ describe('leerlaufWaechter', () => {
     expect(meldungen[0]).toContain('Stupse ohne Wirkung');
 
     // Danach ruht der Waechter fuer diesen Auftrag — kein Dauerstups.
-    leerlaufWaechter({ ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T08:00:00Z') });
-    const w2 = leerlaufWaechter({
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T08:00:00Z') });
+    const w2 = await leerlaufWaechter({ armBedarf: KEIN_BEDARF,
       ...a, runner, melde, paneText: PANE_RUHT, now: new Date('2026-10-11T08:20:00Z'),
     });
     expect(w2).toMatchObject({ ruht: 'Auftrag paket9-steht ist gemeldet' });
     expect(meldungen).toHaveLength(1);
   });
 
-  it('stupst nicht, wenn kein Auftrag offen ist', () => {
+  it('stupst nicht, wenn kein Auftrag offen ist', async () => {
     const a = aufbau(false);
     const { calls, runner } = sammler();
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
     expect(w).toEqual({ ruht: 'kein offener Auftrag' });
     expect(calls).toHaveLength(0);
   });
 
-  it('stupst nicht, wenn noch eine Datei in der Inbox wartet', () => {
+  it('stupst nicht, wenn noch eine Datei in der Inbox wartet', async () => {
     // Dann erledigt das der normale Lauf — ein Stups waere doppelt.
     const a = aufbau();
     fs.writeFileSync(path.join(a.inboxDir, 'neu.txt'), 'noch was');
     const { calls, runner } = sammler();
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z') });
     expect(w).toEqual({ ruht: 'Datei wartet in der Inbox' });
     expect(calls).toHaveLength(0);
   });
 
-  it('setzt die Leerlaufuhr zurück, sobald wieder gearbeitet wird', () => {
+  it('setzt die Leerlaufuhr zurück, sobald wieder gearbeitet wird', async () => {
     const a = aufbau();
     const { calls, runner } = sammler();
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
     // Zwischendurch arbeitet Claude Code — die Uhr muss neu beginnen.
-    leerlaufWaechter({ ...a, runner, paneText: PANE_ARBEITET, now: new Date('2026-10-11T07:05:00Z') });
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:06:00Z') });
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:12:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_ARBEITET, now: new Date('2026-10-11T07:05:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:06:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:12:00Z') });
     expect(w).toMatchObject({ ruht: expect.stringContaining('untaetig') });
     expect(calls).toHaveLength(0);
   });
 
-  it('stupst nachts genauso', () => {
+  it('stupst nachts genauso', async () => {
     const a = aufbau();
     const { runner } = sammler();
-    leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:00:00Z') });
-    const w = leerlaufWaechter({ ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:11:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T02:11:00Z') });
     expect(w).toMatchObject({ versuch: 1 });
   });
 });
@@ -443,7 +449,7 @@ function hookZeile(zeit: string, art: 'BLOCK' | 'ARMED', rest: string): string {
 const JETZT = new Date('2026-10-11T08:00:00Z');
 
 describe('erkenneArmWartung', () => {
-  it('erkennt eine frische Blockade auf einen roten Pfad', () => {
+  it('erkennt eine frische Blockade auf einen roten Pfad', async () => {
     const log = hookZeile('2026-10-11T07:50:00Z', 'BLOCK',
       'red path: src/modules/assets/migrations/V041__x.sql matches */migrations/*.sql');
     const w = erkenneArmWartung(log, JETZT);
@@ -452,12 +458,12 @@ describe('erkenneArmWartung', () => {
     expect(w.zeitpunkt).toBe('2026-10-11T07:50:00Z');
   });
 
-  it('erkennt eine Blockade auf einen roten Befehl', () => {
+  it('erkennt eine Blockade auf einen roten Befehl', async () => {
     const log = hookZeile('2026-10-11T07:55:00Z', 'BLOCK', 'red command: psql.*openclaw_core');
     expect(erkenneArmWartung(log, JETZT).wartet).toBe(true);
   });
 
-  it('meldet NICHT, wenn nach der Blockade armiert wurde', () => {
+  it('meldet NICHT, wenn nach der Blockade armiert wurde', async () => {
     /* Der entscheidende Fall: Die Blockade ist erledigt, sobald das Flag
        eingelöst wurde. Ohne diese Prüfung käme die Meldung noch Stunden
        später. */
@@ -468,18 +474,18 @@ describe('erkenneArmWartung', () => {
     expect(erkenneArmWartung(log, JETZT).wartet).toBe(false);
   });
 
-  it('meldet NICHT bei einer alten Blockade', () => {
+  it('meldet NICHT bei einer alten Blockade', async () => {
     const log = hookZeile('2026-10-10T20:00:00Z', 'BLOCK', 'red path: …/V040__x.sql matches …');
     expect(erkenneArmWartung(log, JETZT).wartet).toBe(false);
   });
 
-  it('meldet NICHT bei leerem oder fremdem Protokoll', () => {
+  it('meldet NICHT bei leerem oder fremdem Protokoll', async () => {
     expect(erkenneArmWartung('', JETZT).wartet).toBe(false);
     expect(erkenneArmWartung('2026-10-11T07:50:00Z [BLOCK] [hdcc] not armed: red path: x',
       JETZT).wartet).toBe(false);
   });
 
-  it('nimmt die JÜNGSTE Blockade, wenn mehrere vorliegen', () => {
+  it('nimmt die JÜNGSTE Blockade, wenn mehrere vorliegen', async () => {
     const log = [
       hookZeile('2026-10-11T07:10:00Z', 'BLOCK', 'red path: alt.sql matches …'),
       hookZeile('2026-10-11T07:50:00Z', 'BLOCK', 'red path: neu.sql matches …'),
@@ -487,7 +493,7 @@ describe('erkenneArmWartung', () => {
     expect(erkenneArmWartung(log, JETZT).gegenstand).toContain('neu.sql');
   });
 
-  it('baut eine Meldung mit antippbarem Link', () => {
+  it('baut eine Meldung mit antippbarem Link', async () => {
     const text = armMeldung({ wartet: true, gegenstand: 'red path: V041__x.sql', zeitpunkt: '2026-10-11T07:50:00Z' });
     expect(text).toContain('wartet auf /arm');
     expect(text).toContain('V041__x.sql');
@@ -513,13 +519,13 @@ describe('leerlaufWaechter — Armierung geht vor Stups', () => {
   const BLOCKADE = hookZeile('2026-10-11T07:50:00Z', 'BLOCK',
     'red path: src/modules/assets/migrations/V041__x.sql matches */migrations/*.sql');
 
-  it('meldet sofort statt zu stupsen — ohne die zehn Minuten abzuwarten', () => {
+  it('meldet sofort statt zu stupsen — ohne die zehn Minuten abzuwarten', async () => {
     const a = aufbau();
     const meldungen: string[] = [];
     const getippt: string[] = [];
     const runner = (_f: string, args: string[]) => { if (args.includes('--')) getippt.push(args[4]); };
 
-    const w = leerlaufWaechter({
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF,
       ...a, runner, melde: (t) => meldungen.push(t),
       paneText: PANE_RUHIG, hookProtokoll: BLOCKADE, now: JETZT,
     });
@@ -531,7 +537,7 @@ describe('leerlaufWaechter — Armierung geht vor Stups', () => {
     expect(getippt).toHaveLength(0);
   });
 
-  it('meldet dieselbe Blockade nur EINMAL', () => {
+  it('meldet dieselbe Blockade nur EINMAL', async () => {
     const a = aufbau();
     const meldungen: string[] = [];
     const runner = () => {};
@@ -539,13 +545,13 @@ describe('leerlaufWaechter — Armierung geht vor Stups', () => {
       ...a, runner, melde: (t: string) => meldungen.push(t),
       paneText: PANE_RUHIG, hookProtokoll: BLOCKADE,
     };
-    leerlaufWaechter({ ...opts, now: JETZT });
-    const w = leerlaufWaechter({ ...opts, now: new Date('2026-10-11T08:30:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...opts, now: JETZT });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...opts, now: new Date('2026-10-11T08:30:00Z') });
     expect(meldungen).toHaveLength(1);
     expect(w).toMatchObject({ ruht: 'Armierung wartet, bereits gemeldet' });
   });
 
-  it('stupst wieder normal, sobald armiert wurde', () => {
+  it('stupst wieder normal, sobald armiert wurde', async () => {
     const a = aufbau();
     const getippt: string[] = [];
     const runner = (_f: string, args: string[]) => { if (args.includes('--')) getippt.push(args[4]); };
@@ -555,9 +561,114 @@ describe('leerlaufWaechter — Armierung geht vor Stups', () => {
     ].join('\n');
     const opts = { ...a, runner, paneText: PANE_RUHIG, hookProtokoll: erledigt };
 
-    leerlaufWaechter({ ...opts, now: JETZT });                                  // Uhr startet
-    const w = leerlaufWaechter({ ...opts, now: new Date('2026-10-11T08:11:00Z') });
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...opts, now: JETZT });                                  // Uhr startet
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...opts, now: new Date('2026-10-11T08:11:00Z') });
     expect(w).toMatchObject({ versuch: 1 });
     expect(getippt[0]).toContain('weiter mit');
+  });
+});
+
+describe('leerlaufWaechter — Tatsachenweg zur Armierung', () => {
+  const PANE_LEISE = '  Fertig.\n───────\n> \n───────\n  bypass permissions on · 1 shell\n';
+
+  function aufbau() {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-fakt-'));
+    const doneDir = path.join(homeDir, 'inbox', 'done');
+    fs.mkdirSync(doneDir, { recursive: true });
+    fs.mkdirSync(path.join(homeDir, 'bikosoc-spec'), { recursive: true });
+    fs.writeFileSync(
+      path.join(doneDir, '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-paket9-steht-20261011.txt'),
+      'AUTO — Paket 9.');
+    return {
+      homeDir, reportDir: path.join(homeDir, 'bikosoc-spec'),
+      zustandPfad: path.join(homeDir, 'waechter.json'),
+    };
+  }
+
+  it('meldet, wenn ungepushte Arbeit an einem roten Pfad liegt', async () => {
+    /* Der Fall, den das Hook-Protokoll NICHT sieht: Claude Code hat den Push
+       gar nicht versucht, weil es wusste, dass er blockiert wird. */
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const getippt: string[] = [];
+    const runner = (_f: string, args: string[]) => { if (args.includes('--')) getippt.push(args[4]); };
+
+    const w = await leerlaufWaechter({
+      ...a, runner, melde: (t) => meldungen.push(t),
+      paneText: PANE_LEISE, hookProtokoll: '',
+      armBedarf: async () => ({
+        wartet: true,
+        gegenstand: '1 noch nicht gepushte Änderung an rotem Pfad: src/modules/assets/migrations/V042__x.sql',
+        kennung: 'push:V042',
+      }),
+      now: new Date('2026-10-11T09:00:00Z'),
+    });
+
+    expect(w).toMatchObject({ armWartung: expect.stringContaining('V042') });
+    expect(meldungen).toHaveLength(1);
+    expect(meldungen[0]).toContain('t.me/share/url');
+    expect(getippt).toHaveLength(0);
+  });
+
+  it('meldet dieselbe Lage nur einmal', async () => {
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const opts = {
+      ...a, runner: () => {}, melde: (t: string) => meldungen.push(t),
+      paneText: PANE_LEISE, hookProtokoll: '',
+      armBedarf: async () => ({ wartet: true, gegenstand: 'x', kennung: 'push:gleich' }),
+    };
+    await leerlaufWaechter({ ...opts, now: new Date('2026-10-11T09:00:00Z') });
+    const w = await leerlaufWaechter({ ...opts, now: new Date('2026-10-11T09:30:00Z') });
+    expect(meldungen).toHaveLength(1);
+    expect(w).toMatchObject({ ruht: 'Armierung wartet, bereits gemeldet' });
+  });
+
+  it('meldet erneut, wenn sich die Lage ändert', async () => {
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const basis = {
+      ...a, runner: () => {}, melde: (t: string) => meldungen.push(t),
+      paneText: PANE_LEISE, hookProtokoll: '',
+    };
+    await leerlaufWaechter({
+      ...basis, armBedarf: async () => ({ wartet: true, gegenstand: 'a', kennung: 'push:a' }),
+      now: new Date('2026-10-11T09:00:00Z'),
+    });
+    await leerlaufWaechter({
+      ...basis, armBedarf: async () => ({ wartet: true, gegenstand: 'b', kennung: 'push:b' }),
+      now: new Date('2026-10-11T09:05:00Z'),
+    });
+    expect(meldungen).toHaveLength(2);
+  });
+
+  it('schweigt bei einem Fehler in der Tatsachenprüfung statt zu melden', async () => {
+    /* Ein Fehler beim Git- oder Datenbankzugriff darf keine Meldung erzeugen —
+       sonst meldet der Waechter bei jedem Ausfall. */
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const opts = {
+      ...a, runner: () => {}, melde: (t: string) => meldungen.push(t),
+      paneText: PANE_LEISE, hookProtokoll: '',
+      armBedarf: async () => { throw new Error('git kaputt'); },
+    };
+    await leerlaufWaechter({ ...opts, now: new Date('2026-10-11T09:00:00Z') });
+    const w = await leerlaufWaechter({ ...opts, now: new Date('2026-10-11T09:11:00Z') });
+    expect(meldungen).toHaveLength(0);
+    // Stattdessen laeuft der normale Stups.
+    expect(w).toMatchObject({ versuch: 1 });
+  });
+
+  it('gibt dem Hook-Protokoll den Vorrang vor der Tatsachenprüfung', async () => {
+    const a = aufbau();
+    const meldungen: string[] = [];
+    const w = await leerlaufWaechter({
+      ...a, runner: () => {}, melde: (t) => meldungen.push(t), paneText: PANE_LEISE,
+      hookProtokoll: '2026-10-11T08:50:00Z [BLOCK] [bikosoc] not armed (x): red path: aus-dem-protokoll.sql matches y',
+      armBedarf: async () => ({ wartet: true, gegenstand: 'aus-der-tatsache', kennung: 'k' }),
+      now: new Date('2026-10-11T09:00:00Z'),
+    });
+    expect(w).toMatchObject({ armWartung: expect.stringContaining('aus-dem-protokoll') });
+    expect(meldungen[0]).toContain('aus-dem-protokoll');
   });
 });
