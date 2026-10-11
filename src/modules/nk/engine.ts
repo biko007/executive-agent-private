@@ -554,8 +554,21 @@ interface AllocationResult {
    `entwaesserung` zählt Kalt- UND Warmwasser: Was ins Haus fließt, fließt auch
    wieder heraus, und das Warmwasser wird aus demselben Hausanschluss gespeist
    (Owner-Entscheidung 10.10.2026). */
+/* Welche Zähler eine Kostenart messen.
+
+   `wasser` zählt KALT UND WARM. Der Versorger berechnet das Wasser, das durch
+   den Hausanschluss läuft — und das Warmwasser der Wohnung kommt durch denselben
+   Anschluss und steht auf derselben Rechnung. Nur die Kaltwasserzähler
+   anzusetzen hieße: Das Warmwasservolumen der Mieter bleibt als ungemessener
+   Rest beim Eigentümer, obwohl es gemessen vorliegt. (Bis zum 11.10.2026 stand
+   hier nur 'cold_water'; bei MG24 verschob das rund 280 Euro im Jahr.)
+
+   `warmwasser` zählt dagegen nur die Warmwasserzähler — dort geht es um die
+   ENERGIE zum Erwärmen, nicht um das Volumen. Doppelt berechnet wird also
+   nichts: Das Volumen läuft über `wasser` und `entwaesserung`, die Wärme über
+   `warmwasser` beziehungsweise die Heizkostenverteilung. */
 const VERBRAUCHSMEDIEN: Record<string, string[]> = {
-  wasser: ['cold_water'],
+  wasser: ['cold_water', 'warm_water'],
   entwaesserung: ['cold_water', 'warm_water'],
   warmwasser: ['warm_water'],
 };
@@ -611,10 +624,13 @@ export function allocateCosts(
    Rechnung trotzdem hier an, bleibt der Betrag beim Eigentümer statt falsch
    verteilt zu werden.
 
-   Was kein Wohnungszähler erfasst, bleibt ebenfalls beim Eigentümer. Das ist
-   kein Rundungsrest: Bei MG24 berechnen die Stadtwerke für 2025 437 m³,
-   während die Wohnungszähler zusammen deutlich weniger messen. Diese Differenz
-   gehört nicht auf die Mieter verteilt, solange sie ungeklärt ist. */
+   Was kein Wohnungszähler erfasst, bleibt ebenfalls beim Eigentümer — dafür
+   ist der Hauptzähler der Nenner und nicht die Summe der Wohnungszähler. Bei
+   MG24 berechnen die Stadtwerke für 2025 437 m³, die Wohnungszähler messen
+   zusammen rund 169 m³; die Differenz gehört nicht auf die Mieter verteilt,
+   solange sie ungeklärt ist. (Bis zum 11.10.2026 stand hier dieser Anspruch im
+   Kommentar, aber nicht im Code: Der Nenner war die Summe der
+   Wohnungszähler.) */
 function allocateByConsumption(
   totalAmount: number,
   rule: AllocationRuleRow,
@@ -651,8 +667,8 @@ function allocateByConsumption(
     verbrauchJeEinheit.set(meter.unit_id, (verbrauchJeEinheit.get(meter.unit_id) || 0) + verbrauch);
   }
 
-  const gesamtVerbrauch = Array.from(verbrauchJeEinheit.values()).reduce((s, v) => s + v, 0);
-  if (gesamtVerbrauch <= 0) {
+  const summeEinheiten = Array.from(verbrauchJeEinheit.values()).reduce((s, v) => s + v, 0);
+  if (summeEinheiten <= 0) {
     warnings.push({
       code: 'CONSUMPTION_DENOMINATOR_ZERO',
       severity: 'warning',
@@ -660,6 +676,69 @@ function allocateByConsumption(
         + 'der Betrag bleibt beim Eigentümer.',
     });
     return leerErgebnis(totalAmount, warnings);
+  }
+
+  /* Der Nenner ist die ABGERECHNETE Menge, nicht die Summe der Wohnungszähler.
+     Beides fällt auseinander, sobald zwischen Hausanschluss und Wohnung etwas
+     verbraucht wird oder verloren geht: Bei MG24 berechnen die Stadtwerke für
+     2025 437 m³, die drei Wohnungszähler messen zusammen rund 169 m³.
+
+     Verteilt man den Rechnungsbetrag nach den Anteilen der Wohnungszähler,
+     tragen die Mieter die vollen Kosten aller 437 m³ — also auch die 268 m³,
+     die niemand ihnen zurechnen kann. Genau das ist bis zum 11.10.2026
+     passiert. Richtig ist: Jede Wohnung zahlt ihre gemessene Menge zum
+     Rechnungspreis, der ungemessene Rest bleibt beim Eigentümer, solange er
+     ungeklärt ist.
+
+     Ist der Hauptzähler KLEINER als die Summe der Wohnungszähler, ist er
+     unbrauchbar — dann würden Anteile über 100 Prozent entstehen. In dem Fall
+     bleibt es beim alten Nenner, aber mit ausdrücklicher Warnung. */
+  const hauptZaehler = meters.filter(
+    m => m.is_main_meter && !m.unit_id && medien.includes(m.medium),
+  );
+  const hauptVerbrauch = hauptZaehler.reduce(
+    (s, m) => s + calculateConsumption(m.id, periodStart, periodEnd, readings), 0);
+
+  let gesamtVerbrauch = summeEinheiten;
+  if (hauptZaehler.length === 0) {
+    warnings.push({
+      code: 'CONSUMPTION_NO_MAIN_METER',
+      severity: 'warning',
+      message: `Kostenart "${rule.category_code}": kein Hauptzähler für das Medium — der `
+        + 'Rechnungsbetrag wird vollständig nach den Wohnungszählern verteilt. Eine '
+        + 'ungemessene Differenz zur Versorgerrechnung bliebe dabei unbemerkt bei den Mietern.',
+    });
+  } else if (hauptVerbrauch > summeEinheiten + 0.0001) {
+    gesamtVerbrauch = hauptVerbrauch;
+    const rest = hauptVerbrauch - summeEinheiten;
+    warnings.push({
+      code: 'CONSUMPTION_UNMEASURED_REMAINDER',
+      severity: 'warning',
+      message: `Kostenart "${rule.category_code}": Der Hauptzähler weist ${hauptVerbrauch} aus, `
+        + `die Wohnungszähler zusammen ${Math.round(summeEinheiten * 1000) / 1000}. Die Differenz `
+        + `von ${Math.round(rest * 1000) / 1000} (${Math.round((rest / hauptVerbrauch) * 1000) / 10} %) `
+        + 'ist keiner Wohnung zugeordnet und bleibt beim Eigentümer.',
+      details: {
+        hauptzaehler: hauptZaehler.map(m => m.meter_number),
+        haupt_verbrauch: hauptVerbrauch,
+        summe_einheiten: Math.round(summeEinheiten * 1000) / 1000,
+        ungemessen: Math.round(rest * 1000) / 1000,
+      },
+    });
+  } else if (hauptVerbrauch > 0) {
+    warnings.push({
+      code: 'CONSUMPTION_MAIN_METER_BELOW_UNITS',
+      severity: 'warning',
+      message: `Kostenart "${rule.category_code}": Der Hauptzähler weist ${hauptVerbrauch} aus `
+        + `und damit WENIGER als die Wohnungszähler zusammen `
+        + `(${Math.round(summeEinheiten * 1000) / 1000}). Das ist physikalisch nicht möglich; `
+        + 'der Hauptzähler wird für die Verteilung nicht verwendet.',
+      details: {
+        hauptzaehler: hauptZaehler.map(m => m.meter_number),
+        haupt_verbrauch: hauptVerbrauch,
+        summe_einheiten: Math.round(summeEinheiten * 1000) / 1000,
+      },
+    });
   }
 
   const allocations: LeaseAllocation[] = [];

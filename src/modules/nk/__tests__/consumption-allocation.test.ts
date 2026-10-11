@@ -106,7 +106,17 @@ describe('Verteilung nach Verbrauch — Grundfälle', () => {
     expect(e.leaseAllocations[1].amount).toBeCloseTo(200, 2);
   });
 
-  it('Kaltwasser ignoriert den Warmwasserzähler', () => {
+  it('Wasser zählt Kalt UND Warm — der Versorger berechnet beides', () => {
+    /* KORREKTUR 11.10.2026. Dieser Test hielt zuvor fest, dass die Kostenart
+       `wasser` den Warmwasserzähler ignoriert. Das war falsch: Der Versorger
+       berechnet das Wasser, das durch den Hausanschluss läuft, und das
+       Warmwasser der Wohnung kommt durch denselben Anschluss und steht auf
+       derselben Rechnung. Zählte man nur Kaltwasser, blieb das gemessene
+       Warmwasservolumen der Mieter als "ungemessener Rest" beim Eigentümer —
+       bei MG24 rund 280 Euro im Jahr.
+
+       W1 verbraucht 10 kalt und 90 warm, W2 nur 10 kalt. Von 200 Euro trägt
+       W1 also 100 von 110 Teilen. */
     const units = [einheit(1, 'W1', 100), einheit(2, 'W2', 100)];
     const leases = [vertrag(10, 1), vertrag(20, 2)];
     const meters = [
@@ -115,22 +125,55 @@ describe('Verteilung nach Verbrauch — Grundfälle', () => {
     ];
     const readings = [
       ablesung(100, 0, '2025-01-01'), ablesung(100, 10, '2025-12-31'),
-      ablesung(101, 0, '2025-01-01'), ablesung(101, 90, '2025-12-31'),  // darf nicht zählen
+      ablesung(101, 0, '2025-01-01'), ablesung(101, 90, '2025-12-31'),
       ablesung(200, 0, '2025-01-01'), ablesung(200, 10, '2025-12-31'),
     ];
 
     const e = verteile(200, regel('wasser'), leases, units, meters, readings);
-    expect(e.leaseAllocations[0].amount).toBeCloseTo(100, 2);
+    expect(e.leaseAllocations[0].amount).toBeCloseTo(181.82, 2);
+    expect(e.leaseAllocations[1].amount).toBeCloseTo(18.18, 2);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(110, 3);
+  });
+
+  it('Warmwasser zählt NUR die Warmwasserzähler — Volumen und Wärme bleiben getrennt', () => {
+    /* Die Gegenprobe zum Test oben: Bei `warmwasser` geht es um die Energie
+       zum Erwärmen, nicht um das Volumen. Würde die Kostenart auch
+       Kaltwasser zählen, wäre dasselbe Wasser zweimal Bemessungsgrundlage. */
+    const units = [einheit(1, 'W1', 100), einheit(2, 'W2', 100)];
+    const leases = [vertrag(10, 1), vertrag(20, 2)];
+    const meters = [
+      zaehler(100, 1, 'cold_water'), zaehler(101, 1, 'warm_water'),
+      zaehler(200, 2, 'cold_water'), zaehler(201, 2, 'warm_water'),
+    ];
+    const readings = [
+      ablesung(100, 0, '2025-01-01'), ablesung(100, 90, '2025-12-31'),
+      ablesung(101, 0, '2025-01-01'), ablesung(101, 30, '2025-12-31'),
+      ablesung(200, 0, '2025-01-01'), ablesung(200, 90, '2025-12-31'),
+      ablesung(201, 0, '2025-01-01'), ablesung(201, 10, '2025-12-31'),
+    ];
+
+    const e = verteile(400, regel('warmwasser'), leases, units, meters, readings);
+    // 30 : 10 — die 180 Kaltwasser-Einheiten bleiben ausser Betracht.
+    expect(e.leaseAllocations[0].amount).toBeCloseTo(300, 2);
     expect(e.leaseAllocations[1].amount).toBeCloseTo(100, 2);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(40, 3);
   });
 });
 
 describe('Verteilung nach Verbrauch — Hauptzähler und Eigentümeranteil', () => {
-  it('der Hauptzähler am Hausanschluss verteilt nicht mit', () => {
-    /* Bei MG24 berechnen die Stadtwerke weit mehr, als die Wohnungszähler
-       zusammen messen. Der Hauptzähler dient dem Abgleich, nicht der
-       Verteilung — sonst bekäme er einen Anteil und niemanden, dem er
-       zuzurechnen wäre. */
+  it('der Hauptzähler bekommt keinen eigenen Anteil, ist aber der Nenner', () => {
+    /* KORREKTUR 11.10.2026. Dieser Test hielt zuvor fest, dass der Mieter den
+       VOLLEN Betrag trägt und der Nenner die Summe der Wohnungszähler ist.
+       Das war das Verhalten des damaligen Codes — und ein Fehler mit
+       Geldwirkung: Bei MG24 berechnen die Stadtwerke für 2025 437 m³, die
+       Wohnungszähler messen zusammen rund 169 m³. Nach der alten Rechnung
+       hätten die drei Mieter die Kosten aller 437 m³ getragen, also auch der
+       268 m³, die niemand ihnen zurechnen kann.
+
+       Richtig ist: Jede Wohnung zahlt ihre gemessene Menge zum
+       Rechnungspreis; der ungemessene Rest bleibt beim Eigentümer. Der
+       Hauptzähler liefert dafür den Nenner, bekommt aber selbst keinen
+       Anteil — er gehört keiner Wohnung. */
     const units = [einheit(1, 'W1', 100)];
     const leases = [vertrag(10, 1)];
     const meters = [
@@ -144,8 +187,52 @@ describe('Verteilung nach Verbrauch — Hauptzähler und Eigentümeranteil', () 
 
     const e = verteile(400, regel('wasser'), leases, units, meters, readings);
     expect(e.leaseAllocations).toHaveLength(1);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(100, 3);
+    expect(e.leaseAllocations[0].amount).toBeCloseTo(100, 2);
+    // Die ungemessenen 75 Prozent bleiben beim Eigentümer.
+    expect(e.vacancyAmount).toBeCloseTo(300, 2);
+    expect(e.warnings?.some(w => w.code === 'CONSUMPTION_UNMEASURED_REMAINDER')).toBe(true);
+  });
+
+  it('meldet einen Hauptzähler, der weniger ausweist als die Wohnungszähler', () => {
+    /* Der Fall des GLT-Zählers E0 bei MG24: Er zeigt für 2025 rund 38 m³,
+       während die Wohnungszähler zusammen 169 m³ messen. Als Nenner wäre er
+       zerstörerisch — die Anteile lägen über 100 Prozent. Deshalb wird er
+       nicht verwendet, aber gemeldet. */
+    const units = [einheit(1, 'W1', 100)];
+    const leases = [vertrag(10, 1)];
+    const meters = [
+      zaehler(100, 1, 'cold_water'),
+      zaehler(999, null, 'cold_water', { is_main_meter: true, property_id: 2 }),
+    ];
+    const readings = [
+      ablesung(100, 0, '2025-01-01'), ablesung(100, 50, '2025-12-31'),
+      ablesung(999, 0, '2025-01-01'), ablesung(999, 10, '2025-12-31'),
+    ];
+
+    const e = verteile(400, regel('wasser'), leases, units, meters, readings);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(50, 3);
     expect(e.leaseAllocations[0].amount).toBeCloseTo(400, 2);
-    expect(e.leaseAllocations[0].denominator).toBeCloseTo(25, 3);
+    expect(e.warnings?.some(w => w.code === 'CONSUMPTION_MAIN_METER_BELOW_UNITS')).toBe(true);
+  });
+
+  it('meldet, wenn gar kein Hauptzähler vorhanden ist', () => {
+    /* Ohne Hauptzähler bleibt es bei der Verteilung über die Summe der
+       Wohnungszähler — eine ungemessene Differenz zur Versorgerrechnung
+       würde dabei unbemerkt bei den Mietern landen. Das gehört in die
+       Abrechnung geschrieben, nicht verschwiegen. */
+    const units = [einheit(1, 'W1', 100), einheit(2, 'W2', 100)];
+    const leases = [vertrag(10, 1), vertrag(20, 2)];
+    const meters = [zaehler(100, 1, 'cold_water'), zaehler(101, 2, 'cold_water')];
+    const readings = [
+      ablesung(100, 0, '2025-01-01'), ablesung(100, 30, '2025-12-31'),
+      ablesung(101, 0, '2025-01-01'), ablesung(101, 10, '2025-12-31'),
+    ];
+
+    const e = verteile(400, regel('wasser'), leases, units, meters, readings);
+    expect(e.leaseAllocations[0].amount).toBeCloseTo(300, 2);
+    expect(e.leaseAllocations[1].amount).toBeCloseTo(100, 2);
+    expect(e.warnings?.some(w => w.code === 'CONSUMPTION_NO_MAIN_METER')).toBe(true);
   });
 
   it('nicht gemessener Rest bleibt beim Eigentümer statt auf Fläche zu gehen', () => {

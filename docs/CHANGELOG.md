@@ -4,6 +4,68 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — SWT-Belegarchiv und zwei Fehler in der Verbrauchsverteilung (Paket 3b)
+
+**Belegarchiv ohne neue Tabelle.** `entity_links` trug schon Objekt, Belegart und
+entweder SharePoint-Referenz oder lokale Datei; die fachlichen Felder (Sparte,
+Vertrag, Leistungszeitraum, Verbrauch, Zählernummer, SHA-256) stehen im Index
+`artifacts/personal/assets/belege/index-swt.json` daneben. 47 SWT-Rechnungen
+samt Textfassungen archiviert, 43 Verknüpfungen, 10 Rechnungen auch in
+SharePoint (vermerkt, nicht doppelt abgelegt). `scripts/archiv-swt-rechnungen.ts`
+lädt nichts erneut, was schon im Archiv liegt.
+
+Ausgeliefert werden die Dateien über `GET /api/belege/:code` am Dashboard —
+Metadaten vom Core, Datei vom Dashboard-Server, Pfad gegen das
+Belegverzeichnis geprüft. Dazu `GET /api/links/by-code/:code` im Core und der
+neue Dashboard-Unterbereich *Belege & Strom*.
+
+**MG24-Buchungen auf die Rechnungen umgestellt** (`scripts/buchungen-mg24-swt.ts`,
+alles über Core-Routen mit Audit). Vier Buchungen stillgelegt, zehn neu. Der
+Fehler dahinter: In Paket 2 wurde der ZAHLBETRAG mit dem ZAHLTAG als Zeitraum
+gebucht. Kosten sind aber die Rechnungssumme, und der Leistungszeitraum ist der
+abgerechnete — die Wasserjahresrechnung für 2025 lag dadurch im Jahr 2026 und
+damit in keiner Abrechnung 2025. Kontrollsummen 2.353,01 € und 5.462,08 €
+stimmen auf den Cent; die Stromschlussrechnung ist nach den Preisblöcken der
+Rechnung in fünf Zeiträume geteilt, nicht geschätzt.
+
+Neue Kostenart `niederschlagswasser` (BetrKV §2 Nr. 3) mit Flächenschlüssel,
+angelegt über die neue, protokollierte Route `POST /api/assets/cost-categories`.
+Niederschlagswasser wird nach versiegelter Fläche erhoben; unter
+`entwaesserung` wäre es nach Wasserverbrauch verteilt worden.
+`PATCH …/expense-bookings/:id` kann jetzt Umlagefähigkeit, Leistungszeitraum,
+Notiz und `archived` setzen — stilllegen statt löschen, die Spur bleibt.
+
+### Zwei Fehler in der Verbrauchsverteilung, beide mit Geldwirkung
+
+**Der Nenner war die Summe der Wohnungszähler statt der abgerechneten Menge.**
+Damit wurde der volle Rechnungsbetrag auf die Wohnungen verteilt: Bei MG24
+berechnen die Stadtwerke für 2025 437 m³, die Wohnungszähler messen 315 m³ —
+die Mieter trugen auch die Kosten der 122 ungemessenen Kubikmeter. Der
+Kommentar an `allocateByConsumption` behauptete seit dem 10.10.2026 das
+Richtige, der Code tat es nicht. Jetzt ist der Hauptzähler der Nenner, der
+ungemessene Rest bleibt beim Eigentümer, und drei neue Befunde machen die Lage
+sichtbar: `CONSUMPTION_UNMEASURED_REMAINDER`,
+`CONSUMPTION_MAIN_METER_BELOW_UNITS` (Hauptzähler kleiner als die
+Wohnungszähler — physikalisch unmöglich, wird nicht verwendet) und
+`CONSUMPTION_NO_MAIN_METER`.
+
+**Die Kostenart `wasser` zählte nur Kaltwasserzähler.** Der Versorger
+berechnet aber alles Wasser durch den Hausanschluss, und das Warmwasser der
+Wohnung kommt durch denselben Anschluss. Das gemessene Warmwasservolumen der
+Mieter blieb dadurch als ungemessener Rest beim Eigentümer — bei MG24 rund
+280 € im Jahr. Doppelt berechnet wird nichts: Volumen über `wasser` und
+`entwaesserung`, Wärme über `warmwasser`.
+
+Zwei Tests hielten das alte Verhalten fest und sind mit Begründung korrigiert,
+nicht entfernt. Dazu der SWT-Abrechnungszähler 8ZRI2316739802 als Hauptzähler
+mit seinen beiden Jahresständen; der GLT-Zähler am Hausanschluss ist
+Beobachtungszähler geworden, weil er für 2025 nur 34,5 m³ zeigt und damit
+weniger als die Wohnungen hinter ihm.
+
+**Tests:** 9 neue. Gesamt 929/0/0.
+
+---
+
 ## Stand 2026-10-11 — Korrektur der Belegzuordnung (Reizner, vierte Pelletlieferung)
 
 Owner-Korrektur zum Nachtrag. Beide Punkte waren Zuordnungen, die ich mangels

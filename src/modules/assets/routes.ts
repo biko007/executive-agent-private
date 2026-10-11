@@ -18,6 +18,9 @@ import {
 } from '../nk/routes.js';
 import { handleObligationsAlert } from '../nk/alerts.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -213,6 +216,7 @@ export function registerAssetsHttpRoutes(api: any) {
             if (sub === 'heating-config') { await handleHeatingConfig(req, res, propertyId); return; }
             if (sub === 'units') { await handlePropertyUnits(req, res, propertyId, segments[3]); return; }
             if (sub === 'leases') { await handlePropertyLeases(req, res, propertyId); return; }
+            if (sub === 'belege') { await handleBelege(req, res, propertyId); return; }
             if (sub === 'expense-bookings') { await handleExpenseBookings(req, res, propertyId, segments[3]); return; }
             if (sub === 'allocation-rules') { await handleAllocationRules(req, res, propertyId, segments[3]); return; }
             if (sub === 'meters') { await handlePropertyMeters(req, res, propertyId); return; }
@@ -481,11 +485,69 @@ export function registerAssetsHttpRoutes(api: any) {
 
       // ── Cost Categories ──────────────────────────────────────────────────
       if (resource === 'cost-categories') {
-        if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return true; }
-        try {
-          const { rows } = await dbQuery('SELECT * FROM cost_categories WHERE active = true ORDER BY sort_order');
-          json(res, 200, rows);
-        } catch (e: any) { err(res, 500, e.message); }
+        if (req.method === 'GET') {
+          try {
+            const { rows } = await dbQuery('SELECT * FROM cost_categories WHERE active = true ORDER BY sort_order');
+            json(res, 200, rows);
+          } catch (e: any) { err(res, 500, e.message); }
+          return true;
+        }
+
+        // POST /api/assets/cost-categories — Kostenart anlegen oder ergaenzen.
+        //
+        // Die Kostenartenliste ist Stammdaten, keine Struktur: Eine fehlende
+        // BetrKV-Position ist eine Datenzeile und braucht keine Migration. Sie
+        // braucht aber einen protokollierten Weg, denn an ihr haengen
+        // Umlageregeln und damit Geld — deshalb diese Route statt eines
+        // direkten INSERT.
+        if (req.method === 'POST') {
+          await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+            try {
+              const body = await parseJsonBody<any>(req);
+              if (!body?.code || !body?.name || typeof body?.umlagefaehig_default !== 'boolean') {
+                err(res, 400, 'code, name und umlagefaehig_default erforderlich'); return;
+              }
+              const { rows: vorher } = await dbQuery(
+                'SELECT * FROM cost_categories WHERE code = $1', [body.code]);
+
+              const { rows } = await dbQuery(
+                `INSERT INTO cost_categories
+                   (code, name, betrkv_reference, umlagefaehig_default, tax_category,
+                    requires_consumption, heating_cost_relevant, co2_relevant,
+                    active, sort_order, notes)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                 ON CONFLICT (code) DO UPDATE SET
+                   name = EXCLUDED.name,
+                   betrkv_reference = COALESCE(EXCLUDED.betrkv_reference, cost_categories.betrkv_reference),
+                   umlagefaehig_default = EXCLUDED.umlagefaehig_default,
+                   tax_category = COALESCE(EXCLUDED.tax_category, cost_categories.tax_category),
+                   requires_consumption = EXCLUDED.requires_consumption,
+                   heating_cost_relevant = EXCLUDED.heating_cost_relevant,
+                   co2_relevant = EXCLUDED.co2_relevant,
+                   active = EXCLUDED.active,
+                   sort_order = COALESCE(EXCLUDED.sort_order, cost_categories.sort_order),
+                   notes = COALESCE(EXCLUDED.notes, cost_categories.notes)
+                 RETURNING *`,
+                [body.code, body.name, body.betrkv_reference || null,
+                  body.umlagefaehig_default, body.tax_category || null,
+                  body.requires_consumption === true, body.heating_cost_relevant === true,
+                  body.co2_relevant === true, body.active !== false,
+                  Number.isInteger(body.sort_order) ? body.sort_order : null,
+                  body.notes || null]);
+
+              await audit.log({
+                module: 'assets',
+                action: vorher.length > 0 ? 'cost_category.update' : 'cost_category.create',
+                entityType: 'cost_category', entityId: body.code,
+                before: vorher[0] || null, after: rows[0],
+              });
+              json(res, vorher.length > 0 ? 200 : 201, rows[0]);
+            } catch (e: any) { err(res, 500, e.message); }
+          });
+          return true;
+        }
+
+        err(res, 405, 'Method not allowed');
         return true;
       }
 
@@ -1063,6 +1125,54 @@ async function handleLeaseCharges(req: IncomingMessage, res: ServerResponse, lea
   }
 }
 
+/**
+ * Belegliste eines Objekts.
+ *
+ * Die fachlichen Felder stehen im Index des Belegarchivs (Sparte, Vertrag,
+ * Leistungszeitraum, Verbrauch, Zählernummer, Hash); die Verknüpfung am Objekt
+ * und damit der Zugriffscode steht in `entity_links`. Diese Route führt beides
+ * über den Dateipfad zusammen — so braucht es keine neue Tabelle, und das
+ * Dashboard bekommt trotzdem eine Liste mit Spalten statt Textetiketten.
+ */
+async function handleBelege(req: IncomingMessage, res: ServerResponse, propertyCode: string) {
+  if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return; }
+
+  const indexPfad = join(
+    homedir(), '.openclaw', 'workspace', 'artifacts', 'personal', 'assets', 'belege', 'index-swt.json');
+  let belege: any[] = [];
+  if (existsSync(indexPfad)) {
+    try {
+      belege = JSON.parse(readFileSync(indexPfad, 'utf-8')).belege || [];
+    } catch (e: any) {
+      err(res, 500, `Belegindex nicht lesbar: ${e.message}`); return;
+    }
+  }
+
+  const { rows: links } = await dbQuery<{ link_code: string; local_path: string }>(
+    `SELECT link_code, local_path FROM entity_links
+      WHERE entity_type = 'property' AND entity_id = $1 AND doc_type = 'local'`,
+    [propertyCode]);
+  const codeZuPfad = new Map(links.map(l => [l.local_path, l.link_code]));
+
+  const eigene = belege
+    .filter(b => b.objekt === propertyCode)
+    .map(b => ({
+      ...b,
+      link_code: codeZuPfad.get(b.pfad) || null,
+      // Rechnungen des Nachbargebäudes liegen beim Objekt, gehören aber nicht
+      // in seine Abrechnung — das muss in der Liste sichtbar sein.
+      nachbargebaeude: b.ablage !== propertyCode,
+    }))
+    .sort((a, b) => String(b.rechnungsdatum).localeCompare(String(a.rechnungsdatum)));
+
+  json(res, 200, {
+    objekt: propertyCode,
+    anzahl: eigene.length,
+    archiv_vorhanden: existsSync(indexPfad),
+    belege: eigene,
+  });
+}
+
 async function handleExpenseBookings(
   req: IncomingMessage, res: ServerResponse, propertyCode: string, bookingId?: string,
 ) {
@@ -1093,10 +1203,17 @@ async function handleExpenseBookings(
     };
     if (typeof body?.umlagefaehig === 'boolean') setze('umlagefaehig', body.umlagefaehig);
     if (typeof body?.notes === 'string') setze('notes', body.notes);
+    // Stilllegen statt loeschen. Eine Buchung, die durch eine Jahresrechnung
+    // ersetzt wird, ist keine Kostenposition mehr — sie war eine Vorauszahlung.
+    // Die Engine liest ausschliesslich archived_at IS NULL, und die Spur bleibt.
+    if (typeof body?.archived === 'boolean') {
+      setze('archived_at', body.archived ? new Date().toISOString() : null);
+    }
     if (typeof body?.service_period_start === 'string') setze('service_period_start', body.service_period_start);
     if (typeof body?.service_period_end === 'string') setze('service_period_end', body.service_period_end);
     if (felder.length === 0) {
-      err(res, 400, 'umlagefaehig, notes, service_period_start oder service_period_end erforderlich');
+      err(res, 400, 'umlagefaehig, notes, archived, service_period_start oder '
+        + 'service_period_end erforderlich');
       return;
     }
 
@@ -1111,11 +1228,13 @@ async function handleExpenseBookings(
         umlagefaehig: vorher[0].umlagefaehig, notes: vorher[0].notes,
         service_period_start: vorher[0].service_period_start,
         service_period_end: vorher[0].service_period_end,
+        archived_at: vorher[0].archived_at,
       },
       after: {
         umlagefaehig: rows[0].umlagefaehig, notes: rows[0].notes,
         service_period_start: rows[0].service_period_start,
         service_period_end: rows[0].service_period_end,
+        archived_at: rows[0].archived_at,
       },
     });
 

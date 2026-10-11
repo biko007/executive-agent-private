@@ -62,6 +62,19 @@ export function registerLinksHttpRoutes(api: any) {
           return;
         }
 
+        // GET /api/links/by-code/:link_code — eine Verknuepfung.
+        //
+        // Das Dashboard braucht sie, um eine archivierte Datei auszuliefern:
+        // Es fragt hier die Metadaten und sendet die Datei dann selbst aus dem
+        // Belegverzeichnis. "by-code" statt "code", damit der Pfad sich nicht
+        // mit GET /api/links/:entityType/:entityId ueberschneidet.
+        if (segments[0] === 'by-code' && segments[1] && req.method === 'GET') {
+          const link = await getLinkById(segments[1]);
+          if (!link) { err(res, 404, 'Link not found'); return; }
+          json(res, 200, link);
+          return;
+        }
+
         // GET /api/links/search/sp?q=...
         if (segments[0] === 'search' && segments[1] === 'sp' && req.method === 'GET') {
           const q = url.searchParams.get('q') || '';
