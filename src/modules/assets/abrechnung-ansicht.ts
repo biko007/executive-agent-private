@@ -57,6 +57,11 @@ export interface ZaehlerZeile {
   /** Stand zu Beginn aus dem hinterlegten Anfangswert statt aus einer Ablesung. */
   anfang_aus_anfangswert: boolean;
   aktiv: boolean;
+  /**
+   * Der Zähler hat keinen belegten Anfangsstand und sperrt damit die
+   * Abrechnung. In der Ansicht rot.
+   */
+  gesperrt?: boolean;
 }
 
 export interface KostenZeile {
@@ -102,6 +107,15 @@ export interface AbrechnungAnsicht {
   vorlaeufig: true;
   /** Zwischenabrechnung zu einem Stichtag statt volles Kalenderjahr. */
   zwischenabrechnung: boolean;
+  /**
+   * Die Vorprüfung hat die Rechnung gesperrt. Dann enthält die Ansicht die
+   * Zählerstände und die Sperrgründe, aber KEINE Beträge — eine gesperrte
+   * Abrechnung darf nicht aussehen wie eine fertige.
+   */
+  blockiert: boolean;
+  blocker: string[];
+  /** Zählernummern, die einen Sperrgrund auslösen — in der Ansicht rot. */
+  gesperrteZaehler: string[];
 }
 
 /** Klartext für die Verteilschlüssel, wie ein Mieter sie lesen soll. */
@@ -111,6 +125,7 @@ function schluesselKlartext(basis: string | null): string {
   if (basis === 'consumption') return 'nach gemessenem Verbrauch';
   if (basis === 'persons') return 'nach Personen';
   if (basis === 'units') return 'je Wohnung gleich';
+  if (basis === 'leerstand') return 'Zeitanteil ohne Mietverhältnis';
   if (basis.startsWith('methodA') || basis.startsWith('methodB')) {
     const m = basis.match(/(\d+)\/(\d+)\)?$/);
     return m
@@ -154,7 +169,19 @@ export async function abrechnungAnsicht(
   const von = zeitraum ? zeitraum.von : `${jahr}-01-01`;
   const bis = zeitraum ? zeitraum.bis : `${jahr}-12-31`;
 
-  const ergebnis = await computeNk(objekt.id, jahr, false, zeitraum);
+  /* Eine gesperrte Abrechnung wirft — und das soll sie: Ohne belegten
+     Anfangsstand darf keine Zahl entstehen. Die Ansicht fängt den Abbruch
+     trotzdem ab, denn sie ist der Ort, an dem der Owner SIEHT, woran es
+     liegt. Sie zeigt dann Zählerstände und Sperrgründe und keinen einzigen
+     Betrag. */
+  let ergebnis: Awaited<ReturnType<typeof computeNk>> | null = null;
+  let blocker: string[] = [];
+  try {
+    ergebnis = await computeNk(objekt.id, jahr, false, zeitraum);
+  } catch (e: any) {
+    if (e?.code !== 'NK_BLOCKED') throw e;
+    blocker = Array.isArray(e.blockers) ? e.blockers : [String(e.message)];
+  }
 
   // ── Stammdaten für die Zuordnung ─────────────────────────────────────────
   const { rows: einheiten } = await dbQuery<any>(
@@ -243,7 +270,7 @@ export async function abrechnungAnsicht(
   }
 
   /** Zählerzeilen einer Einheit, mit Ständen am Rand des Zeitraums. */
-  function zaehlerZeilen(unitId: number | null): ZaehlerZeile[] {
+  function zaehlerZeilen(unitId: number | null, gesperrt: string[] = []): ZaehlerZeile[] {
     return zaehler
       .filter(m => (unitId === null ? !m.unit_id : m.unit_id === unitId))
       .map(m => {
@@ -275,6 +302,7 @@ export async function abrechnungAnsicht(
             calculateConsumption(m.id, von, bis, ablesungen) * 1000) / 1000,
           anfang_aus_anfangswert: !vorher && anfangsWert !== null,
           aktiv: m.active !== false,
+          gesperrt: gesperrt.includes(String(m.meter_number)),
         };
       });
   }
@@ -282,6 +310,54 @@ export async function abrechnungAnsicht(
   // ── Einheiten ────────────────────────────────────────────────────────────
   const tageImJahr = tagDiff(von, bis);
   const ausgabe: EinheitAbrechnung[] = [];
+
+  /* Welche Zähler einen Sperrgrund auslösen: Die Meldung nennt die Nummer.
+     Die Oberfläche färbt genau diese Zeilen rot — der Owner sieht so ohne
+     Umweg, an welchem Gerät es hängt. */
+  const gesperrteZaehler = zaehler
+    .map(m => String(m.meter_number))
+    .filter(nr => blocker.some(b => b.includes(nr)));
+
+  if (!ergebnis) {
+    /* Gesperrt: Zählerstände ja, Beträge nein. Die Einheiten kommen hier aus
+       den Stammdaten statt aus dem Rechenergebnis — es gibt keines. */
+    for (const einheit of einheiten) {
+      const vertrag = vertraege.find(v => v.unit_id === einheit.id);
+      ausgabe.push({
+        einheit: einheit.code,
+        wohnflaeche: einheit.living_area_qm !== null
+          ? parseFloat(String(einheit.living_area_qm)) : null,
+        lage: einheit.floor ?? null,
+        vertrag_id: vertrag?.id ?? 0,
+        tage: 0,
+        tage_im_jahr: tageImJahr,
+        zaehler: zaehlerZeilen(einheit.id, gesperrteZaehler),
+        kosten: [],
+        kosten_summe: 0,
+        vorauszahlung: 0,
+        saldo: 0,
+        rundung: 0,
+      });
+    }
+
+    return {
+      objekt: objektCode,
+      objekt_name: objekt.name || objektCode,
+      adresse: `${objekt.street}, ${objekt.postal_code} ${objekt.city}`,
+      jahr,
+      zeitraum: { von, bis, tage: tageImJahr },
+      heizung: null,
+      einheiten: ausgabe,
+      eigentuemer: null,
+      befunde: [],
+      summe_objekt: 0,
+      vorlaeufig: true,
+      zwischenabrechnung: Boolean(zeitraum),
+      blockiert: true,
+      blocker,
+      gesperrteZaehler,
+    };
+  }
 
   for (const s of ergebnis.statements) {
     if (s.is_owner_block) continue;
@@ -298,7 +374,7 @@ export async function abrechnungAnsicht(
       vertrag_id: s.lease_id!,
       tage: s.active_days,
       tage_im_jahr: tageImJahr,
-      zaehler: zaehlerZeilen(vertrag.unit_id),
+      zaehler: zaehlerZeilen(vertrag.unit_id, gesperrteZaehler),
       kosten: kostenZeilen(s.items),
       kosten_summe: s.costs_total,
       vorauszahlung: s.advance_total,
@@ -338,5 +414,8 @@ export async function abrechnungAnsicht(
       + (eigentuemerSatz?.costs_total ?? 0),
     vorlaeufig: true,
     zwischenabrechnung: Boolean(zeitraum),
+    blockiert: false,
+    blocker: [],
+    gesperrteZaehler: [],
   };
 }

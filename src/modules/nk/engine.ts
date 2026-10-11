@@ -296,12 +296,20 @@ export async function computeNk(
       );
       for (const w of heatingResult.warnings) warnings.push(w);
 
-      // Distribute heating items to statements
+      /* Posten mit Mietverhältnis gehen in dessen Abrechnung, der
+         Leerstandsanteil in den Eigentümerblock. Bis zum 11.10.2026 kannte
+         diese Schleife nur den ersten Fall: Ein Heizkostenposten ohne
+         `lease_id` wurde ERSATZLOS verworfen. Bei MG24 2025 verschwanden so
+         999,72 € von 4.943,22 € aus der Abrechnung — die Objektsumme war zu
+         niedrig und der Eigentümer sah seinen eigenen Anteil nicht. */
       for (const hItem of heatingResult.items) {
+        const posten = { ...hItem, source_booking_ids: sourceBookingIds };
         if (hItem.metadata_jsonb?.lease_id) {
           const leaseId = hItem.metadata_jsonb.lease_id as number;
           const stmt = statementMap.get(leaseId);
-          if (stmt) stmt.items.push({ ...hItem, source_booking_ids: sourceBookingIds });
+          if (stmt) stmt.items.push(posten);
+        } else if (hItem.item_type === 'vacancy_owner_share') {
+          vacancyItems.push(posten);
         }
       }
       continue;

@@ -201,9 +201,13 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
   let readings: any[] = [];
   if (meterIds.length > 0) {
     const { rows: rRows } = await dbQuery(
+      /* Ab November des Vorjahres: Die Prüfung auf einen Anfangsstand sucht
+         in genau diesem Fenster. Bis zum 11.10.2026 begann die Abfrage erst
+         am 1. Januar — ein Stand vom Dezember war damit nie zu sehen, und die
+         Prüfung konnte nur negativ ausfallen. */
       `SELECT * FROM meter_readings WHERE meter_id = ANY($1)
        AND read_at >= $2 AND read_at <= $3`,
-      [meterIds, `${year}-01-01`, `${year + 1}-03-31`]
+      [meterIds, `${year - 1}-11-01`, `${year + 1}-03-31`]
     );
     readings = rRows;
   }
@@ -237,6 +241,29 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
       });
     }
   }
+
+  /* 13b. HEAT_METER_NO_DOCUMENTED_START — Blocker.
+
+     Fehlt einem Wärmemengenzähler der Anfangsstand, rechnet
+     `calculateConsumption()` mit null und gibt den gesamten Zählerstand als
+     Verbrauch des Zeitraums aus. Bei MG24 heißt das: Was der Zähler seit dem
+     Einbau gezählt hat — Estrichtrocknung, Bauheizung, Leerstand — landet
+     beim Mieter. Das ist nicht „etwas zu hoch", sondern als Abrechnung
+     unbrauchbar.
+
+     Ein Hinweis genügt dafür nicht: Die Zahl sieht aus wie gemessen. Deshalb
+     ein Blocker — die Abrechnung entsteht erst, wenn der Anfangsstand belegt
+     ist.
+
+     Zulässig und kein Blocker sind zwei Fälle:
+       - eine Ablesung am oder vor dem Periodenbeginn (das Fenster beginnt im
+         November des Vorjahres),
+       - ein im Zeitraum eingebauter Zähler mit hinterlegtem Anfangswert — dann
+         ist der Startpunkt dokumentiert.
+
+     Strom bleibt wie bei den übrigen Prüfungen außen vor; er wird bei MG24
+     nicht nach Verbrauch verteilt. */
+  for (const w of waermezaehlerOhneAnfangsstand(meters, readings, year)) findings.push(w);
 
   // 14. CONSUMPTION_DENOMINATOR_ZERO
   // Check if any consumption-based rule has zero total consumption
@@ -495,4 +522,52 @@ function makeResult(
     info_count,
     findings,
   };
+}
+
+/**
+ * Wärmemengenzähler ohne belegten Anfangsstand.
+ *
+ * Reine Funktion, damit die Regel ohne Datenbank prüfbar ist — sie entscheidet
+ * über eine Sperre und muss deshalb an ihren Grenzfällen nachweisbar richtig
+ * sein.
+ *
+ * Zwei Fälle gelten als belegt und lösen KEINE Sperre aus:
+ *   - eine Ablesung am oder vor dem Periodenbeginn,
+ *   - ein im Zeitraum eingebauter Zähler mit hinterlegtem Anfangswert.
+ */
+export function waermezaehlerOhneAnfangsstand(
+  meters: { id: number; medium: string; meter_number: string;
+    installed_at?: string | Date | null; initial_reading?: number | string | null }[],
+  readings: { meter_id: number; read_at: string | Date }[],
+  year: number,
+): PreCheckFinding[] {
+  const beginn = new Date(`${year}-01-01T00:00:00Z`);
+  const ende = new Date(`${year}-12-31T23:59:59Z`);
+  const out: PreCheckFinding[] = [];
+
+  for (const meter of meters) {
+    if (meter.medium !== 'heat') continue;
+
+    const standVorBeginn = readings.some(r =>
+      r.meter_id === meter.id && new Date(r.read_at) <= beginn);
+    if (standVorBeginn) continue;
+
+    const eingebautImZeitraum = Boolean(meter.installed_at)
+      && new Date(meter.installed_at as any) > beginn
+      && new Date(meter.installed_at as any) <= ende;
+    if (eingebautImZeitraum
+      && meter.initial_reading !== null && meter.initial_reading !== undefined) {
+      continue;
+    }
+
+    out.push({
+      code: 'HEAT_METER_NO_DOCUMENTED_START',
+      severity: 'blocker',
+      message: `Wärmemengenzähler ${meter.meter_number} hat keinen belegten Anfangsstand `
+        + `zum ${year}-01-01. Ohne ihn würde der gesamte Zählerstand seit Einbau als `
+        + 'Verbrauch des Zeitraums abgerechnet.',
+      details: { meter_id: meter.id, meter_number: meter.meter_number },
+    });
+  }
+  return out;
 }

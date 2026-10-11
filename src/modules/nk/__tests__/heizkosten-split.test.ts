@@ -112,6 +112,68 @@ function betragJeVertrag(e: ReturnType<typeof heatingAllocation>) {
   return out;
 }
 
+describe('Leerstandsanteil der Heizkosten', () => {
+  /* Bis zum 11.10.2026 verschwand der Teil der Heizkosten, der auf keinen
+     Mietzeitraum entfällt, ersatzlos: `heatingAllocation` lieferte nur Posten
+     mit `lease_id`, und die Engine reichte nur solche weiter. Bei MG24 2025
+     waren das 999,72 € von 4.943,22 € — die Objektsumme war zu niedrig und
+     der Eigentümer sah seinen eigenen Anteil nirgends. */
+
+  function mitLeerstand(startW2: string, betrag = 1000) {
+    const k = { ...konfig(30, 70), hot_water_via_heating: false };
+    const units = [einheit(1, 'W1', 100), einheit(2, 'W2', 100)];
+    const leases = [vertrag(10, 1), { ...vertrag(20, 2), start_date: startW2 }];
+    const meters = [
+      zaehler(100, 1, 'heat'), zaehler(200, 2, 'heat'),
+      zaehler(999, null, 'heat', { is_main_meter: true }),
+    ];
+    const readings = [
+      ablesung(100, 0, '2024-12-31'), ablesung(100, 1000, BIS),
+      ablesung(200, 0, '2024-12-31'), ablesung(200, 1000, BIS),
+      ablesung(999, 0, '2024-12-31'), ablesung(999, 2000, BIS),
+    ];
+    return heatingAllocation(k, [buchung(betrag)], meters, readings, units, leases, VON, BIS, [], REGEL);
+  }
+
+  it('weist den nicht vermieteten Zeitanteil als Eigentuemerposten aus', () => {
+    // W2 ab 01.07.: rund ein halbes Jahr ohne Mietverhaeltnis.
+    const e = mitLeerstand('2025-07-01');
+    const leer = e.items.filter(i => i.item_type === 'vacancy_owner_share');
+    expect(leer).toHaveLength(1);
+    expect(leer[0].amount).toBeGreaterThan(200);
+    expect(leer[0].notes).toBe('Leerstandsanteil');
+    expect((leer[0].metadata_jsonb as any)?.lease_id).toBeUndefined();
+  });
+
+  it('verteilt den vollen Betrag — Mieteranteile plus Leerstand ergeben die Buchung', () => {
+    const e = mitLeerstand('2025-07-01');
+    const summe = e.items.reduce((s, i) => s + i.amount, 0);
+    expect(summe).toBeCloseTo(1000, 2);
+  });
+
+  it('veraendert die Mieteranteile nicht', () => {
+    /* Der Posten ist eine Ergaenzung, keine Umverteilung: Was die Mieter
+       zahlen, bleibt auf den Cent gleich. */
+    const e = mitLeerstand('2025-07-01');
+    const b = betragJeVertrag(e);
+    const ohne = betragJeVertrag(mitLeerstand('2025-07-01'));
+    expect(b.get(10)).toBeCloseTo(ohne.get(10)!, 2);
+    expect(b.get(20)).toBeCloseTo(ohne.get(20)!, 2);
+  });
+
+  it('erzeugt ohne Leerstand keinen Posten', () => {
+    const e = mitLeerstand(VON);
+    expect(e.items.filter(i => i.item_type === 'vacancy_owner_share')).toHaveLength(0);
+  });
+
+  it('erzeugt fuer einen Rundungsrest unter einem Euro keinen Posten', () => {
+    /* Ein Cent Rundung ist kein Leerstand — eine Zeile dafuer koennte
+       niemand erklaeren. */
+    const e = mitLeerstand(VON, 1000.004);
+    expect(e.items.filter(i => i.item_type === 'vacancy_owner_share')).toHaveLength(0);
+  });
+});
+
 describe('Heizkostenverteilung — die drei verlangten Aufteilungen', () => {
   it('0 / 100: alles nach Verbrauch', () => {
     // 1.500 zu 500 kWh → 750 zu 250 Euro. Die Fläche spielt keine Rolle.

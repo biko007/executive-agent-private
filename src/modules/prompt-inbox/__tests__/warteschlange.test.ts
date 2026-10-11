@@ -21,7 +21,7 @@ import path from 'node:path';
 import {
   pruefeBereitschaft, auftragsKennung, erkenneArmWartung, armMeldung,
 } from '../bereitschaft.js';
-import { processPromptInboxOnce, leerlaufWaechter, offeneAuftraege } from '../index.js';
+import { processPromptInboxOnce, leerlaufWaechter, offeneAuftraege, hatReport } from '../index.js';
 import type { TmuxRunner } from '../../cc-prompt-dispatch/index.js';
 
 // ── Echte Pane-Texte ───────────────────────────────────────────────────────
@@ -298,6 +298,89 @@ describe('offeneAuftraege', () => {
     expect(offeneAuftraege({ doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z') })).toHaveLength(0);
   });
 
+  /* ── Die beiden Faelle vom 11.10.2026 ───────────────────────────────────
+     Beide Auftraege waren am 08.10. erledigt und hatten einen Report. Der
+     Waechter stupste sie trotzdem, weil er `report-prompt-<stamm>-` suchte,
+     der Report aber `report-<stamm>-` heisst. */
+
+  it('erkennt den Report zu prompt-golink-spacing2 (Fall vom 11.10.2026)', async () => {
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-08T08-46-20-904Z-dropbox-20261008-104520-prompt-golink-spacing2-20261008.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-golink-spacing2-20261008.md'), '# fertig');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-08T09:00:00Z'),
+    })).toHaveLength(0);
+  });
+
+  it('erkennt den Report zu prompt-cue-agent-label (Fall vom 11.10.2026)', async () => {
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-08T08-15-20-903Z-dropbox-20261008-101420-prompt-cue-agent-label-20261008.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-cue-agent-label-20261008.md'), '# fertig');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-08T09:00:00Z'),
+    })).toHaveLength(0);
+  });
+
+  it('akzeptiert einen Report vom Folgetag als Nachweis', async () => {
+    // Ein Auftrag von abends, der Report von morgens danach — das Datum im
+    // Reportnamen darf nicht verglichen werden.
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-10T20-00-00-000Z-dropbox-20261010-220000-prompt-paket9-20261010.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-paket9-20261011-0730.md'), '# fertig');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-11T09:00:00Z'),
+    })).toHaveLength(0);
+  });
+
+  it('akzeptiert einen Nachtrag-Report als Nachweis', async () => {
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-prompt-golink-spacing2-20261011.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-golink-spacing2-nachpruefung-20261011.md'), '# fertig');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z'),
+    })).toHaveLength(0);
+  });
+
+  it('haelt einen Auftrag ohne Report weiterhin fuer offen — auch mit prompt-Vorsatz', async () => {
+    /* Gegenprobe: Die Lockerung darf die Erkennung nicht blind machen. */
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-prompt-ganz-neue-sache-20261011.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-etwas-anderes-20261011.md'), '# fremd');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z'),
+    }).map(o => o.kennung)).toEqual(['prompt-ganz-neue-sache']);
+  });
+
+  it('verwechselt zwei Auftraege mit gemeinsamem Namensanfang nicht', async () => {
+    /* `report-golink-spacing-...` darf NICHT als Nachweis fuer
+       `golink-spacing2` zaehlen — der Bindestrich hinter dem Stamm trennt. */
+    const { doneDir, reportDir } = aufbau();
+    fs.writeFileSync(path.join(doneDir,
+      '2026-10-11T06-00-00-000Z-dropbox-20261011-060000-prompt-golink-spacing2-20261011.txt'), 'x');
+    fs.writeFileSync(path.join(reportDir, 'report-golink-spacing-20261008.md'), '# anderer Auftrag');
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z'),
+    }).map(o => o.kennung)).toEqual(['prompt-golink-spacing2']);
+  });
+
+  it('laesst Auftraege vor dem Beobachtungsbeginn aus', async () => {
+    const { doneDir, reportDir } = aufbau();
+    const p = path.join(doneDir,
+      '2026-10-08T08-00-00-000Z-dropbox-20261008-100000-prompt-altes-ding-20261008.txt');
+    fs.writeFileSync(p, 'x');
+    const alt = new Date('2026-10-08T08:00:00Z');
+    fs.utimesSync(p, alt, alt);
+    expect(offeneAuftraege({
+      doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z'),
+      nichtVor: new Date('2026-10-11T00:00:00Z'),
+    })).toHaveLength(0);
+  });
+
   it('übergeht alte Aufträge', async () => {
     const { doneDir, reportDir } = aufbau();
     const p = path.join(doneDir, '2026-10-01T06-00-00-000Z-dropbox-20261001-060000-altes-paket-20261001.txt');
@@ -307,6 +390,32 @@ describe('offeneAuftraege', () => {
     expect(offeneAuftraege({
       doneDir, reportDir, now: new Date('2026-10-11T07:00:00Z'), maxAlterTage: 3,
     })).toHaveLength(0);
+  });
+});
+
+describe('hatReport', () => {
+  const berichte = [
+    'report-golink-spacing2-20261008.md',
+    'report-cue-agent-label-nachzug-20261011.md',
+    'report-weiter-v041-paket4-20261011.md',
+  ];
+
+  it('findet den Report ohne prompt-Vorsatz', async () => {
+    expect(hatReport(berichte, 'prompt-golink-spacing2')).toBe(true);
+    expect(hatReport(berichte, 'prompt-cue-agent-label')).toBe(true);
+  });
+
+  it('findet den Report auch ohne Vorsatz in der Kennung', async () => {
+    expect(hatReport(berichte, 'weiter-v041-paket4')).toBe(true);
+  });
+
+  it('meldet nichts fuer einen unbekannten Auftrag', async () => {
+    expect(hatReport(berichte, 'prompt-noch-nie-dagewesen')).toBe(false);
+  });
+
+  it('nimmt einen laengeren Namen nicht als Treffer fuer den kuerzeren', async () => {
+    // `golink-spacing` ist ein ANDERER Auftrag als `golink-spacing2`.
+    expect(hatReport(berichte, 'prompt-golink-spacing')).toBe(false);
   });
 });
 
@@ -330,6 +439,35 @@ describe('leerlaufWaechter', () => {
       zustandPfad: path.join(homeDir, 'waechter.json'),
     };
   }
+
+  it('stupst keinen Auftrag, der vor dem Beobachtungsbeginn zugestellt wurde', async () => {
+    /* Der Fall vom 11.10.2026 auf Waechter-Ebene: Ein frisch ausgerollter
+       Waechter darf die Auftraege der letzten drei Tage nicht nachholen — er
+       weiss nicht, wie sie ausgegangen sind. */
+    const a = aufbau(false);
+    const doneDir = path.join(a.inboxDir, 'done');
+    const alt = path.join(doneDir,
+      '2026-10-08T08-00-00-000Z-dropbox-20261008-100000-prompt-altes-ding-20261008.txt');
+    fs.writeFileSync(alt, 'x');
+    const vor3Tagen = new Date('2026-10-08T08:00:00Z');
+    fs.utimesSync(alt, vor3Tagen, vor3Tagen);
+    const neu2 = path.join(doneDir,
+      '2026-10-11T06-30-00-000Z-dropbox-20261011-063000-prompt-neues-ding-20261011.txt');
+    fs.writeFileSync(neu2, 'x');
+    fs.writeFileSync(path.join(a.reportDir, 'report-neues-ding-20261011.md'), '# fertig');
+
+    const { calls, runner } = sammler();
+    await leerlaufWaechter({ armBedarf: KEIN_BEDARF, ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:00:00Z') });
+    const w = await leerlaufWaechter({ armBedarf: KEIN_BEDARF,
+      ...a, runner, paneText: PANE_RUHT, now: new Date('2026-10-11T07:11:00Z'),
+    });
+    expect(w).toEqual({ ruht: 'kein offener Auftrag' });
+    expect(calls).toHaveLength(0);
+    // Der Beobachtungsbeginn steht auf der Zustellzeit des juengsten Auftrags.
+    const zustand = JSON.parse(fs.readFileSync(a.zustandPfad, 'utf-8'));
+    expect(new Date(zustand.beobachtetSeit).getTime())
+      .toBe(fs.statSync(neu2).mtimeMs);
+  });
 
   it('stupst nicht, solange Claude Code arbeitet', async () => {
     const a = aufbau();

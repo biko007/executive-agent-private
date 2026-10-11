@@ -140,6 +140,24 @@ export function auftragsKennung(dateiname: string): string | null {
   return name.length >= 3 ? name : null;
 }
 
+/**
+ * Der Stamm einer Auftragskennung — der Teil, unter dem der Report abgelegt wird.
+ *
+ * WARUM (11.10.2026): Die Dateien aus der Dropbox-Inbox heißen oft
+ * `prompt-<stamm>-<datum>.txt`, der zugehörige Report aber `report-<stamm>-<datum>.md`
+ * — ohne das Wort `prompt`. Die Zuordnung verglich `report-prompt-<stamm>-` und fand
+ * nie etwas. Zwei am 08.10. erledigte Aufträge (`golink-spacing2`,
+ * `cue-agent-label`) galten deshalb am 11.10. als offen und wurden vom
+ * Leerlauf-Wächter erneut angestoßen.
+ *
+ * Abgeschnitten wird genau dieser eine Herkunftsvorsatz. `weiter-`, `paket3-`
+ * und dergleichen bleiben stehen: Sie sind Teil des Namens und stehen auch im
+ * Report so.
+ */
+export function auftragsStamm(kennung: string): string {
+  return kennung.replace(/^prompt-/, '');
+}
+
 // ── Wartet cc auf eine Armierung? ──────────────────────────────────────────
 //
 // Ein Stups hilft hier nicht: Solange `/arm` nicht gesetzt ist, kann Claude

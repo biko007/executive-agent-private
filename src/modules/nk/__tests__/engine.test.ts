@@ -782,7 +782,14 @@ describe('Block tests', () => {
     const l = await seedLease(u, '2024-01-01', null);
     await seedLeaseTenant(l, t);
     await seedResident(u, t, '2024-01-01', null, 1);
-    await seedMeter(pid, null, 'heat', { is_main_meter: true });
+    const hz = await seedMeter(pid, null, 'heat', { is_main_meter: true });
+    /* Anfangsstand zum Periodenbeginn: Seit dem 11.10.2026 sperrt die
+       Vorprüfung einen Wärmemengenzähler ohne belegten Startwert
+       (HEAT_METER_NO_DOCUMENTED_START). Dieser Fall prüft die CO2-Behandlung;
+       ohne den Stand bräche er an der anderen Sperre ab, bevor er dort
+       ankommt. Die Regel wird dadurch nicht umgangen — sie hat ihre eigenen
+       Tests in waermezaehler-anfangsstand.test.ts. */
+    await seedReading(hz, 0, '2023-12-31');
 
     // Heating config WITHOUT co2 data
     await seedHeatingConfig(pid, 2024);

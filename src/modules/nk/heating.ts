@@ -10,10 +10,77 @@ import type {
 import { roundKaufmaennisch } from './engine.js';
 
 /**
- * Allocate heating and warm-water costs per §7/§8/§9 HeizKV.
- * Returns items per lease, plus warnings.
+ * Heizkosten verteilen — einschließlich des Anteils, den kein Mietverhältnis trägt.
+ *
+ * WARUM DIESER MANTEL (11.10.2026): Jede Verteilung multipliziert den Anteil
+ * einer Wohnung mit ihrem Zeitanteil (`calcProRata`). Stand eine Wohnung einen
+ * Teil des Jahres leer, bleibt entsprechend etwas übrig — bei MG24 2025 sind
+ * das 999,72 € von 4.943,22 €, weil alle drei Mietverhältnisse im Lauf des
+ * Jahres begonnen haben.
+ *
+ * Dieser Rest fiel bisher ERSATZLOS WEG: `heatingAllocation` gab nur Posten mit
+ * `lease_id` zurück, und die Engine reichte ausschließlich solche weiter. In
+ * der Abrechnung erschienen dadurch weniger Heizkosten, als es gab — der
+ * Eigentümer sah seinen eigenen Leerstandsanteil nirgends, und die Objektsumme
+ * war zu niedrig. Bei allen anderen Kostenarten wird derselbe Rest seit jeher
+ * als `vacancy_owner_share` ausgewiesen (engine.ts, „Vacancy share → owner
+ * block"); die Heizung war die Ausnahme.
+ *
+ * Der Mantel rechnet nicht neu: Er bildet die Differenz zwischen der Summe der
+ * Buchungen und der Summe der verteilten Posten. Damit gilt für jede Methode
+ * (A, B, Grundaufteilung) dasselbe, ohne jede von ihnen anzufassen.
  */
 export function heatingAllocation(
+  heatingConfig: HeatingConfigRow | null,
+  bookings: ExpenseBookingRow[],
+  meters: MeterRow[],
+  readings: MeterReadingRow[],
+  units: UnitRow[],
+  leases: LeaseRow[],
+  periodStart: string,
+  periodEnd: string,
+  shares: AllocationShareRow[],
+  rule: AllocationRuleRow,
+): HeatingResult {
+  const ergebnis = verteileHeizkosten(
+    heatingConfig, bookings, meters, readings, units, leases,
+    periodStart, periodEnd, shares, rule,
+  );
+
+  const gesamt = bookings.reduce((s, b) => s + parseFloat(String(b.amount_gross)), 0);
+  const verteilt = ergebnis.items.reduce((s, i) => s + i.amount, 0);
+  const rest = roundKaufmaennisch(gesamt - verteilt);
+
+  /* Ein Cent Rundungsrest ist kein Leerstand. Erst ab einem Euro entsteht ein
+     eigener Posten — darunter bliebe eine Zeile stehen, die niemand erklären
+     kann. Der Rundungsrest selbst gehört in die bestehende Rundungsspalte. */
+  if (rest >= 1) {
+    ergebnis.items.push({
+      item_type: 'vacancy_owner_share',
+      /* Ohne Kostenart und ohne Regel — genau wie die Posten der Methoden A
+         und B. Die Darstellung führt sie dadurch unter derselben Überschrift
+         „Heizung und Warmwasser"; eine eigene Kostenart würde den
+         Eigentümeranteil als zweite Kostenart erscheinen lassen. */
+      cost_category_id: null,
+      allocation_rule_id: null,
+      related_lease_id: null,
+      total_property: gesamt,
+      allocation_basis: 'leerstand',
+      share_numerator: rest,
+      share_denominator: gesamt,
+      share_fraction: gesamt > 0 ? rest / gesamt : 0,
+      amount: rest,
+      rounding_remainder: null,
+      source_booking_ids: [],
+      notes: 'Leerstandsanteil',
+      metadata_jsonb: null,
+    });
+  }
+
+  return ergebnis;
+}
+
+function verteileHeizkosten(
   heatingConfig: HeatingConfigRow | null,
   bookings: ExpenseBookingRow[],
   meters: MeterRow[],

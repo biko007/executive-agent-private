@@ -4,7 +4,7 @@ import {
   sendPromptToBikosocTmux, lesePaneInhalt, type TmuxRunner,
 } from '../cc-prompt-dispatch/index.js';
 import {
-  pruefeBereitschaft, grundText, auftragsKennung,
+  pruefeBereitschaft, grundText, auftragsKennung, auftragsStamm,
   erkenneArmWartung, armMeldung,
   type Bereitschaft,
 } from './bereitschaft.js';
@@ -73,6 +73,11 @@ interface WaechterZustand {
   stupse: Record<string, { anzahl: number; zuletzt: string; gemeldet?: boolean }>;
   /** Zeitpunkt der Blockade, zu der schon eine Armierungsmeldung raus ist. */
   armGemeldetFuer?: string;
+  /**
+   * Ab wann der Wächter zuschaut. Aufträge, die davor zugestellt wurden, stupst
+   * er nie — ob sie erledigt sind, hat er nicht miterlebt.
+   */
+  beobachtetSeit?: string;
 }
 
 function ladeZustand(pfad: string): WaechterZustand {
@@ -82,6 +87,7 @@ function ladeZustand(pfad: string): WaechterZustand {
       bereitSeit: z.bereitSeit,
       stupse: z.stupse || {},
       armGemeldetFuer: z.armGemeldetFuer,
+      beobachtetSeit: z.beobachtetSeit,
     };
   } catch {
     return { stupse: {} };
@@ -107,12 +113,18 @@ export function offeneAuftraege(opts: {
   now: Date;
   /** Nur Aufträge aus den letzten n Tagen betrachten. */
   maxAlterTage?: number;
+  /**
+   * Aufträge, die vor diesem Zeitpunkt zugestellt wurden, bleiben außen vor.
+   * Der Wächter hat nicht miterlebt, wie sie abgearbeitet wurden, und darf sie
+   * deshalb nicht für offen halten.
+   */
+  nichtVor?: Date;
 }): { datei: string; kennung: string; uebergabe: Date }[] {
   const maxAlter = (opts.maxAlterTage ?? 3) * 86400000;
   let dateien: string[] = [];
   let berichte: string[] = [];
   try { dateien = fs.readdirSync(opts.doneDir); } catch { return []; }
-  try { berichte = fs.readdirSync(opts.reportDir); } catch { berichte = []; }
+  try { berichte = fs.readdirSync(opts.reportDir).filter(b => b.endsWith('.md')); } catch { berichte = []; }
 
   const offen: { datei: string; kennung: string; uebergabe: Date }[] = [];
   for (const datei of dateien) {
@@ -122,15 +134,50 @@ export function offeneAuftraege(opts: {
     let st: fs.Stats;
     try { st = fs.statSync(path.join(opts.doneDir, datei)); } catch { continue; }
     if (opts.now.getTime() - st.mtimeMs > maxAlter) continue;
+    if (opts.nichtVor && st.mtimeMs < opts.nichtVor.getTime()) continue;
 
     // Quittungen des Pollers selbst sind keine Aufträge.
     if (/^prompt-inbox/.test(kennung)) continue;
 
-    const hatReport = berichte.some(b =>
-      b.startsWith(`report-${kennung}-`) && b.endsWith('.md'));
-    if (!hatReport) offen.push({ datei, kennung, uebergabe: new Date(st.mtimeMs) });
+    if (!hatReport(berichte, kennung)) {
+      offen.push({ datei, kennung, uebergabe: new Date(st.mtimeMs) });
+    }
   }
   return offen.sort((a, b) => a.uebergabe.getTime() - b.uebergabe.getTime());
+}
+
+/** Zustellzeit des jüngsten abgelegten Auftrags, oder null bei leerem Ordner. */
+export function juengsteZustellung(doneDir: string): number | null {
+  let neuste: number | null = null;
+  let dateien: string[];
+  try { dateien = fs.readdirSync(doneDir); } catch { return null; }
+  for (const datei of dateien) {
+    if (!datei.endsWith('.txt')) continue;
+    try {
+      const ms = fs.statSync(path.join(doneDir, datei)).mtimeMs;
+      if (neuste === null || ms > neuste) neuste = ms;
+    } catch { /* verschwundene Datei überspringen */ }
+  }
+  return neuste;
+}
+
+/**
+ * Gibt es zu dieser Auftragskennung einen Report?
+ *
+ * Verglichen wird gegen die Kennung UND gegen ihren Stamm ohne den
+ * `prompt-`-Vorsatz: Die Datei heißt `prompt-golink-spacing2-20261008.txt`,
+ * der Report dazu `report-golink-spacing2-20261008.md`. Die alte Prüfung
+ * suchte `report-prompt-golink-spacing2-` und fand nie etwas; zwei längst
+ * erledigte Aufträge wurden dadurch am 11.10.2026 erneut angestoßen.
+ *
+ * Das Datum im Reportnamen wird NICHT verglichen. Ein Report vom Vortag oder
+ * ein Nachtrag (`report-<stamm>-nachzug-<datum>.md`) zählt genauso — er
+ * belegt, dass der Auftrag bearbeitet wurde.
+ */
+export function hatReport(berichte: string[], kennung: string): boolean {
+  const stamm = auftragsStamm(kennung);
+  return berichte.some(b =>
+    b.startsWith(`report-${kennung}-`) || b.startsWith(`report-${stamm}-`));
 }
 
 /**
@@ -373,8 +420,19 @@ export async function leerlaufWaechter(opts: {
     if (wartend.length > 0) return { ruht: 'Datei wartet in der Inbox' };
   } catch { /* Inbox fehlt — dann ist auch nichts zu tun */ }
 
+  /* Beobachtungsbeginn: Der Wächter stupst nur Aufträge, die zugestellt wurden,
+     seit er läuft. Beim ersten Lauf wird er auf die Zustellzeit des JÜNGSTEN
+     Auftrags gesetzt — der gerade laufende zählt damit noch, alles Ältere nicht.
+     Ohne diese Grenze holt ein frisch ausgerollter Wächter die Aufträge der
+     letzten drei Tage nach, von denen er nicht weiß, wie sie ausgegangen sind. */
+  const doneDir = path.join(inboxDir, 'done');
+  if (!zustand.beobachtetSeit) {
+    zustand.beobachtetSeit = new Date(juengsteZustellung(doneDir) ?? now.getTime()).toISOString();
+    speichereZustand(zustandPfad, zustand);
+  }
+
   const offen = offeneAuftraege({
-    doneDir: path.join(inboxDir, 'done'), reportDir, now,
+    doneDir, reportDir, now, nichtVor: new Date(zustand.beobachtetSeit),
   });
   if (offen.length === 0) return { ruht: 'kein offener Auftrag' };
 

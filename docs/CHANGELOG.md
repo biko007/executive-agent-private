@@ -4,6 +4,60 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Altauftrags-Stupse, Leerstandsanteil Heizung, Sperre ohne Anfangsstand
+
+**Der Leerlauf-Wächter stupste erledigte Aufträge.** Am 11.10.2026 kamen zwei
+„weiter mit …" zu Aufträgen, die am 08.10. abgeschlossen waren. Zwei Ursachen
+zusammen:
+
+1. **Namensabweichung.** Die Datei heißt `prompt-<stamm>-<datum>.txt`, der
+   Report `report-<stamm>-<datum>.md` — ohne das Wort `prompt`. Die Zuordnung
+   suchte `report-prompt-<stamm>-` und fand nie etwas. Jetzt vergleicht
+   `hatReport()` gegen Kennung UND Stamm; das Datum im Reportnamen zählt nicht
+   mit, ein Nachtrag oder ein Report vom Folgetag gilt ebenso.
+2. **Kein Beobachtungsfenster.** Ein frisch ausgerollter Wächter holte die
+   Aufträge der letzten drei Tage nach, von denen er nicht weiß, wie sie
+   ausgegangen sind. `beobachtetSeit` steht ab dem ersten Lauf auf der
+   Zustellzeit des jüngsten Auftrags; Älteres wird nie gestupst. Ohne diese
+   Grenze hätte allein die Namensbehebung nicht gereicht — zum Zeitpunkt der
+   Prüfung galten 24 Altaufträge als offen, die meisten ohne eigenen Report
+   (Nachträge, Entscheidungen, Freigaben).
+
+**Vierter Abrechnungsfehler: der Leerstandsanteil der Heizkosten verschwand.**
+`heatingAllocation()` lieferte ausschließlich Posten mit `lease_id`, und die
+Engine reichte nur solche weiter. Der Teil, auf den kein Mietzeitraum entfällt,
+fiel ersatzlos weg — bei MG24 2025 **999,72 € von 4.943,22 €**. Die Objektsumme
+war zu niedrig (12.398,78 € statt 13.398,50 €) und der Eigentümer sah seinen
+eigenen Anteil nirgends. Bei allen anderen Kostenarten wird derselbe Rest seit
+jeher als `vacancy_owner_share` ausgewiesen; die Heizung war die Ausnahme. Ein
+Mantel um `heatingAllocation()` bildet die Differenz zwischen Buchungssumme und
+verteilter Summe — damit gilt für Methode A, Methode B und die Grundaufteilung
+dasselbe, ohne eine davon anzufassen. Die Mieteranteile ändern sich nicht.
+
+**Sperre statt Hinweis bei Wärmezählern ohne Anfangsstand.** Fehlt der Stand zum
+Periodenbeginn, weist `calculateConsumption()` den GESAMTEN Zählerstand als
+Verbrauch des Zeitraums aus — bei MG24 also auch Estrichtrocknung, Bauheizung und
+Leerstand nach der Sanierung. Das ist nicht „etwas zu hoch", sondern als
+Abrechnung unbrauchbar, und die Zahl sieht aus wie gemessen. Neuer Blocker
+`HEAT_METER_NO_DOCUMENTED_START`. Nicht gesperrt wird, wenn eine Ablesung am oder
+vor dem Periodenbeginn vorliegt oder der Zähler im Zeitraum eingebaut wurde und
+einen hinterlegten Anfangswert hat.
+
+Damit der Owner trotzdem SIEHT, woran es liegt, fängt die Abrechnungsansicht den
+Abbruch ab: Sie zeigt Zählerstände und Sperrgründe, markiert die betroffenen
+Zähler rot — und keinen einzigen Betrag.
+
+Nebenbefund: Die Abfrage der Ablesungen in `nkPreCheck` begann erst am 1. Januar,
+während die Prüfung auf einen Anfangsstand ab November des Vorjahres suchte. Eine
+Ablesung vom Dezember war damit nie zu sehen. Die Abfrage beginnt jetzt im
+November.
+
+Tests: `waermezaehler-anfangsstand.test.ts` (10), Leerstandsanteil in
+`heizkosten-split.test.ts` (5), Warteschlange um 12 Fälle erweitert. Gesamt
+1058/0/0.
+
+---
+
 ## Stand 2026-10-11 — Nachzug Cue-Anzeigename ohne nickname
 
 Der Auftrag „Anzeigename Agent <Name>" vom 08.10.2026 (`59db621`) hatte eine Stelle
