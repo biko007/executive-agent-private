@@ -9,10 +9,14 @@
  * Grundsatz: Eine Lücke wird als `FEHLT` ausgewiesen und nicht geschätzt. Ein
  * leeres Feld im Portal fällt auf, ein erfundener Wert nicht.
  *
- * Die erzeugte Datei darf Mieternamen enthalten — sie ist eine interne
- * Arbeitsdatei und gehört NICHT in einen Report und nicht nach Dropbox. Sie
- * liegt deshalb in einem Unterordner von ~/bikosoc-spec/, den der
- * Report-Watcher nicht liest (der sieht nur report-*.md direkt im Ordner).
+ * Die erzeugte Datei enthält Mieternamen. Sie liegt deshalb in einem
+ * Unterordner von ~/bikosoc-spec/, den der Report-Watcher nicht liest (der
+ * sieht nur report-*.md direkt im Ordner), und gehört NICHT in einen Report.
+ *
+ * ERLAUBT seit der Owner-Entscheidung vom 11.10.2026: eine Kopie im privaten
+ * App-Ordner des Owners unter `/Apps/bikosoc-reports/.../transfer/casameta/`.
+ * Dort braucht der Claude-Chat sie für die Portaleingabe. Ein anderer
+ * Dropbox-Ort bleibt ausgeschlossen.
  */
 import { query as dbQuery } from '../../shared/db/index.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -171,8 +175,10 @@ export async function erzeugeEingabeblatt(
   z.push('');
   z.push(`Erzeugt am ${new Date().toLocaleString('de-DE')} aus bikosoc.`);
   z.push('');
-  z.push('**Diese Datei enthält Mieternamen. Sie ist eine interne Arbeitsdatei und gehört');
-  z.push('nicht in einen Report und nicht nach Dropbox.**');
+  z.push('**Diese Datei enthält Mieternamen.** Sie ist eine interne Arbeitsdatei und gehört');
+  z.push('nicht in einen Report. Zulässiger Ablageort außerhalb des Servers ist allein der');
+  z.push('private App-Ordner des Owners: `/Apps/bikosoc-reports/.../transfer/casameta/`');
+  z.push('(Owner-Entscheidung 11.10.2026).');
   z.push('');
   z.push('Felder mit `FEHLT` sind in bikosoc nicht vorhanden und im Portal bewusst zu setzen.');
   z.push('');
@@ -363,11 +369,48 @@ export async function erzeugeEingabeblatt(
   }
   z.push('');
 
+  /** Medium in Klartext — im Portal steht kein `cold_water`. */
+  function mediumName(medium: string): string {
+    const namen: Record<string, string> = {
+      cold_water: 'Kaltwasser', warm_water: 'Warmwasser', heat: 'Wärme',
+      gas: 'Gas', electricity: 'Strom',
+    };
+    return namen[medium] || medium;
+  }
+
+  /** Zähleinheit des Mediums. */
+  function einheitVon(medium: string): string {
+    const einheiten: Record<string, string> = {
+      cold_water: 'm³', warm_water: 'm³', heat: 'kWh', gas: 'm³', electricity: 'kWh',
+    };
+    return einheiten[medium] || '';
+  }
+
+  /**
+   * Lage eines Zählers, soweit die Daten sie hergeben.
+   *
+   * Ein eigenes Feld dafür gibt es nicht. Verwertbar ist, was in der Kennung
+   * steht: Die Wärmemengenzähler tragen den Heizkreis (Nord/Ost, Süd/West),
+   * die Objektzähler ihren Zweck. Alles andere bleibt ausdrücklich offen,
+   * statt eine Raumangabe zu erfinden.
+   */
+  function lageVon(m: { meter_number: string; einheit?: string | null;
+    submetering_purpose?: string | null }): string {
+    const nr = String(m.meter_number);
+    if (/-WMZ-NO$/.test(nr)) return 'Heizkreis Nord/Ost';
+    if (/-WMZ-SW$/.test(nr)) return 'Heizkreis Süd/West';
+    if (/HEIZUNG-GESAMT$/.test(nr)) return 'Heizzentrale, Heizkreis gesamt';
+    if (/WARMWASSER-GESAMT$/.test(nr)) return 'Heizzentrale, Warmwasserbereitung';
+    if (/HAUSANSCHLUSS$/.test(nr)) return 'Hausanschlussraum';
+    if (!m.einheit) return 'Objekt';
+    return 'nicht erfasst';
+  }
+
   // 5. Zähler und Stände
   z.push('## 5. Zähler und Zählerstände');
   z.push('');
-  z.push('| Pos. | Nummer | Wohnung | Typ | Raum | K-Wert | Stand alt | Stand neu | Verbrauch |');
-  z.push('|---|---|---|---|---|---|---:|---:|---:|');
+  z.push('| Pos. | Kennung | Wohnung | Medium | Lage | Stand 01.01. | Stand 31.12. | Verbrauch | Einheit |');
+  z.push('|---|---|---|---|---|---:|---:|---:|---|');
   let pos = 0;
   for (const m of zaehler) {
     if (m.active === false) continue;
@@ -378,17 +421,27 @@ export async function erzeugeEingabeblatt(
       ? (Number(neu.value) - Number(alt.value)).toFixed(3)
       : (m.initial_reading != null && neu
         ? (Number(neu.value) - Number(m.initial_reading)).toFixed(3) : FEHLT);
-    z.push(`| ${pos} | ${m.meter_number} | ${m.einheit || 'Objekt'} | ${m.medium} | ${FEHLT} | ${FEHLT} | `
-      + `${alt ? `${alt.value} (${tag(alt.tag)})` : (m.initial_reading != null ? `${m.initial_reading} (Anfangswert)` : FEHLT)} | `
-      + `${neu ? `${neu.value} (${tag(neu.tag)})` : FEHLT} | ${verbrauch} |`);
-    csvZeile('zaehler', `${m.meter_number} Stand alt`, alt ? String(alt.value) : FEHLT);
-    csvZeile('zaehler', `${m.meter_number} Stand neu`, neu ? String(neu.value) : FEHLT);
+    const standAlt = alt
+      ? `${alt.value} (${tag(alt.tag)})`
+      : (m.initial_reading != null ? `${m.initial_reading} (Anfangswert)` : FEHLT);
+    z.push(`| ${pos} | ${m.meter_number} | ${m.einheit || 'Objekt'} | ${mediumName(m.medium)} | `
+      + `${lageVon(m)} | ${standAlt} | ${neu ? `${neu.value} (${tag(neu.tag)})` : FEHLT} | `
+      + `${verbrauch} | ${einheitVon(m.medium)} |`);
+    csvZeile('zaehler', `${m.meter_number} Medium`, mediumName(m.medium), lageVon(m));
+    csvZeile('zaehler', `${m.meter_number} Stand 01.01.`,
+      alt ? String(alt.value) : (m.initial_reading != null ? String(m.initial_reading) : FEHLT),
+      einheitVon(m.medium));
+    csvZeile('zaehler', `${m.meter_number} Stand 31.12.`,
+      neu ? String(neu.value) : FEHLT, einheitVon(m.medium));
+    csvZeile('zaehler', `${m.meter_number} Verbrauch`, verbrauch, einheitVon(m.medium));
     if (!alt && m.initial_reading == null) {
       merkeLuecke(`Zähler ${m.meter_number}: kein Stand zum Periodenanfang und kein Anfangswert.`);
     }
     if (!neu) merkeLuecke(`Zähler ${m.meter_number}: kein Stand zum Periodenende.`);
   }
-  merkeLuecke('Raum und K-Wert je Zähler führt bikosoc nicht — im Portal zu ergänzen.');
+  merkeLuecke('Raumangabe je Zähler führt bikosoc nur, soweit sie aus der Kennung hervorgeht '
+    + '(Heizkreis Nord/Ost bzw. Süd/West). Der K-Wert der Heizkostenverteiler wird nicht '
+    + 'geführt — bei MG24 sind es Wärmemengenzähler, dort gibt es keinen.');
   z.push('');
   const inaktiv = zaehler.filter(m => m.active === false);
   if (inaktiv.length > 0) {

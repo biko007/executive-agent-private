@@ -4,6 +4,25 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Eingabeblatt: Zählertabelle und Ablageort
+
+Die Zählertabelle des Casameta-Eingabeblatts nennt jetzt je Zähler Kennung, Wohnung,
+Medium in Klartext, Lage, Stand 01.01., Stand 31.12., Verbrauch und Einheit. Die Lage
+kommt aus der Kennung, soweit sie etwas hergibt (Heizkreis Nord/Ost bzw. Süd/West,
+Heizzentrale, Hausanschlussraum) — sonst steht „nicht erfasst" statt einer erfundenen
+Raumangabe. Die Spalte K-Wert ist entfallen: Bei MG24 hängen Wärmemengenzähler, dort gibt
+es keinen.
+
+**Ablageort geändert (Owner-Entscheidung 11.10.2026).** Das Blatt enthält Mieternamen und
+blieb deshalb bisher auf dem Server. Zulässig ist jetzt zusätzlich eine Kopie im privaten
+App-Ordner des Owners unter `/Apps/bikosoc-reports/.../transfer/casameta/`, weil der
+Claude-Chat sie dort für die Portaleingabe braucht. Der Hinweis im Kopf der Datei sagt das
+jetzt auch so — vorher stand dort „gehört nicht nach Dropbox", was der Entscheidung
+widerspricht. Jeder andere Dropbox-Ort bleibt ausgeschlossen, und in einen Report gehört
+das Blatt weiterhin nicht.
+
+---
+
 ## Stand 2026-10-11 — Stützpunktverfahren: messen, wo gemessen wurde
 
 Die § 9b-Aufteilung vom selben Tag verteilte den GANZEN Jahresverbrauch nach
