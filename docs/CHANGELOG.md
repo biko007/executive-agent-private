@@ -4,6 +4,44 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Skala der Zählerreihen belegt: absoluter Zählerstand
+
+Zwei Reports vom selben Tag behandelten die Skala der Fiehn-Reihen unterschiedlich: W1
+Süd/West als Jahresverbrauch (Foto minus Stichtag), W2 direkt als Zählerstand. Beides
+zugleich kann nicht stimmen.
+
+**Belegt ist die absolute Skala, aus zwei unabhängigen Quellen:**
+
+1. Die Spaltenüberschrift im Fiehn-Monatsbericht lautet **„Zählerstand aktuell (Wh)"**;
+   daneben steht eine eigene, leere Spalte „Verbrauch Vormonat".
+2. Die Reihen laufen über den Jahreswechsel **weiter** statt neu anzusetzen — W1 Süd/West
+   9.222.000 Wh am 27.12.2025, 9.422.000 Wh am 01.01.2026. Geprüft für alle sieben Zähler
+   mit Daten.
+
+W1 Süd/West ist deshalb korrigiert: Anfangsstand 01.01.2025 = **2.772 kWh** (Stichtagswert
+31.12.2024 vom Foto) statt null, Einzugsstand = **3.781 kWh** statt 1.009. Der Verbrauch
+2025 dieses Zählers sinkt damit von 9.417 auf **6.645 kWh**. W2 bleibt unverändert.
+
+**Die Nebenwirkung ist größer als die Korrektur.** Die Anfangsstände aller acht
+Wärmemengenzähler stammten aus einer Ableitung über die GLT-Spalte „Vorjahr" und ergaben
+exakt null. Das Foto widerlegt diese Ableitung für einen Zähler — damit ist sie als
+Methode entwertet, auch für die übrigen sechs aktiven. Neuer Hinweis
+`HEAT_METER_START_FROM_GLT_DERIVATION` in jeder Abrechnung, bis die Stichtagswerte
+vorliegen.
+
+Eine zweite Spur stützt den Verdacht: Mit den Null-Ankern ergibt sich für den Pelletkessel
+ein Jahresnutzungsgrad von **98 Prozent** (63.478 kWh Wärme aus 64.700 kWh Brennstoff).
+Für einen Pelletkessel sind 80 bis 90 Prozent der Erwartungsbereich; bei 85 Prozent wären
+rund 8.500 kWh weniger Wärme zu erwarten. Die gemessene Wärme ist also insgesamt zu hoch
+— genau das, was zu niedrige Anfangsstände bewirken.
+
+**Wirkung MG24 2025:** W1 860,43 → 644,96 € · W2 296,47 → 382,03 € · W3 unverändert
+1.213,48 € · Eigentümer 3.669,46 → 3.799,37 €.
+
+Die Zwischenstände-CSV führt jetzt in jeder Zeile die Spalte `skala`.
+
+---
+
 ## Stand 2026-10-11 — Owner-Fotos W1: drei Korrekturen und eine Methodenänderung
 
 Die Fotos der W1-Zähler widerlegen drei Angaben, die ich aus dem handschriftlichen

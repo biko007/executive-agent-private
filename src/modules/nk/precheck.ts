@@ -268,6 +268,40 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
      nicht nach Verbrauch verteilt. */
   for (const w of waermezaehlerOhneAnfangsstand(meters, readings, year)) findings.push(w);
 
+  /* 13d. HEAT_METER_START_FROM_GLT_DERIVATION — Hinweis, kein Blocker.
+
+     Die Anfangsstände der Wärmemengenzähler zum 01.01.2025 wurden am
+     11.10.2026 aus der GLT-Spalte „Vorjahr" abgeleitet (Stand − Jahr aktuell
+     − Vorjahr) und ergaben für alle acht Zähler exakt null. Am selben Tag hat
+     ein Owner-Foto diese Ableitung für einen Zähler WIDERLEGT: W1 Süd/West
+     stand am 31.12.2024 auf 2.772 kWh.
+
+     Die Fiehn-Berichte führen die Spalte „Zählerstand aktuell (Wh)" und laufen
+     über den Jahreswechsel weiter — die Reihe ist also der absolute
+     Zählerstand und nicht der Jahresverbrauch. Damit sagt die GLT-Spalte
+     „Vorjahr" bei diesen Zählern nichts über den Stand zum Jahresanfang.
+
+     Für die übrigen Zähler fehlt der Gegenbeweis in beide Richtungen. Ihr
+     Anfangsstand null ist eine ARBEITSANNAHME, und ist er zu niedrig, ist der
+     Verbrauch 2025 zu hoch. Deshalb dieser Hinweis in jeder Abrechnung, bis
+     die Stichtagswerte vorliegen. */
+  for (const meter of meters) {
+    if (meter.medium !== 'heat') continue;
+    const abgeleitet = readings.some((r: any) =>
+      r.meter_id === meter.id && r.reader_name === 'GLT-Jahreszähler');
+    if (!abgeleitet) continue;
+    findings.push({
+      code: 'HEAT_METER_START_FROM_GLT_DERIVATION',
+      severity: 'warning',
+      message: `Wärmemengenzähler ${meter.meter_number}: Der Anfangsstand zum ${year}-01-01 `
+        + 'ist aus der GLT-Spalte „Vorjahr" abgeleitet und nicht abgelesen. Diese Ableitung '
+        + 'ist für den Zähler 33050523 (W1 Süd/West) durch ein Foto widerlegt worden — dort '
+        + 'stand der Zähler zum Jahreswechsel auf 2.772 kWh statt null. Liegt der wahre '
+        + 'Anfangsstand über null, ist der Verbrauch dieses Zeitraums zu hoch angesetzt.',
+      details: { meter_id: meter.id, meter_number: meter.meter_number },
+    });
+  }
+
   /* 13c. NUTZERWECHSEL_OHNE_AUFTEILUNG — Blocker.
 
      Beginnt oder endet ein Mietverhältnis im Abrechnungszeitraum, verlangt
