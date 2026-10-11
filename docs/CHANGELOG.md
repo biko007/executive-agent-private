@@ -4,6 +4,39 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — MG24 auf 0/100 umgestellt
+
+Owner-Entscheidung vom 10.10.2026, erneut bestätigt am 11.10.2026 um 14:05: Heizung und
+Warmwasser werden bei MG24 zu **100 Prozent nach Verbrauch** verteilt, ohne
+Grundkostenanteil. Die Zwischenlösung 30/70 „bis zur Klärung der W3-Wärmemengenzähler"
+ist aufgehoben. Casameta steht bereits auf „nur nach Verbrauch".
+
+Geändert über die bestehenden Routen (`heating-config` 2025 und 2026,
+`allocation-rules` für `heizung` und `warmwasser`), je mit Audit-Eintrag. Die Abweichung
+von § 7 Abs. 1 HeizkostenV bleibt als Befund `HEATING_SPLIT_OUTSIDE_HEIZKOSTENV` in jeder
+Abrechnung stehen; der Owner trägt das Kürzungsrisiko aus § 12 bewusst.
+
+**Wirkung MG24 2025:**
+
+| | 30/70 | 0/100 | Differenz |
+|---|---:|---:|---:|
+| W1 | 556,95 € | 728,25 € | +171,30 € |
+| W2 | 245,60 € | 356,90 € | +111,30 € |
+| W3 | 1.392,22 € | 1.213,48 € | −178,74 € |
+| Eigentümer | 3.845,07 € | 3.741,21 € | −103,86 € |
+
+W3 wird entlastet, W1 und W2 werden belastet — genau umgekehrt zur Erwartung bei einem
+normalen Haus. Grund: W3 hat keine funktionierenden Wärmemengenzähler und trägt an der
+Raumwärme deshalb **0 €**. Mit 30/70 zahlte es wenigstens noch den Grundkostenanteil nach
+Fläche (43,7 %), bei 0/100 fällt auch der weg.
+
+Beim Einpflegen ist mir ein Fehler unterlaufen: Der erste Aufruf überschrieb das Feld
+`notes` der Heizungskonfiguration und löschte damit die Anlagenbeschreibung (KWB
+Combifire, Puffer, Inbetriebnahmedaten). Sofort korrigiert — der technische Text steht
+wieder drin, die Entscheidung ist angehängt statt an seine Stelle gesetzt.
+
+---
+
 ## Stand 2026-10-11 — Endbestand Brennstoff nach FIFO
 
 Beim Abgleich der Casameta-Eingabe fiel auf, dass das Portal den Endbestand nach FIFO
