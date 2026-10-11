@@ -6,6 +6,7 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import { canonicalHash } from '../../util/canonical.js';
 import { nkPreCheck } from './precheck.js';
 import { heatingAllocation, calculateConsumption } from './heating.js';
+import { nutzerAnteilZeit, findeEinzugsstand, isoTag } from './nutzerzeit.js';
 import type {
   EngineOutput, EngineInput, EngineWarning, ExcludedLease,
   StatementResult, ItemResult, RunMeta, TenantRecipient,
@@ -861,20 +862,52 @@ function allocateByConsumption(
   let verteilt = 0;
 
   for (const lease of leases) {
-    const verbrauch = verbrauchJeEinheit.get(lease.unit_id) || 0;
+    const verbrauchEinheit = verbrauchJeEinheit.get(lease.unit_id) || 0;
+    if (verbrauchEinheit <= 0) continue;
+
+    /* KORREKTUR 11.10.2026. Hier stand: „Gemessen wird ohnehin nur, was in
+       dieser Zeit lief — deshalb geht der Zeitanteil NICHT zusätzlich ein."
+       Das stimmt nur, wenn der Zähler zu Mietbeginn abgelesen oder gesetzt
+       wurde. Bei MG24 läuft er seit Periodenbeginn weiter: Die Wohnung im
+       3. OG ist ab 01.05.2025 vermietet, ihr Wasserzähler zählt aber ab
+       01.01.2025. Der Verbrauch der Leerstandszeit landete damit beim Mieter.
+
+       Richtig: Der Nutzer trägt seinen Anteil nach § 9b-Logik — gemessen,
+       wenn es eine Ablesung zum Einzug gibt, sonst zeitanteilig. Der Rest
+       bleibt beim Eigentümer (er fällt in den Leerstandsrest unten). */
+    const einzugsTag = isoTag(lease.start_date);
+    const zaehlerDerEinheit = einheitenZaehler.filter(m => m.unit_id === lease.unit_id);
+    const staende = wohnungsStaende(zaehlerDerEinheit, einzugsTag, readings, periodStart, periodEnd);
+    const anteil = nutzerAnteilZeit({
+      lease, periodStart, periodEnd, ...staende,
+    });
+    if (!anteil) continue;
+
+    const verbrauch = verbrauchEinheit * anteil.anteil;
     if (verbrauch <= 0) continue;
 
-    /* Zeitanteil: Ein unterjähriges Mietverhältnis trägt nur den Verbrauch
-       seiner Zeit. Gemessen wird ohnehin nur, was in dieser Zeit lief —
-       deshalb geht der Zeitanteil NICHT zusätzlich in den Nenner ein, sonst
-       würde doppelt gekürzt. */
+    if (anteil.grundlage === 'zeitanteil') {
+      warnings.push({
+        code: 'NUTZERWECHSEL_9B_AUFTEILUNG',
+        severity: 'warning',
+        message: `Kostenart "${rule.category_code}", Mietverhältnis ab ${anteil.von}: `
+          + 'Zum Einzug wurde nicht abgelesen. Der gemessene Verbrauch der Wohnung '
+          + `(${Math.round(verbrauchEinheit * 1000) / 1000}) wird zeitanteilig aufgeteilt — `
+          + `${(anteil.anteil * 100).toFixed(1)} % Nutzer, der Rest Eigentümer.`,
+        details: {
+          category: rule.category_code, von: anteil.von, bis: anteil.bis,
+          anteil_zeit: Math.round(anteil.anteil * 10000) / 100,
+        },
+      });
+    }
+
     const fraction = verbrauch / gesamtVerbrauch;
     const amount = roundKaufmaennisch(totalAmount * fraction);
     verteilt += amount;
 
     allocations.push({
       lease_id: lease.id,
-      numerator: verbrauch,
+      numerator: Math.round(verbrauch * 1000) / 1000,
       denominator: gesamtVerbrauch,
       fraction,
       amount,
@@ -889,6 +922,37 @@ function allocateByConsumption(
     vacancyDenominator: totalAmount || 1,
     vacancyFraction: totalAmount > 0 ? rest / totalAmount : 0,
     warnings,
+  };
+}
+
+/**
+ * Anfangs-, End- und Einzugsstand einer Wohnung über alle ihre Zähler.
+ *
+ * Ein Einzugsstand zählt nur, wenn JEDER Zähler der Wohnung einen hat —
+ * sonst wäre der Wohnungsverbrauch halb gemessen und halb geschätzt.
+ */
+function wohnungsStaende(
+  zaehler: MeterRow[], einzugsTag: string, readings: MeterReadingRow[],
+  periodStart: string, periodEnd: string,
+) {
+  let standAnfang = 0; let standEnde = 0; let einzugSumme = 0;
+  let alleHabenEinzug = zaehler.length > 0;
+  let tag = '';
+  for (const m of zaehler) {
+    const eigene = readings
+      .filter(r => r.meter_id === m.id)
+      .map(r => ({ tag: isoTag(r.read_at as any), wert: parseFloat(String(r.value)) }))
+      .sort((a, b) => a.tag.localeCompare(b.tag));
+    const vorher = eigene.filter(r => r.tag <= periodStart).pop();
+    const letzter = eigene.filter(r => r.tag <= periodEnd).pop();
+    standAnfang += vorher ? vorher.wert : 0;
+    standEnde += letzter ? letzter.wert : 0;
+    const e = findeEinzugsstand(m.id, einzugsTag, readings);
+    if (e) { einzugSumme += e.wert; tag = e.tag; } else { alleHabenEinzug = false; }
+  }
+  return {
+    standAnfang, standEnde,
+    einzugsstand: alleHabenEinzug ? { tag, wert: einzugSumme } : null,
   };
 }
 

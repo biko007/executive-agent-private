@@ -296,6 +296,19 @@ export async function erzeugeEingabeblatt(
       z.push(`| ${u.code} | *Leerstand* | ${tag(von)} | ${tag(ersterStart)} | — | — |`);
       merkeLuecke(`${u.code} war von ${tag(von)} bis ${tag(ersterStart)} nicht vermietet — `
         + 'in Casameta als Leerstand-Nutzerzeitraum eintragen.');
+      /* Der Nutzerwechsel ist der Punkt, an dem das Portal eine
+         Zwischenablesung erwartet. Gibt es keine, muss dort dieselbe
+         Aufteilung eingestellt werden wie hier gerechnet — sonst weichen
+         Kontrollrechnung und verbindliche Abrechnung voneinander ab. */
+      z.push(`| ${u.code} | *§ 9b-Aufteilung, Zwischenablesung fehlt* | — | — | — | — |`);
+      csvZeile('nutzer', `${u.code} Aufteilung Nutzerwechsel`,
+        '§ 9b Abs. 3 HeizkostenV',
+        'Wärme nach Gradtagszahlen, Warmwasser und Wasser zeitanteilig — '
+        + 'im Portal entsprechend einstellen');
+      merkeLuecke(`${u.code}: Zwischenablesung zum Einzug fehlt. Gerechnet wird nach `
+        + '§ 9b Abs. 3 HeizkostenV (Wärme nach Gradtagszahlen, Warmwasser zeitanteilig). '
+        + 'Liefert die Gebäudeleittechnik später echte Einzugsstände, ersetzen diese die '
+        + 'Aufteilung.');
     }
   }
   z.push('');

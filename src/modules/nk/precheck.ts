@@ -4,6 +4,9 @@
  * for Nebenkostenabrechnung calculation.
  */
 import { query as dbQuery } from '../../shared/db/index.js';
+import {
+  nutzungsAbschnitt, findeEinzugsstand, gradtagsSumme, tageZwischen, isoTag,
+} from './nutzerzeit.js';
 
 export type Severity = 'blocker' | 'warning' | 'info';
 
@@ -264,6 +267,29 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
      Strom bleibt wie bei den übrigen Prüfungen außen vor; er wird bei MG24
      nicht nach Verbrauch verteilt. */
   for (const w of waermezaehlerOhneAnfangsstand(meters, readings, year)) findings.push(w);
+
+  /* 13c. NUTZERWECHSEL_OHNE_AUFTEILUNG — Blocker.
+
+     Beginnt oder endet ein Mietverhältnis im Abrechnungszeitraum, verlangt
+     § 9b Abs. 1 HeizkostenV eine Zwischenablesung. Fehlt sie, tritt die
+     Aufteilung nach Absatz 3 an ihre Stelle — Wärme nach Gradtagszahlen,
+     Warmwasser und Wasser zeitanteilig. Beides zusammen deckt jeden Fall ab.
+
+     Gesperrt wird deshalb nur, wenn WEDER das eine NOCH das andere möglich
+     ist: kein Stand zum Einzug und keine brauchbare Aufteilung, weil der
+     Nutzungsabschnitt leer ist oder die Gradtagstabelle für den Zeitraum
+     nichts hergibt. Das ist der Fall, in dem stillschweigend irgendetwas
+     herauskäme — und genau der soll nicht durchgehen. */
+  const { rows: mietverhaeltnisse } = await dbQuery(
+    `SELECT l.id, l.unit_id, l.start_date, l.end_date FROM leases l
+       JOIN units u ON u.id = l.unit_id
+      WHERE u.property_id = $1 AND l.status IN ('active','ended')
+        AND l.start_date <= $2 AND (l.end_date IS NULL OR l.end_date >= $3)`,
+    [propertyId, `${year}-12-31`, `${year}-01-01`]);
+  for (const w of nutzerwechselOhneAufteilung(
+    mietverhaeltnisse as any, units as any, meters as any, readings as any, year)) {
+    findings.push(w);
+  }
 
   // 14. CONSUMPTION_DENOMINATOR_ZERO
   // Check if any consumption-based rule has zero total consumption
@@ -567,6 +593,58 @@ export function waermezaehlerOhneAnfangsstand(
         + `zum ${year}-01-01. Ohne ihn würde der gesamte Zählerstand seit Einbau als `
         + 'Verbrauch des Zeitraums abgerechnet.',
       details: { meter_id: meter.id, meter_number: meter.meter_number },
+    });
+  }
+  return out;
+}
+
+
+/**
+ * Mietverhältnisse, die im Zeitraum beginnen oder enden, ohne dass sich ihr
+ * Anteil bestimmen lässt.
+ *
+ * Reine Funktion — die Sperre entscheidet über Geld und braucht prüfbare
+ * Grenzfälle.
+ */
+export function nutzerwechselOhneAufteilung(
+  leases: { id: number; unit_id: number; start_date: string | Date; end_date?: string | Date | null }[],
+  units: { id: number; code: string }[],
+  meters: { id: number; medium: string; unit_id?: number | null; is_main_meter?: boolean }[],
+  readings: { meter_id: number; read_at: string | Date; value: number | string }[],
+  year: number,
+): PreCheckFinding[] {
+  const periodStart = `${year}-01-01`;
+  const periodEnd = `${year}-12-31`;
+  const out: PreCheckFinding[] = [];
+
+  for (const lease of leases) {
+    const abschnitt = nutzungsAbschnitt(lease as any, periodStart, periodEnd);
+    const unit = units.find(u => u.id === lease.unit_id);
+    const code = unit?.code ?? String(lease.unit_id);
+
+    if (!abschnitt) continue;  // läuft im Zeitraum gar nicht — kein Fall für § 9b
+    const unterjaehrig = abschnitt.von !== periodStart || abschnitt.bis !== periodEnd;
+    if (!unterjaehrig) continue;
+
+    // Variante 1: Zwischenablesung an allen Wärmemengenzählern der Wohnung.
+    const waermezaehler = meters.filter(
+      m => m.medium === 'heat' && !m.is_main_meter && m.unit_id === lease.unit_id);
+    const alleAbgelesen = waermezaehler.length > 0 && waermezaehler.every(
+      m => findeEinzugsstand(m.id, isoTag(lease.start_date), readings as any) !== null);
+    if (alleAbgelesen) continue;
+
+    // Variante 2: Aufteilung nach § 9b Abs. 3.
+    const gradtageZeitraum = gradtagsSumme(periodStart, periodEnd);
+    const tageZeitraum = tageZwischen(periodStart, periodEnd);
+    if (gradtageZeitraum > 0 && tageZeitraum > 0) continue;
+
+    out.push({
+      code: 'NUTZERWECHSEL_OHNE_AUFTEILUNG',
+      severity: 'blocker',
+      message: `Einheit ${code}: Das Mietverhältnis läuft nur von ${abschnitt.von} bis `
+        + `${abschnitt.bis}. Es gibt weder eine Zwischenablesung zum Nutzerwechsel noch eine `
+        + 'anwendbare Aufteilung nach § 9b Abs. 3 HeizkostenV.',
+      details: { unit_code: code, von: abschnitt.von, bis: abschnitt.bis },
     });
   }
   return out;

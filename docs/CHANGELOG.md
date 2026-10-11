@@ -4,6 +4,62 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Nutzeranteil nach § 9b HeizkostenV statt Zeitanteil
+
+**Der fünfte Abrechnungsfehler, und der teuerste.** Beginnt ein Mietverhältnis mitten im
+Jahr, misst der Wohnungszähler trotzdem ab Januar. Die Engine nahm dafür bisher einen
+einheitlichen Zeitanteil (`active_days / Jahrestage`). Für Wärme ist das nach § 9b Abs. 3
+HeizkostenV falsch: Dort gelten Gradtagszahlen, weil Januar und Juli nicht dasselbe
+wiegen. Für Wasser war es sogar ganz abgeschaltet — der Kommentar begründete das mit
+„gemessen wird ohnehin nur, was in dieser Zeit lief", was nur stimmt, wenn zum Einzug
+abgelesen oder zurückgesetzt wird.
+
+Neues Modul `nk/nutzerzeit.ts`:
+
+- **Gradtagszahlen als Daten** (VDI 2067, Promille des Jahresbedarfs; Juni bis August als
+  ein Block von 40 ‰, weil die Tabelle dort keine Monatswerte kennt). Summe 1000,
+  tagweise gerechnet, Schaltjahr berücksichtigt.
+- **`nutzerAnteilWaerme()` / `nutzerAnteilZeit()`** liefern den Anteil samt Grundlage:
+  Zwischenablesung, Gradtagszahlen, Zeitabschnitte oder ganzer Zeitraum.
+- **Zwischenablesung hat Vorrang** (§ 9b Abs. 1 und 2). Als solche gilt eine Ablesung bis
+  drei Tage um den Einzugstag; weiter entfernt greift die Aufteilung. Liefert die
+  Gebäudeleittechnik später echte Einzugsstände, ersetzen sie die Aufteilung von selbst —
+  es ist keine Umstellung nötig.
+
+`calcProRata()` ist entfallen. Alle vier Verteilstellen in `heating.ts` und die
+Verbrauchsverteilung in `engine.ts` rechnen jetzt über `nutzerFaktoren()`.
+
+**Wirkung MG24 2025** (nur die Verteilung, die Kosten sind unverändert):
+
+| | vorher | nachher | Differenz |
+|---|---:|---:|---:|
+| W1 | 778,57 € | 609,03 € | −169,54 € |
+| W2 | 739,23 € | 316,35 € | −422,88 € |
+| W3 | 1.383,37 € | 864,07 € | −519,30 € |
+| Eigentümer | 3.097,33 € | 4.209,05 € | +1.111,72 € |
+
+**Plausibilitätsprobe W2** (Zähler Nord/Ost 7.404 kWh am 23.05., Süd/West 3.812 kWh am
+24.05., zusammen 11.216 kWh): Die Gradtagszahlen erwarten für 01.01.–23.05. 56,0 % des
+Jahresverbrauchs von 17.877 kWh, also 10.005 kWh. Gemessen sind 11.216 kWh — 12,1 %
+darüber, erklärbar mit der Bautrocknung in den ersten Monaten. Vom Gemessenen entfallen
+rund 2.198 kWh auf die Mietzeit ab 01.04. und rund 9.018 kWh auf den Leerstand davor.
+
+**Neuer Blocker `NUTZERWECHSEL_OHNE_AUFTEILUNG`:** Ein unterjähriges Mietverhältnis ohne
+Zwischenablesung UND ohne anwendbare § 9b-Aufteilung sperrt die Abrechnung. In der Praxis
+greift immer eine der beiden Grundlagen; die Sperre fängt den Fall ab, in dem keine von
+beiden trägt.
+
+**Kennzeichnung:** Die Wohnungskarte in der Abrechnungsansicht trägt den Satz
+„§ 9b-Aufteilung, Zwischenablesung fehlt" mit beiden Anteilen; dasselbe steht als Zeile im
+Casameta-Eingabeblatt und in dessen Lückenliste, damit Portal und Kontrollrechnung nicht
+auseinanderlaufen.
+
+Tests: `nutzerzeit.test.ts` (28). Zwei Erwartungen in `consumption-allocation.test.ts`
+beschrieben den alten Zustand (16,0 : 12,0 : 72,0 Prozent) und sind mit Begründung auf die
+korrigierten Werte gesetzt. Gesamt 1087/0/0.
+
+---
+
 ## Stand 2026-10-11 — Anfangsstände der Wärmemengenzähler aus dem GLT-Jahreszähler
 
 Die Sperre aus dem vorigen Abschnitt ist aufgelöst, und zwar mit einem Beleg statt mit

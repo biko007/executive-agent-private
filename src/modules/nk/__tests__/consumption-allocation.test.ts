@@ -329,14 +329,30 @@ describe('Verteilung nach Verbrauch — echte Werte MG24 2025', () => {
     ablesung(13, 0, '2025-01-01'), ablesung(13, 121.32, '2025-12-30'),
   ];
 
-  it('verteilt im Verhältnis 16,0 : 12,0 : 72,0 Prozent', () => {
+  /* GEÄNDERTE ERWARTUNG 11.10.2026. Vorher standen hier 16,0 : 12,0 : 72,0 —
+     die vollen Zählerstände des Jahres, obwohl alle drei Mietverhältnisse
+     erst im Lauf des Jahres beginnen. Der Zähler läuft aber ab dem 1. Januar:
+     Was in der Leerstandszeit durch die Leitung ging, war dem Mieter
+     zugerechnet.
+
+     Jetzt trägt jeder Nutzer seinen Zeitanteil am gemessenen Verbrauch
+     (§ 9b-Logik; eine Ablesung zum Einzug gibt es nicht). Der Rest bleibt
+     beim Eigentümer. Die alten Zahlen waren die Beschreibung des Fehlers,
+     nicht des Sollzustands. */
+  it('verteilt im Verhältnis 14,6 : 9,1 : 48,3 Prozent — Rest beim Eigentümer', () => {
     const e = verteile(1214.01, regel('wasser'), leases, units, meters, readings);
     const anteil = (leaseId: number) =>
       (e.leaseAllocations.find(a => a.lease_id === leaseId)!.fraction) * 100;
 
-    expect(anteil(29)).toBeCloseTo(16.0, 1);
-    expect(anteil(30)).toBeCloseTo(12.0, 1);
-    expect(anteil(31)).toBeCloseTo(72.0, 1);
+    expect(anteil(29)).toBeCloseTo(14.64, 1);   // W1 ab 01.02. → 91,5 % der Zeit
+    expect(anteil(30)).toBeCloseTo(9.06, 1);    // W2 ab 01.04. → 75,3 %
+    expect(anteil(31)).toBeCloseTo(48.32, 1);   // W3 ab 01.05. → 67,1 %
+  });
+
+  it('lässt den Verbrauch der Leerstandszeit beim Eigentümer', () => {
+    const e = verteile(1214.01, regel('wasser'), leases, units, meters, readings);
+    // 339,78 € von 1.214,01 € entfallen auf die Zeit vor den Einzügen.
+    expect(e.vacancyAmount).toBeCloseTo(339.78, 1);
   });
 
   it('weicht deutlich von der Flächenverteilung ab — darum die Änderung', () => {
@@ -349,8 +365,9 @@ describe('Verteilung nach Verbrauch — echte Werte MG24 2025', () => {
     const w3Verbrauch = nachVerbrauch.leaseAllocations.find(a => a.lease_id === 31)!.amount;
     const w3Flaeche = nachFlaeche.leaseAllocations.find(a => a.lease_id === 31)!.amount;
 
-    // W3 traegt nach Verbrauch deutlich mehr als nach Flaeche
-    expect(w3Verbrauch).toBeGreaterThan(w3Flaeche + 300);
+    // W3 traegt nach Verbrauch weiterhin deutlich mehr als nach Flaeche —
+    // der Abstand ist durch den Zeitanteil kleiner geworden, nicht weg.
+    expect(w3Verbrauch).toBeGreaterThan(w3Flaeche + 200);
   });
 
   it('die Summe über alle Einheiten ergibt wieder den Rechnungsbetrag', () => {

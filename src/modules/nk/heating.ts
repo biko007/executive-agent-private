@@ -8,6 +8,11 @@ import type {
   ItemResult, EngineWarning, HeatingResult,
 } from './types.js';
 import { roundKaufmaennisch } from './engine.js';
+import {
+  nutzerAnteilWaerme, nutzerAnteilZeit, findeEinzugsstand, nutzungsAbschnitt,
+  tageZwischen, isoTag, grundlageKlartext,
+  type Grundlage,
+} from './nutzerzeit.js';
 
 /**
  * Heizkosten verteilen — einschließlich des Anteils, den kein Mietverhältnis trägt.
@@ -255,17 +260,23 @@ function verteileHeizkosten(
     const unit = units.find(u => u.id === lease.unit_id);
     if (!unit) continue;
 
-    const proRata = calcProRata(lease, periodStart, periodEnd);
-    if (proRata <= 0) continue;
+    /* § 9b-Anteile. Dieser Zweig verteilt reine Heizkosten ohne
+       Warmwasseranteil — deshalb zählen nur die Wärmemengenzähler. */
+    const f = nutzerFaktoren(
+      lease, unit,
+      meters.filter(m => m.medium === 'heat' && !m.is_main_meter && m.unit_id === unit.id),
+      [], readings, periodStart, periodEnd, warnings);
+    if (!f) continue;
 
     // Base share (sqm)
     const sqm = unit.living_area_qm || 0;
-    const baseFraction = totalSqm > 0 ? (sqm / totalSqm) * proRata : 0;
-    const baseAmount = roundKaufmaennisch(basePool * baseFraction);
+    const flaechenAnteil = totalSqm > 0 ? sqm / totalSqm : 0;
+    const baseAmount = roundKaufmaennisch(basePool * flaechenAnteil * f.waermeBasis);
 
     // Consumption share
     const unitConsumption = consumptionByUnit.get(unit.id) || 0;
-    const consFraction = totalConsumption > 0 ? (unitConsumption / totalConsumption) * proRata : 0;
+    const consFraction = totalConsumption > 0
+      ? (unitConsumption / totalConsumption) * f.waerme : 0;
     const consAmount = roundKaufmaennisch(consumptionPool * consFraction);
 
     const totalPerLease = roundKaufmaennisch(baseAmount + consAmount);
@@ -468,27 +479,34 @@ function methodA(
     const unit = units.find(u => u.id === lease.unit_id);
     if (!unit) continue;
 
-    const proRata = calcProRata(lease, periodStart, periodEnd);
-    if (proRata <= 0) continue;
+    /* Nutzeranteil nach § 9b HeizkostenV statt eines einheitlichen
+       Zeitanteils: Wärme nach Gradtagszahlen, Warmwasser nach Zeit, eine
+       vorhandene Zwischenablesung geht beidem vor. */
+    const f = nutzerFaktoren(
+      lease, unit,
+      allMeters.filter(m => m.medium === 'heat' && !m.is_main_meter && m.unit_id === unit.id),
+      wwMeters.filter(m => m.unit_id === unit.id),
+      readings, periodStart, periodEnd, warnings);
+    if (!f) continue;
 
     const sqm = unit.living_area_qm || 0;
 
-    // WW costs: base (sqm) + consumption (ww meters)
+    // WW costs: base (sqm) + consumption (ww meters) — beides zeitanteilig
     const wwBase = roundKaufmaennisch(wwCostPool * (basePct / 100) *
-      (totalSqm > 0 ? (sqm / totalSqm) * proRata : 0));
+      (totalSqm > 0 ? (sqm / totalSqm) * f.zeit : 0));
     const wwCons = totalWwCons > 0
       ? roundKaufmaennisch(wwCostPool * (consumptionPct / 100) *
-          ((wwConsumptionByUnit.get(unit.id) || 0) / totalWwCons) * proRata)
+          ((wwConsumptionByUnit.get(unit.id) || 0) / totalWwCons) * f.zeit)
       : 0;
 
     // Heating costs: base (sqm) + consumption (heat meters or sqm fallback)
     const hBase = roundKaufmaennisch(heatingCostPool * (basePct / 100) *
-      (totalSqm > 0 ? (sqm / totalSqm) * proRata : 0));
+      (totalSqm > 0 ? (sqm / totalSqm) * f.waermeBasis : 0));
     const hCons = totalHeatCons > 0
       ? roundKaufmaennisch(heatingCostPool * (consumptionPct / 100) *
-          ((heatConsumptionByUnit.get(unit.id) || 0) / totalHeatCons) * proRata)
+          ((heatConsumptionByUnit.get(unit.id) || 0) / totalHeatCons) * f.waerme)
       : roundKaufmaennisch(heatingCostPool * (consumptionPct / 100) *
-          (totalSqm > 0 ? (sqm / totalSqm) * proRata : 0));
+          (totalSqm > 0 ? (sqm / totalSqm) * f.waerme : 0));
 
     const totalPerLease = roundKaufmaennisch(wwBase + wwCons + hBase + hCons);
 
@@ -580,25 +598,31 @@ function methodB(
     const unit = units.find(u => u.id === lease.unit_id);
     if (!unit) continue;
 
-    const proRata = calcProRata(lease, periodStart, periodEnd);
-    if (proRata <= 0) continue;
+    /* § 9b-Anteile wie in Methode A. Die Zähler für Warmwasserwärme tragen
+       hier den Zeitanteil, die für Raumwärme den Gradtagsanteil. */
+    const f = nutzerFaktoren(
+      lease, unit,
+      spaceHeatMeters.filter(m => m.unit_id === unit.id),
+      wwHeatMeters.filter(m => m.unit_id === unit.id),
+      readings, periodStart, periodEnd, warnings);
+    if (!f) continue;
 
     const sqm = unit.living_area_qm || 0;
 
     // WW
     const wwBase = roundKaufmaennisch(wwCostPool * (basePct / 100) *
-      (totalSqm > 0 ? (sqm / totalSqm) * proRata : 0));
+      (totalSqm > 0 ? (sqm / totalSqm) * f.zeit : 0));
     const wwCons = totalWwHeat > 0
       ? roundKaufmaennisch(wwCostPool * (consumptionPct / 100) *
-          ((wwByUnit.get(unit.id) || 0) / totalWwHeat) * proRata)
+          ((wwByUnit.get(unit.id) || 0) / totalWwHeat) * f.zeit)
       : 0;
 
     // Space heating
     const hBase = roundKaufmaennisch(heatingCostPool * (basePct / 100) *
-      (totalSqm > 0 ? (sqm / totalSqm) * proRata : 0));
+      (totalSqm > 0 ? (sqm / totalSqm) * f.waermeBasis : 0));
     const hCons = totalSpaceHeat > 0
       ? roundKaufmaennisch(heatingCostPool * (consumptionPct / 100) *
-          ((spaceByUnit.get(unit.id) || 0) / totalSpaceHeat) * proRata)
+          ((spaceByUnit.get(unit.id) || 0) / totalSpaceHeat) * f.waerme)
       : 0;
 
     const totalPerLease = roundKaufmaennisch(wwBase + wwCons + hBase + hCons);
@@ -646,20 +670,26 @@ function applyHeatingBaseSplit(
     const unit = units.find(u => u.id === lease.unit_id);
     if (!unit) continue;
 
-    const proRata = calcProRata(lease, periodStart, periodEnd);
-    if (proRata <= 0) continue;
+    /* Auch hier der Nutzeranteil nach § 9b. Zähler gibt es in diesem Zweig
+       keine — er greift gerade dann, wenn nicht gemessen wird —, also bleibt
+       es bei der Aufteilung nach Gradtagszahlen. */
+    const f = nutzerFaktoren(lease, unit, [], [], [], periodStart, periodEnd, warnings);
+    if (!f) continue;
 
     const sqm = unit.living_area_qm || 0;
-    const baseFraction = totalSqm > 0 ? (sqm / totalSqm) * proRata : 0;
-    const baseAmount = roundKaufmaennisch(totalCost * (basePct / 100) * baseFraction);
+    const flaechenAnteil = totalSqm > 0 ? sqm / totalSqm : 0;
+    const baseAmount = roundKaufmaennisch(
+      totalCost * (basePct / 100) * flaechenAnteil * f.waermeBasis);
 
     let consAmount = 0;
     if (totalConsumption > 0) {
       const unitCons = consumptionByUnit.get(unit.id) || 0;
-      consAmount = roundKaufmaennisch(totalCost * (consumptionPct / 100) * (unitCons / totalConsumption) * proRata);
+      consAmount = roundKaufmaennisch(
+        totalCost * (consumptionPct / 100) * (unitCons / totalConsumption) * f.waerme);
     } else {
       // Fallback: consumption share also by sqm
-      consAmount = roundKaufmaennisch(totalCost * (consumptionPct / 100) * baseFraction);
+      consAmount = roundKaufmaennisch(
+        totalCost * (consumptionPct / 100) * flaechenAnteil * f.waerme);
     }
 
     const total = roundKaufmaennisch(baseAmount + consAmount);
@@ -685,21 +715,128 @@ function applyHeatingBaseSplit(
   return { items, warnings };
 }
 
-// ── Shared Utility ───────────────────────────────────────────────────────────
+// ── Nutzeranteil bei unterjährigem Mietverhältnis ────────────────────────────
 
-function calcProRata(lease: LeaseRow, periodStart: string, periodEnd: string): number {
-  const pStart = new Date(periodStart);
-  const pEnd = new Date(periodEnd);
-  const leaseStart = new Date(lease.start_date);
-  const leaseEnd = lease.end_date ? new Date(lease.end_date) : pEnd;
-
-  const effectiveStart = leaseStart > pStart ? leaseStart : pStart;
-  const effectiveEnd = leaseEnd < pEnd ? leaseEnd : pEnd;
-
-  if (effectiveStart > effectiveEnd) return 0;
-
-  const days = Math.floor((effectiveEnd.getTime() - effectiveStart.getTime()) / 86_400_000) + 1;
-  const totalDays = Math.floor((pEnd.getTime() - pStart.getTime()) / 86_400_000) + 1;
-
-  return days / totalDays;
+/**
+ * Die Faktoren, mit denen der Anteil einer Wohnung auf den Nutzer
+ * heruntergebrochen wird.
+ *
+ * WARUM DREI FAKTOREN UND NICHT EINER. Bis zum 11.10.2026 stand hier überall
+ * derselbe Zeitanteil. § 9b HeizkostenV unterscheidet aber:
+ *
+ *   - Wärme ohne Zwischenablesung → Gradtagszahlen (Abs. 3). Januar wiegt
+ *     schwerer als Juli; der Zeitanteil bildet das nicht ab.
+ *   - Warmwasser → immer zeitanteilig.
+ *   - Mit Zwischenablesung → der gemessene Anteil für die verbrauchsabhängigen
+ *     Kosten, Zeitanteil für die übrigen (Abs. 2).
+ */
+interface NutzerFaktoren {
+  /** Verbrauchsabhängiger Wärmeanteil. */
+  waerme: number;
+  /** Grundkostenanteil Wärme — bei Zwischenablesung zeitanteilig. */
+  waermeBasis: number;
+  /** Warmwasser, Verbrauch wie Grundkosten. */
+  zeit: number;
+  grundlage: Grundlage;
 }
+
+/**
+ * Stände einer Wohnung zusammengefasst: Anfang, Ende und — wenn für JEDEN
+ * Zähler der Wohnung vorhanden — der Stand zum Einzug.
+ *
+ * Alles oder nichts: Hat nur einer von zwei Wärmemengenzählern eine
+ * Zwischenablesung, ist der Wohnungsverbrauch nicht messbar getrennt. Dann
+ * wird aufgeteilt, statt zwei Grundlagen zu mischen.
+ */
+function staendeDerWohnung(
+  zaehler: MeterRow[], einzugsTag: string,
+  readings: MeterReadingRow[], periodStart: string, periodEnd: string,
+) {
+  let anfang = 0; let ende = 0; let einzugSumme = 0; let alleHabenEinzug = zaehler.length > 0;
+  let einzugsTagGenutzt = '';
+  for (const m of zaehler) {
+    const eigene = readings
+      .filter(r => r.meter_id === m.id)
+      .map(r => ({ tag: isoTag(r.read_at as any), wert: parseFloat(String(r.value)) }))
+      .sort((a, b) => a.tag.localeCompare(b.tag));
+    const vorher = eigene.filter(r => r.tag <= periodStart).pop();
+    const letzter = eigene.filter(r => r.tag <= periodEnd).pop();
+    anfang += vorher ? vorher.wert : 0;
+    ende += letzter ? letzter.wert : 0;
+    const e = findeEinzugsstand(m.id, einzugsTag, readings);
+    if (e) { einzugSumme += e.wert; einzugsTagGenutzt = e.tag; } else { alleHabenEinzug = false; }
+  }
+  return {
+    standAnfang: anfang,
+    standEnde: ende,
+    einzugsstand: alleHabenEinzug ? { tag: einzugsTagGenutzt, wert: einzugSumme } : null,
+  };
+}
+
+/**
+ * Die Faktoren für ein Mietverhältnis. `null`, wenn es im Zeitraum gar nicht
+ * läuft. Ein § 9b-Fall wird als Befund gemeldet — er gehört in die Abrechnung.
+ */
+function nutzerFaktoren(
+  lease: LeaseRow,
+  unit: UnitRow,
+  waermeZaehler: MeterRow[],
+  warmwasserZaehler: MeterRow[],
+  readings: MeterReadingRow[],
+  periodStart: string,
+  periodEnd: string,
+  warnings: EngineWarning[],
+): NutzerFaktoren | null {
+  const abschnitt = nutzungsAbschnitt(lease, periodStart, periodEnd);
+  if (!abschnitt) return null;
+
+  const einzugsTag = isoTag(lease.start_date);
+  const w = nutzerAnteilWaerme({
+    lease, periodStart, periodEnd,
+    ...staendeDerWohnung(waermeZaehler, einzugsTag, readings, periodStart, periodEnd),
+  });
+  const z = nutzerAnteilZeit({
+    lease, periodStart, periodEnd,
+    ...staendeDerWohnung(warmwasserZaehler, einzugsTag, readings, periodStart, periodEnd),
+  });
+  if (!w || !z) return null;
+
+  const reinZeit = tageZwischen(abschnitt.von, abschnitt.bis)
+    / tageZwischen(periodStart, periodEnd);
+
+  if (w.grundlage === 'gradtagszahlen' || z.grundlage === 'zeitanteil') {
+    warnings.push({
+      code: 'NUTZERWECHSEL_9B_AUFTEILUNG',
+      severity: 'warning',
+      message: `Einheit ${unit.code}: Das Mietverhältnis beginnt oder endet im `
+        + `Abrechnungszeitraum (${abschnitt.von} bis ${abschnitt.bis}), eine Zwischenablesung `
+        + 'zum Nutzerwechsel liegt nicht vor. Aufgeteilt wird nach § 9b Abs. 3 HeizkostenV: '
+        + `Wärme nach Gradtagszahlen (${(w.anteil * 100).toFixed(1)} %), Warmwasser `
+        + `zeitanteilig (${(z.anteil * 100).toFixed(1)} %). Der Rest trägt der Eigentümer.`,
+      details: {
+        unit_code: unit.code,
+        von: abschnitt.von, bis: abschnitt.bis,
+        anteil_waerme: Math.round(w.anteil * 10000) / 100,
+        anteil_zeit: Math.round(z.anteil * 10000) / 100,
+        grundlage_waerme: grundlageKlartext(w.grundlage),
+      },
+    });
+  }
+
+  return {
+    waerme: w.anteil,
+    /* Bei einer Zwischenablesung gehen nur die verbrauchsabhängigen Kosten
+       nach dem Messwert; die Grundkosten bleiben zeitanteilig (§ 9b Abs. 2).
+       Ohne Zwischenablesung gilt Absatz 3 — dann auch die Grundkosten nach
+       Gradtagszahlen. */
+    waermeBasis: w.grundlage === 'zwischenablesung' ? reinZeit : w.anteil,
+    zeit: z.anteil,
+    grundlage: w.grundlage,
+  };
+}
+
+/* `calcProRata()` ist am 11.10.2026 entfallen. Die Funktion rechnete für JEDE
+   Kostenart denselben Zeitanteil — für die Wärme ist das nach § 9b Abs. 3
+   HeizkostenV falsch, dort gelten Gradtagszahlen. An ihre Stelle ist
+   `nutzerFaktoren()` getreten, das die drei Fälle auseinanderhält. Wer den
+   Zeitanteil wieder einführt, nimmt den Unterschied zurück. */

@@ -96,7 +96,10 @@ async function main() {
             value: anfang,
             unit: 'kWh',
             reading_type: 'annual',
-            read_at: `${STICHTAG}T00:00:00+01:00`,
+            /* UTC-Mitternacht, nicht Ortszeit: `2025-01-01T00:00:00+01:00` ist
+               in UTC der 31.12.2024 um 23 Uhr, und genau so stand das Datum
+               dann in der Abrechnungsansicht. */
+            read_at: `${STICHTAG}T00:00:00Z`,
             source: 'manual',
             reader_name: 'GLT-Jahreszähler',
             is_estimated: false,

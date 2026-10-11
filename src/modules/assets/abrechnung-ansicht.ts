@@ -85,6 +85,11 @@ export interface EinheitAbrechnung {
   tage: number;
   tage_im_jahr: number;
   zaehler: ZaehlerZeile[];
+  /**
+   * Hinweis auf die Aufteilung nach § 9b HeizkostenV, wenn das
+   * Mietverhältnis unterjährig ist und eine Zwischenablesung fehlt.
+   */
+  aufteilung_9b: string | null;
   kosten: KostenZeile[];
   kosten_summe: number;
   vorauszahlung: number;
@@ -307,6 +312,25 @@ export async function abrechnungAnsicht(
       });
   }
 
+  /**
+   * Der § 9b-Hinweis einer Einheit, aus den Befunden der Engine.
+   *
+   * Der Satz steht auf der Wohnungskarte und nicht nur unten bei den
+   * Hinweisen: Wer liest, was er zahlt, soll an derselben Stelle sehen, dass
+   * der Anteil aufgeteilt und nicht abgelesen wurde.
+   */
+  function hinweis9b(einheitCode: string): string | null {
+    const treffer = (ergebnis?.warnings || []).find((w: any) =>
+      w.code === 'NUTZERWECHSEL_9B_AUFTEILUNG' && w.details?.unit_code === einheitCode);
+    if (!treffer) return null;
+    const d: any = treffer.details || {};
+    // Deutsche Zahlschreibweise — der Satz steht in einer Mieterabrechnung.
+    const prozent = (n: number) => String(n).replace('.', ',');
+    return `§ 9b-Aufteilung, Zwischenablesung fehlt: Nutzung ${isoTag(d.von)} bis `
+      + `${isoTag(d.bis)}, Wärme ${prozent(d.anteil_waerme)} % nach Gradtagszahlen, `
+      + `Warmwasser ${prozent(d.anteil_zeit)} % nach Zeitabschnitten.`;
+  }
+
   // ── Einheiten ────────────────────────────────────────────────────────────
   const tageImJahr = tagDiff(von, bis);
   const ausgabe: EinheitAbrechnung[] = [];
@@ -332,6 +356,7 @@ export async function abrechnungAnsicht(
         tage: 0,
         tage_im_jahr: tageImJahr,
         zaehler: zaehlerZeilen(einheit.id, gesperrteZaehler),
+        aufteilung_9b: null,
         kosten: [],
         kosten_summe: 0,
         vorauszahlung: 0,
@@ -375,6 +400,7 @@ export async function abrechnungAnsicht(
       tage: s.active_days,
       tage_im_jahr: tageImJahr,
       zaehler: zaehlerZeilen(vertrag.unit_id, gesperrteZaehler),
+      aufteilung_9b: hinweis9b(vertrag.einheit),
       kosten: kostenZeilen(s.items),
       kosten_summe: s.costs_total,
       vorauszahlung: s.advance_total,
