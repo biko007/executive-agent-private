@@ -254,6 +254,21 @@ aller betroffenen Repos prüfen. DONE nur bei vollständigen Gates; sonst PARTIA
   (z. B. `git revert <sha>` + `scripts/deploy.sh openclaw-gateway`), plus was dabei
   NICHT zurückgedreht wird (Daten, Dropbox-Dateien, env-Werte, gelöschte Dateien).
 
+**Owner-Texte und offene Punkte (Owner-Regel 11.10.2026, verbindlich):**
+
+1. **Die Liste der offenen Owner-Punkte und alle Owner-Mailentwürfe pflegt ausschließlich
+   der Claude-Chat** in `docs/projekt/bikosoc-Offene-Punkte.md` (Dropbox). cc ändert diese
+   Datei NICHT und schreibt auch keine eigenen Mailabsätze.
+2. **cc liefert nur Fakten.** Was in einen Owner-Text gehört, steht im Report als
+   Stichpunkt unter der Überschrift **„Für Owner-Texte"** — Tatsache, Zahl, Datum,
+   Fundstelle. Keine Formulierungsvorschläge, kein „an die Mail anhängen", keine
+   ausformulierten Absätze.
+   Beispiel: `erste Ablesung W1 Nord/Ost: 30.09.2025 (vorher keine)` statt eines
+   Mailtextes darüber.
+3. **Owner-Aktion ist nur, was ausschließlich der Owner kann** — unterschreiben, senden,
+   vor Ort ablesen, entscheiden, bezahlen. Alles andere erledigt cc selbst oder
+   kennzeichnet es als **Claude-Chat-Aufgabe** (z. B. Portaleingaben über Chrome).
+
 **Zustellung (Watcher):**
 - Reports → Telegram dev-Gruppe + Dropbox `/bikosoc-reports/<name>.md` (mit `## DIGEST`-Prefix)
 - Plans → Telegram dev-Gruppe + Dropbox `/bikosoc-plans/<name>.md` (Rohinhalt)
