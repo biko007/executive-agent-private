@@ -161,6 +161,8 @@ export const ARM_FENSTER_STUNDEN = 6;
 
 export interface ArmWartung {
   wartet: boolean;
+  /** Zeitpunkt der letzten verbrauchten Armierung, als Millisekunden. */
+  letzteArmierungMs?: number;
   /** Was blockiert wurde — Pfad oder Befehl, für die Meldung. */
   gegenstand?: string;
   /** Zeitpunkt der Blockade. */
@@ -196,15 +198,18 @@ export function erkenneArmWartung(hookProtokoll: string, jetzt: Date): ArmWartun
     letzteBlockade = { gegenstand: (g ? g[1] : zeile).trim(), zeit, iso: m[1] };
   }
 
-  if (!letzteBlockade) return { wartet: false };
-  if (letzteBlockade.zeit < grenze) return { wartet: false };
+  if (!letzteBlockade) return { wartet: false, letzteArmierungMs: letzteArmierung };
+  if (letzteBlockade.zeit < grenze) return { wartet: false, letzteArmierungMs: letzteArmierung };
   // Nach der Blockade wurde armiert — dann ist sie erledigt.
-  if (letzteArmierung > letzteBlockade.zeit) return { wartet: false };
+  if (letzteArmierung > letzteBlockade.zeit) {
+    return { wartet: false, letzteArmierungMs: letzteArmierung };
+  }
 
   return {
     wartet: true,
     gegenstand: letzteBlockade.gegenstand,
     zeitpunkt: letzteBlockade.iso,
+    letzteArmierungMs: letzteArmierung,
   };
 }
 
@@ -220,3 +225,29 @@ export function armMeldung(w: ArmWartung): string {
     + `${w.zeitpunkt ? ` (blockiert ${w.zeitpunkt})` : ''}. `
     + 'Antippen und senden: https://t.me/share/url?url=%2Farm%20push';
 }
+
+/* ── Erkennung über Berichtstexte: bewusst NICHT umgesetzt ────────────────
+ *
+ * Die Owner-Ergänzung vom 11.10.2026 nannte zwei Erkennungswege: das
+ * Hook-Protokoll ODER „der letzte Report nennt `wartet auf /arm`". Der zweite
+ * ist gebaut, geprüft und wieder entfernt worden.
+ *
+ * WARUM. In einem Markdown-Bericht ist ein ganzer Absatz EINE Zeile. Jeder
+ * Bericht, der die Mechanik erklärt, enthält `/arm` und Wörter wie „wartet
+ * auf" mehrfach — und weil Anfang und Ende der Datei getrennt gelesen werden,
+ * entstehen zusätzlich abgeschnittene Zeilenfragmente. Drei Fassungen mit
+ * immer engeren Mustern schlugen jedes Mal auf einem Prosaabsatz des
+ * Teil-Q-Berichts an; die Meldung nannte dann einen Satzfetzen statt einer
+ * Aufgabe. Eine Meldung, die alle zehn Sekunden Fehlalarm gibt, ist schlechter
+ * als keine — sie wird ignoriert, und dann hilft sie auch im echten Fall nicht.
+ *
+ * WAS BLEIBT. Das Hook-Protokoll ist ein Tatsachenbeleg: Der Hook schreibt
+ * genau dann eine Zeile, wenn ein roter Schritt wirklich blockiert wurde. Das
+ * deckt jeden Fall ab, in dem Claude Code den Schritt versucht hat.
+ *
+ * DIE LÜCKE, die damit offen bleibt: Weiß Claude Code vorher, dass der Schritt
+ * blockiert würde, versucht es ihn gar nicht — dann steht nichts im Protokoll.
+ * Diese Lücke ließe sich über TATSACHEN schließen statt über Textdeutung:
+ * „liegt in den noch nicht gepushten Commits ein roter Pfad?" und „liegt eine
+ * Migrationsdatei vor, deren Version nicht in schema_version steht?". Beides
+ * ist eindeutig prüfbar. Als Vorschlag im Report, nicht gebaut. */

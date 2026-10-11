@@ -25,6 +25,24 @@ Stunden, Meldung je Blockade genau einmal.
 Eingabefeld mit dem vorbereiteten Befehl; der Owner wählt nur noch den Chat.
 Ein echter Befehlslink ist in Telegram nicht möglich.
 
+**Der zweite Erkennungsweg aus der Owner-Ergänzung — „der letzte Report nennt
+`wartet auf /arm`" — ist gebaut, geprüft und wieder entfernt worden.** In einem
+Markdown-Bericht ist ein ganzer Absatz EINE Zeile; jeder Bericht, der diese
+Mechanik erklärt, enthält `/arm` und Wörter wie „wartet auf" mehrfach. Dazu
+entstehen abgeschnittene Zeilenfragmente, weil Anfang und Ende der Datei
+getrennt gelesen werden. Drei Fassungen mit immer engeren Mustern schlugen jedes
+Mal auf einem Prosaabsatz des Teil-Q-Berichts an und nannten in der Meldung
+einen Satzfetzen statt einer Aufgabe. Eine Meldung, die alle zehn Sekunden
+Fehlalarm gibt, wird ignoriert — und hilft dann auch im echten Fall nicht.
+
+Das Hook-Protokoll bleibt als einziger Weg: Es ist ein Tatsachenbeleg und deckt
+jeden Fall ab, in dem der rote Schritt wirklich versucht wurde. Die offene
+Lücke — Claude Code versucht es gar nicht, weil es die Blockade vorhersieht —
+liesse sich über Tatsachen schliessen statt über Textdeutung: „liegt in den
+nicht gepushten Commits ein roter Pfad?" und „liegt eine Migrationsdatei vor,
+deren Version nicht in schema_version steht?". Als Vorschlag vermerkt, nicht
+gebaut.
+
 **Tests:** 10 neue, darunter der Fall „nach der Blockade wurde armiert" (darf
 nicht melden) und „dieselbe Blockade zweimal" (meldet nur einmal). Gesamt
 980/0/0.
