@@ -4,6 +4,49 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Übergabeprotokoll W1: echte Zwischenablesung
+
+Der Owner hat das Wohnungsübergabeprotokoll W1 vom 25.01.2025 bereitgestellt. Es enthält
+genau das, was § 9b Abs. 1 HeizkostenV verlangt — eine Ablesung zum Nutzerwechsel:
+
+| Zähler | Stand 25.01.2025 | Herstellernummer |
+|---|---:|---|
+| Kaltwasser | 3,780 m³ | 33050523 |
+| Warmwasser | 0,412 m³ | 24035938 |
+| Heizung | **nicht eingebaut** | — |
+
+**Die Toleranz für eine Zwischenablesung steigt von drei auf sieben Tage.** Eine
+Wohnungsübergabe liegt üblicherweise einige Tage vor dem Monatsersten, zu dem der Vertrag
+beginnt — hier sieben. Der Übergabetermin ist dabei der sachlich richtige Anker: Ab da
+hat der Mieter die Schlüssel. Mehr als eine Woche wird nicht zugelassen; sieben
+Januartage sind knapp vier Prozent des Jahresheizbedarfs.
+
+**Die beiden Wärmemengenzähler W1 waren am Übergabetag nicht vorhanden** („Zähler wird
+noch eingebaut"). Ihr `installed_at` stand auf 15.10.2024 — falsch und jetzt geleert, mit
+dem Sachverhalt in der Notiz. Für die Abrechnung folgt daraus: Was diese Zähler später
+gezählt haben, fällt vollständig in die Mietzeit. Erfasst ist das als Stand 0 zum
+25.01.2025 mit dem Vermerk ABGELEITET, nicht abgelesen.
+
+**Wirkung MG24 2025** (bei 0/100):
+
+| | vorher | nachher | Differenz |
+|---|---:|---:|---:|
+| W1 | 728,25 € | 1.153,86 € | **+425,61 €** |
+| W2 | 356,90 € | 356,90 € | 0 |
+| W3 | 1.213,48 € | 1.213,48 € | 0 |
+| Eigentümer | 3.741,21 € | 3.315,60 € | −425,61 € |
+
+W1 trägt jetzt seine volle gemessene Wärme (17.017 kWh statt 79,47 % davon) und beim
+Wasser nur noch den Verbrauch ab Übergabe. Die Schätzung ist durch Messung ersetzt.
+
+**Zwei Stellen rechneten danach anders als die Engine** und sind nachgezogen: das
+Casameta-Eingabeblatt (sagte weiter „Zwischenablesung fehlt") und das Skript für die
+Zwischenstände. Beide kennen jetzt dieselbe Rangfolge — Zwischenablesung vor
+Stützpunktverfahren. Zwei Aussagen über denselben Sachverhalt sind in einer Abrechnung
+schlimmer als eine unbequeme.
+
+---
+
 ## Stand 2026-10-11 — MG24 auf 0/100 umgestellt
 
 Owner-Entscheidung vom 10.10.2026, erneut bestätigt am 11.10.2026 um 14:05: Heizung und

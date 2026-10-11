@@ -23,7 +23,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  stuetzpunkteVon, anteilAusStuetzpunkten, nutzungsAbschnitt,
+  stuetzpunkteVon, anteilAusStuetzpunkten, nutzungsAbschnitt, findeEinzugsstand,
 } from '../nk/nutzerzeit.js';
 
 const ZIEL_DIR = join(homedir(), 'bikosoc-spec', 'casameta');
@@ -299,6 +299,25 @@ export async function erzeugeEingabeblatt(
       von, bis,
       z.initial_reading !== null && z.initial_reading !== undefined
         ? parseFloat(String(z.initial_reading)) : null));
+
+    /* Rangfolge wie in der Engine: Eine Zwischenablesung zum Nutzerwechsel
+       schlägt das Stützpunktverfahren. Ohne diese Prüfung stünde im
+       Eingabeblatt „Aufteilung" , während die Abrechnung längst misst — zwei
+       Aussagen über denselben Sachverhalt. */
+    const alleAbgelesen = eigene.length > 0 && abschnitt !== null && eigene.every(
+      z => findeEinzugsstand(
+        z.id,
+        isoTag((vertrag as any).start_date),
+        staende.map(s => ({ meter_id: s.meter_id, read_at: s.tag, value: s.value })) as any,
+      ) !== null);
+    if (alleAbgelesen) {
+      return {
+        kurz: 'Zwischenablesung zum Nutzerwechsel vorhanden',
+        lang: 'Zum Nutzerwechsel liegt eine Ablesung vor; der Verbrauch ist zwischen '
+          + 'Leerstand und Mieter gemessen getrennt. Die Stände stehen in '
+          + 'zwischenstaende-mg24-2025.csv und sind im Portal so einzutragen.',
+      };
+    }
 
     const a = abschnitt
       ? anteilAusStuetzpunkten(serien, abschnitt.von, abschnitt.bis, von, bis, 'gradtage')

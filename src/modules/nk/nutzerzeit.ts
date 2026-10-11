@@ -130,12 +130,22 @@ export function nutzungsAbschnitt(
  * Wie weit darf eine Ablesung vom Einzugstag entfernt sein, um noch als
  * Zwischenablesung zu gelten?
  *
- * Drei Tage. Großzügiger wäre im Januar ein spürbarer Unterschied — die
- * Tabelle gibt für einen Januartag 5,5 Promille des Jahresbedarfs her. Wer
- * weiter entfernt liest, bekommt die Aufteilung nach § 9b Abs. 3, und die ist
- * der gesetzlich vorgesehene Weg, kein Notbehelf.
+ * SIEBEN TAGE (geändert am 11.10.2026, vorher drei). Der Anlass ist das
+ * Übergabeprotokoll der Wohnung im 1. OG von MG24: Die Übergabe fand am
+ * 25.01.2025 statt, das Mietverhältnis begann am 01.02.2025 — sieben Tage
+ * später. So läuft es üblicherweise; der Vormieter oder die Bauphase endet
+ * mit der Übergabe, der Vertrag beginnt zum Monatsersten.
+ *
+ * Der Übergabetermin ist dabei der SACHLICH richtige Anker: Ab da hat der
+ * Mieter die Schlüssel und verbraucht, was der Zähler zählt. Eine Ablesung
+ * an diesem Tag ist genau die Zwischenablesung, die § 9b Abs. 1 verlangt.
+ *
+ * Mehr als eine Woche wird nicht zugelassen: Ein Januartag trägt 5,5 Promille
+ * des Jahresheizbedarfs, sieben Tage also knapp vier Prozent. Was weiter
+ * entfernt liegt, ist keine Übergabeablesung mehr und bekommt die Aufteilung
+ * nach § 9b Abs. 3 — den gesetzlich vorgesehenen Weg.
  */
-export const EINZUGSSTAND_TOLERANZ_TAGE = 3;
+export const EINZUGSSTAND_TOLERANZ_TAGE = 7;
 
 /**
  * Eine Ablesung nahe am Einzugstag — die Zwischenablesung nach § 9b Abs. 1.

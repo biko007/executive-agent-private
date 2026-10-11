@@ -153,13 +153,18 @@ describe('Zwischenablesung hat Vorrang', () => {
     expect(a.anteil).toBeCloseTo(0.8, 6);
   });
 
-  it('nimmt eine Ablesung drei Tage daneben noch an', () => {
-    const nah = [ablesung(7, '2025-04-04', 3000)];
-    expect(findeEinzugsstand(7, '2025-04-01', nah)).not.toBeNull();
+  it('nimmt eine Ablesung sieben Tage daneben noch an', () => {
+    /* GEÄNDERT 11.10.2026: vorher drei Tage. Eine Wohnungsübergabe liegt
+       üblicherweise einige Tage vor dem Monatsersten, zu dem der Vertrag
+       beginnt — bei MG24 W1 sieben (Übergabe 25.01., Mietbeginn 01.02.).
+       Das Protokoll dieser Übergabe IST die Zwischenablesung nach
+       § 9b Abs. 1; sie zu verwerfen wäre der schlechtere Weg. */
+    const uebergabe = [ablesung(7, '2025-03-25', 3000)];
+    expect(findeEinzugsstand(7, '2025-04-01', uebergabe)).not.toBeNull();
   });
 
-  it('nimmt eine Ablesung vier Tage daneben nicht mehr an', () => {
-    const fern = [ablesung(7, '2025-04-05', 3000)];
+  it('nimmt eine Ablesung acht Tage daneben nicht mehr an', () => {
+    const fern = [ablesung(7, '2025-03-24', 3000)];
     expect(findeEinzugsstand(7, '2025-04-01', fern)).toBeNull();
   });
 
