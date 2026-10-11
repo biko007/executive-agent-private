@@ -4,6 +4,38 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Übergabefotos W2, Zählerzuordnung über den GLT-Verlauf
+
+Vier Zählerstände zum Einzug W2 am 01.04.2025, aus Fotos des Owners. Damit ist auch W2
+gemessen statt geschätzt; nur W3 bleibt beim Stützpunktverfahren.
+
+**Die Zuordnung der beiden Wärmemengenzähler war offen** — Seriennummern sind in bikosoc
+nirgends dokumentiert. Entschieden über den GLT-Verlauf: Der Stand 6.983 kWh am
+01.04.2025 passt in das Fenster **genau eines** Wohnungszählers (W2 Nord/Ost, 0 am 01.01.
+→ 7.470 am 31.05.). W1 Nord/Ost steht am 30.09. erst bei 5.929, W1 Süd/West am 31.05. bei
+6.710, die W3-Zähler im dreistelligen Bereich. Der zweite Zähler ist damit durch
+Ausschluss Süd/West. Beide Seriennummern stehen jetzt in den Stammdaten, ebenso die der
+Wasserzähler.
+
+**Der gemeldete Widerspruch löst sich auf:** 6.983 kWh liegt über den bisher verwendeten
+5.882 kWh — aber das waren nie Messwerte, sondern der rechnerische Einzugsstand aus dem
+Stützpunktverfahren. Die Schätzung lag 1.101 kWh zu niedrig; der Mieter hätte
+Bautrocknung mitgetragen. Gegen die GLT-Reihe ist der Fotowert widerspruchsfrei
+(monoton, plausibel).
+
+| W2 | Schätzung | Foto 01.04. | Differenz |
+|---|---:|---:|---:|
+| Nord/Ost | 5.882 kWh | 6.983 kWh | +1.101 |
+| Süd/West | 3.090 kWh | 2.784 kWh | −306 |
+| Kaltwasser | 3,513 m³ | 0,325 m³ | −3,188 |
+| Warmwasser | 2,306 m³ | 0,243 m³ | −2,063 |
+
+Beim Wasser lag die Schätzung weit daneben: Eine leere Wohnung verbraucht fast nichts.
+Heizung sinkt um 795 kWh, Wasser steigt um gut 5 m³ — unter dem Strich **−60,43 €** für
+W2, derselbe Betrag mehr beim Eigentümer.
+
+---
+
 ## Stand 2026-10-11 — Übergabeprotokoll W1: echte Zwischenablesung
 
 Der Owner hat das Wohnungsübergabeprotokoll W1 vom 25.01.2025 bereitgestellt. Es enthält
