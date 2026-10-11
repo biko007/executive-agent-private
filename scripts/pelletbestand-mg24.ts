@@ -79,12 +79,46 @@ function preisJeTonne(re: keyof typeof LIEFERUNGEN): number {
   return l.brutto / l.tonnen;
 }
 
+/**
+ * Endbestand nach FIFO bewerten.
+ *
+ * WARUM FIFO (Owner-Entscheidung 11.10.2026 nach Abgleich mit Casameta). Bis
+ * dahin wurde der Endbestand pauschal zum Preis der LETZTEN Lieferung
+ * bewertet. Das ist zu grob, sobald der Bestand größer ist als die letzte
+ * Lieferung: Hier liegen 5,00 t im Lager, die letzte Lieferung brachte aber
+ * nur 4,02 t — die restlichen 0,98 t stammen zwangsläufig aus der Lieferung
+ * davor und waren billiger.
+ *
+ * Verbraucht wird das älteste Lager zuerst; was liegen bleibt, ist das
+ * jüngste. Deshalb wird von hinten aufgefüllt. Casameta rechnet genauso, und
+ * § 7 Abs. 2 HeizkostenV meint die Kosten der tatsächlich VERBRAUCHTEN
+ * Brennstoffe — nicht einen Durchschnitt.
+ */
+function endbestandFifo(tonnen: number): { wert: number; teile: string[] } {
+  const jung = Object.entries(LIEFERUNGEN)
+    .sort((a, b) => b[1].datum.localeCompare(a[1].datum));
+  let rest = tonnen; let wert = 0; const teile: string[] = [];
+  for (const [re, l] of jung) {
+    if (rest <= 0.0005) break;
+    const nimm = Math.min(rest, l.tonnen);
+    const preis = l.brutto / l.tonnen;
+    wert += nimm * preis;
+    rest -= nimm;
+    teile.push(`${nimm.toFixed(3)} t aus ${re} vom ${l.datum} zu ${preis.toFixed(2)} EUR/t`);
+  }
+  if (rest > 0.0005) {
+    throw new Error(`FIFO: ${rest.toFixed(3)} t des Endbestands lassen sich keiner Lieferung `
+      + 'zuordnen — die Lieferliste ist unvollständig.');
+  }
+  return { wert: Math.round(wert * 100) / 100, teile };
+}
+
 async function main() {
   const anwenden = process.argv.includes('--apply');
 
   const anfangWert = LIEFERUNGEN['910222'].brutto;           // 5,00 t zum Preis von 910222
-  const endePreis = preisJeTonne('109505');
-  const endeWert = Math.round(ENDE_TONNEN * endePreis * 100) / 100;
+  const fifo = endbestandFifo(ENDE_TONNEN);
+  const endeWert = fifo.wert;
   const zukaufTonnen = LIEFERUNGEN['101657'].tonnen + LIEFERUNGEN['106971'].tonnen
     + LIEFERUNGEN['109505'].tonnen;
   const zukaufWert = LIEFERUNGEN['101657'].brutto + LIEFERUNGEN['106971'].brutto
@@ -95,7 +129,8 @@ async function main() {
   console.log(`\nPelletbestand MG24 ${JAHR} — ${anwenden ? 'ANWENDEN' : 'Probelauf'}\n`);
   console.log(`  Anfangsbestand 01.01.  ${ANFANG_TONNEN.toFixed(2)} t  ${anfangWert.toFixed(2)} EUR`);
   console.log(`  Zukauf                 ${zukaufTonnen.toFixed(2)} t  ${zukaufWert.toFixed(2)} EUR`);
-  console.log(`  Endbestand 31.12.     -${ENDE_TONNEN.toFixed(2)} t -${endeWert.toFixed(2)} EUR`);
+  console.log(`  Endbestand 31.12.     -${ENDE_TONNEN.toFixed(2)} t -${endeWert.toFixed(2)} EUR  (FIFO)`);
+  for (const teil of fifo.teile) console.log(`      ${teil}`);
   console.log(`  Verbrauch              ${verbrauchTonnen.toFixed(2)} t  ${verbrauchWert.toFixed(2)} EUR`);
   console.log(`  bisher nach Lieferdatum          ${zukaufWert.toFixed(2)} EUR`);
   console.log(`  Differenz                        ${(verbrauchWert - zukaufWert).toFixed(2)} EUR`);
@@ -123,11 +158,17 @@ async function main() {
         + 'der Leittechnik oder von Fa. Maurer vorliegt. Owner-Entscheidung 11.10.2026.',
     },
     {
-      source_key: `mg24-${JAHR}-pellets-endbestand`,
+      /* Der Schlüssel trägt die Bewertungsmethode. Die erste Fassung bewertete
+         zum Preis der letzten Lieferung und liegt unter
+         `mg24-<jahr>-pellets-endbestand` archiviert; ihr Schlüssel ist
+         dauerhaft belegt (die Eindeutigkeitsregel gilt auch für archivierte
+         Buchungen). Ein eigener Schlüssel je Methode hält beide Fassungen
+         nebeneinander nachvollziehbar, statt die alte zu überschreiben. */
+      source_key: `mg24-${JAHR}-pellets-endbestand-fifo`,
       betrag: -endeWert,
       von: `${JAHR}-12-31`, bis: `${JAHR}-12-31`,
-      notiz: `Endbestand Pelletlager 31.12.${JAHR}: ${ENDE_TONNEN.toFixed(2)} t, bewertet zum Preis `
-        + `der letzten Lieferung 109505 vom 15.12.${JAHR} (${endePreis.toFixed(2)} EUR/t). `
+      notiz: `Endbestand Pelletlager 31.12.${JAHR}: ${ENDE_TONNEN.toFixed(2)} t, bewertet nach `
+        + `FIFO — ${fifo.teile.join(' und ')}. `
         + 'Negativer Betrag, weil der Bestand am Jahresende NICHT verbraucht wurde und damit '
         + 'nicht in die Abrechnung gehört. '
         + 'ARBEITSANNAHME: Der Endbestand ist nicht erhoben. Angesetzt ist derselbe Wert wie der '

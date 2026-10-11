@@ -4,6 +4,40 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Endbestand Brennstoff nach FIFO
+
+Beim Abgleich der Casameta-Eingabe fiel auf, dass das Portal den Endbestand nach FIFO
+bewertet, bikosoc dagegen pauschal zum Preis der letzten Lieferung. FIFO ist richtig:
+Im Lager liegen 5,00 t, die letzte Lieferung brachte aber nur 4,02 t — die restlichen
+0,98 t stammen zwangsläufig aus der Lieferung davor und waren billiger.
+
+| | bisher | FIFO |
+|---|---:|---:|
+| Endbestand 31.12.2025 | 2.187,75 € | **2.146,41 €** |
+| Heizkosten 2025 | 4.943,22 € | **4.984,56 €** |
+
+FIFO-Zusammensetzung: 4,020 t aus Lieferung 109505 vom 15.12.2025 zu 437,55 €/t
+(1.758,95 €) und 0,980 t aus 106971 vom 25.09.2025 zu 395,37 €/t (387,46 €).
+
+`scripts/pelletbestand-mg24.ts` rechnet jetzt mit `endbestandFifo()` und bricht ab, wenn
+sich der Bestand nicht vollständig aus den bekannten Lieferungen decken lässt — eine
+unvollständige Lieferliste soll keine stille Teilbewertung ergeben.
+
+**Umsetzung über zwei Buchungen statt einer Betragsänderung.** Die PATCH-Route für
+Kostenbuchungen lässt den Betrag bewusst nicht ändern („das wäre eine andere Buchung").
+Also: alte Buchung archiviert, neue angelegt. Der `source_key` trägt jetzt die
+Bewertungsmethode (`…-endbestand-fifo`), weil die Eindeutigkeitsregel auch für
+archivierte Buchungen gilt und der alte Schlüssel dauerhaft belegt bleibt. Beide
+Fassungen stehen damit nebeneinander nachvollziehbar.
+
+**Wirkung MG24 2025:** W1 544,25 → 556,95 · W2 237,09 → 245,60 · W3 1.385,90 → 1.392,22 ·
+Eigentümer 3.831,26 → 3.845,07 €. Objektsumme 13.439,84 €.
+
+**Abgleich mit Casameta geht auf:** 13.439,84 € abzüglich 618,55 € ungemessenem
+Wasser- und Abwasserrest = **12.821,29 €** — genau der Wert, den das Portal erwartet.
+
+---
+
 ## Stand 2026-10-11 — SWT-Wasserzähler abgelesen, Objektzähler in der Ansicht
 
 Der Eigentümer hat den Abrechnungszähler der Stadtwerke (8ZRI2316739802) vor Ort
