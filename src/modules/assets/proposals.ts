@@ -271,6 +271,9 @@ export async function erzeugeVorschlaege(
         const cidR = artId.get(regel.cost_category);
         if (!pidR || !cidR) continue;
         const betragR = Math.round(rechnung.betrag * 100) / 100;
+        // Die Rechnungsnummer gehoert mit in den Vergleich: Wird eine zunaechst
+        // unbekannte Nummer nachgetragen, soll der Vorschlag sie auch zeigen.
+        const belegR = rechnung.nr ? `Rechnung ${rechnung.nr}` : 'Sammelüberweisung';
         const gleichR =
           Number(o.property_id) === pidR &&
           Number(o.cost_category_id) === cidR &&
@@ -278,17 +281,18 @@ export async function erzeugeVorschlaege(
           isoTag(o.service_period_start) === z.start &&
           isoTag(o.service_period_end) === z.ende &&
           o.umlagefaehig === regel.umlagefaehig &&
-          o.sicherheit === regel.sicherheit;
+          o.sicherheit === regel.sicherheit &&
+          o.reference === belegR;
         if (!gleichR) {
           await dbQuery(
             `UPDATE expense_booking_proposals
                 SET property_id = $2, cost_category_id = $3, amount_gross = $4, anteil = 1,
                     service_period_start = $5, service_period_end = $6,
-                    umlagefaehig = $7, sicherheit = $8, begruendung = $9
+                    umlagefaehig = $7, sicherheit = $8, begruendung = $9, reference = $10
               WHERE id = $1 AND status = 'offen'`,
             [o.id, pidR, cidR, betragR, z.start, z.ende,
               regel.umlagefaehig, regel.sicherheit,
-              begruendungRechnung(regel, rechnung, 1, u)]);
+              begruendungRechnung(regel, rechnung, 1, u), belegR]);
           ergebnis.aktualisiert++;
         }
         continue;

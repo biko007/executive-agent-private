@@ -4,6 +4,36 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Korrektur der Belegzuordnung (Reizner, vierte Pelletlieferung)
+
+Owner-Korrektur zum Nachtrag. Beide Punkte waren Zuordnungen, die ich mangels
+Beleg offen gelassen hatte und die der Owner aus Paket 1 und 2 auflösen konnte.
+
+**Reizner 128,46 € ist MG24, nicht N24.** Rechnung 178-2025 vom 26.09.2025,
+„Netzwerkanschluss Heizung" — belegt in Paket 1 C2 und Paket 2 K7. Einmalige
+Herstellung und damit nicht umlagefähig, Kostenart `heizung`. Der offene
+Vorschlag ist über die Selbstheilung von N24 auf MG24 umgestellt worden, ohne
+dass eine Zeile von Hand angefasst werden musste. Die N24-Rechnungen 054-2025
+(161,78 €) und 223-2025 (174,87 €) stehen ausdrücklich NICHT in der Liste —
+ihre Kostenart und Umlagefähigkeit sind nicht belegt; sie sind nur im Hinweis
+vermerkt, damit sie nicht wieder verloren gehen.
+
+**Die Zahlung vom 03.01.2025 über 1.695,84 € ist zugeordnet:** Koch-Rechnung
+910222 vom 20.12.2024, 5,00 t Holzpellets. Nach dem Leistungsprinzip liegt sie
+in **2024** und fällt damit aus der Abrechnung 2025 — die enthält jetzt drei
+Lieferungen über 5.435,13 €. Verbrannt wurden die Pellets allerdings 2025.
+Ohne Lagerbestandsführung ist das Leistungsprinzip bei Pellets systematisch
+ungenau; die Entscheidung über eine Lagerbestandsrechnung fällt in Paket 3c.
+
+**Eine Stelle nachgezogen:** Die Selbstheilung vergleicht jetzt auch die
+Rechnungsnummer. Wird eine zunächst unbekannte Nummer nachgetragen — genau der
+Fall bei Reizner —, trug der Vorschlag sonst weiter „Sammelüberweisung" statt
+des Belegs.
+
+**Tests:** 6 neue. Gesamt 926/0/0.
+
+---
+
 ## Stand 2026-10-10 — Nachtrag zu Paket 3: Einstufungen und Rechnungsabgleich
 
 Owner-Entscheidungen zu den drei Vorschlagsgruppen, dazu zwei Erweiterungen am

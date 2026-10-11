@@ -420,3 +420,57 @@ describe('Nachtrag 10.10.2026 — korrigierte Einstufungen', () => {
     expect(REGELN_START.filter(r => trifft(r, u)).length).toBe(1);
   });
 });
+
+
+describe('Korrektur 11.10.2026 — Reizner und die vierte Pelletlieferung', () => {
+  const pool = () => REGELN_START.filter(istRechnungsregel)
+    .flatMap(r => (r.rechnungen || []).map(rg => ({ regelId: r.id, rechnung: rg })));
+
+  it('führt die Reizner-Rechnung 178-2025 unter MG24 und nicht umlagefähig', () => {
+    // Belegt in Paket 1 C2 und Paket 2 K7: "Netzwerkanschluss Heizung" für MG24,
+    // einmalige Herstellung. Zuvor stand die Regel auf N24.
+    const r = REGELN_START.find(x => x.id === 'reizner-rechnungen')!;
+    expect(r.property).toBe('mg24');
+    expect(r.cost_category).toBe('heizung');
+    expect(r.umlagefaehig).toBe(false);
+    expect(r.rechnungen!.map(x => x.nr)).toEqual(['178-2025']);
+  });
+
+  it('trägt die N24-Reizner-Rechnungen NICHT in die MG24-Liste ein', () => {
+    const r = REGELN_START.find(x => x.id === 'reizner-rechnungen')!;
+    const betraege = r.rechnungen!.map(x => x.betrag);
+    expect(betraege).not.toContain(161.78);
+    expect(betraege).not.toContain(174.87);
+  });
+
+  it('löst die Sammelüberweisung vom 09.10.2025 in beide Belege auf', () => {
+    const { treffer } = ordneSammelueberweisungZu(sammel(1630.85), pool());
+    expect(treffer.length).toBe(2);
+    const nummern = treffer.map(x => x.rechnung.nr).sort();
+    expect(nummern).toEqual(['106971', '178-2025']);
+  });
+
+  it('erklärt die Zahlung vom 03.01.2025 aus der Lieferung vom 20.12.2024', () => {
+    const { treffer } = ordneSammelueberweisungZu(
+      sammel(1695.84, { booking_date: '2025-01-03' }), pool());
+    expect(treffer.length).toBe(1);
+    expect(treffer[0].rechnung.nr).toBe('910222');
+    expect(treffer[0].rechnung.lieferdatum).toBe('2024-12-20');
+  });
+
+  it('hält die vierte Lieferung aus dem Abrechnungsjahr 2025 heraus', () => {
+    // Leistungsprinzip: Lieferung 20.12.2024 gehört in 2024, auch wenn die
+    // Pellets erst 2025 verbrannt wurden.
+    const z = leistungszeitraum('lieferdatum', { ...sammel(0), booking_date: '2024-12-20' });
+    expect(z.start < '2025-01-01').toBe(true);
+    expect(z.ende < '2025-01-01').toBe(true);
+  });
+
+  it('rechnet die Abrechnung 2025 mit drei Lieferungen', () => {
+    const koch = REGELN_START.find(x => x.id === 'mg24-pellets')!;
+    const in2025 = koch.rechnungen!.filter(
+      r => r.lieferdatum! >= '2025-01-01' && r.lieferdatum! <= '2025-12-31');
+    expect(in2025.length).toBe(3);
+    expect(in2025.reduce((n, r) => n + r.betrag, 0)).toBeCloseTo(5435.13, 2);
+  });
+});

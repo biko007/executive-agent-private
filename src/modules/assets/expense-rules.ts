@@ -267,6 +267,13 @@ export const REGELN_START: AusgabenRegel[] = [
     // greifen — und Pellets sind der groesste Nebenkostenposten von MG24.
     match: {},
     rechnungen: [
+      {
+        nr: '910222', betrag: 1695.84, lieferdatum: '2024-12-20',
+        hinweis: '5,00 t Holzpellets. Leistungszeitraum 2024 und damit NICHT in der '
+          + 'Abrechnung 2025 — verbrannt wurde die Lieferung allerdings 2025. Ohne '
+          + 'Lagerbestandsführung ist das Leistungsprinzip bei Pellets systematisch '
+          + 'ungenau; die Entscheidung über eine Lagerbestandsrechnung fällt in Paket 3c.',
+      },
       { nr: '101657', betrag: 2173.79, lieferdatum: '2025-03-11' },
       { nr: '106971', betrag: 1502.39, lieferdatum: '2025-09-25' },
       { nr: '109505', betrag: 1758.95, lieferdatum: '2025-12-15' },
@@ -281,36 +288,29 @@ export const REGELN_START: AusgabenRegel[] = [
     hinweis: 'Pelletlieferungen Matthias Koch Brennstoffe für die Zentralheizung MG24. '
       + 'Leistungszeitraum ist das Lieferdatum, nicht der Zahltag. Die fünf Rechnungen '
       + 'stammen aus der Belegauswertung von Paket 1 und 2; eine neue Lieferung wird hier '
-      + 'als Rechnung ergänzt (Einstellungen, kein Deployment). Die Zahlung vom 03.01.2025 '
-      + 'über 1.695,84 Euro ist noch keiner Rechnung zugeordnet — sie gehört nach dem '
-      + 'Leistungsprinzip vermutlich in 2024 und ist in Paket 3b zu klären.',
+      + 'als Rechnung ergänzt (Einstellungen, kein Deployment). Die Abrechnung 2025 '
+      + 'enthält damit drei Lieferungen (März, September, Dezember 2025); die vierte '
+      + 'Lieferung vom 20.12.2024 liegt nach dem Leistungsprinzip in 2024.',
   },
   {
     id: 'reizner-rechnungen',
-    property: 'n24',
-    // Objektzuordnung laut Paket 2: Reizner, Maurer und Energiekonzept KD 11042
-    // gehören zu N24. Die Rechnungsliste ist deshalb bewusst leer, bis die
-    // Belege vorliegen — eine geratene Zuordnung würde Kosten dem falschen
-    // Haus zuweisen.
+    property: 'mg24',
     match: {},
     rechnungen: [
-      {
-        betrag: 128.46,
-        hinweis: 'Rechnungsnummer und Leistungsdatum noch nicht belegt — Betrag aus der '
-          + 'Überweisung vom 09.10.2025 (ANZAHL 2) abgeleitet, der zweite Posten ist '
-          + 'Koch-Rechnung 106971 über 1.502,39 Euro. Beleg aus Postfach/SharePoint '
-          + 'nachtragen; bis dahin gilt der Zahltag als Leistungsdatum.',
-      },
+      { nr: '178-2025', betrag: 128.46, lieferdatum: '2025-09-26' },
     ],
-    cost_category: 'instandhaltung',
+    cost_category: 'heizung',
     umlagefaehig: false,
     service_period: 'lieferdatum',
     anteil: 1,
-    sicherheit: 'niedrig',
-    hinweis: 'Reizner (Elektro) — wird über Sammelüberweisungen bezahlt. Objekt N24 laut '
-      + 'Paket 2; Sicherheit niedrig, weil weder Rechnungsnummer noch Objektzuordnung '
-      + 'dieser einen Rechnung belegt sind. Der Betrag ist nur deshalb bekannt, weil er '
-      + 'die Differenz der Sammelüberweisung zur Koch-Rechnung ist.',
+    sicherheit: 'hoch',
+    hinweis: 'Reizner, Rechnung 178-2025 vom 26.09.2025, "Netzwerkanschluss Heizung" für '
+      + 'MG24 (belegt in Paket 1 C2 und Paket 2 K7). Einmalige Herstellung und damit '
+      + 'NICHT umlagefähig. Bezahlt über die Sammelüberweisung vom 09.10.2025 '
+      + '(1.630,85 Euro = 1.502,39 Koch 106971 + 128,46 Reizner). '
+      + 'Nicht verwechseln: Die Reizner-Rechnungen 054-2025 (161,78 Euro) und 223-2025 '
+      + '(174,87 Euro) gehören zu N24 und sind hier bewusst NICHT eingetragen — ihre '
+      + 'Kostenart und Umlagefähigkeit sind nicht belegt.',
   },
   {
     id: 'maurer-rechnungen',
