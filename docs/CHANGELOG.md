@@ -4,6 +4,56 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Prompt-Inbox stellt nur noch bei Bereitschaft zu (Teil Q)
+
+**REVIEW-pflichtig nach C7** — gebaut, getestet, NICHT gepusht.
+
+**Was bisher passierte** (gemessen, nicht vermutet): Die Inbox tippte eine
+Datei über `tmux send-keys` ins Pane, ohne zu prüfen, was dort läuft. Acht
+Aufträge gingen so mitten in laufende Durchgänge. Ergebnis der Messung: Claude
+Code nimmt den Text als Zwischennachricht auf und arbeitet ihn im selben
+Durchgang ab — nichts geht verloren, nichts wird zusammengeführt.
+
+**Zwei Risiken blieben.** Erstens: Steht ein Dialog mit numerierten Optionen
+offen, ist getippter Text keine Nachricht, sondern eine ANTWORT — die erste
+Zeile eines Auftrags würde eine Option auswählen, die niemand gewählt hat. Das
+ist der gefährliche Fall, nicht der verlorene Auftrag. Zweitens war die
+Reihenfolge nicht zugesichert: sortiert wurde nach Dateiname, und der trägt den
+Zeitstempel der Dropbox-Übergabe statt den der Ablage.
+
+**Jetzt:** `prompt-inbox/bereitschaft.ts` prüft den Pane-Text (reine Funktionen,
+ohne tmux testbar). Zugestellt wird nur bei ruhendem Pane, und dann höchstens
+EINE Datei pro Lauf — nach der Zustellung arbeitet Claude Code, eine zweite
+Datei träfe genau den Zustand, den die Prüfung verhindern soll. Bei Unklarheit
+wird nicht zugestellt: Ein leeres Pane heißt tmux nicht erreichbar, und ins
+Leere zu tippen verliert den Auftrag still. Reihenfolge nach Dateizeit.
+
+Die Dialogerkennung ist eng gefasst: Eine numerierte Liste aus einem
+Auftragstext im Scrollback darf nicht sperren — eine Sperre, die immer greift,
+ist so schlimm wie keine.
+
+**Leerlauf-Wächter:** 10 Minuten untätig und ein übergebener Auftrag ohne
+zugehörigen Report → `weiter mit <Datei>`. Nach dem zweiten erfolglosen Stups
+Telegram an operativ, danach ruht der Wächter für diesen Auftrag. Grund für die
+Grenze: Die Zuordnung Auftrag → Report ist eine Annäherung, ein Nachtrag
+bekommt oft keinen eigenen Report — ohne Grenze wäre das ein Dauerstups.
+Nachts identisch.
+
+**Ein Guard hat gegriffen, wie er soll:** `kontrollflaeche.test.ts` verbietet
+der Inbox jeden eigenen tmux-Aufruf. Der erste Entwurf las das Pane direkt und
+verstiess dagegen; das Pane-Lesen ist als `lesePaneInhalt()` nach
+`cc-prompt-dispatch` gewandert, wo aller tmux-Zugriff liegt. Ein zweiter Guard
+verglich die Importzeile wörtlich und schlug an einer Formatierung an — er
+prüft jetzt die Sache (Helfer aus cc-prompt-dispatch, nichts direkt aus
+child_process) statt die Schreibweise. Geschwächt ist nichts.
+
+**Tests:** 30 neue, davon sechs Missbrauchsfälle nach C7 in beiden Richtungen.
+Dazu ein Lauf mit zwei Dummy-Aufträgen gegen das ECHTE Pane der laufenden
+Sitzung: während der Arbeit wurde nichts getippt, danach beide in richtiger
+Reihenfolge. Gesamt 970/0/0.
+
+---
+
 ## Stand 2026-10-11 — Casameta-Hybrid und der dritte Abrechnungsfehler (Paket 3c)
 
 **Abrechnungsarchitektur hybrid.** bikosoc hält Daten, Belege und

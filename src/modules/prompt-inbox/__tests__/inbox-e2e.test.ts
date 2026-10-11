@@ -125,11 +125,17 @@ describe('Prompt-Inbox E2E über echtes tmux', () => {
         const umgelenkt = args.map((a) => (a === 'bikosoc' ? SITZUNG : a));
         execFileSync(file, umgelenkt, { stdio: 'ignore', timeout: options?.timeout });
       },
+      // Die Bereitschaftspruefung liest in Produktion das echte bikosoc-Pane.
+      // Hier wird sie mit einem ruhenden Pane gespeist: Ob die Erkennung
+      // stimmt, pruefen die Tests in bereitschaft.test.ts; dieser Test
+      // prueft die ZUSTELLKETTE.
+      paneText: '> \n',
     });
 
-    expect(ergebnis).toHaveLength(1);
+    expect(ergebnis.zugestellt).toHaveLength(1);
+    expect(ergebnis.zurueckgestellt).toHaveLength(0);
     // Datei wurde nach done/ verschoben — das tat der Poller auch im Defektfall.
-    expect(existsSync(ergebnis[0].donePath)).toBe(true);
+    expect(existsSync(ergebnis.zugestellt[0].donePath)).toBe(true);
 
     // Der entscheidende Nachweis: der Empfänger hat den Auftrag ABGESCHICKT.
     warte(1200);

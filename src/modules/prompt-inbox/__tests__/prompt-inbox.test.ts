@@ -27,6 +27,7 @@ describe('prompt inbox', () => {
     };
 
     const results = processPromptInboxOnce({
+      paneText: '> \n',
       homeDir,
       now: new Date('2026-07-15T08:00:00.000Z'),
       runner,
@@ -44,11 +45,11 @@ describe('prompt inbox', () => {
         args: ['send-keys', '-t', 'bikosoc', 'Enter'],
       },
     ]);
-    expect(results).toHaveLength(1);
+    expect(results.zugestellt).toHaveLength(1);
     expect(fs.existsSync(path.join(inboxDir, 'auftrag eins.txt'))).toBe(false);
-    expect(results[0].donePath).toContain('/inbox/done/2026-07-15T08-00-00-000Z-auftrag_eins.txt');
-    expect(fs.existsSync(results[0].donePath)).toBe(true);
-    expect(path.basename(results[0].reportPath)).toBe('report-prompt-inbox-20260715-100000.md');
-    expect(fs.readFileSync(results[0].reportPath, 'utf-8')).toContain('Prompt uebergeben.');
+    expect(results.zugestellt[0].donePath).toContain('/inbox/done/2026-07-15T08-00-00-000Z-auftrag_eins.txt');
+    expect(fs.existsSync(results.zugestellt[0].donePath)).toBe(true);
+    expect(path.basename(results.zugestellt[0].reportPath)).toBe('report-prompt-inbox-20260715-100000.md');
+    expect(fs.readFileSync(results.zugestellt[0].reportPath, 'utf-8')).toContain('Prompt uebergeben');
   });
 });

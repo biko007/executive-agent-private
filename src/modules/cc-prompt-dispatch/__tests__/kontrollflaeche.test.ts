@@ -133,9 +133,17 @@ describe('statische Guards: Prompt-Inbox', () => {
   );
 
   test('die Inbox nutzt denselben Helfer wie /do', () => {
-    expect(inboxQuelle).toContain(
-      "import { sendPromptToBikosocTmux, type TmuxRunner } from '../cc-prompt-dispatch/index.js';",
-    );
+    /* Geprüft wird die SACHE, nicht die Schreibweise der Importzeile: Die
+       Inbox muss den Versandhelfer aus cc-prompt-dispatch beziehen. Die
+       vorherige Fassung verglich die Zeile wörtlich und schlug am 11.10.2026
+       an, als der Import um `lesePaneInhalt` erweitert und dabei umgebrochen
+       wurde — also an einer Formatierung, nicht an einem Verstoss. Die Aussage
+       ist unverändert und durch den zweiten Guard unten abgesichert, der jeden
+       eigenen tmux-Aufruf in der Inbox verbietet. */
+    expect(inboxQuelle).toContain('sendPromptToBikosocTmux');
+    expect(inboxQuelle).toContain("from '../cc-prompt-dispatch/index.js'");
+    // Kein zweiter Bezugsweg: nichts aus child_process direkt.
+    expect(inboxQuelle).not.toContain("from 'node:child_process'");
   });
 
   test('die Inbox baut keinen eigenen tmux-Aufruf', () => {

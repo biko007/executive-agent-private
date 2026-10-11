@@ -2,6 +2,24 @@ import { execFileSync } from 'node:child_process';
 
 export type TmuxRunner = (file: string, args: string[], options?: { timeout?: number }) => void;
 
+/**
+ * Sichtbarer Inhalt des tmux-Panes. Leerer Text, wenn die Sitzung nicht
+ * erreichbar ist.
+ *
+ * Steht hier und nicht bei der Prompt-Inbox, weil ALLER tmux-Zugriff in diesem
+ * Modul liegt — ein statischer Guard erzwingt das (`kontrollflaeche.test.ts`).
+ * Ein zweiter Ort mit eigenen tmux-Aufrufen wäre genau der Weg, auf dem sich
+ * zwei verschiedene Verhaltensweisen einschleichen.
+ */
+export function lesePaneInhalt(target = DEFAULT_TMUX_TARGET): string {
+  try {
+    return execFileSync('tmux', ['capture-pane', '-t', target, '-p'],
+      { encoding: 'utf-8', timeout: 5000 });
+  } catch {
+    return '';
+  }
+}
+
 const DEFAULT_TMUX_TARGET = 'bikosoc';
 
 /**
