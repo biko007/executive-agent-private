@@ -960,10 +960,13 @@ function wohnungsStaende(
   return {
     standAnfang, standEnde,
     einzugsstand: alleHabenEinzug ? { tag, wert: einzugSumme } : null,
-    punkte: zaehler.map(m => stuetzpunkteVon(
-      m.id, readings, periodStart, periodEnd,
-      m.initial_reading !== null && m.initial_reading !== undefined
-        ? parseFloat(String(m.initial_reading)) : null)),
+    punkte: zaehler.map(m => ({
+      punkte: stuetzpunkteVon(
+        m.id, readings, periodStart, periodEnd,
+        m.initial_reading !== null && m.initial_reading !== undefined
+          ? parseFloat(String(m.initial_reading)) : null),
+      einzugsstand: findeEinzugsstand(m.id, einzugsTag, readings),
+    })),
   };
 }
 

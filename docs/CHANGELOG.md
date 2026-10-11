@@ -4,6 +4,52 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Owner-Fotos W1: drei Korrekturen und eine Methodenänderung
+
+Die Fotos der W1-Zähler widerlegen drei Angaben, die ich aus dem handschriftlichen
+Übergabeprotokoll übernommen hatte. Der Fehler lag im Protokoll, die ungeprüfte
+Übernahme bei mir.
+
+| Protokoll (falsch) | Foto (richtig) |
+|---|---|
+| „Wasser 33050523 = 3,78 m³" | **Wärmemengenzähler** 33050523, 3,781 **MWh** |
+| „Warmwasser 24035938 = 0,412" | **Kaltwasser** 9WGNWG24035938, 0,412 m³ |
+| — | Warmwasser 9WGNWG24037785, **0,334 m³** |
+| „Heizung: Zähler wird noch eingebaut" | gilt nur für den **zweiten** Zähler |
+
+**Der Zähler 33050523 lief bereits 2024** — Stichtagswert 31.12.2024: 2,772 MWh. Damit
+ist er der Zähler, der ab Mai 2025 in den Fiehn-Berichten auftaucht, also **Süd/West**;
+der zweite (Nord/Ost) erscheint erst ab 30.09.2025 und ist der, auf den sich der
+Protokollvermerk bezog.
+
+**Eine Skalenfalle, die beinahe 2.772 kWh gekostet hätte:** Die Reihe in bikosoc stammt
+aus den Fiehn-Berichten und beginnt 2025 bei null; der physische Zähler steht um den
+2024er Bestand höher. Eingetragen ist deshalb der Januarverbrauch 3.781 − 2.772 =
+**1.009 kWh** als Einzugsstand, nicht der Zählerstand. Hätte ich 2.772 als Anfangsstand
+und 3.781 als Einzugsstand gesetzt, wäre der Jahresverbrauch um 2.772 kWh zu niedrig
+herausgekommen.
+
+**Methodenänderung: je Zähler statt alles oder nichts.** Bis dahin galt: Hat nur einer
+von zwei Wärmemengenzählern eine Zwischenablesung, wird auch sie verworfen. Bei W1 kostete
+das die vorhandene Messung für Süd/West. Jetzt nimmt **jeder Zähler die beste Grundlage,
+die er hat**; die Wohnung summiert die Mengen. `anteilAusStuetzpunkten()` nimmt dafür
+Reihen mit eigener Zwischenablesung entgegen und meldet, ob alle gemessen sind.
+
+**Wirkung MG24 2025** (nach W1- und W2-Korrektur zusammen):
+
+| | vor beiden Korrekturen | nachher |
+|---|---:|---:|
+| W1 | 1.153,86 € | 860,43 € |
+| W2 | 356,90 € | 296,47 € |
+| W3 | 1.213,48 € | 1.213,48 € |
+| Eigentümer | 3.315,60 € | 3.669,46 € |
+
+**Befund zur Rückrechnung:** Sie liegt nicht systematisch zu niedrig, sondern meist zu
+HOCH — in vier von fünf vergleichbaren Fällen. Beim Wasser um das Zehnfache: Der
+Zeitanteil unterstellt einer leeren Wohnung den Verbrauch einer bewohnten.
+
+---
+
 ## Stand 2026-10-11 — Übergabefotos W2, Zählerzuordnung über den GLT-Verlauf
 
 Vier Zählerstände zum Einzug W2 am 01.04.2025, aus Fotos des Owners. Damit ist auch W2

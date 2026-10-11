@@ -315,21 +315,52 @@ export function tagPlus(tag: string, n: number): string {
  * `null`, wenn es keine zwei Stützpunkte gibt — dann bleibt nur die
  * Ganzjahresaufteilung.
  */
+/** Eine Zählerreihe mit ihrer — möglicherweise vorhandenen — Zwischenablesung. */
+export interface ZaehlerReihe {
+  punkte: Stuetzpunkt[];
+  /** Ablesung zum Nutzerwechsel, falls für DIESEN Zähler vorhanden. */
+  einzugsstand?: Stuetzpunkt | null;
+}
+
 export function anteilAusStuetzpunkten(
-  serien: Stuetzpunkt[][], von: string, bis: string,
+  serien: (Stuetzpunkt[] | ZaehlerReihe)[], von: string, bis: string,
   periodStart: string, periodEnd: string, art: Gewichtung,
-): { anteil: number; stuetzpunkt: string | null; lueckenAnteil: number } | null {
+): { anteil: number; stuetzpunkt: string | null; lueckenAnteil: number;
+  alleGemessen: boolean } | null {
   /* Mehrere Zähler je Wohnung werden nicht zu einer Reihe verschmolzen — ihre
      Ablesetage fallen auseinander. Gerechnet wird je Zähler, summiert werden
-     die absoluten Mengen. Das Ergebnis ist dasselbe, der Weg dorthin ehrlicher. */
-  const brauchbar = serien.filter(s => s.length >= 2);
+     die absoluten Mengen. Das Ergebnis ist dasselbe, der Weg dorthin ehrlicher.
+     
+     JE ZÄHLER ENTSCHIEDEN (11.10.2026): Vorher galt für die ganze Wohnung
+     „alles oder nichts" — hatte nur einer von zwei Zählern eine
+     Zwischenablesung, wurde auch sie verworfen und alles aufgeteilt. Bei W1
+     von MG24 kostete das eine echte Messung: Für Süd/West liegt der Stand zum
+     Einzug vor, für Nord/Ost nicht. Jetzt nimmt jeder Zähler die beste
+     Grundlage, die er hat, und die Wohnung summiert die Mengen. */
+  const reihen: ZaehlerReihe[] = serien.map(
+    s => (Array.isArray(s) ? { punkte: s, einzugsstand: null } : s));
+  const brauchbar = reihen.filter(r => r.punkte.length >= 2);
   if (brauchbar.length === 0) return null;
 
   let gesamt = 0; let nutzer = 0; let luecke = 0;
   let stuetzpunkt: string | null = null;
+  let alleGemessen = true;
 
-  for (const punkte of brauchbar) {
-    gesamt += verbrauchImAbschnitt(punkte, tagPlus(periodStart, 1), periodEnd, art);
+  for (const reihe of brauchbar) {
+    const punkte = reihe.punkte;
+    const eigenGesamt = verbrauchImAbschnitt(punkte, tagPlus(periodStart, 1), periodEnd, art);
+    gesamt += eigenGesamt;
+
+    const ende = punkte[punkte.length - 1];
+    const e = reihe.einzugsstand;
+    /* Zwischenablesung: Was nach ihr zählte, gehört dem Nutzer — ohne
+       Gewichtung, ohne Tabelle. */
+    if (e && ende && ende.wert >= e.wert) {
+      nutzer += ende.wert - e.wert;
+      continue;
+    }
+    alleGemessen = false;
+
     nutzer += verbrauchImAbschnitt(punkte, von, bis, art);
 
     /* Der Stützpunkt, an dem die Messung für den Nutzer beginnt: die erste
@@ -352,6 +383,7 @@ export function anteilAusStuetzpunkten(
        steht in der Kennzeichnung — sie sagt, wie weit die Abrechnung auf einer
        Aufteilung und nicht auf einer Messung beruht. */
     lueckenAnteil: nutzer > 0 ? Math.min(1, luecke / nutzer) : 0,
+    alleGemessen,
   };
 }
 
@@ -371,8 +403,8 @@ export function nutzerAnteilWaerme(opts: {
   einzugsstand?: { tag: string; wert: number } | null;
   standAnfang?: number | null;
   standEnde?: number | null;
-  /** Die Ablesereihen der Zähler dieser Wohnung, für das Stützpunktverfahren. */
-  punkte?: Stuetzpunkt[][];
+  /** Die Ablesereihen der Zähler dieser Wohnung, je mit eigener Zwischenablesung. */
+  punkte?: (Stuetzpunkt[] | ZaehlerReihe)[];
 }): NutzerAnteil | null {
   const abschnitt = nutzungsAbschnitt(opts.lease, opts.periodStart, opts.periodEnd);
   if (!abschnitt) return null;
@@ -393,7 +425,12 @@ export function nutzerAnteilWaerme(opts: {
       opts.punkte, abschnitt.von, abschnitt.bis, opts.periodStart, opts.periodEnd, 'gradtage')
     : null;
   if (ueberStuetzpunkte) {
-    return { ...ueberStuetzpunkte, grundlage: 'stuetzpunkte', ...abschnitt };
+    const { alleGemessen, ...rest } = ueberStuetzpunkte;
+    return {
+      ...rest,
+      grundlage: alleGemessen ? 'zwischenablesung' : 'stuetzpunkte',
+      ...abschnitt,
+    };
   }
 
   const nenner = gradtagsSumme(opts.periodStart, opts.periodEnd);
@@ -416,8 +453,8 @@ export function nutzerAnteilZeit(opts: {
   einzugsstand?: { tag: string; wert: number } | null;
   standAnfang?: number | null;
   standEnde?: number | null;
-  /** Die Ablesereihen der Zähler dieser Wohnung, für das Stützpunktverfahren. */
-  punkte?: Stuetzpunkt[][];
+  /** Die Ablesereihen der Zähler dieser Wohnung, je mit eigener Zwischenablesung. */
+  punkte?: (Stuetzpunkt[] | ZaehlerReihe)[];
 }): NutzerAnteil | null {
   const abschnitt = nutzungsAbschnitt(opts.lease, opts.periodStart, opts.periodEnd);
   if (!abschnitt) return null;
@@ -435,7 +472,12 @@ export function nutzerAnteilZeit(opts: {
       opts.punkte, abschnitt.von, abschnitt.bis, opts.periodStart, opts.periodEnd, 'tage')
     : null;
   if (ueberStuetzpunkte) {
-    return { ...ueberStuetzpunkte, grundlage: 'stuetzpunkte', ...abschnitt };
+    const { alleGemessen, ...rest } = ueberStuetzpunkte;
+    return {
+      ...rest,
+      grundlage: alleGemessen ? 'zwischenablesung' : 'stuetzpunkte',
+      ...abschnitt,
+    };
   }
 
   const nenner = tageZwischen(opts.periodStart, opts.periodEnd);

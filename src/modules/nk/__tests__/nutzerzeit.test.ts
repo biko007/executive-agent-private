@@ -341,6 +341,60 @@ describe('Stützpunktverfahren', () => {
     expect(a.stuetzpunkt).toBe('2025-05-31');
   });
 
+  it('entscheidet je Zaehler: gemessener neben geschaetztem', () => {
+    /* Der Fall W1 von MG24: Fuer Sued/West liegt der Stand zum Einzug vor,
+       fuer Nord/Ost nicht. Bis zum 11.10.2026 galt „alles oder nichts" — die
+       vorhandene Messung wurde mitverworfen. Jetzt nimmt jeder Zaehler die
+       beste Grundlage, die er hat. */
+    const gemessen = {
+      punkte: [{ tag: VON, wert: 0 }, { tag: '2025-02-01', wert: 1000 },
+        { tag: BIS, wert: 10000 }],
+      einzugsstand: { tag: '2025-02-01', wert: 1000 },
+    };
+    const geschaetzt = {
+      punkte: [{ tag: VON, wert: 0 }, { tag: BIS, wert: 10000 }],
+      einzugsstand: null,
+    };
+
+    const a = anteilAusStuetzpunkten(
+      [gemessen, geschaetzt], '2025-02-01', BIS, VON, BIS, 'gradtage')!;
+    /* Gemessen: 9.000 von 10.000. Geschaetzt: 83,46 % von 10.000 — der
+       Gradtagsnenner beginnt am 2. Januar, weil der Verbrauch des ersten Tages
+       bereits im Stand vom 1. Januar steckt. */
+    expect(a.anteil).toBeCloseTo((9000 + 8345.77) / 20000, 4);
+    expect(a.alleGemessen).toBe(false);
+  });
+
+  it('meldet alleGemessen, wenn jeder Zaehler eine Zwischenablesung hat', () => {
+    const reihe = (einzug: number) => ({
+      punkte: [{ tag: VON, wert: 0 }, { tag: '2025-02-01', wert: einzug },
+        { tag: BIS, wert: 10000 }],
+      einzugsstand: { tag: '2025-02-01', wert: einzug },
+    });
+    const a = anteilAusStuetzpunkten(
+      [reihe(1000), reihe(2000)], '2025-02-01', BIS, VON, BIS, 'gradtage')!;
+    expect(a.alleGemessen).toBe(true);
+    expect(a.anteil).toBeCloseTo((9000 + 8000) / 20000, 6);
+  });
+
+  it('faellt fuer einen Zaehler mit unplausibler Zwischenablesung auf die Aufteilung zurueck', () => {
+    // Einzugsstand ueber dem Endstand — dann zaehlt die Aufteilung.
+    const a = anteilAusStuetzpunkten([{
+      punkte: [{ tag: VON, wert: 0 }, { tag: BIS, wert: 1000 }],
+      einzugsstand: { tag: '2025-02-01', wert: 5000 },
+    }], '2025-02-01', BIS, VON, BIS, 'gradtage')!;
+    expect(a.alleGemessen).toBe(false);
+    expect(a.anteil).toBeCloseTo(0.8346, 3);
+  });
+
+  it('nimmt eine blanke Punktliste weiterhin an', () => {
+    // Rueckwaertskompatibel: ohne Zwischenablesung bleibt alles wie zuvor.
+    const a = anteilAusStuetzpunkten(
+      [[{ tag: VON, wert: 0 }, { tag: BIS, wert: 1000 }]],
+      '2025-02-01', BIS, VON, BIS, 'gradtage')!;
+    expect(a.anteil).toBeCloseTo(0.8346, 3);
+  });
+
   it('tagPlus rechnet über Monats- und Jahresgrenzen', () => {
     expect(tagPlus('2025-01-31', 1)).toBe('2025-02-01');
     expect(tagPlus('2025-12-31', 1)).toBe('2026-01-01');

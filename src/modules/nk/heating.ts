@@ -770,11 +770,16 @@ function staendeDerWohnung(
     standAnfang: anfang,
     standEnde: ende,
     einzugsstand: alleHabenEinzug ? { tag: einzugsTagGenutzt, wert: einzugSumme } : null,
-    // Je Zähler eine Ablesereihe — Grundlage des Stützpunktverfahrens.
-    punkte: zaehler.map(m => stuetzpunkteVon(
-      m.id, readings, periodStart, periodEnd,
-      m.initial_reading !== null && m.initial_reading !== undefined
-        ? parseFloat(String(m.initial_reading)) : null)),
+    /* Je Zähler eine Ablesereihe MIT seiner eigenen Zwischenablesung. Jeder
+       Zähler nimmt damit die beste Grundlage, die er hat — bei W1 von MG24
+       ist für Süd/West der Stand zum Einzug bekannt, für Nord/Ost nicht. */
+    punkte: zaehler.map(m => ({
+      punkte: stuetzpunkteVon(
+        m.id, readings, periodStart, periodEnd,
+        m.initial_reading !== null && m.initial_reading !== undefined
+          ? parseFloat(String(m.initial_reading)) : null),
+      einzugsstand: findeEinzugsstand(m.id, einzugsTag, readings),
+    })),
   };
 }
 
