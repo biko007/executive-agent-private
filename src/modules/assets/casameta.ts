@@ -18,6 +18,9 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import {
+  stuetzpunkteVon, anteilAusStuetzpunkten, nutzungsAbschnitt,
+} from '../nk/nutzerzeit.js';
 
 const ZIEL_DIR = join(homedir(), 'bikosoc-spec', 'casameta');
 
@@ -269,6 +272,54 @@ export async function erzeugeEingabeblatt(
     + 'Warmwasser und Nebenkosten voneinander ab, sind sie im Portal von Hand zu setzen.');
   z.push('');
 
+  /**
+   * Wie der Nutzeranteil dieser Wohnung zustande kommt — Stützpunkt und
+   * Lückenanteil, mit derselben Funktion gerechnet wie in der Engine.
+   *
+   * Nicht eine zweite Fassung: Stünde im Eingabeblatt eine andere Zahl als in
+   * der Kontrollrechnung, wäre das Blatt wertlos.
+   */
+  function stuetzpunktHinweis(einheitCode: string): { kurz: string; lang: string } {
+    const vertrag = vertraege.find(v => v.einheit === einheitCode);
+    const abschnitt = vertrag ? nutzungsAbschnitt(vertrag as any, von, bis) : null;
+    /* Nur aktive Zähler — die Engine lädt ebenfalls nur aktive. Ein
+       abgeschalteter Zähler (bei MG24 die beiden in W3) darf hier keinen
+       Stützpunkt liefern, den die Rechnung nicht kennt. */
+    const eigene = zaehler.filter(
+      z => z.einheit === einheitCode && z.medium === 'heat' && z.active !== false);
+    const serien = eigene.map(z => stuetzpunkteVon(
+      z.id,
+      staende.map(s => ({ meter_id: s.meter_id, read_at: s.tag, value: s.value })) as any,
+      von, bis,
+      z.initial_reading !== null && z.initial_reading !== undefined
+        ? parseFloat(String(z.initial_reading)) : null));
+
+    const a = abschnitt
+      ? anteilAusStuetzpunkten(serien, abschnitt.von, abschnitt.bis, von, bis, 'gradtage')
+      : null;
+
+    if (!a || !a.stuetzpunkt) {
+      return {
+        kurz: '§ 9b-Aufteilung, Zwischenablesung fehlt',
+        lang: 'Zwischenablesung zum Einzug fehlt und es gibt keine Ablesung im Zeitraum. '
+          + 'Gerechnet wird nach § 9b Abs. 3 HeizkostenV über den ganzen Zeitraum: Wärme nach '
+          + 'Gradtagszahlen, Warmwasser und Wasser zeitanteilig. Im Portal entsprechend '
+          + 'einstellen. Liefert die Gebäudeleittechnik später echte Einzugsstände, ersetzen '
+          + 'diese die Aufteilung.',
+      };
+    }
+    const prozent = (a.lueckenAnteil * 100).toFixed(1).replace('.', ',');
+    return {
+      kurz: `§ 9b-Aufteilung, Zwischenablesung fehlt — gemessen ab ${a.stuetzpunkt}`,
+      lang: 'Zwischenablesung zum Einzug fehlt. Ab der ersten Ablesung danach '
+        + `(${a.stuetzpunkt}) wird gemessen; aufgeteilt ist nur die Lücke davor — `
+        + `${prozent} % des Nutzerverbrauchs, Wärme nach Gradtagszahlen, Warmwasser und `
+        + 'Wasser zeitanteilig (§ 9b Abs. 3 HeizkostenV). Im Portal entsprechend einstellen. '
+        + 'Liefert die Gebäudeleittechnik später echte Einzugsstände, ersetzen diese die '
+        + 'Aufteilung.',
+    };
+  }
+
   // 4. Nutzer und Zeiträume
   z.push('## 4. Nutzer und Nutzungszeiträume');
   z.push('');
@@ -300,15 +351,14 @@ export async function erzeugeEingabeblatt(
          Zwischenablesung erwartet. Gibt es keine, muss dort dieselbe
          Aufteilung eingestellt werden wie hier gerechnet — sonst weichen
          Kontrollrechnung und verbindliche Abrechnung voneinander ab. */
-      z.push(`| ${u.code} | *§ 9b-Aufteilung, Zwischenablesung fehlt* | — | — | — | — |`);
-      csvZeile('nutzer', `${u.code} Aufteilung Nutzerwechsel`,
-        '§ 9b Abs. 3 HeizkostenV',
-        'Wärme nach Gradtagszahlen, Warmwasser und Wasser zeitanteilig — '
-        + 'im Portal entsprechend einstellen');
-      merkeLuecke(`${u.code}: Zwischenablesung zum Einzug fehlt. Gerechnet wird nach `
-        + '§ 9b Abs. 3 HeizkostenV (Wärme nach Gradtagszahlen, Warmwasser zeitanteilig). '
-        + 'Liefert die Gebäudeleittechnik später echte Einzugsstände, ersetzen diese die '
-        + 'Aufteilung.');
+      /* Stützpunkt und Lückenanteil kommen aus dem Rechenlauf — sie sagen,
+         wie weit die Zahl gemessen und wie weit sie aufgeteilt ist. Ohne
+         diese Angabe steht im Portal eine Zahl, deren Herkunft niemand mehr
+         nachvollziehen kann. */
+      const st = stuetzpunktHinweis(u.code);
+      z.push(`| ${u.code} | *${st.kurz}* | — | — | — | — |`);
+      csvZeile('nutzer', `${u.code} Aufteilung Nutzerwechsel`, st.kurz, st.lang);
+      merkeLuecke(`${u.code}: ${st.lang}`);
     }
   }
   z.push('');

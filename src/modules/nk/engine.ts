@@ -6,7 +6,7 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import { canonicalHash } from '../../util/canonical.js';
 import { nkPreCheck } from './precheck.js';
 import { heatingAllocation, calculateConsumption } from './heating.js';
-import { nutzerAnteilZeit, findeEinzugsstand, isoTag } from './nutzerzeit.js';
+import { nutzerAnteilZeit, findeEinzugsstand, isoTag, stuetzpunkteVon } from './nutzerzeit.js';
 import type {
   EngineOutput, EngineInput, EngineWarning, ExcludedLease,
   StatementResult, ItemResult, RunMeta, TenantRecipient,
@@ -886,17 +886,24 @@ function allocateByConsumption(
     const verbrauch = verbrauchEinheit * anteil.anteil;
     if (verbrauch <= 0) continue;
 
-    if (anteil.grundlage === 'zeitanteil') {
+    if (anteil.grundlage === 'zeitanteil' || anteil.grundlage === 'stuetzpunkte') {
       warnings.push({
         code: 'NUTZERWECHSEL_9B_AUFTEILUNG',
         severity: 'warning',
         message: `Kostenart "${rule.category_code}", Mietverhältnis ab ${anteil.von}: `
-          + 'Zum Einzug wurde nicht abgelesen. Der gemessene Verbrauch der Wohnung '
-          + `(${Math.round(verbrauchEinheit * 1000) / 1000}) wird zeitanteilig aufgeteilt — `
-          + `${(anteil.anteil * 100).toFixed(1)} % Nutzer, der Rest Eigentümer.`,
+          + 'Zum Einzug wurde nicht abgelesen. '
+          + (anteil.grundlage === 'stuetzpunkte'
+            ? `Ab der ersten Ablesung danach (${anteil.stuetzpunkt}) wird gemessen; `
+              + `aufgeteilt ist nur die Lücke davor — ${((anteil.lueckenAnteil ?? 0) * 100).toFixed(1)} % `
+              + 'des Nutzerverbrauchs.'
+            : `Der gemessene Verbrauch der Wohnung (${Math.round(verbrauchEinheit * 1000) / 1000}) `
+              + 'wird zeitanteilig aufgeteilt.')
+          + ` Nutzeranteil ${(anteil.anteil * 100).toFixed(1)} %, der Rest Eigentümer.`,
         details: {
           category: rule.category_code, von: anteil.von, bis: anteil.bis,
           anteil_zeit: Math.round(anteil.anteil * 10000) / 100,
+          stuetzpunkt: anteil.stuetzpunkt ?? null,
+          luecken_anteil: Math.round((anteil.lueckenAnteil ?? 0) * 10000) / 100,
         },
       });
     }
@@ -953,6 +960,10 @@ function wohnungsStaende(
   return {
     standAnfang, standEnde,
     einzugsstand: alleHabenEinzug ? { tag, wert: einzugSumme } : null,
+    punkte: zaehler.map(m => stuetzpunkteVon(
+      m.id, readings, periodStart, periodEnd,
+      m.initial_reading !== null && m.initial_reading !== undefined
+        ? parseFloat(String(m.initial_reading)) : null)),
   };
 }
 

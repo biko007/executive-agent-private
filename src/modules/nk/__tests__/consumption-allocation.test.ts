@@ -339,20 +339,43 @@ describe('Verteilung nach Verbrauch — echte Werte MG24 2025', () => {
      (§ 9b-Logik; eine Ablesung zum Einzug gibt es nicht). Der Rest bleibt
      beim Eigentümer. Die alten Zahlen waren die Beschreibung des Fehlers,
      nicht des Sollzustands. */
-  it('verteilt im Verhältnis 14,6 : 9,1 : 48,3 Prozent — Rest beim Eigentümer', () => {
+  it('verteilt im Verhältnis 14,7 : 9,1 : 48,4 Prozent — Rest beim Eigentümer', () => {
     const e = verteile(1214.01, regel('wasser'), leases, units, meters, readings);
     const anteil = (leaseId: number) =>
       (e.leaseAllocations.find(a => a.lease_id === leaseId)!.fraction) * 100;
 
-    expect(anteil(29)).toBeCloseTo(14.64, 1);   // W1 ab 01.02. → 91,5 % der Zeit
-    expect(anteil(30)).toBeCloseTo(9.06, 1);    // W2 ab 01.04. → 75,3 %
-    expect(anteil(31)).toBeCloseTo(48.32, 1);   // W3 ab 01.05. → 67,1 %
+    /* Die Zähler haben hier nur zwei Stützpunkte (01.01. und 30.12.), also
+       ist das ganze Jahr eine Lücke und es wird zeitanteilig geteilt. Die
+       Anteile liegen knapp über dem reinen Kalenderanteil, weil das
+       Intervall am 2. Januar beginnt: Der Verbrauch des 1. Januar steckt
+       bereits im Stand vom 01.01. */
+    expect(anteil(29)).toBeCloseTo(14.67, 1);   // W1 ab 01.02.
+    expect(anteil(30)).toBeCloseTo(9.07, 1);    // W2 ab 01.04.
+    expect(anteil(31)).toBeCloseTo(48.39, 1);   // W3 ab 01.05.
   });
 
   it('lässt den Verbrauch der Leerstandszeit beim Eigentümer', () => {
     const e = verteile(1214.01, regel('wasser'), leases, units, meters, readings);
-    // 339,78 € von 1.214,01 € entfallen auf die Zeit vor den Einzügen.
-    expect(e.vacancyAmount).toBeCloseTo(339.78, 1);
+    // 338,31 € von 1.214,01 € entfallen auf die Zeit vor den Einzügen.
+    expect(e.vacancyAmount).toBeCloseTo(338.31, 1);
+  });
+
+  it('nutzt eine Ablesung kurz nach Einzug statt das ganze Jahr zu teilen', () => {
+    /* Der echte W3-Fall: Der Kaltwasserzähler stand am 14.05. auf 4,17 m³
+       und bewegte sich bis Ende Juni nicht. Mit diesem Stützpunkt gehören
+       fast 97 Prozent des Jahresverbrauchs dem Mieter statt 67 nach
+       Zeitanteil. */
+    const mitStuetzpunkt = [
+      ablesung(13, 0, '2025-01-01'),
+      ablesung(13, 4.17, '2025-05-14'),
+      ablesung(13, 4.17, '2025-06-23'),
+      ablesung(13, 121.32, '2025-12-30'),
+    ];
+    const e = verteile(
+      1214.01, regel('wasser'),
+      [vertrag(31, 35, '2025-05-01')], [einheit(35, 'W3', 173.11)],
+      [zaehler(13, 35, 'cold_water')], mitStuetzpunkt);
+    expect(e.leaseAllocations[0].fraction).toBeGreaterThan(0.9);
   });
 
   it('weicht deutlich von der Flächenverteilung ab — darum die Änderung', () => {

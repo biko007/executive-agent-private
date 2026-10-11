@@ -17,7 +17,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   GRADTAGSZAHLEN, gradtagszahlProTag, gradtagsSumme, tageZwischen, tageImMonat,
   nutzungsAbschnitt, findeEinzugsstand, nutzerAnteilWaerme, nutzerAnteilZeit,
-  grundlageKlartext,
+  grundlageKlartext, stuetzpunkteVon, verbrauchImAbschnitt, anteilAusStuetzpunkten,
+  tagPlus,
 } from '../nutzerzeit.js';
 import type { LeaseRow, MeterReadingRow } from '../types.js';
 
@@ -215,5 +216,129 @@ describe('Klartext der Grundlage', () => {
     expect(grundlageKlartext('gradtagszahlen')).toContain('Zwischenablesung fehlt');
     expect(grundlageKlartext('zeitanteil')).toContain('Zeitabschnitten');
     expect(grundlageKlartext('zwischenablesung')).toBe('Zwischenablesung zum Einzug');
+  });
+});
+
+// ── Stützpunktverfahren ────────────────────────────────────────────────────
+
+describe('Stützpunktverfahren', () => {
+  /* Die echten Ablesereihen aus den Fiehn-Monatsberichten. Sie sind der Grund
+     für die Nachschärfung: Ab Mai wird gemessen, aufzuteilen bleibt nur die
+     Lücke davor. Die Ganzjahresaufteilung verschenkte diese Messung. */
+
+  function reihe(meterId: number, werte: [string, number][]): MeterReadingRow[] {
+    return werte.map(([tag, wert], i) => ({
+      id: i + 1, meter_id: meterId, value: wert, unit: 'kWh',
+      reading_type: 'interim', read_at: `${tag}T12:00:00Z`, is_estimated: false,
+    }) as MeterReadingRow);
+  }
+
+  it('hängt den hinterlegten Anfangswert als ersten Stützpunkt an', () => {
+    const r = reihe(1, [['2025-05-14', 4.17]]);
+    const ohne = stuetzpunkteVon(1, r, VON, BIS);
+    const mit = stuetzpunkteVon(1, r, VON, BIS, 0);
+    expect(ohne).toHaveLength(1);
+    expect(mit).toHaveLength(2);
+    expect(mit[0]).toEqual({ tag: VON, wert: 0 });
+  });
+
+  it('misst zwischen zwei Ablesungen und teilt nur den Schnitt', () => {
+    // 100 Einheiten über den Januar; die halbe Zeit ergibt die halbe Menge.
+    const punkte = [{ tag: '2025-01-01', wert: 0 }, { tag: '2025-01-31', wert: 100 }];
+    expect(verbrauchImAbschnitt(punkte, '2025-01-02', '2025-01-31', 'tage')).toBeCloseTo(100, 6);
+    expect(verbrauchImAbschnitt(punkte, '2025-01-17', '2025-01-31', 'tage')).toBeCloseTo(50, 6);
+  });
+
+  it('wertet einen Zählerrücksetzer als null statt negativ', () => {
+    const punkte = [{ tag: '2025-01-01', wert: 500 }, { tag: '2025-06-30', wert: 0 },
+      { tag: '2025-12-31', wert: 200 }];
+    const v = verbrauchImAbschnitt(punkte, '2025-01-02', BIS, 'tage');
+    expect(v).toBeCloseTo(200, 6);
+  });
+
+  it('MG24 W3 Kaltwasser: 96,9 Prozent statt 67,1 nach Zeitanteil', () => {
+    /* Der Zähler stand am 14.05. auf 4,17 m³ und bewegte sich bis Ende Juni
+       nicht — vor dem Einzug am 01.05. lief praktisch nichts. Der reine
+       Zeitanteil hätte dem Mieter ein Drittel seines gemessenen Verbrauchs
+       abgenommen. */
+    const r = reihe(13, [
+      ['2025-05-14', 4.17], ['2025-06-23', 4.17], ['2025-07-31', 18.17],
+      ['2025-08-31', 40.95], ['2025-09-30', 62.42], ['2025-10-31', 82.69],
+      ['2025-11-30', 101.28], ['2025-12-30', 121.32],
+    ]);
+    const punkte = stuetzpunkteVon(13, r, VON, BIS, 0);
+    const a = anteilAusStuetzpunkten([punkte], '2025-05-01', BIS, VON, BIS, 'tage')!;
+    expect(a.anteil).toBeCloseTo(0.969, 3);
+    expect(a.stuetzpunkt).toBe('2025-05-14');
+    // Fast alles ist gemessen — die geteilte Lücke ist verschwindend klein.
+    expect(a.lueckenAnteil).toBeLessThan(0.01);
+
+    const nurZeit = nutzerAnteilZeit({
+      lease: vertrag('2025-05-01'), periodStart: VON, periodEnd: BIS })!;
+    expect(nurZeit.anteil).toBeCloseTo(0.671, 3);
+  });
+
+  it('MG24 W2 Wärme: 49,8 Prozent statt 55 nach Ganzjahres-Gradtagen', () => {
+    /* Beide Wärmemengenzähler stehen am 01.01. auf null und haben ihre erste
+       echte Ablesung am 31.05. Ab da ist gemessen; geteilt wird nur Januar
+       bis Mai. */
+    const no = stuetzpunkteVon(1, reihe(1, [
+      ['2025-01-01', 0], ['2025-05-31', 7470], ['2025-08-31', 7589],
+      ['2025-09-30', 7877], ['2025-10-31', 8489], ['2025-11-30', 9318],
+      ['2025-12-31', 10414],
+    ]), VON, BIS);
+    const sw = stuetzpunkteVon(2, reihe(2, [
+      ['2025-01-01', 0], ['2025-05-31', 3924], ['2025-06-25', 4006],
+      ['2025-07-31', 4103], ['2025-08-31', 4310], ['2025-09-30', 4775],
+      ['2025-10-31', 5567], ['2025-11-30', 6473], ['2025-12-31', 7462],
+    ]), VON, BIS);
+
+    const a = anteilAusStuetzpunkten([no, sw], '2025-04-01', BIS, VON, BIS, 'gradtage')!;
+    expect(a.anteil).toBeCloseTo(0.498, 3);
+    expect(a.stuetzpunkt).toBe('2025-05-31');
+
+    // Ohne Stützpunkte wären es 55 Prozent — der Unterschied ist der Auftrag.
+    const ganzjahr = nutzerAnteilWaerme({
+      lease: vertrag('2025-04-01'), periodStart: VON, periodEnd: BIS })!;
+    expect(ganzjahr.anteil).toBeCloseTo(0.55, 3);
+    expect(a.anteil).toBeLessThan(ganzjahr.anteil);
+  });
+
+  it('wirkt symmetrisch beim Auszug', () => {
+    /* Auszug zum 30.06.: Gemessen bis zur Ablesung am 31.05., danach nur die
+       Lücke bis zur nächsten Ablesung anteilig. */
+    const punkte = stuetzpunkteVon(1, reihe(1, [
+      ['2025-01-01', 0], ['2025-05-31', 500], ['2025-12-31', 1000],
+    ]), VON, BIS);
+    const a = anteilAusStuetzpunkten([punkte], VON, '2025-06-30', VON, BIS, 'tage')!;
+    // 500 gemessen bis 31.05., dazu 30 von 214 Tagen der Lücke Juni–Dezember.
+    expect(a.anteil).toBeGreaterThan(0.5);
+    expect(a.anteil).toBeLessThan(0.58);
+  });
+
+  it('gibt null, wenn es nur einen Stützpunkt gibt', () => {
+    const punkte = [{ tag: '2025-05-14', wert: 4.17 }];
+    expect(anteilAusStuetzpunkten([punkte], '2025-05-01', BIS, VON, BIS, 'tage')).toBeNull();
+  });
+
+  it('gibt null bei Zählerstillstand im ganzen Zeitraum', () => {
+    const punkte = [{ tag: VON, wert: 5 }, { tag: BIS, wert: 5 }];
+    expect(anteilAusStuetzpunkten([punkte], '2025-05-01', BIS, VON, BIS, 'tage')).toBeNull();
+  });
+
+  it('nennt die Stützpunkte als Grundlage, wenn Ablesungen vorliegen', () => {
+    const punkte = stuetzpunkteVon(1, reihe(1, [
+      ['2025-01-01', 0], ['2025-05-31', 500], ['2025-12-31', 1000],
+    ]), VON, BIS);
+    const a = nutzerAnteilWaerme({
+      lease: vertrag('2025-04-01'), periodStart: VON, periodEnd: BIS, punkte: [punkte] })!;
+    expect(a.grundlage).toBe('stuetzpunkte');
+    expect(a.stuetzpunkt).toBe('2025-05-31');
+  });
+
+  it('tagPlus rechnet über Monats- und Jahresgrenzen', () => {
+    expect(tagPlus('2025-01-31', 1)).toBe('2025-02-01');
+    expect(tagPlus('2025-12-31', 1)).toBe('2026-01-01');
+    expect(tagPlus('2024-02-28', 1)).toBe('2024-02-29');
   });
 });

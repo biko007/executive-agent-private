@@ -4,6 +4,57 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Stützpunktverfahren: messen, wo gemessen wurde
+
+Die § 9b-Aufteilung vom selben Tag verteilte den GANZEN Jahresverbrauch nach
+Gradtagszahlen bzw. Zeit — obwohl ab Mai echte Monatsablesungen vorliegen. Das
+verschenkte die Messung. Beim Kaltwasser der Wohnung im 3. OG lief vor dem Einzug
+praktisch nichts (Stand 4,17 m³ am 14.05., bis Ende Juni unverändert); der Zeitanteil
+kürzte den gemessenen Verbrauch trotzdem auf 67 %.
+
+**Neu:** Zwischen zwei Ablesungen ist der Verbrauch bekannt. Fällt der Nutzerwechsel in
+ein solches Intervall, wird nur dieses Intervall geteilt — Wärme nach Gradtagszahlen,
+Warmwasser und Wasser nach Tagen. Alles davor und danach ist gemessen.
+`verbrauchImAbschnitt()` und `anteilAusStuetzpunkten()` in `nk/nutzerzeit.ts`; die Reihe
+beginnt beim Anfangsstand des Zeitraums (notfalls dem beim Einbau hinterlegten Wert) und
+endet beim letzten Stand.
+
+**Rangfolge:** Zwischenablesung (± 3 Tage) → Stützpunktverfahren → Ganzjahres-§ 9b. Die
+dritte Stufe greift nur noch, wenn im ganzen Jahr keine Ablesung vorliegt (bei MG24: die
+abgeschalteten Zähler in W3).
+
+**Wirkung MG24 2025** gegenüber der Ganzjahresaufteilung:
+
+| | Ganzjahres-§ 9b | Stützpunkte | Differenz |
+|---|---:|---:|---:|
+| W1 | 609,03 € | 544,25 € | −64,78 € |
+| W2 | 316,35 € | 237,09 € | −79,26 € |
+| W3 | 864,07 € | 1.385,90 € | +521,83 € |
+| Eigentümer | 4.209,05 € | 3.831,26 € | −377,79 € |
+
+Objektsumme unverändert 13.398,50 €. W3 steigt, weil sein Wasserverbrauch nachweislich
+erst nach dem Einzug anfiel; W1 und W2 sinken, weil ihre Wärmezähler bis zur ersten
+Ablesung im Mai schon weit gelaufen waren.
+
+Zwei Fallen, die beim Bauen auffielen:
+
+- **Der Nenner.** Beginnt die Stützpunktreihe erst bei der ersten echten Ablesung, ist
+  sie kleiner als der Jahresverbrauch — der Nutzer bekäme 100 % ausgewiesen. Deshalb geht
+  der beim Einbau hinterlegte Anfangswert als erster Stützpunkt in die Reihe ein.
+- **Der Intervallbeginn.** Ein Intervall reicht vom Tag NACH der ersten Ablesung bis zur
+  zweiten: Der Verbrauch des Ablesetages steckt bereits im abgelesenen Stand. Ohne diese
+  Verschiebung wird ein Tag doppelt gezählt.
+
+Kennzeichnung mit Stützpunktdatum und Lückenanteil in der Abrechnungsansicht und im
+Casameta-Eingabeblatt — dort über dieselbe Funktion gerechnet, damit Blatt und
+Kontrollrechnung nicht auseinanderlaufen.
+
+Tests: `nutzerzeit.test.ts` auf 38 erweitert, darunter die echten Reihen von W2-Wärme und
+W3-Kaltwasser, der Auszugsfall, der Zählerrücksetzer und der Zählerstillstand. Gesamt
+1098/0/0.
+
+---
+
 ## Stand 2026-10-11 — Nutzeranteil nach § 9b HeizkostenV statt Zeitanteil
 
 **Der fünfte Abrechnungsfehler, und der teuerste.** Beginnt ein Mietverhältnis mitten im

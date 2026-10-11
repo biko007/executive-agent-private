@@ -326,9 +326,18 @@ export async function abrechnungAnsicht(
     const d: any = treffer.details || {};
     // Deutsche Zahlschreibweise — der Satz steht in einer Mieterabrechnung.
     const prozent = (n: number) => String(n).replace('.', ',');
-    return `§ 9b-Aufteilung, Zwischenablesung fehlt: Nutzung ${isoTag(d.von)} bis `
-      + `${isoTag(d.bis)}, Wärme ${prozent(d.anteil_waerme)} % nach Gradtagszahlen, `
-      + `Warmwasser ${prozent(d.anteil_zeit)} % nach Zeitabschnitten.`;
+    const tag = (s: string) => {
+      const d2 = new Date(`${s}T00:00:00Z`);
+      return isNaN(d2.getTime()) ? s : d2.toLocaleDateString('de-DE', { timeZone: 'UTC' });
+    };
+    const kopf = d.stuetzpunkt
+      ? `Keine Ablesung zum Einzug. Gemessen ab ${tag(d.stuetzpunkt)}; nur die Lücke davor `
+        + `ist aufgeteilt (${prozent(d.luecken_anteil)} % des Verbrauchs).`
+      : 'Keine Ablesung zum Einzug. Der ganze Zeitraum ist nach § 9b Abs. 3 HeizkostenV '
+        + 'aufgeteilt.';
+    return `${kopf} Nutzung ${tag(d.von)} bis ${tag(d.bis)}: Wärme `
+      + `${prozent(d.anteil_waerme)} % (Gradtagszahlen), Warmwasser und Wasser `
+      + `${prozent(d.anteil_zeit)} % (Zeitabschnitte).`;
   }
 
   // ── Einheiten ────────────────────────────────────────────────────────────

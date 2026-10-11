@@ -171,7 +171,12 @@ export type Grundlage =
   /** Aufgeteilt nach Gradtagszahlen (§ 9b Abs. 3, Wärme). */
   | 'gradtagszahlen'
   /** Aufgeteilt nach Zeitabschnitten (§ 9b Abs. 3, Warmwasser und Wasser). */
-  | 'zeitanteil';
+  | 'zeitanteil'
+  /**
+   * Stützpunktverfahren: Zwischen den vorhandenen Ablesungen wird GEMESSEN;
+   * aufgeteilt wird nur die Lücke, in die der Nutzerwechsel fällt.
+   */
+  | 'stuetzpunkte';
 
 export interface NutzerAnteil {
   /** Anteil des Nutzers am Verbrauch des Zeitraums, 0 bis 1. */
@@ -182,6 +187,162 @@ export interface NutzerAnteil {
   bis: string;
   /** Bei `zwischenablesung`: der abgelesene Stand und sein Tag. */
   ablesung?: { tag: string; wert: number };
+  /**
+   * Beim Stützpunktverfahren: der Tag der ersten echten Ablesung nach dem
+   * Einzug und wie viel des Nutzerverbrauchs nur aufgeteilt ist.
+   */
+  stuetzpunkt?: string | null;
+  /** Anteil des aufgeteilten Lückenteils am Nutzerverbrauch, 0 bis 1. */
+  lueckenAnteil?: number;
+}
+
+/** Ein Zählerstand als Stützpunkt: Tag und Wert. */
+export interface Stuetzpunkt { tag: string; wert: number }
+
+/** Wie ein Zeitabschnitt gewichtet wird: nach Gradtagszahlen oder nach Tagen. */
+export type Gewichtung = 'gradtage' | 'tage';
+
+function gewicht(art: Gewichtung, von: string, bis: string): number {
+  return art === 'gradtage' ? gradtagsSumme(von, bis) : tageZwischen(von, bis);
+}
+
+/**
+ * Die Stützpunkte eines Zählers im Zeitraum: Ablesungen, chronologisch,
+ * auf den Zeitraum beschnitten und je Tag nur einmal.
+ *
+ * Der Anfangsstand (letzte Ablesung am oder vor dem Periodenbeginn) wird auf
+ * den Periodenbeginn gesetzt — er ist der Startpunkt der Rechnung, gleich an
+ * welchem Tag er abgelesen wurde.
+ */
+export function stuetzpunkteVon(
+  meterId: number, readings: MeterReadingRow[], periodStart: string, periodEnd: string,
+  anfangswert?: number | null,
+): Stuetzpunkt[] {
+  const eigene = readings
+    .filter(r => r.meter_id === meterId)
+    .map(r => ({ tag: isoTag(r.read_at as any), wert: parseFloat(String(r.value)) }))
+    .filter(r => isFinite(r.wert))
+    .sort((a, b) => a.tag.localeCompare(b.tag));
+
+  const vorher = eigene.filter(r => r.tag <= periodStart).pop();
+  const drin = eigene.filter(r => r.tag > periodStart && r.tag <= periodEnd);
+
+  const punkte: Stuetzpunkt[] = [];
+  /* Ohne Ablesung zum Periodenbeginn zählt der beim Einbau hinterlegte
+     Anfangswert als erster Stützpunkt. Ohne ihn begänne die Reihe erst bei
+     der ersten echten Ablesung — der Nenner wäre dann kleiner als der
+     Jahresverbrauch, und der Nutzer bekäme einen Anteil von 100 Prozent
+     ausgewiesen, obwohl er erst später eingezogen ist. */
+  if (vorher) punkte.push({ tag: periodStart, wert: vorher.wert });
+  else if (anfangswert !== null && anfangswert !== undefined && isFinite(anfangswert)) {
+    punkte.push({ tag: periodStart, wert: anfangswert });
+  }
+  for (const r of drin) {
+    // Mehrere Ablesungen am selben Tag: die letzte gewinnt.
+    if (punkte.length > 0 && punkte[punkte.length - 1].tag === r.tag) punkte.pop();
+    punkte.push(r);
+  }
+  return punkte;
+}
+
+/**
+ * Verbrauch eines Zählers innerhalb eines Abschnitts — gemessen, wo gemessen
+ * wurde, und nur innerhalb einer Lücke gewichtet aufgeteilt.
+ *
+ * DAS IST DER KERN DER NACHSCHÄRFUNG (11.10.2026). Bis dahin wurde der GANZE
+ * Jahresverbrauch nach Gradtagszahlen bzw. Zeit aufgeteilt, obwohl ab Mai
+ * echte Monatsablesungen vorliegen. Das verschenkte die Messung: Beim
+ * Kaltwasser der Wohnung im 3. OG lief vor dem Einzug praktisch nichts, der
+ * Zeitanteil kürzte den gemessenen Verbrauch trotzdem um ein Drittel.
+ *
+ * Richtig ist: Zwischen zwei Ablesungen ist der Verbrauch bekannt. Fällt der
+ * Nutzerwechsel in ein solches Intervall, wird NUR dieses Intervall geteilt —
+ * bei Wärme nach Gradtagszahlen, bei Wasser und Warmwasser nach Tagen. Alles
+ * davor und danach ist gemessen.
+ *
+ * Ein Zählerwechsel oder Rücksetzer erzeugt eine negative Differenz; sie wird
+ * als null gewertet, statt den Verbrauch kleinzurechnen.
+ */
+export function verbrauchImAbschnitt(
+  punkte: Stuetzpunkt[], von: string, bis: string, art: Gewichtung,
+): number {
+  if (punkte.length < 2 || von > bis) return 0;
+  let summe = 0;
+  for (let i = 1; i < punkte.length; i++) {
+    const a = punkte[i - 1];
+    const b = punkte[i];
+    const delta = b.wert - a.wert;
+    if (delta <= 0) continue;
+
+    /* Das Intervall reicht von a.tag (ausschließlich) bis b.tag
+       (einschließlich): Der Verbrauch des Tages a ist bereits im Stand a
+       enthalten. Deshalb beginnt die Gewichtung am Folgetag von a. */
+    const intervallVon = tagPlus(a.tag, 1);
+    const intervallBis = b.tag;
+    if (intervallVon > intervallBis) continue;
+
+    const schnittVon = intervallVon > von ? intervallVon : von;
+    const schnittBis = intervallBis < bis ? intervallBis : bis;
+    if (schnittVon > schnittBis) continue;
+
+    const ganz = gewicht(art, intervallVon, intervallBis);
+    const teil = gewicht(art, schnittVon, schnittBis);
+    summe += ganz > 0 ? delta * (teil / ganz) : 0;
+  }
+  return summe;
+}
+
+/** Einen ISO-Tag um n Tage verschieben. */
+export function tagPlus(tag: string, n: number): string {
+  const d = new Date(`${tag}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Anteil des Nutzers nach dem Stützpunktverfahren.
+ *
+ * `null`, wenn es keine zwei Stützpunkte gibt — dann bleibt nur die
+ * Ganzjahresaufteilung.
+ */
+export function anteilAusStuetzpunkten(
+  serien: Stuetzpunkt[][], von: string, bis: string,
+  periodStart: string, periodEnd: string, art: Gewichtung,
+): { anteil: number; stuetzpunkt: string | null; lueckenAnteil: number } | null {
+  /* Mehrere Zähler je Wohnung werden nicht zu einer Reihe verschmolzen — ihre
+     Ablesetage fallen auseinander. Gerechnet wird je Zähler, summiert werden
+     die absoluten Mengen. Das Ergebnis ist dasselbe, der Weg dorthin ehrlicher. */
+  const brauchbar = serien.filter(s => s.length >= 2);
+  if (brauchbar.length === 0) return null;
+
+  let gesamt = 0; let nutzer = 0; let luecke = 0;
+  let stuetzpunkt: string | null = null;
+
+  for (const punkte of brauchbar) {
+    gesamt += verbrauchImAbschnitt(punkte, tagPlus(periodStart, 1), periodEnd, art);
+    nutzer += verbrauchImAbschnitt(punkte, von, bis, art);
+
+    /* Der Stützpunkt, an dem die Messung für den Nutzer beginnt: die erste
+       Ablesung am oder nach seinem ersten Tag. Liegt sie genau auf dem ersten
+       Tag, ist gar nichts aufzuteilen. */
+    const ersterDanach = punkte.find(p => p.tag >= von) || null;
+    if (ersterDanach && ersterDanach.tag > von) {
+      luecke += verbrauchImAbschnitt(punkte, von, ersterDanach.tag, art);
+      // Für die Kennzeichnung der späteste der Stützpunkte: Bis dahin ist geteilt.
+      if (!stuetzpunkt || ersterDanach.tag > stuetzpunkt) stuetzpunkt = ersterDanach.tag;
+    }
+  }
+
+  if (gesamt <= 0) return null;
+
+  return {
+    anteil: Math.min(1, nutzer / gesamt),
+    stuetzpunkt,
+    /* Wie viel des Nutzerverbrauchs stammt aus der geteilten Lücke? Diese Zahl
+       steht in der Kennzeichnung — sie sagt, wie weit die Abrechnung auf einer
+       Aufteilung und nicht auf einer Messung beruht. */
+    lueckenAnteil: nutzer > 0 ? Math.min(1, luecke / nutzer) : 0,
+  };
 }
 
 /**
@@ -200,6 +361,8 @@ export function nutzerAnteilWaerme(opts: {
   einzugsstand?: { tag: string; wert: number } | null;
   standAnfang?: number | null;
   standEnde?: number | null;
+  /** Die Ablesereihen der Zähler dieser Wohnung, für das Stützpunktverfahren. */
+  punkte?: Stuetzpunkt[][];
 }): NutzerAnteil | null {
   const abschnitt = nutzungsAbschnitt(opts.lease, opts.periodStart, opts.periodEnd);
   if (!abschnitt) return null;
@@ -211,6 +374,17 @@ export function nutzerAnteilWaerme(opts: {
 
   const gemessen = anteilAusAblesung(opts);
   if (gemessen) return { ...gemessen, ...abschnitt };
+
+  /* Stützpunktverfahren vor der Ganzjahresaufteilung: Liegen Ablesungen im
+     Jahr, ist zwischen ihnen gemessen — aufzuteilen bleibt nur die Lücke,
+     in die der Wechsel fällt. */
+  const ueberStuetzpunkte = opts.punkte
+    ? anteilAusStuetzpunkten(
+      opts.punkte, abschnitt.von, abschnitt.bis, opts.periodStart, opts.periodEnd, 'gradtage')
+    : null;
+  if (ueberStuetzpunkte) {
+    return { ...ueberStuetzpunkte, grundlage: 'stuetzpunkte', ...abschnitt };
+  }
 
   const nenner = gradtagsSumme(opts.periodStart, opts.periodEnd);
   const zaehler = gradtagsSumme(abschnitt.von, abschnitt.bis);
@@ -232,6 +406,8 @@ export function nutzerAnteilZeit(opts: {
   einzugsstand?: { tag: string; wert: number } | null;
   standAnfang?: number | null;
   standEnde?: number | null;
+  /** Die Ablesereihen der Zähler dieser Wohnung, für das Stützpunktverfahren. */
+  punkte?: Stuetzpunkt[][];
 }): NutzerAnteil | null {
   const abschnitt = nutzungsAbschnitt(opts.lease, opts.periodStart, opts.periodEnd);
   if (!abschnitt) return null;
@@ -243,6 +419,14 @@ export function nutzerAnteilZeit(opts: {
 
   const gemessen = anteilAusAblesung(opts);
   if (gemessen) return { ...gemessen, ...abschnitt };
+
+  const ueberStuetzpunkte = opts.punkte
+    ? anteilAusStuetzpunkten(
+      opts.punkte, abschnitt.von, abschnitt.bis, opts.periodStart, opts.periodEnd, 'tage')
+    : null;
+  if (ueberStuetzpunkte) {
+    return { ...ueberStuetzpunkte, grundlage: 'stuetzpunkte', ...abschnitt };
+  }
 
   const nenner = tageZwischen(opts.periodStart, opts.periodEnd);
   const zaehler = tageZwischen(abschnitt.von, abschnitt.bis);
@@ -290,5 +474,6 @@ export function grundlageKlartext(g: Grundlage): string {
     case 'zwischenablesung': return 'Zwischenablesung zum Einzug';
     case 'gradtagszahlen': return '§ 9b-Aufteilung nach Gradtagszahlen, Zwischenablesung fehlt';
     case 'zeitanteil': return '§ 9b-Aufteilung nach Zeitabschnitten, Zwischenablesung fehlt';
+    case 'stuetzpunkte': return 'gemessen zwischen den Ablesungen, nur die Lücke aufgeteilt';
   }
 }

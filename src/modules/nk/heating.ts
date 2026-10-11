@@ -10,7 +10,7 @@ import type {
 import { roundKaufmaennisch } from './engine.js';
 import {
   nutzerAnteilWaerme, nutzerAnteilZeit, findeEinzugsstand, nutzungsAbschnitt,
-  tageZwischen, isoTag, grundlageKlartext,
+  tageZwischen, isoTag, grundlageKlartext, stuetzpunkteVon,
   type Grundlage,
 } from './nutzerzeit.js';
 
@@ -770,6 +770,11 @@ function staendeDerWohnung(
     standAnfang: anfang,
     standEnde: ende,
     einzugsstand: alleHabenEinzug ? { tag: einzugsTagGenutzt, wert: einzugSumme } : null,
+    // Je Zähler eine Ablesereihe — Grundlage des Stützpunktverfahrens.
+    punkte: zaehler.map(m => stuetzpunkteVon(
+      m.id, readings, periodStart, periodEnd,
+      m.initial_reading !== null && m.initial_reading !== undefined
+        ? parseFloat(String(m.initial_reading)) : null)),
   };
 }
 
@@ -804,21 +809,33 @@ function nutzerFaktoren(
   const reinZeit = tageZwischen(abschnitt.von, abschnitt.bis)
     / tageZwischen(periodStart, periodEnd);
 
-  if (w.grundlage === 'gradtagszahlen' || z.grundlage === 'zeitanteil') {
+  const aufgeteilt = ['gradtagszahlen', 'zeitanteil', 'stuetzpunkte'];
+  if (aufgeteilt.includes(w.grundlage) || aufgeteilt.includes(z.grundlage)) {
+    const stuetz = w.stuetzpunkt || z.stuetzpunkt || null;
+    const luecke = Math.max(w.lueckenAnteil ?? 0, z.lueckenAnteil ?? 0);
     warnings.push({
       code: 'NUTZERWECHSEL_9B_AUFTEILUNG',
       severity: 'warning',
       message: `Einheit ${unit.code}: Das Mietverhältnis beginnt oder endet im `
-        + `Abrechnungszeitraum (${abschnitt.von} bis ${abschnitt.bis}), eine Zwischenablesung `
-        + 'zum Nutzerwechsel liegt nicht vor. Aufgeteilt wird nach § 9b Abs. 3 HeizkostenV: '
-        + `Wärme nach Gradtagszahlen (${(w.anteil * 100).toFixed(1)} %), Warmwasser `
-        + `zeitanteilig (${(z.anteil * 100).toFixed(1)} %). Der Rest trägt der Eigentümer.`,
+        + `Abrechnungszeitraum (${abschnitt.von} bis ${abschnitt.bis}), eine Ablesung zum `
+        + 'Nutzerwechsel liegt nicht vor. '
+        + (w.grundlage === 'stuetzpunkte' || z.grundlage === 'stuetzpunkte'
+          ? `Gerechnet wird ab der ersten Ablesung danach (${stuetz}) mit Messwerten; `
+            + `aufgeteilt ist nur die Lücke davor — ${(luecke * 100).toFixed(1)} % des `
+            + 'Nutzerverbrauchs. Wärme nach Gradtagszahlen, Warmwasser nach Tagen '
+            + '(§ 9b Abs. 3 HeizkostenV).'
+          : 'Aufgeteilt wird der ganze Zeitraum nach § 9b Abs. 3 HeizkostenV: Wärme nach '
+            + 'Gradtagszahlen, Warmwasser zeitanteilig.')
+        + ` Anteile: Wärme ${(w.anteil * 100).toFixed(1)} %, Warmwasser `
+        + `${(z.anteil * 100).toFixed(1)} %. Der Rest trägt der Eigentümer.`,
       details: {
         unit_code: unit.code,
         von: abschnitt.von, bis: abschnitt.bis,
         anteil_waerme: Math.round(w.anteil * 10000) / 100,
         anteil_zeit: Math.round(z.anteil * 10000) / 100,
         grundlage_waerme: grundlageKlartext(w.grundlage),
+        stuetzpunkt: stuetz,
+        luecken_anteil: Math.round(luecke * 10000) / 100,
       },
     });
   }
