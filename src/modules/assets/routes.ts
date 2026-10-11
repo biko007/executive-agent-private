@@ -19,6 +19,7 @@ import {
 import { handleObligationsAlert } from '../nk/alerts.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 import { erzeugeEingabeblatt } from './casameta.js';
+import { abrechnungAnsicht } from './abrechnung-ansicht.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -220,6 +221,7 @@ export function registerAssetsHttpRoutes(api: any) {
             if (sub === 'belege') { await handleBelege(req, res, propertyId); return; }
             if (sub === 'mieterstrom') { await handleMieterstrom(req, res, propertyId); return; }
             if (sub === 'abrechnungsbereitschaft') { await handleBereitschaft(req, res, propertyId, url); return; }
+            if (sub === 'abrechnung-ansicht') { await handleAbrechnungAnsicht(req, res, propertyId, url); return; }
             if (sub === 'casameta-eingabeblatt') { await handleEingabeblatt(req, res, propertyId, url); return; }
             if (sub === 'expense-bookings') { await handleExpenseBookings(req, res, propertyId, segments[3]); return; }
             if (sub === 'allocation-rules') { await handleAllocationRules(req, res, propertyId, segments[3]); return; }
@@ -1272,6 +1274,36 @@ async function handleBereitschaft(
       kostenbuchungen_im_zeitraum: belegStand[0]?.n ?? 0,
     },
   });
+}
+
+/**
+ * Darstellungsdaten einer Abrechnung — je Einheit Verbrauch, Kostenarten,
+ * Vorauszahlung, Saldo und Belege.
+ *
+ * Es ist eine VORSCHAU: Es entsteht kein Dokument, es wird nichts versendet
+ * und nichts gespeichert. Die Betraege kommen unveraendert aus der Engine.
+ */
+async function handleAbrechnungAnsicht(
+  req: IncomingMessage, res: ServerResponse, propertyCode: string, url: URL,
+) {
+  if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return; }
+  const jahr = parseInt(url.searchParams.get('jahr') || String(new Date().getFullYear() - 1), 10);
+  if (!Number.isInteger(jahr) || jahr < 2000 || jahr > 2100) {
+    err(res, 400, 'jahr fehlt oder ist ungueltig'); return;
+  }
+  /* Zwischenabrechnung: `bis` genügt, `von` ist dann der Jahresbeginn. Die
+     fachliche Prüfung des Zeitraums macht die Engine (pruefeZeitraum) — eine
+     zweite Prüfung hier würde mit der Zeit von jener abweichen. */
+  const bisParam = url.searchParams.get('bis');
+  const vonParam = url.searchParams.get('von');
+  const zeitraum = (bisParam || vonParam)
+    ? { von: vonParam || `${jahr}-01-01`, bis: bisParam || `${jahr}-12-31` }
+    : undefined;
+  try {
+    json(res, 200, await abrechnungAnsicht(propertyCode, jahr, zeitraum));
+  } catch (e: any) {
+    err(res, e.status === 400 ? 400 : 500, e.message);
+  }
 }
 
 /** Erzeugt das Casameta-Eingabeblatt und liefert die Kennzahlen zurueck. */

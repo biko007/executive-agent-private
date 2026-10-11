@@ -21,14 +21,31 @@ export { ENGINE_VERSION } from './types.js';
 // ── Main entry point ─────────────────────────────────────────────────────────
 
 /**
+ * Ein vom Kalenderjahr abweichender Abrechnungszeitraum (Zwischenabrechnung).
+ *
+ * Beide Daten als ISO-Tag `YYYY-MM-DD` und innerhalb desselben Jahres: Die
+ * Heizkostenkonfiguration, der Vorprüfungslauf und die Belegauswahl hängen am
+ * Jahr. Eine Zwischenabrechnung über einen Jahreswechsel hinweg wäre eine
+ * andere Aufgabe und wird hier bewusst abgelehnt statt halb richtig gerechnet.
+ */
+export interface Zeitraum {
+  von: string;
+  bis: string;
+}
+
+/**
  * Compute NK for a property+year. Returns full engine output or throws on blockers.
  * @param isFinalizeMode — true during finalize (stricter blocks, e.g. CO2)
+ * @param zeitraum — abweichender Zeitraum innerhalb des Jahres (Zwischenabrechnung,
+ *   nur Vorschau). Ohne Angabe wird das volle Kalenderjahr gerechnet.
  */
 export async function computeNk(
   propertyId: number,
   year: number,
   isFinalizeMode = false,
+  zeitraum?: Zeitraum,
 ): Promise<EngineOutput> {
+  if (zeitraum) pruefeZeitraum(year, zeitraum, isFinalizeMode);
   // 1. Pre-check
   const precheck = await nkPreCheck(propertyId, year);
   const blockers = precheck.findings.filter(f => f.severity === 'blocker');
@@ -102,12 +119,14 @@ export async function computeNk(
   }
 
   // 2. Load engine input
-  const input = await loadEngineInput(propertyId, year);
+  const input = await loadEngineInput(propertyId, year, zeitraum);
   const inputHash = canonicalHash(input);
 
-  const periodStart = `${year}-01-01`;
-  const periodEnd = `${year}-12-31`;
-  const totalDays = daysInYear(year);
+  const periodStart = zeitraum ? zeitraum.von : `${year}-01-01`;
+  const periodEnd = zeitraum ? zeitraum.bis : `${year}-12-31`;
+  const totalDays = zeitraum
+    ? daysBetween(new Date(periodStart), new Date(periodEnd)) + 1
+    : daysInYear(year);
 
   // 3. Separate leases by billing mode
   const excluded_leases: ExcludedLease[] = [];
@@ -149,6 +168,91 @@ export async function computeNk(
   }
 
   const periodizedBookings = periodizeBookings(input.expense_bookings, periodStart, periodEnd);
+
+  /* Zwischenabrechnung: Kennzeichnung der Schätzanteile.
+
+     Eine Abrechnung zu einem Stichtag mitten im Jahr enthält zwangsläufig
+     Posten, die nur anteilig zählen — die Gebäudeversicherung läuft über das
+     ganze Jahr, abgerechnet wird aber nur bis zum Stichtag. Welcher Teil das
+     ist, rechnet `periodizeBookings` taggenau. Taggenau heißt NICHT
+     verbrauchsgerecht: Heizkosten fallen im Januar anders an als im Juli. Der
+     Hinweis sagt das ausdrücklich, damit niemand die Zahl für eine
+     Schlussabrechnung hält. */
+  if (zeitraum) {
+    warnings.push({
+      code: 'INTERIM_BILLING_PERIOD',
+      severity: 'warning',
+      message: `Zwischenabrechnung ${periodStart} bis ${periodEnd} (${totalDays} von `
+        + `${daysInYear(year)} Tagen). Keine Schlussabrechnung: Es fehlen Kosten, die erst `
+        + 'später im Jahr anfallen oder abgerechnet werden.',
+      details: { period_start: periodStart, period_end: periodEnd, days: totalDays },
+    });
+
+    /* Zweite Quelle von Schätzung: die Zählerstände. Zum Stichtag ist meist
+       nicht abgelesen worden. `calculateConsumption` nimmt dann den letzten
+       Stand DAVOR — der Verbrauch der Wochen dazwischen fehlt also schlicht,
+       und zwar stillschweigend. Hier wird er benannt. Hochgerechnet wird
+       bewusst nicht: Der Auftrag lautet, aus VORHANDENEN Ablesungen zu
+       rechnen, und eine erfundene Zahl wäre in einer Mieterauskunft
+       schlechter als eine benannte Lücke. */
+    const veraltet: { zaehler: string; letzte: string }[] = [];
+    const ohneStand: string[] = [];
+    for (const m of input.meters) {
+      const staende = input.readings
+        .filter(r => r.meter_id === m.id && String(r.read_at).slice(0, 10) <= periodEnd)
+        .map(r => String(r.read_at).slice(0, 10))
+        .sort();
+      const letzte = staende[staende.length - 1];
+      /* Gar kein Stand bis zum Stichtag ist der gefährlichere Fall: Die
+         Berechnung liefert dann Verbrauch 0, und null sieht aus wie eine
+         Messung. Deshalb ein eigener Hinweis statt stillschweigend nichts. */
+      if (!letzte) { ohneStand.push(m.meter_number); continue; }
+      const abstandTage = daysBetween(new Date(letzte), new Date(periodEnd));
+      if (abstandTage > 31) veraltet.push({ zaehler: m.meter_number, letzte });
+    }
+    if (ohneStand.length > 0) {
+      warnings.push({
+        code: 'INTERIM_READING_MISSING',
+        severity: 'warning',
+        message: `${ohneStand.length} Zähler ${ohneStand.length === 1 ? 'hat' : 'haben'} bis `
+          + `zum Stichtag ${periodEnd} überhaupt keine Ablesung. Für sie wird Verbrauch 0 `
+          + 'gerechnet — das ist keine Messung, sondern eine Lücke.',
+        details: { meters: ohneStand.join(', ') },
+      });
+    }
+    if (veraltet.length > 0) {
+      warnings.push({
+        code: 'INTERIM_READING_STALE',
+        severity: 'warning',
+        message: `${veraltet.length} Zähler ${veraltet.length === 1 ? 'hat' : 'haben'} zum `
+          + `Stichtag ${periodEnd} keine aktuelle Ablesung. Gerechnet wird mit dem letzten `
+          + 'vorhandenen Stand; der Verbrauch der Zeit danach fehlt in dieser Auskunft.',
+        details: { meters: veraltet.map(v => `${v.zaehler} (zuletzt ${v.letzte})`).join(', ') },
+      });
+    }
+
+    const anteilig = periodizedBookings.filter(b => b.overlap_fraction < 0.9995 && b.overlap_fraction > 0);
+    if (anteilig.length > 0) {
+      const summeVoll = anteilig.reduce((n, b) => n + (b.amount_gross as number), 0);
+      const summeAnteil = anteilig.reduce((n, b) => n + b.periodized_amount, 0);
+      warnings.push({
+        code: 'INTERIM_COST_PRORATED',
+        severity: 'warning',
+        message: anteilig.length === 1
+          ? `Eine Rechnung fällt nur anteilig in den Zeitraum: ${summeAnteil.toFixed(2)} € `
+            + `von ${summeVoll.toFixed(2)} €. Der Anteil ist taggenau gerechnet, nicht nach `
+            + 'tatsächlichem Verbrauch im Zeitraum.'
+          : `${anteilig.length} Rechnungen fallen nur anteilig in den Zeitraum: `
+            + `${summeAnteil.toFixed(2)} € von ${summeVoll.toFixed(2)} €. Der Anteil ist `
+            + 'taggenau gerechnet, nicht nach tatsächlichem Verbrauch im Zeitraum.',
+        details: {
+          bookings: anteilig.length,
+          amount_prorated: Number(summeAnteil.toFixed(2)),
+          amount_full: Number(summeVoll.toFixed(2)),
+        },
+      });
+    }
+  }
 
   // 5. Allocate costs per category → items per lease
   const statementMap = new Map<number, { items: ItemResult[]; days: number }>();
@@ -372,9 +476,13 @@ export async function computeNk(
 
 // ── Load Engine Input ────────────────────────────────────────────────────────
 
-export async function loadEngineInput(propertyId: number, year: number): Promise<EngineInput> {
-  const periodStart = `${year}-01-01`;
-  const periodEnd = `${year}-12-31`;
+export async function loadEngineInput(
+  propertyId: number,
+  year: number,
+  zeitraum?: Zeitraum,
+): Promise<EngineInput> {
+  const periodStart = zeitraum ? zeitraum.von : `${year}-01-01`;
+  const periodEnd = zeitraum ? zeitraum.bis : `${year}-12-31`;
 
   const [
     propResult, unitsResult, leasesResult, rulesResult, sharesResult,
@@ -1234,6 +1342,43 @@ export function buildStatementRecipients(
 function daysBetween(d1: Date, d2: Date): number {
   const ms = d2.getTime() - d1.getTime();
   return Math.floor(ms / 86_400_000);
+}
+
+/**
+ * Prüft einen abweichenden Abrechnungszeitraum, bevor gerechnet wird.
+ *
+ * Fail-closed: Ein unsinniger Zeitraum ergibt sonst eine Abrechnung, die
+ * plausibel aussieht und falsch ist. Eine Finalisierung ist damit gar nicht
+ * erst zugelassen — eine Zwischenabrechnung ist eine Auskunft, kein Dokument.
+ */
+export function pruefeZeitraum(year: number, zeitraum: Zeitraum, isFinalizeMode: boolean): void {
+  if (isFinalizeMode) {
+    const e: any = new Error('Eine Zwischenabrechnung kann nicht finalisiert werden');
+    e.status = 400;
+    throw e;
+  }
+  /* Rückprobe statt bloßer Formatprüfung: `new Date('2025-02-30')` ist in
+     JavaScript gültig und ergibt den 2. März. Ohne die Rückprobe liefe ein
+     solcher Tag bis in die Datenbankabfrage, und Postgres bräche dort mit
+     einem Serverfehler ab statt mit einer verständlichen Meldung. */
+  const istTag = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s)
+    && !isNaN(new Date(`${s}T00:00:00Z`).getTime())
+    && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
+  if (!istTag(zeitraum.von) || !istTag(zeitraum.bis)) {
+    const e: any = new Error('Zeitraum braucht zwei Datumsangaben im Format JJJJ-MM-TT');
+    e.status = 400;
+    throw e;
+  }
+  if (zeitraum.von > zeitraum.bis) {
+    const e: any = new Error('Der Beginn des Zeitraums liegt nach seinem Ende');
+    e.status = 400;
+    throw e;
+  }
+  if (!zeitraum.von.startsWith(`${year}-`) || !zeitraum.bis.startsWith(`${year}-`)) {
+    const e: any = new Error(`Der Zeitraum muss vollständig im Jahr ${year} liegen`);
+    e.status = 400;
+    throw e;
+  }
 }
 
 function daysInYear(year: number): number {

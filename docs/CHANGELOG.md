@@ -4,6 +4,58 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Abrechnung je Wohnung und Zwischenabrechnung (Teil C und D)
+
+**Teil C — Darstellung je Wohnung.** Neuer Unterbereich „Abrechnung je Wohnung"
+im Immobilien-Tab, gespeist aus `GET /api/assets/properties/:code/abrechnung-ansicht`.
+Je Wohnung: Zählerstände Anfang und Ende mit Verbrauch (Wärme, Warmwasser,
+Kaltwasser), Kostenarten mit ihrem Verteilschlüssel im Klartext, Vorauszahlung,
+Saldo und die verlinkten Belege. Dazu der Anteil des Eigentümers und die
+Befunde der Rechnung.
+
+Drei Entscheidungen prägen die Ansicht:
+
+- **Zählerstände statt Brüche.** „26,96 von 437" sagt einem Mieter nichts, „Ihr
+  Kaltwasserzähler lief von 0 auf 26,96 m³" schon.
+- **Der Verteilschlüssel im Klartext.** Nicht `sqm`, sondern „nach Wohnfläche";
+  nicht `methodA(…30/70)`, sondern „Heizkosten: 30 % nach Wohnfläche, 70 % nach
+  Verbrauch".
+- **Gerechnet wird nicht neu.** Die Beträge kommen unverändert aus der Engine
+  (`computeNk` ohne Finalisierung). Wer in der Darstellung rechnet, bekommt zwei
+  Wahrheiten.
+
+Zwei Lücken, die die Ansicht benennt statt zu verdecken: ein Zähler ohne
+Anfangsstand (gerechnet wird mit dem Endstand allein — der Verbrauch ist damit
+eher zu hoch) und Buchungen ohne Belegnachweis. Die Befunde sind nach Prüfcode
+gebündelt; vierzehnmal derselbe Satz untereinander liest niemand.
+
+**Teil D — Zwischenabrechnung zu beliebigem Stichtag.** `computeNk` nimmt
+optional einen Zeitraum innerhalb des Jahres entgegen; alles Weitere rechnet
+unverändert weiter, weil die Engine ohnehin auf `periodStart`/`periodEnd`
+arbeitet. Im Dashboard genügt ein Stichtag im Datumsfeld.
+
+Die Schätzanteile werden ausgewiesen, nicht versteckt:
+
+- `INTERIM_BILLING_PERIOD` — keine Schlussabrechnung; was später im Jahr
+  anfällt, fehlt vollständig.
+- `INTERIM_COST_PRORATED` — welche Rechnungen nur anteilig zählen, mit Betrag.
+  Taggenau ist nicht verbrauchsgerecht: Heizkosten fallen im Januar anders an
+  als im Juli.
+- `INTERIM_READING_STALE` / `INTERIM_READING_MISSING` — Zähler ohne aktuellen
+  bzw. ohne jeden Stand zum Stichtag. Hochgerechnet wird bewusst nicht: Der
+  Auftrag lautet, aus vorhandenen Ablesungen zu rechnen, und eine erfundene
+  Zahl wäre in einer Mieterauskunft schlechter als eine benannte Lücke.
+
+`pruefeZeitraum` ist fail-closed und verweigert insbesondere die Finalisierung:
+Eine Zwischenabrechnung ist eine Auskunft, kein Dokument, aus dem eine Forderung
+folgt. Ebenso abgelehnt werden Zeiträume über den Jahreswechsel (Heizkosten-
+konfiguration, Vorprüfung und Belegauswahl hängen am Jahr) und Scheindaten wie
+`2025-02-30`, die JavaScript stillschweigend auf den 2. März verschieben würde.
+
+Tests: `zwischenabrechnung.test.ts` (17). Gesamt 1030/0/0, Smoke 31/31.
+
+---
+
 ## Stand 2026-10-11 — V041 angewendet, Armierungsbedarf über Tatsachen (Teil A und B)
 
 **V041 angewendet.** Der Verbrauchsanteil bei `heating_split` darf jetzt 0 bis
