@@ -18,6 +18,7 @@ import {
 } from '../nk/routes.js';
 import { handleObligationsAlert } from '../nk/alerts.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
+import { erzeugeEingabeblatt } from './casameta.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -217,6 +218,9 @@ export function registerAssetsHttpRoutes(api: any) {
             if (sub === 'units') { await handlePropertyUnits(req, res, propertyId, segments[3]); return; }
             if (sub === 'leases') { await handlePropertyLeases(req, res, propertyId); return; }
             if (sub === 'belege') { await handleBelege(req, res, propertyId); return; }
+            if (sub === 'mieterstrom') { await handleMieterstrom(req, res, propertyId); return; }
+            if (sub === 'abrechnungsbereitschaft') { await handleBereitschaft(req, res, propertyId, url); return; }
+            if (sub === 'casameta-eingabeblatt') { await handleEingabeblatt(req, res, propertyId, url); return; }
             if (sub === 'expense-bookings') { await handleExpenseBookings(req, res, propertyId, segments[3]); return; }
             if (sub === 'allocation-rules') { await handleAllocationRules(req, res, propertyId, segments[3]); return; }
             if (sub === 'meters') { await handlePropertyMeters(req, res, propertyId); return; }
@@ -1171,6 +1175,120 @@ async function handleBelege(req: IncomingMessage, res: ServerResponse, propertyC
     archiv_vorhanden: existsSync(indexPfad),
     belege: eigene,
   });
+}
+
+/**
+ * Mieterstromdaten eines Objekts aus den Einstellungen.
+ *
+ * Der Mieterstrom wird von energiekonzept getrennt mit den Mietern
+ * abgerechnet; in die Nebenkosten geht nur der Allgemeinstrom. Für die
+ * Objektverwaltung müssen die Zahlen trotzdem greifbar sein. Sie stehen in
+ * `system_settings.mieterstrom` — bewusst als Daten und nicht als Tabelle: Es
+ * sind wenige Werte je Objekt und Jahr aus EINEM Beleg, und jede Tabelle
+ * dafür wäre eine Migration ohne Gegenwert. Kommt eine Kontrollrechnung
+ * hinzu, ist der Zeitpunkt für ein Fachschema da (Vorschlag im Report 3b).
+ */
+async function handleMieterstrom(req: IncomingMessage, res: ServerResponse, propertyCode: string) {
+  if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return; }
+  const { rows } = await dbQuery<{ value: any }>(
+    `SELECT value FROM system_settings WHERE key = 'mieterstrom'`);
+  const alle = rows[0]?.value || {};
+  json(res, 200, { objekt: propertyCode, jahre: alle[propertyCode] || {} });
+}
+
+/**
+ * Abrechnungsbereitschaft eines Objekts für einen Zeitraum.
+ *
+ * Führt drei Dinge zusammen, die der Owner sonst an drei Stellen suchen müsste:
+ *
+ *   1. die technische Abrechnungsreife aus der Vorprüfung (Blocker/Warnungen),
+ *   2. den fachlichen Belegbedarf — ob überhaupt alle Rechnungen vorliegen,
+ *   3. den Datenstand: Wie alt sind Zählerimport, Bankabgleich und Belege?
+ *
+ * Punkt 2 fehlt in der Vorprüfung grundsätzlich: Sie kann prüfen, ob die
+ * erfassten Daten stimmig sind, aber nicht, ob eine Rechnung fehlt, die
+ * niemand erfasst hat. Genau daran scheitert eine Abrechnung in der Praxis.
+ */
+async function handleBereitschaft(
+  req: IncomingMessage, res: ServerResponse, propertyCode: string, url: URL,
+) {
+  if (req.method !== 'GET') { err(res, 405, 'Method not allowed'); return; }
+  const jahr = parseInt(url.searchParams.get('jahr') || String(new Date().getFullYear() - 1), 10);
+  if (!Number.isInteger(jahr) || jahr < 2000 || jahr > 2100) {
+    err(res, 400, 'jahr fehlt oder ist ungueltig'); return;
+  }
+
+  const { rows: objekte } = await dbQuery(
+    'SELECT id FROM properties WHERE code = $1 AND active = true', [propertyCode]);
+  if (objekte.length === 0) { err(res, 404, 'Property not found'); return; }
+  const propId = objekte[0].id;
+
+  const vorpruefung = await nkPreCheck(propId, jahr);
+
+  const { rows: bbRows } = await dbQuery<{ value: any }>(
+    `SELECT value FROM system_settings WHERE key = 'belegbedarf'`);
+  const bedarf: any[] = bbRows[0]?.value?.[propertyCode]?.[String(jahr)] || [];
+  const offeneBelege = bedarf.filter(
+    b => b.status !== 'vorhanden' && b.status !== 'nicht_zutreffend');
+
+  // Datenstand: je jünger, desto verlässlicher ist die Abrechnung.
+  const { rows: zaehlerStand } = await dbQuery<{ letzte: string | null }>(
+    `SELECT max(r.read_at)::text AS letzte
+       FROM meter_readings r JOIN meters m ON m.id = r.meter_id
+       LEFT JOIN units u ON u.id = m.unit_id
+      WHERE m.property_id = $1 OR u.property_id = $1`, [propId]);
+  const { rows: bankStand } = await dbQuery<{ letzte: string | null }>(
+    'SELECT max(booking_date)::text AS letzte FROM banking_transactions');
+  const { rows: belegStand } = await dbQuery<{ letzte: string | null; n: number }>(
+    `SELECT max(invoice_date)::text AS letzte, count(*)::int AS n
+       FROM expense_bookings
+      WHERE property_id = $1 AND archived_at IS NULL
+        AND service_period_start <= $3 AND service_period_end >= $2`,
+    [propId, `${jahr}-01-01`, `${jahr}-12-31`]);
+
+  // Ampel: Rot bei Blockern, Gelb bei fehlenden Belegen oder Warnungen.
+  const blocker = vorpruefung.findings.filter((f: any) => f.severity === 'blocker');
+  const warnungen = vorpruefung.findings.filter((f: any) => f.severity === 'warning');
+  const ampel = blocker.length > 0 ? 'rot'
+    : (offeneBelege.length > 0 || warnungen.length > 0) ? 'gelb' : 'gruen';
+
+  json(res, 200, {
+    objekt: propertyCode,
+    jahr,
+    ampel,
+    bereit: vorpruefung.ready === true,
+    blocker: blocker.map((f: any) => ({ code: f.code, message: f.message })),
+    warnungen: warnungen.map((f: any) => ({ code: f.code, message: f.message })),
+    belegbedarf: bedarf,
+    offene_belege: offeneBelege.length,
+    datenstand: {
+      letzter_zaehlerstand: zaehlerStand[0]?.letzte ?? null,
+      letzter_bankumsatz: bankStand[0]?.letzte ?? null,
+      letzte_rechnung: belegStand[0]?.letzte ?? null,
+      kostenbuchungen_im_zeitraum: belegStand[0]?.n ?? 0,
+    },
+  });
+}
+
+/** Erzeugt das Casameta-Eingabeblatt und liefert die Kennzahlen zurueck. */
+async function handleEingabeblatt(
+  req: IncomingMessage, res: ServerResponse, propertyCode: string, url: URL,
+) {
+  if (req.method !== 'POST') { err(res, 405, 'Method not allowed'); return; }
+  const jahr = parseInt(url.searchParams.get('jahr') || '', 10);
+  if (!Number.isInteger(jahr) || jahr < 2000 || jahr > 2100) {
+    err(res, 400, 'jahr fehlt oder ist ungueltig'); return;
+  }
+  const ergebnis = await erzeugeEingabeblatt(propertyCode, jahr);
+  await audit.log({
+    module: 'assets', action: 'casameta.eingabeblatt',
+    entityType: 'property', entityId: propertyCode,
+    after: {
+      jahr, luecken: ergebnis.luecken.length,
+      summe_umlagefaehig: ergebnis.summe_umlagefaehig, pfad: ergebnis.pfad_md,
+    },
+  });
+  json(res, 200, ergebnis);
 }
 
 async function handleExpenseBookings(

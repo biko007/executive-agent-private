@@ -45,6 +45,27 @@ export function heatingAllocation(
   const consumptionPct = heatingConfig.consumption_share_percent != null
     ? parseFloat(String(heatingConfig.consumption_share_percent)) : 70;
 
+  /* § 7 Abs. 1 HeizkostenV verlangt 50 bis 70 Prozent nach Verbrauch. Bis zum
+     11.10.2026 erzwang die Datenbank diesen Rahmen; der Owner hat ihn für MG24
+     bewusst verlassen (0 Prozent Grundkosten, 100 Prozent Verbrauch) und trägt
+     das Kürzungsrisiko aus § 12 HeizkostenV selbst.
+
+     Eine Sperre, die eine bewusste Entscheidung des Eigentümers blockiert,
+     wäre an dieser Stelle falsch — eine stillschweigende Abweichung aber
+     auch. Deshalb steht die Abweichung ab jetzt als Befund in jeder
+     Abrechnung. */
+  if (consumptionPct < 50 || consumptionPct > 70) {
+    warnings.push({
+      code: 'HEATING_SPLIT_OUTSIDE_HEIZKOSTENV',
+      severity: 'warning',
+      message: `Heizkostenverteilung ${basePct} % Grundkosten / ${consumptionPct} % Verbrauch. `
+        + '§ 7 Abs. 1 HeizkostenV sieht 50 bis 70 % Verbrauchsanteil vor. Bei einer Abweichung '
+        + 'kann der Mieter die Heizkosten nach § 12 HeizkostenV um 15 % kürzen, sofern keine '
+        + 'wirksame abweichende Vereinbarung im Mietvertrag besteht.',
+      details: { base_share_percent: basePct, consumption_share_percent: consumptionPct },
+    });
+  }
+
   const basePool = totalAmount * (basePct / 100);
   const consumptionPool = totalAmount * (consumptionPct / 100);
 
@@ -57,6 +78,28 @@ export function heatingAllocation(
   );
 
   const hasWwSubmetering = heatMeters.some(m => m.submetering_purpose === 'warm_water_heat');
+
+  /* GEMESSENE Warmwasserwärme auf Objektebene.
+
+     § 9 Abs. 2 HeizkostenV lässt die Schätzformel Q = 2,5 · V · (tw − 10) nur
+     zu, WENN die Wärmemenge für das Warmwasser nicht gemessen wird. Wird sie
+     gemessen, gilt der Messwert.
+
+     MG24 hat genau so einen Zähler: Für 2025 weist er 7.559 kWh aus, während
+     die Formel auf 18.331 kWh kommt — mehr als das Doppelte. Die Kappung bei
+     50 Prozent hat das bis zum 11.10.2026 verdeckt: Dem Warmwasser wurde die
+     Hälfte aller Heizkosten zugeordnet statt der gemessenen knapp 31 Prozent.
+     Das verschiebt Geld zwischen den Wohnungen, weil das Warmwasser nach den
+     Warmwasserzählern verteilt wird und die Raumwärme nach den
+     Wärmemengenzählern. */
+  const wwWaermeZaehler = meters.filter(
+    m => m.medium === 'heat' && !m.unit_id && m.submetering_purpose === 'warm_water_heat');
+  const raumWaermeZaehler = meters.filter(
+    m => m.medium === 'heat' && !m.unit_id && m.submetering_purpose === 'space_heating_heat');
+  const gemesseneWwWaerme = wwWaermeZaehler.reduce(
+    (s, m) => s + calculateConsumption(m.id, periodStart, periodEnd, readings), 0);
+  const gemesseneRaumWaerme = raumWaermeZaehler.reduce(
+    (s, m) => s + calculateConsumption(m.id, periodStart, periodEnd, readings), 0);
 
   // Separate WW and heating costs if hot_water_via_heating
   let wwCostPool = 0;
@@ -77,6 +120,8 @@ export function heatingAllocation(
       const result = methodA(
         totalAmount, mainHeatMeter, wwMeters, readings, meters, units, leases,
         periodStart, periodEnd, basePct, consumptionPct, heatingConfig,
+        gemesseneWwWaerme > 0 ? gemesseneWwWaerme : null,
+        gemesseneRaumWaerme > 0 ? gemesseneRaumWaerme : null,
       );
       items.push(...result.items);
       warnings.push(...result.warnings);
@@ -273,6 +318,10 @@ function methodA(
   basePct: number,
   consumptionPct: number,
   heatingConfig: HeatingConfigRow,
+  /** Gemessene Warmwasserwärme in kWh. Hat Vorrang vor der Schätzformel. */
+  gemesseneWwWaerme: number | null = null,
+  /** Gemessene Raumwärme in kWh. Nenner, wenn beide Kreise gemessen werden. */
+  gemesseneRaumWaerme: number | null = null,
 ): HeatingResult {
   const warnings: EngineWarning[] = [];
   const items: ItemResult[] = [];
@@ -283,12 +332,30 @@ function methodA(
     totalWwVolume += calculateConsumption(meter.id, periodStart, periodEnd, readings);
   }
 
-  // Q formula: Q_WW = 2.5 * V_m3 * (tw - 10) kWh
-  const tw = 60; // standard warm water temp
-  const qWw = 2.5 * totalWwVolume * (tw - 10);
+  /* Warmwasserwärme: Messwert vor Schätzung (§ 9 Abs. 2 HeizkostenV). */
+  const geschaetztesQWw = 2.5 * totalWwVolume * (60 - 10);
+  const qWw = gemesseneWwWaerme ?? geschaetztesQWw;
+  if (gemesseneWwWaerme !== null) {
+    warnings.push({
+      code: 'HEATING_WW_MEASURED',
+      severity: 'warning',
+      message: `Warmwasserwärme gemessen: ${Math.round(gemesseneWwWaerme)} kWh. Die Formel des `
+        + `§ 9 Abs. 2 HeizkostenV käme auf ${Math.round(geschaetztesQWw)} kWh `
+        + `(2,5 × ${Math.round(totalWwVolume * 100) / 100} m³ × 50 K); der Messwert hat Vorrang.`,
+      details: {
+        gemessen_kwh: Math.round(gemesseneWwWaerme),
+        formel_kwh: Math.round(geschaetztesQWw),
+        ww_volumen_m3: Math.round(totalWwVolume * 100) / 100,
+      },
+    });
+  }
 
-  // Total heat from main meter
-  const totalHeat = calculateConsumption(mainHeatMeter.id, periodStart, periodEnd, readings);
+  /* Nenner: Werden beide Kreise gemessen, ist die erzeugte Nutzwärme ihre
+     Summe. Der Hauptzähler misst bei MG24 nur den Heizkreis — ihn als Nenner
+     zu nehmen hiesse, das Warmwasser doppelt zu zählen. */
+  const totalHeat = (gemesseneWwWaerme !== null && gemesseneRaumWaerme !== null)
+    ? gemesseneWwWaerme + gemesseneRaumWaerme
+    : calculateConsumption(mainHeatMeter.id, periodStart, periodEnd, readings);
 
   if (totalHeat <= 0) {
     warnings.push({

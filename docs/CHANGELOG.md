@@ -4,6 +4,70 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Casameta-Hybrid und der dritte Abrechnungsfehler (Paket 3c)
+
+**Abrechnungsarchitektur hybrid.** bikosoc hält Daten, Belege und
+Kontrollrechnung; Casameta erzeugt das rechtsverbindliche Mieter-PDF. Eine
+Schnittstelle gibt es nicht — deshalb ein **Eingabeblatt** mit allen
+Portalfeldern in Portalreihenfolge: `docs/casameta-mapping.md` für das Warum,
+`system_settings.casameta_mapping` für die Daten, `src/modules/assets/casameta.ts`
+für die Erzeugung. Dieselbe Funktion nutzen Kommandozeile und Core-Route, damit
+beide Wege nie auseinanderlaufen. Eine Lücke wird als `FEHLT` ausgewiesen und
+nicht geschätzt: Ein leeres Feld im Portal fällt auf, ein erfundener Wert nicht.
+
+Das erzeugte Blatt enthält Mieternamen und liegt deshalb in
+`~/bikosoc-spec/casameta/` — einem Unterordner, den der Report-Watcher nicht
+liest (er nimmt nur `report-*.md` direkt im Ordner und arbeitet nicht
+rekursiv; nachgeprüft).
+
+**V041 geschrieben, nicht angewendet** (Rote Zone): Der CHECK auf
+`allocation_rules` schrieb bei `heating_split` 50 bis 70 Prozent
+Verbrauchsanteil vor — den Rahmen des § 7 Abs. 1 HeizkostenV. Der Owner hat
+sich bewusst dagegen entschieden und trägt das Risiko aus § 12 selbst. An die
+Stelle der Datenbanksperre tritt der Befund
+`HEATING_SPLIT_OUTSIDE_HEIZKOSTENV` in jeder Abrechnung: Eine Sperre, die eine
+bewusste Eigentümerentscheidung blockiert, wäre falsch — eine stillschweigende
+Abweichung aber auch. Die Summe aus Grund- und Verbrauchsanteil muss weiter
+genau 100 Prozent ergeben; das ist Arithmetik, keine Rechtsfrage.
+
+### Der dritte Fehler in der Abrechnungslogik
+
+§ 9 Abs. 2 HeizkostenV lässt die Schätzformel Q = 2,5 · V · (tw − 10) nur zu,
+wenn die Wärmemenge für das Warmwasser NICHT gemessen wird. MG24 hat einen
+Zähler dafür — die Engine hat ihn ignoriert und geschätzt: 18.331 kWh nach der
+Formel gegen 9.151 kWh gemessen, durch die Kappung bei 50 Prozent verdeckt. Dem
+Warmwasser wurde damit die Hälfte aller Heizkosten zugeordnet statt der
+gemessenen 31 Prozent. Weil Warmwasser nach den Warmwasserzählern und Raumwärme
+nach den Wärmemengenzählern verteilt wird, verschob das Geld zwischen den
+Wohnungen: W3 trug 414 Euro zu viel, W1 und W2 entsprechend zu wenig.
+
+Behoben: Messwert vor Formel, Nenner ist die Summe der gemessenen Kreise (der
+Hauptzähler misst bei MG24 nur den Heizkreis — ihn als Nenner zu nehmen hiesse,
+das Warmwasser doppelt zu zählen). Befund `HEATING_WW_MEASURED` weist Messwert
+und Formelwert nebeneinander aus.
+
+**Zur Umstellung auf 0/100 bei MG24: vorerst nicht empfohlen.** W3 trägt heute
+Grundkosten bei NULL Verbrauchsanteil, weil seine Wärmemengenzähler nach
+Owner-Entscheidung E2 abgeschaltet sind. Bei 0/100 fiele dieser Betrag weg und
+ginge an W1 und W2 — das Gegenteil der Absicht. Erst nach Klärung mit Fa. Fiehn.
+
+**Neue Routen:** `GET …/belege` (Belegliste aus Archivindex und `entity_links`),
+`GET …/mieterstrom`, `GET …/abrechnungsbereitschaft?jahr=`,
+`POST …/casameta-eingabeblatt?jahr=`, `POST /api/assets/cost-categories`
+(protokolliert, weil an Kostenarten Umlageregeln und damit Geld hängen).
+Dazu `scripts/setze-einstellung.ts`, das über `setSetting()` schreibt und damit
+den Audit-Eintrag in derselben Transaktion erzeugt.
+
+**Zwischenabrechnung bei Mieterwechsel: kann die Engine nicht.** `computeNk()`
+nimmt ausschliesslich ein Kalenderjahr; Gradtagszahlen kommen im Code nicht vor,
+der Zeitanteil ist linear. Für einen Auszug Ende Juni ist das zu grob —
+Folgeauftrag mit Aufwand M bis L im Report beschrieben.
+
+**Tests:** 11 neue (0/100, 30/70, 50/50, Befund bei Abweichung in beide
+Richtungen, Messwert vor Formel). Gesamt 940/0/0.
+
+---
+
 ## Stand 2026-10-11 — SWT-Belegarchiv und zwei Fehler in der Verbrauchsverteilung (Paket 3b)
 
 **Belegarchiv ohne neue Tabelle.** `entity_links` trug schon Objekt, Belegart und
