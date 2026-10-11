@@ -4,6 +4,35 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-11 — Anfangsstände der Wärmemengenzähler aus dem GLT-Jahreszähler
+
+Die Sperre aus dem vorigen Abschnitt ist aufgelöst, und zwar mit einem Beleg statt mit
+einer Annahme. Die Gebäudeleittechnik führt je Zähler „Stand", „Jahr aktuell" und
+„Vorjahr"; dass „Vorjahr" ein echter Jahreszähler ist, war in Paket 2 (Abschnitt 1f) am
+Kaltwasser-Hausanschluss bewiesen. Damit gilt
+
+```
+Stand(01.01.2025) = Stand(Ablesetag) − Jahr aktuell − Vorjahr
+```
+
+Für alle acht Wärmemengenzähler ergibt das **exakt 0 kWh** — die Zähler standen zum
+Jahresbeginn 2025 auf null. `scripts/anfangsstaende-wmz-mg24.ts` rechnet das nach und
+erfasst die Stände über die bestehende Route
+`POST /api/assets/meters/:id/readings/bulk` (Idempotency-Key, Audit-Eintrag); das Skript
+ist wiederholbar und überspringt bereits erfasste Tage.
+
+**Die Beträge ändern sich dadurch nicht** (W1 778,57 · W2 739,23 · W3 1.383,37 €,
+Eigentümer 3.097,33 €). Geändert hat sich die Grundlage: Die Null ist jetzt ein belegter
+Wert mit benannter Quelle und kein stiller Rückfall mehr. Die Sperre
+`HEAT_METER_NO_DOCUMENTED_START` bleibt für künftige Jahre in Kraft.
+
+Damit ist auch die Befürchtung ausgeräumt, der gesamte Zählerstand seit Einbau werde dem
+Mieter angelastet: Vor dem 01.01.2025 steht auf diesen Zählern nichts. Der Verbrauch der
+Zeit VOR Mietbeginn innerhalb von 2025 bleibt davon unberührt — den trägt über den
+Zeitanteil der Eigentümer.
+
+---
+
 ## Stand 2026-10-11 — Altauftrags-Stupse, Leerstandsanteil Heizung, Sperre ohne Anfangsstand
 
 **Der Leerlauf-Wächter stupste erledigte Aufträge.** Am 11.10.2026 kamen zwei
