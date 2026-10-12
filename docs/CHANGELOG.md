@@ -4,6 +4,45 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — N24: 38 Zähler erfasst, drei Vorprüfungen korrigiert
+
+Für N24 waren bisher **keine** Zähler angelegt. Jetzt stehen 36 Wohnungszähler und zwei
+Liegenschaftszähler mit je drei Ständen in der Datenbank (31.12.2024 aus Casameta,
+31.12.2025 als Stichtagswert aus dem M-Bus-Logger, 12.10.2026 als Live-Wert). Angelegt
+über `scripts/zaehler-n24.ts`, ausschließlich über die bestehenden Routen mit Audit;
+der Lauf ist wiederholbar und überschreibt nichts.
+
+Die Warmwasserzähler sind **Wärmezähler**: Sie messen die Energie zum Erwärmen in kWh,
+nicht das Volumen — wie in Casameta 2024. Deshalb `medium = 'heat'` mit
+`submetering_purpose = 'warm_water_heat'`. Damit greift Methode B (§ 9 Abs. 1
+HeizkostenV, getrennte Messung) statt der Schätzformel nach § 9 Abs. 2.
+
+Beim Rechnen kamen drei Fehler in der Vorprüfung heraus:
+
+1. **`HAUPTZAEHLER_OHNE_ENDSTAND` (neu).** Der Hauptzähler am Hausanschluss ist der
+   NENNER der Verbrauchsverteilung. Fehlte sein Stand zum Periodenende, gab
+   `calculateConsumption()` null zurück — und der volle Rechnungsbetrag wurde nach den
+   Wohnungszählern verteilt, die ungemessene Differenz also den Mietern zugerechnet.
+   Genau dieser Fehler war bei MG24 am 11.10.2026 behoben worden; über einen fehlenden
+   Stand wäre er still zurückgekommen. Blocker, wenn eine Kostenart nach diesem Medium
+   verteilt; sonst Warnung — der Gesamt-Wärmezähler dient bei getrennter Messung nur dem
+   Abgleich, und ein Blocker würde eine rechenbare Abrechnung ohne Nutzen aufhalten.
+2. **`MISSING_WW_METERS` meldete die Schätzformel, wo gemessen wird.** Die Regel sah nur
+   Volumenzähler (`warm_water`) und übersah Wärmezähler mit dem Zweck
+   `warm_water_heat`. Bei N24 behauptete sie damit das Gegenteil dessen, was die Engine
+   tut.
+3. **Bereitschaft und Engine widersprachen sich.** `MISSING_INTERIM_READING_FOR_CHANGEOVER`
+   stand in der Vorprüfung als Warnung, während die Engine denselben Befund unbedingt zum
+   Blocker hochstuft. Für N24 2025 hieß das: „bereit, 0 Blocker" — und ein Abbruch mit
+   HTTP 422. Jetzt ist der Befund auch in der Bereitschaft ein Blocker. Das verschärft
+   nichts; gesperrt war die Abrechnung schon, es stand nur nicht in der Bereitschaft.
+
+Nebenbei ist die Tabelle `VERBRAUCHSMEDIEN` aus `engine.ts` nach `types.ts` gewandert,
+damit die Vorprüfung dieselbe Tabelle lesen kann, ohne einen Importzyklus zu erzeugen —
+statt einer dritten Kopie.
+
+---
+
 ## Stand 2026-10-12 — Zwischenablesung: der Schnitt liegt am Vertragsende
 
 Die Vorprüfung `MISSING_INTERIM_READING_FOR_CHANGEOVER` verlangte bisher *irgendeine*

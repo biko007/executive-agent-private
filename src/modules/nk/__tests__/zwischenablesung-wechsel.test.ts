@@ -45,6 +45,9 @@ describe('zwischenablesungFehlt', () => {
       ZAEHLER, [ablesung('2025-11-15')]);
     expect(f).toHaveLength(1);
     expect(f[0].code).toBe('MISSING_INTERIM_READING_FOR_CHANGEOVER');
+    /* Blocker, damit Bereitschaft und Engine dasselbe sagen — die Engine
+       stuft den Befund ohnehin unbedingt hoch. */
+    expect(f[0].severity).toBe('blocker');
     expect(f[0].details?.wechsel).toBe('2025-11-30');
     expect(f[0].details?.uebergabe).toBe('2025-11-15');
     expect(f[0].message).toContain('Wohnungsübergabe war am 2025-11-15');

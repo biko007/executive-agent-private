@@ -7,6 +7,7 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import {
   nutzungsAbschnitt, findeEinzugsstand, gradtagsSumme, tageZwischen, isoTag,
 } from './nutzerzeit.js';
+import { VERBRAUCHSMEDIEN } from './types.js';
 
 export type Severity = 'blocker' | 'warning' | 'info';
 
@@ -172,14 +173,26 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
     }
   }
 
-  // 9. MISSING_WW_METERS
+  /* 9. MISSING_WW_METERS
+
+     Gemeint ist: Ohne Warmwasserzähler muss der Warmwasseranteil nach § 9
+     Abs. 2 HeizkostenV geschätzt werden (Q = 2,5 · V · (tw − 10)).
+
+     KORREKTUR 12.10.2026. Die Regel sah nur Volumenzähler (`warm_water`) und
+     meldete die Schätzformel auch dort, wo die Warmwasserwärme je Wohnung
+     GEMESSEN wird — mit Wärmezählern und dem Zweck `warm_water_heat`. So ist
+     N24 gebaut: Dort rechnet die Engine nach § 9 Abs. 1 (Methode B) und
+     schätzt nichts. Die Meldung behauptete das Gegenteil. */
   if (heatingRelevant && heatingConfig?.hot_water_via_heating) {
-    const wwMeters = meters.filter((m: any) => m.medium === 'warm_water');
-    if (wwMeters.length === 0) {
+    const wwVolumen = meters.filter((m: any) => m.medium === 'warm_water');
+    const wwWaermeJeWohnung = meters.filter((m: any) =>
+      m.medium === 'heat' && m.unit_id && m.submetering_purpose === 'warm_water_heat');
+    if (wwVolumen.length === 0 && wwWaermeJeWohnung.length === 0) {
       findings.push({
         code: 'MISSING_WW_METERS',
         severity: 'warning',
-        message: 'No warm water meters — hot water cost split will use formula (30/70 rule)',
+        message: 'Keine Warmwasserzähler — der Warmwasseranteil muss nach § 9 Abs. 2 '
+          + 'HeizkostenV geschätzt werden (Q = 2,5 · V · (tw − 10)).',
       });
     }
   }
@@ -243,6 +256,33 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
         details: { meter_id: meter.id, meter_number: meter.meter_number },
       });
     }
+  }
+
+  /* 13c. HAUPTZAEHLER_OHNE_ENDSTAND.
+
+     Der Hauptzähler am Hausanschluss ist der NENNER der Verbrauchsverteilung:
+     Jede Wohnung zahlt ihre gemessene Menge zum Rechnungspreis, der
+     ungemessene Rest bleibt beim Eigentümer. Fehlt der Stand zum Periodenende,
+     gibt `calculateConsumption()` für den Hauptzähler null zurück — und die
+     Engine verteilt den vollen Rechnungsbetrag nach den Wohnungszählern,
+     ohne einen Hinweis. Die Mieter tragen dann auch die ungemessene Differenz.
+
+     Genau dieser Fehler ist bei MG24 am 11.10.2026 korrigiert worden; über
+     einen fehlenden Stand käme er still zurück. Bei N24 fehlt für 2025 der
+     Stand des Gemeindewasserzählers und des Gesamt-Wärmezählers.
+
+     Blocker nur, wenn das Medium tatsächlich als Nenner gebraucht wird, also
+     eine aktive Kostenart nach Verbrauch verteilt wird. Sonst eine Warnung:
+     Der Gesamt-Wärmezähler dient bei getrennter Messung nach § 9 Abs. 1
+     HeizkostenV nur dem Abgleich — ihn zum Blocker zu machen hielte eine
+     rechenbare Abrechnung ohne Nutzen auf. */
+  const nennerMedien = new Set<string>();
+  for (const rule of allocRules) {
+    if (rule.key_type !== 'consumption') continue;
+    for (const medium of VERBRAUCHSMEDIEN[rule.category_code] || []) nennerMedien.add(medium);
+  }
+  for (const f of hauptzaehlerOhneEndstand(meters as any, readings as any, year, nennerMedien)) {
+    findings.push(f);
   }
 
   /* 13b. HEAT_METER_NO_DOCUMENTED_START — Blocker.
@@ -727,7 +767,15 @@ export function zwischenablesungFehlt(
       if (findeEinzugsstand(meter.id, wechsel, readings as any, toleranzTage)) continue;
       out.push({
         code: 'MISSING_INTERIM_READING_FOR_CHANGEOVER',
-        severity: 'warning',
+        /* Blocker, nicht Warnung. Die Engine stuft diesen Befund ohnehin
+           unbedingt zum Blocker hoch (`engine.ts`, Severity-Eskalation) und
+           verweigert die Berechnung. Stand er in der Bereitschaft als
+           Warnung, meldete die Vorprüfung „bereit, 0 Blocker", während die
+           Abrechnung mit 422 scheiterte — bei N24 2025 genau so gesehen.
+           Zwei Aussagen über denselben Sachverhalt sind schlimmer als eine
+           unbequeme. Diese Zeile verschärft nichts: Gesperrt war die
+           Abrechnung bereits, nur stand es nicht in der Bereitschaft. */
+        severity: 'blocker',
         message: `Zähler ${meter.meter_number}: keine Zwischenablesung zum Nutzerwechsel am `
           + `${wechsel} (± ${toleranzTage} Tage). § 9b Abs. 1 HeizkostenV verlangt sie; ohne `
           + 'sie wird der Verbrauch zwischen Vor- und Nachmieter aufgeteilt statt gemessen.'
@@ -738,6 +786,53 @@ export function zwischenablesungFehlt(
         },
       });
     }
+  }
+  return out;
+}
+
+/**
+ * Hauptzähler ohne Stand zum Periodenende.
+ *
+ * Gesucht wird ein Stand IM Abrechnungszeitraum. Ein Stand vom Vorjahr genügt
+ * nicht: `calculateConsumption()` nimmt ihn dann als Anfangs- UND Endstand und
+ * liefert null — ein Verbrauch von null sieht in der Verteilung wie eine
+ * Messung aus, ist aber keine.
+ *
+ * `nennerMedien` sind die Medien, für die eine aktive Kostenart nach Verbrauch
+ * verteilt wird. Nur dort ist der fehlende Stand ein Blocker.
+ */
+export function hauptzaehlerOhneEndstand(
+  meters: { id: number; meter_number: string; medium: string; is_main_meter?: boolean; unit_id?: number | null }[],
+  readings: { meter_id: number; read_at: string }[],
+  year: number,
+  nennerMedien: Set<string>,
+): PreCheckFinding[] {
+  const out: PreCheckFinding[] = [];
+  const von = new Date(`${year}-01-01T00:00:00Z`).getTime();
+  const bis = new Date(`${year}-12-31T23:59:59.999Z`).getTime();
+
+  for (const meter of meters) {
+    if (!meter.is_main_meter || meter.unit_id) continue;
+    const imZeitraum = readings.some((r) => {
+      if (r.meter_id !== meter.id) return false;
+      const t = new Date(r.read_at).getTime();
+      return t >= von && t <= bis;
+    });
+    if (imZeitraum) continue;
+
+    const nenner = nennerMedien.has(meter.medium);
+    out.push({
+      code: 'HAUPTZAEHLER_OHNE_ENDSTAND',
+      severity: nenner ? 'blocker' : 'warning',
+      message: `Hauptzähler ${meter.meter_number} hat keinen Stand im Abrechnungszeitraum ${year}. `
+        + (nenner
+          ? 'Er ist der Nenner der Verbrauchsverteilung — ohne ihn würde der volle '
+            + 'Rechnungsbetrag auf die Wohnungszähler verteilt und die ungemessene Differenz '
+            + 'den Mietern zugerechnet.'
+          : 'Für die Verteilung wird er nicht gebraucht, wohl aber für den Abgleich mit der '
+            + 'Versorgerrechnung und die Verteilverluste.'),
+      details: { meter_id: meter.id, meter_number: meter.meter_number, medium: meter.medium },
+    });
   }
   return out;
 }

@@ -18,6 +18,7 @@ import type {
 } from './types.js';
 
 export { ENGINE_VERSION } from './types.js';
+import { VERBRAUCHSMEDIEN } from './types.js';
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
@@ -662,33 +663,6 @@ interface AllocationResult {
   warnings?: EngineWarning[];
 }
 
-/* ── Verbrauchsschlüssel ─────────────────────────────────────────────────────
-
-   Welche Zählermedien eine Kostenart verbraucht. Bewusst als Tabelle an einer
-   Stelle, nicht verstreut über die Verteilfunktion — eine neue Kostenart
-   braucht hier eine Zeile und sonst nichts.
-
-   `entwaesserung` zählt Kalt- UND Warmwasser: Was ins Haus fließt, fließt auch
-   wieder heraus, und das Warmwasser wird aus demselben Hausanschluss gespeist
-   (Owner-Entscheidung 10.10.2026). */
-/* Welche Zähler eine Kostenart messen.
-
-   `wasser` zählt KALT UND WARM. Der Versorger berechnet das Wasser, das durch
-   den Hausanschluss läuft — und das Warmwasser der Wohnung kommt durch denselben
-   Anschluss und steht auf derselben Rechnung. Nur die Kaltwasserzähler
-   anzusetzen hieße: Das Warmwasservolumen der Mieter bleibt als ungemessener
-   Rest beim Eigentümer, obwohl es gemessen vorliegt. (Bis zum 11.10.2026 stand
-   hier nur 'cold_water'; bei MG24 verschob das rund 280 Euro im Jahr.)
-
-   `warmwasser` zählt dagegen nur die Warmwasserzähler — dort geht es um die
-   ENERGIE zum Erwärmen, nicht um das Volumen. Doppelt berechnet wird also
-   nichts: Das Volumen läuft über `wasser` und `entwaesserung`, die Wärme über
-   `warmwasser` beziehungsweise die Heizkostenverteilung. */
-const VERBRAUCHSMEDIEN: Record<string, string[]> = {
-  wasser: ['cold_water', 'warm_water'],
-  entwaesserung: ['cold_water', 'warm_water'],
-  warmwasser: ['warm_water'],
-};
 
 export function allocateCosts(
   totalAmount: number,
