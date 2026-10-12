@@ -4,6 +4,26 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — Mietverhältnisse: Vertragsparteien und Dokumentpfad nachtragbar
+
+Zwei Lücken in den Routen, die beim N24-Nachtrag aufgefallen sind und beide nur den Weg
+an der Route vorbei gelassen hätten:
+
+1. **`contract_document_path` war über keine Route zu setzen.** Das Feld existiert seit
+   jeher in der Tabelle; die Änderungsroute führte es nicht, und `mapLeaseRow()` lieferte
+   es nicht aus. Beides ergänzt — jetzt ist eine gesetzte Verknüpfung auch von außen
+   sichtbar.
+2. **`lease_tenants` wurde nur beim ANLEGEN eines Mietverhältnisses gefüllt.** Fehlte
+   eine Vertragspartei, war sie nicht mehr nachzutragen. Neue Route
+   `GET|POST /api/assets/leases/:id/vertragsparteien` mit Audit-Eintrag
+   (`lease_tenant.create`). Entfernt wird dort nichts: Eine Vertragspartei verschwindet
+   nicht, sie wechselt allenfalls — und das ist ein neues Mietverhältnis.
+
+Angewandt auf N24: zweite Vertragspartei bei W5 nachgetragen, Dokumentpfade für fünf
+Mietverhältnisse gesetzt.
+
+---
+
 ## Stand 2026-10-11 — Skala der Zählerreihen belegt: absoluter Zählerstand
 
 Zwei Reports vom selben Tag behandelten die Skala der Fiehn-Reihen unterschiedlich: W1

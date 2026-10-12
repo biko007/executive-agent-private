@@ -452,6 +452,10 @@ export function registerAssetsHttpRoutes(api: any) {
             if (segments[2] === 'end') { await handleLeaseEnd(req, res, leaseId); return; }
             if (segments[2] === 'revoke-end') { await handleLeaseRevokeEnd(req, res, leaseId); return; }
             if (segments[2] === 'move-out') { await handleLeaseMoveOut(req, res, leaseId); return; }
+            if (segments[2] === 'vertragsparteien') {
+              await handleLeaseVertragsparteien(req, res, leaseId);
+              return;
+            }
 
             if (req.method === 'GET') {
               const { rows } = await dbQuery(
@@ -468,10 +472,16 @@ export function registerAssetsHttpRoutes(api: any) {
               const sets: string[] = [];
               const params: unknown[] = [];
               let pi = 1;
+              /* `contract_document_path` ist am 12.10.2026 dazugekommen. Das Feld
+                 existiert seit jeher in der Tabelle, war aber über keine Route
+                 zu setzen — bei N24 standen die Vertrags-PDFs in SharePoint und
+                 ließen sich mit dem Mietverhältnis nicht verknüpfen. Der einzige
+                 Weg wäre ein Schreiben an der Route vorbei gewesen. */
               for (const field of ['lease_number','lease_type','status','start_date','end_date',
                 'kaltmiete','nk_vorauszahlung','heizkosten_vorauszahlung','kaution',
                 'billing_mode','payment_method','rent_due_day','vat_option','vat_rate','notes',
-                'termination_date','termination_reason','actual_move_out']) {
+                'termination_date','termination_reason','actual_move_out',
+                'contract_document_path']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }
               if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }
@@ -1105,6 +1115,64 @@ async function handleLeaseMoveOut(req: IncomingMessage, res: ServerResponse, lea
   );
   await audit.log({ module: 'assets', action: 'lease.move_out', entityType: 'lease', entityId: leaseId, before: before[0], after: after[0] });
   json(res, 200, mapLeaseRow(after[0]));
+}
+
+/**
+ * Vertragsparteien eines bestehenden Mietverhältnisses.
+ *
+ * WARUM ES DAS BRAUCHT (12.10.2026): `lease_tenants` wurde bisher nur beim
+ * ANLEGEN eines Mietverhältnisses gefüllt. Fehlte eine Partei — bei N24 W5
+ * stand nur Klaus Bickel in der Datenbank, der Vertrag nennt aber auch
+ * Waltraud Bickel —, war sie nicht mehr nachzutragen. Der einzige Weg wäre
+ * ein Schreiben an der Route vorbei gewesen.
+ *
+ * GET listet die Parteien, POST fügt eine hinzu. Entfernt wird hier nichts:
+ * Eine Vertragspartei verschwindet nicht, sie wechselt allenfalls — und das
+ * ist ein neues Mietverhältnis.
+ */
+async function handleLeaseVertragsparteien(
+  req: IncomingMessage, res: ServerResponse, leaseId: string,
+) {
+  const { rows: lease } = await dbQuery(
+    'SELECT id, start_date FROM leases WHERE id = $1', [leaseId]);
+  if (lease.length === 0) { err(res, 404, 'Lease not found'); return; }
+
+  if (req.method === 'GET') {
+    const { rows } = await dbQuery(
+      `SELECT lt.tenant_id, lt.role, lt.is_primary_contact, lt.valid_from,
+              t.first_name, t.last_name, t.company_name
+         FROM lease_tenants lt JOIN tenants t ON t.id = lt.tenant_id
+        WHERE lt.lease_id = $1 ORDER BY lt.is_primary_contact DESC, t.last_name`,
+      [leaseId]);
+    json(res, 200, rows);
+    return;
+  }
+
+  if (req.method !== 'POST') { err(res, 405, 'Method not allowed'); return; }
+
+  const body = await parseJsonBody(req);
+  if (!body.tenant_id) { err(res, 400, 'tenant_id required'); return; }
+
+  const { rows: mieter } = await dbQuery(
+    'SELECT id FROM tenants WHERE id = $1 AND active = true', [body.tenant_id]);
+  if (mieter.length === 0) { err(res, 404, 'Tenant not found'); return; }
+
+  const { rows: schon } = await dbQuery(
+    'SELECT 1 FROM lease_tenants WHERE lease_id = $1 AND tenant_id = $2',
+    [leaseId, body.tenant_id]);
+  if (schon.length > 0) { err(res, 409, 'Tenant is already a party to this lease'); return; }
+
+  const { rows } = await dbQuery(
+    `INSERT INTO lease_tenants (lease_id, tenant_id, role, is_primary_contact, valid_from)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [leaseId, body.tenant_id, body.role || 'contract_party',
+     body.is_primary_contact ?? false, body.valid_from || lease[0].start_date]);
+
+  await audit.log({
+    module: 'assets', action: 'lease_tenant.create',
+    entityType: 'lease', entityId: String(leaseId), after: rows[0],
+  });
+  json(res, 201, rows[0]);
 }
 
 async function handleLeaseCharges(req: IncomingMessage, res: ServerResponse, leaseId: string) {
@@ -1762,6 +1830,10 @@ function mapLeaseRow(row: any) {
     heizkosten_vorauszahlung: num(row.heizkosten_vorauszahlung),
     kaution: num(row.kaution),
     billing_mode: row.billing_mode,
+    /* Seit 12.10.2026 mit ausgeliefert. Das Feld wurde geschrieben, tauchte
+       aber in keiner Antwort auf — eine gesetzte Verknüpfung war damit von
+       außen nicht zu sehen. */
+    contract_document_path: row.contract_document_path ?? null,
     payment_method: row.payment_method,
     vat_option: row.vat_option,
     notes: row.notes,
