@@ -1425,6 +1425,7 @@ async function handleExpenseBookings(
     };
     if (typeof body?.umlagefaehig === 'boolean') setze('umlagefaehig', body.umlagefaehig);
     if (typeof body?.notes === 'string') setze('notes', body.notes);
+    if (typeof body?.document_path === 'string') setze('document_path', body.document_path);
     // Stilllegen statt loeschen. Eine Buchung, die durch eine Jahresrechnung
     // ersetzt wird, ist keine Kostenposition mehr — sie war eine Vorauszahlung.
     // Die Engine liest ausschliesslich archived_at IS NULL, und die Spur bleibt.
@@ -1434,8 +1435,8 @@ async function handleExpenseBookings(
     if (typeof body?.service_period_start === 'string') setze('service_period_start', body.service_period_start);
     if (typeof body?.service_period_end === 'string') setze('service_period_end', body.service_period_end);
     if (felder.length === 0) {
-      err(res, 400, 'umlagefaehig, notes, archived, service_period_start oder '
-        + 'service_period_end erforderlich');
+      err(res, 400, 'umlagefaehig, notes, document_path, archived, service_period_start '
+        + 'oder service_period_end erforderlich');
       return;
     }
 
@@ -1448,12 +1449,14 @@ async function handleExpenseBookings(
       entityType: 'expense_booking', entityId: String(id),
       before: {
         umlagefaehig: vorher[0].umlagefaehig, notes: vorher[0].notes,
+        document_path: vorher[0].document_path,
         service_period_start: vorher[0].service_period_start,
         service_period_end: vorher[0].service_period_end,
         archived_at: vorher[0].archived_at,
       },
       after: {
         umlagefaehig: rows[0].umlagefaehig, notes: rows[0].notes,
+        document_path: rows[0].document_path,
         service_period_start: rows[0].service_period_start,
         service_period_end: rows[0].service_period_end,
         archived_at: rows[0].archived_at,
@@ -1486,14 +1489,20 @@ async function handleExpenseBookings(
     const { rows } = await dbQuery(
       `INSERT INTO expense_bookings (source_key, property_id, unit_id, cost_category_id,
          vendor_name, invoice_number, invoice_date, service_period_start, service_period_end,
-         payment_date, amount_gross, amount_net, vat_amount, vat_rate, umlagefaehig, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+         payment_date, amount_gross, amount_net, vat_amount, vat_rate, umlagefaehig, notes,
+         document_path)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [body.source_key || null, propId, body.unit_id || null, body.cost_category_id,
        body.vendor_name || null, body.invoice_number || null, body.invoice_date || null,
        body.service_period_start || null, body.service_period_end || null,
        body.payment_date || null, body.amount_gross, body.amount_net || null,
        body.vat_amount || null, body.vat_rate || null,
-       body.umlagefaehig ?? true, body.notes || null]
+       body.umlagefaehig ?? true, body.notes || null,
+       /* Belegpfad. Eine Kostenbuchung ohne Beleg ist in einer
+          Nebenkostenabrechnung nicht belegbar — der Mieter hat ein
+          Einsichtsrecht. Das Feld gab es in der Tabelle von Anfang an, die
+          Route führte es nur nicht (ergänzt 12.10.2026). */
+       body.document_path || null]
     );
     await audit.log({ module: 'assets', action: 'expense_booking.create', entityType: 'expense_booking', entityId: String(rows[0].id), after: rows[0] });
     json(res, 201, rows[0]);
@@ -1525,7 +1534,13 @@ async function handleAllocationRules(req: IncomingMessage, res: ServerResponse, 
          base_share_percent, consumption_share_percent, valid_from, valid_until, source, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [propId, body.cost_category_id, body.key_type,
-       body.base_share_percent || null, body.consumption_share_percent || null,
+       /* `?? null`, nicht `|| null`: Ein Grundkostenanteil von NULL PROZENT ist
+          eine gültige Angabe — genau die, die MG24 und N24 verwenden (0/100,
+          alles nach Verbrauch). Mit `||` wurde die 0 zu NULL, und die
+          Prüfbedingung der Tabelle (Grund + Verbrauch = 100, beide gesetzt)
+          ließ den Datensatz nicht zu: Eine 0/100-Regel war über die Route
+          nicht anzulegen. (12.10.2026) */
+       body.base_share_percent ?? null, body.consumption_share_percent ?? null,
        body.valid_from, body.valid_until || null, body.source || null, body.notes || null]
     );
     await audit.log({ module: 'assets', action: 'allocation_rule.create', entityType: 'allocation_rule', entityId: String(rows[0].id), after: rows[0] });

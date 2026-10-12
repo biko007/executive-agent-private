@@ -4,6 +4,40 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — N24 2025: Umlageregeln und die ersten Kostenbuchungen
+
+Elf Umlageregeln für N24 ab 2025, nach dem Vorbild der eddi24-Abrechnung 2024 für
+dieselbe Liegenschaft: NHN (Nutzfläche) → `sqm`, VKW (Verbrauch Kaltwasser) →
+`consumption`, WNZ (Wohnungen nach Nutzungszeit) → `units`, Heizung und Warmwasser
+0/100 über `heating_split`. Dazu fünf Kostenbuchungen aus den drei vorliegenden
+SWT-Rechnungen (3.237,59 €) und die Stände des Gemeindewasserzählers.
+
+Drei Lücken im Code standen dem im Weg:
+
+1. **Eine 0/100-Regel war über die Route nicht anzulegen.** Die Anteile wurden mit
+   `body.base_share_percent || null` gesetzt — aus der 0 wurde NULL, und die
+   Prüfbedingung der Tabelle (beide Anteile gesetzt, Summe 100) ließ den Datensatz
+   nicht zu. Die 0/100-Regeln von MG24 mussten deshalb seinerzeit von Hand in die
+   Datenbank. Jetzt `?? null`: „nicht angegeben" und „null Prozent" sind zwei
+   verschiedene Dinge. Vier Tests halten das fest.
+2. **`document_path` führte die Buchungsroute nicht.** Eine Kostenbuchung ohne Beleg
+   ist in einer Nebenkostenabrechnung nicht belegbar — der Mieter hat ein
+   Einsichtsrecht. Das Feld existierte in der Tabelle, aber weder POST noch PATCH
+   kannten es. Beide jetzt, mit Audit.
+3. **Die Testdatenbank ist bei `allocation_rules` zwei Migrationen hinter der
+   Produktion** (`setupTestDb()` spielt nur V022 ein, der Rahmen 50–70 % aus § 7
+   HeizkostenV wurde erst mit V041 geöffnet). Der neue Test spielt die
+   Prüfbedingung aus V041 auf seiner eigenen Testdatenbank selbst ein, damit kein
+   anderer Test berührt wird.
+
+**Zum Leistungszeitraum.** Eine Rechnung über zwei Kalenderjahre wird an den
+Zeitraumzeilen der Rechnung selbst geteilt, nicht tageweise: Menge und Preis je m³
+unterscheiden sich in den Teilzeiträumen. Die SWT-Wasserrechnung für
+01.10.2024–30.09.2025 trägt für 2025 genau 380 m³ zu 2,470 €, nicht den
+Tagesdurchschnitt.
+
+---
+
 ## Stand 2026-10-12 — N24: 38 Zähler erfasst, drei Vorprüfungen korrigiert
 
 Für N24 waren bisher **keine** Zähler angelegt. Jetzt stehen 36 Wohnungszähler und zwei
