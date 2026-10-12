@@ -165,13 +165,16 @@ async function seedCostCategory(code: string): Promise<number> {
   return rows[0].id;
 }
 
-async function seedExpenseBooking(propertyId: number, catId: number, amount: number, periodStart: string, periodEnd: string) {
+async function seedExpenseBooking(
+  propertyId: number, catId: number, amount: number, periodStart: string, periodEnd: string,
+  umlagefaehig = true,
+) {
   const key = `test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const { rows } = await testPool.query(
     `INSERT INTO expense_bookings (source_key, property_id, cost_category_id, amount_gross, umlagefaehig,
      service_period_start, service_period_end)
-     VALUES ($1, $2, $3, $4, true, $5, $6) RETURNING id`,
-    [key, propertyId, catId, amount, periodStart, periodEnd],
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [key, propertyId, catId, amount, umlagefaehig, periodStart, periodEnd],
   );
   return rows[0].id;
 }
@@ -591,6 +594,37 @@ describe('Goldfile 6: Multi-tenant + mixed billing modes', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLOCK TESTS (B1-B11)
 // ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Nicht umlagefähige Buchungen', () => {
+  /* KORREKTUR 12.10.2026. ALLOCATION_RULE_GAP prüfte ALLE gebuchten
+     Kostenarten, auch die nicht umlagefähigen. Eine Reparatur wird aber nie
+     verteilt; ein Verteilschlüssel dafür wäre sinnlos. Der Blocker ließ sich
+     nur umgehen, indem man die Kosten gar nicht erfasste — dann fehlen sie in
+     der Kostenseite des Objekts — oder eine Regel anlegte, die nichts tut.
+     Bei N24 2025 sperrte die erste gebuchte Reparatur die ganze Abrechnung. */
+  it('eine Reparatur ohne Verteilschlüssel sperrt die Abrechnung nicht', async () => {
+    const propId = await seedProperty('NOUML', 'Nicht umlagefähig');
+    const u1 = await seedUnit(propId, 'NOUML-W1', 80);
+    const t1 = await seedTenant('Mieter');
+    const l1 = await seedLease(u1, '2024-01-01', null, { nk_vorauszahlung: 100 });
+    await seedLeaseTenant(l1, t1);
+
+    const wasser = await seedCostCategory('wasser');
+    await seedExpenseBooking(propId, wasser, 1000, '2024-01-01', '2024-12-31');
+    await seedAllocationRule(propId, wasser, 'sqm', '2024-01-01');
+
+    // Reparatur: gebucht, aber nicht umlagefähig und ohne Verteilschlüssel.
+    const reparatur = await seedCostCategory('instandhaltung');
+    await seedExpenseBooking(propId, reparatur, 500, '2024-06-01', '2024-06-01', false);
+
+    const result = await computeNk(propId, 2024);
+
+    // Verteilt werden nur die umlagefähigen 1.000 €.
+    const summe = result.statements.reduce(
+      (s, st) => s + st.items.reduce((a, i) => a + i.amount, 0), 0);
+    expect(summe).toBeCloseTo(1000, 2);
+  });
+});
 
 describe('Block tests', () => {
   it('B1: PROPERTY_NOT_FOUND blocks', async () => {

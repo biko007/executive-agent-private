@@ -139,10 +139,24 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
     [propertyId, `${year}-12-31`, `${year}-01-01`]
   );
 
-  // 7. ALLOCATION_RULE_GAP — check that each cost category with bookings has an allocation rule
+  /* 7. ALLOCATION_RULE_GAP — jede Kostenart, die VERTEILT wird, braucht einen
+     Verteilschlüssel.
+
+     KORREKTUR 12.10.2026. Geprüft wurden bisher ALLE gebuchten Kostenarten,
+     auch die nicht umlagefähigen. Eine Reparatur wird aber nie verteilt; ein
+     Verteilschlüssel dafür wäre sinnlos. Die Folge war ein Blocker, den man
+     nur beseitigen konnte, indem man entweder die Kosten nicht erfasst — dann
+     ist die Kostenseite des Objekts unvollständig — oder eine Regel anlegt,
+     die nichts tut. Bei N24 2025 sperrte die erste gebuchte Reparatur die
+     ganze Abrechnung.
+
+     `bookedCategories` bleibt daneben bestehen: Regel 16 fragt damit, ob für
+     das Jahr überhaupt schon gebucht wurde. */
   const bookedCategories = new Set(bookings.map((b: any) => b.category_code));
+  const umzulegendeKategorien = new Set(
+    bookings.filter((b: any) => b.umlagefaehig).map((b: any) => b.category_code));
   const ruledCategories = new Set(allocRules.map((r: any) => r.category_code));
-  for (const cat of bookedCategories) {
+  for (const cat of umzulegendeKategorien) {
     if (!ruledCategories.has(cat)) {
       findings.push({
         code: 'ALLOCATION_RULE_GAP',

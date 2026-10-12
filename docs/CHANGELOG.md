@@ -4,6 +4,35 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — Nicht umlagefähige Kosten sperrten die Abrechnung
+
+`ALLOCATION_RULE_GAP` prüfte ALLE gebuchten Kostenarten darauf, ob ein Verteilschlüssel
+hinterlegt ist — auch die nicht umlagefähigen. Eine Reparatur wird aber nie verteilt; ein
+Verteilschlüssel dafür wäre sinnlos.
+
+Die Folge: Wer die Kosten des Objekts vollständig erfasst, sperrt damit die Abrechnung.
+Umgehen ließ sich das nur, indem man Reparaturen gar nicht buchte — dann fehlt die
+Kostenseite — oder eine Regel anlegte, die nichts tut. Bei N24 2025 sperrte die erste
+gebuchte Reparatur die ganze Abrechnung.
+
+Geprüft werden jetzt nur noch die Kostenarten, aus denen umlagefähige Buchungen stammen.
+
+---
+
+## Stand 2026-10-12 — N24 2025: 17 Belege gefunden und gebucht
+
+Im Bericht `n24-kosten-umlage-2025` stand, für N24 gebe es in SharePoint keine Belege
+für 2025. Das war falsch: Die Suche traf mehr, als die abgeschnittene Ausgabe zeigte, und
+der Ordner `N24/N24 - Gebäudeakte/8. Rechnungen/` blieb dadurch unbemerkt.
+
+Gebucht sind jetzt **11 umlagefähige Belege über 8.192,31 €** und **6 nicht umlagefähige
+über 6.017,14 €**, jeder mit Belegpfad. Zugeordnet ist über den Leistungszeitraum, nicht
+über den Zahltag — zwei Belege zeigen, warum: Die Störungsrechnung von Schmitt + Sohn vom
+04.03.2025 betrifft einen Einsatz am 17.11.2024, und die Maurer-Rechnung über 1.786,49 €
+vom Februar 2025 ist die Wartung 2024.
+
+---
+
 ## Stand 2026-10-12 — Der Anteil ausgeschlossener Mietverhältnisse wurde doppelt gezählt
 
 Beim Freischalten von N24 2025 verteilte die Abrechnung **3.815,44 €**, obwohl nur
