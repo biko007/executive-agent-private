@@ -114,14 +114,38 @@ export function tageZwischen(vonTag: string, bisTag: string): number {
 }
 
 /**
- * Der Abschnitt eines Mietverhältnisses innerhalb des Abrechnungszeitraums.
- * Liegt es ganz außerhalb, ist das Ergebnis null.
+ * Der VERBRAUCHSABSCHNITT eines Mietverhältnisses innerhalb des
+ * Abrechnungszeitraums. Liegt es ganz außerhalb, ist das Ergebnis null.
+ *
+ * MASSGEBLICH IST DIE ÜBERGABE, NICHT DER VERTRAG (Owner-Entscheidung
+ * 13.10.2026: „Verbrauch nach Protokoll, Umlage nach Vertrag").
+ *
+ * Verbrauchen kann nur, wer die Schlüssel hat. Wer am 27.10. auszieht, heizt
+ * danach nicht mehr — auch wenn sein Vertrag bis zum 30.11. läuft. Umgekehrt
+ * beginnt der Verbrauch des Nachmieters mit der Übergabe und nicht mit dem
+ * Ersten des Monats. Deshalb zählen hier `handover_at` und `actual_move_out`,
+ * sobald sie gesetzt sind.
+ *
+ * Für die Kosten, die NICHT nach Verbrauch verteilt werden — Fläche, Wohnungen
+ * nach Nutzungszeit —, bleibt es beim Vertrag: Dort rechnet `calculateProRata()`
+ * in `engine.ts` weiterhin mit `start_date` und `end_date`. Der Vormieter trägt
+ * die Grundkosten bis zum Vertragsende, auch wenn er schon ausgezogen ist.
+ *
+ * Fällt zwischen Auszug und Einzug eine Lücke, ist der Verbrauch darin keinem
+ * Mietverhältnis zugeordnet und bleibt beim Eigentümer. Genau das ist die
+ * Zwischenmiete bei N24 W6 zwischen dem 27.10. und dem 24.11.2025.
+ *
+ * Bis zum 13.10.2026 standen hier `start_date` und `end_date`. Das änderte
+ * nichts, solange Übergabe und Vertrag zusammenfallen — bei MG24 und den
+ * übrigen N24-Wohnungen ist `handover_at` gleich `start_date`.
  */
 export function nutzungsAbschnitt(
   lease: LeaseRow, periodStart: string, periodEnd: string,
 ): { von: string; bis: string } | null {
-  const von = isoTag(lease.start_date) > periodStart ? isoTag(lease.start_date) : periodStart;
-  const leaseEnde = lease.end_date ? isoTag(lease.end_date) : periodEnd;
+  const beginn = isoTag(lease.handover_at ?? lease.start_date);
+  const von = beginn > periodStart ? beginn : periodStart;
+  const ende = lease.actual_move_out ?? lease.end_date;
+  const leaseEnde = ende ? isoTag(ende) : periodEnd;
   const bis = leaseEnde < periodEnd ? leaseEnde : periodEnd;
   return von > bis ? null : { von, bis };
 }

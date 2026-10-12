@@ -142,6 +142,8 @@ export interface LeaseRow {
   status: string;
   start_date: string;
   end_date: string | null;
+  /** Tag der Wohnungsübergabe. Ab hier verbraucht der Mieter. */
+  handover_at: string | null;
   actual_move_out: string | null;
   billing_mode: string;
   kaltmiete: number | null;

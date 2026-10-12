@@ -401,3 +401,56 @@ describe('Stützpunktverfahren', () => {
     expect(tagPlus('2024-02-28', 1)).toBe('2024-02-29');
   });
 });
+
+/* ── Verbrauchsabschnitt nach Übergabe ──────────────────────────────────────
+
+   Owner-Entscheidung 13.10.2026: „Verbrauch nach Protokoll, Umlage nach
+   Vertrag." Verbrauchen kann nur, wer die Schlüssel hat. */
+describe('nutzungsAbschnitt — Übergabe statt Vertrag', () => {
+  const basis = {
+    id: 1, unit_id: 1, lease_type: 'residential', status: 'ended',
+    billing_mode: 'vorauszahlung', kaltmiete: null, nk_vorauszahlung: null,
+    heizkosten_vorauszahlung: null,
+  };
+
+  it('endet mit der Übergabe, nicht mit dem Vertrag', () => {
+    /* N24 W6: Übergabe 27.10.2025, Vertrag bis 30.11.2025. */
+    const a = nutzungsAbschnitt(
+      { ...basis, start_date: '2025-01-01', end_date: '2025-11-30',
+        handover_at: '2025-01-01', actual_move_out: '2025-10-27' } as any,
+      '2025-01-01', '2025-12-31');
+    expect(a).toEqual({ von: '2025-01-01', bis: '2025-10-27' });
+  });
+
+  it('beginnt mit der Übergabe, nicht mit dem Mietbeginn', () => {
+    /* N24 W6 Nachmieter: Übergabe 24.11.2025, Mietbeginn 01.12.2025. */
+    const a = nutzungsAbschnitt(
+      { ...basis, start_date: '2025-12-01', end_date: null,
+        handover_at: '2025-11-24', actual_move_out: null } as any,
+      '2025-01-01', '2025-12-31');
+    expect(a).toEqual({ von: '2025-11-24', bis: '2025-12-31' });
+  });
+
+  it('lässt die Lücke zwischen Auszug und Einzug offen', () => {
+    /* Was dazwischen verbraucht wird, gehört keinem Mietverhältnis und bleibt
+       beim Eigentümer — die Zwischenmiete. */
+    const vor = nutzungsAbschnitt(
+      { ...basis, start_date: '2025-01-01', end_date: '2025-11-30',
+        handover_at: '2025-01-01', actual_move_out: '2025-10-27' } as any,
+      '2025-01-01', '2025-12-31')!;
+    const nach = nutzungsAbschnitt(
+      { ...basis, start_date: '2025-12-01', end_date: null,
+        handover_at: '2025-11-24', actual_move_out: null } as any,
+      '2025-01-01', '2025-12-31')!;
+    expect(vor.bis < nach.von).toBe(true);
+    expect(tageZwischen(vor.bis, nach.von) - 2).toBe(27); // 28.10. bis 23.11.
+  });
+
+  it('bleibt beim Vertrag, wenn keine Übergabedaten erfasst sind', () => {
+    const a = nutzungsAbschnitt(
+      { ...basis, start_date: '2025-03-01', end_date: '2025-09-30',
+        handover_at: null, actual_move_out: null } as any,
+      '2025-01-01', '2025-12-31');
+    expect(a).toEqual({ von: '2025-03-01', bis: '2025-09-30' });
+  });
+});

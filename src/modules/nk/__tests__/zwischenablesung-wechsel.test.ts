@@ -6,10 +6,14 @@
  * Tag orientiert:
  *
  *   - Eine Ablesung vom Februar erfüllte die Regel für einen Auszug im November.
- *   - Maßgeblich war `actual_move_out`, also der Übergabetermin. Für die
- *     Abrechnung zählt aber das VERTRAGSENDE: Bis dahin trägt der Vormieter die
- *     Kosten. Bei N24 W6 liegen die beiden 15 Tage auseinander (Übergabe
- *     15.11.2025, Vertragsende 30.11.2025).
+ *
+ * ÄNDERUNG 13.10.2026 (Owner-Entscheidung „Verbrauch nach Protokoll, Umlage
+ * nach Vertrag"). Am 12.10. stand hier das Vertragsende als maßgeblicher Tag.
+ * Geschnitten wird aber der VERBRAUCH, und der endet mit der Übergabe: Wer
+ * ausgezogen ist, verbraucht nichts mehr. Maßgeblich ist deshalb
+ * `actual_move_out`, ersatzweise `end_date` — dieselbe Reihenfolge wie in
+ * `nutzungsAbschnitt()`. Bei N24 W6 liegen die beiden gut einen Monat
+ * auseinander (Übergabe 27.10.2025, Vertragsende 30.11.2025).
  *
  * Ohne Datenbank — `zwischenablesungFehlt()` ist eine reine Funktion.
  */
@@ -36,27 +40,27 @@ function ablesung(tag: string, meterId = 100) {
 }
 
 describe('zwischenablesungFehlt', () => {
-  it('verlangt die Ablesung am VERTRAGSENDE, nicht am Übergabetag', () => {
-    /* Der Fall N24 W6: Übergabe 15.11.2025, Vertragsende 30.11.2025. Eine
-       Ablesung zum Übergabetag erfüllt die Regel NICHT — sie schneidet die
-       Abrechnung 15 Tage zu früh. */
+  it('verlangt die Ablesung am ÜBERGABETAG, nicht am Vertragsende', () => {
+    /* Der Fall N24 W6: Übergabe 27.10.2025, Vertragsende 30.11.2025. Eine
+       Ablesung zum Vertragsende erfüllt die Regel NICHT — der Verbrauch ist
+       einen Monat früher geschnitten. */
     const f = zwischenablesungFehlt(
-      [vertrag({ end_date: '2025-11-30', actual_move_out: '2025-11-15' })],
-      ZAEHLER, [ablesung('2025-11-15')]);
+      [vertrag({ end_date: '2025-11-30', actual_move_out: '2025-10-27' })],
+      ZAEHLER, [ablesung('2025-11-30')]);
     expect(f).toHaveLength(1);
     expect(f[0].code).toBe('MISSING_INTERIM_READING_FOR_CHANGEOVER');
     /* Blocker, damit Bereitschaft und Engine dasselbe sagen — die Engine
        stuft den Befund ohnehin unbedingt hoch. */
     expect(f[0].severity).toBe('blocker');
-    expect(f[0].details?.wechsel).toBe('2025-11-30');
-    expect(f[0].details?.uebergabe).toBe('2025-11-15');
-    expect(f[0].message).toContain('Wohnungsübergabe war am 2025-11-15');
+    expect(f[0].details?.wechsel).toBe('2025-10-27');
+    expect(f[0].details?.vertragsende).toBe('2025-11-30');
+    expect(f[0].message).toContain('Vertrag läuft bis zum 2025-11-30');
   });
 
-  it('ist erfüllt, wenn die Ablesung am Vertragsende liegt', () => {
+  it('ist erfüllt, wenn die Ablesung am Übergabetag liegt', () => {
     const f = zwischenablesungFehlt(
-      [vertrag({ end_date: '2025-11-30', actual_move_out: '2025-11-15' })],
-      ZAEHLER, [ablesung('2025-11-30')]);
+      [vertrag({ end_date: '2025-11-30', actual_move_out: '2025-10-27' })],
+      ZAEHLER, [ablesung('2025-10-27')]);
     expect(f).toHaveLength(0);
   });
 
@@ -79,10 +83,10 @@ describe('zwischenablesungFehlt', () => {
     expect(f).toHaveLength(1);
   });
 
-  it('nimmt den Übergabetag, wenn kein Vertragsende erfasst ist', () => {
+  it('nimmt das Vertragsende, wenn kein Übergabetag erfasst ist', () => {
     const f = zwischenablesungFehlt(
-      [vertrag({ end_date: null, actual_move_out: '2025-11-15' })],
-      ZAEHLER, [ablesung('2025-11-15')]);
+      [vertrag({ end_date: '2025-11-30', actual_move_out: null })],
+      ZAEHLER, [ablesung('2025-11-30')]);
     expect(f).toHaveLength(0);
   });
 

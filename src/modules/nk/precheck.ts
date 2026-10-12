@@ -738,20 +738,24 @@ export const WECHSEL_TOLERANZ_TAGE = 3;
  * Mietverhältnisse, die im Zeitraum enden, ohne Zwischenablesung am
  * Nutzerwechsel.
  *
- * KORREKTUR 12.10.2026. Die Regel verlangte bisher irgendeine Ablesung vom Typ
- * `move_out` an den Zählern der Wohnung — ohne Datum. Zwei Dinge waren daran
- * falsch:
+ * KORREKTUR 12.10.2026. Die Regel verlangte irgendeine Ablesung vom Typ
+ * `move_out` an den Zählern der Wohnung — ohne Datumsbezug. Eine Ablesung vom
+ * Februar erfüllte sie für einen Auszug im November. Seitdem wird auf einen
+ * Tag geprüft.
  *
- *   1. **Der Tag fehlte.** Eine Ablesung vom Februar erfüllte die Regel für
- *      einen Auszug im November.
- *   2. **Der falsche Tag war gemeint.** Maßgeblich ist der Nutzerwechsel, also
- *      das VERTRAGSENDE — bis dahin trägt der Vormieter die Kosten. Bei N24 W6
- *      liegt die Übergabe am 15.11.2025, das Vertragsende am 30.11.2025; eine
- *      Ablesung zum 15.11. schneidet die Abrechnung an der falschen Stelle.
+ * ÄNDERUNG 13.10.2026 (Owner-Entscheidung „Verbrauch nach Protokoll, Umlage
+ * nach Vertrag"). Am 12.10. stand hier noch das VERTRAGSENDE als maßgeblicher
+ * Tag. Gemeint ist aber der Tag, an dem der VERBRAUCH geschnitten wird — und
+ * das ist die Übergabe: Wer ausgezogen ist, verbraucht nichts mehr, auch wenn
+ * sein Vertrag weiterläuft. Dieselbe Reihenfolge gilt in
+ * `nutzungsAbschnitt()`, das den Verbrauchsabschnitt bildet. Stünden hier und
+ * dort verschiedene Tage, verlangte die Vorprüfung eine Ablesung, mit der die
+ * Engine anschließend nicht rechnet.
  *
- * Maßgeblich ist deshalb `end_date`; `actual_move_out` dient nur noch als
- * Ersatz, wenn kein Vertragsende erfasst ist, und bleibt im Übrigen eine
- * informative Angabe zum Übergabetermin.
+ * Maßgeblich ist deshalb `actual_move_out`; `end_date` dient als Ersatz, wenn
+ * kein Übergabetermin erfasst ist. Die Kosten nach Fläche laufen unverändert
+ * bis zum Vertragsende — das ist eine andere Rechnung und steht in
+ * `calculateProRata()`.
  *
  * Als Zwischenablesung zählt JEDE Ablesung innerhalb der Toleranz, nicht nur
  * eine vom Typ `move_out`. Was zählt, ist der Stand an diesem Tag — nicht,
@@ -768,13 +772,14 @@ export function zwischenablesungFehlt(
   const out: PreCheckFinding[] = [];
 
   for (const v of vertraege) {
-    const wechsel = v.end_date ? isoTag(v.end_date) : (v.actual_move_out ? isoTag(v.actual_move_out) : null);
+    const wechsel = v.actual_move_out ? isoTag(v.actual_move_out) : (v.end_date ? isoTag(v.end_date) : null);
     if (!wechsel) continue;
 
-    const uebergabe = v.actual_move_out ? isoTag(v.actual_move_out) : null;
-    const zusatz = uebergabe && uebergabe !== wechsel
-      ? ` Die Wohnungsübergabe war am ${uebergabe}; für die Abrechnung zählt das `
-        + 'Vertragsende, bis dahin trägt der Vormieter die Kosten.'
+    const vertragsende = v.end_date ? isoTag(v.end_date) : null;
+    const zusatz = vertragsende && vertragsende !== wechsel
+      ? ` Der Vertrag läuft bis zum ${vertragsende}; die Kosten nach Fläche trägt der `
+        + 'Vormieter bis dahin weiter. Geschnitten wird nur der VERBRAUCH, und der endet '
+        + 'mit der Übergabe.'
       : '';
 
     for (const meter of meters.filter(m => m.unit_id === v.unit_id)) {
@@ -796,7 +801,7 @@ export function zwischenablesungFehlt(
           + zusatz,
         details: {
           lease_id: v.id, meter_id: meter.id, meter_number: meter.meter_number,
-          unit_code: v.unit_code ?? null, wechsel, uebergabe,
+          unit_code: v.unit_code ?? null, wechsel, vertragsende,
         },
       });
     }

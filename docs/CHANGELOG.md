@@ -4,6 +4,41 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — Verbrauch nach Protokoll, Umlage nach Vertrag
+
+Owner-Entscheidung vom 13.10.2026. Zwei Schnitte, die bisher derselbe waren, laufen jetzt
+auseinander:
+
+- **Verbrauch** (Heizung, Warmwasser, Wasser) wird an der **Übergabe** geschnitten.
+  Verbrauchen kann nur, wer die Schlüssel hat; wer am 27.10. auszieht, heizt danach nicht
+  mehr.
+- **Kosten nach Fläche und nach Wohnungen** laufen weiter nach **Vertrag**. Der Vormieter
+  trägt die Grundkosten bis zum Vertragsende, auch wenn er schon ausgezogen ist.
+
+Umgesetzt in **einer Funktion**: `nutzungsAbschnitt()` bildet den Verbrauchsabschnitt und
+liest dafür jetzt `handover_at` und `actual_move_out` statt `start_date` und `end_date`.
+Die Flächenrechnung läuft über `calculateProRata()` und bleibt unberührt. Kein neues Feld,
+keine Migration, kein zusätzliches Mietverhältnis.
+
+Beide Felder existierten und waren überall mit den Vertragsdaten identisch belegt — bei
+MG24 und den übrigen N24-Wohnungen ändert sich dadurch nichts.
+
+**Die Lücke zwischen Auszug und Einzug gehört keinem Mietverhältnis** und fällt damit in
+den Eigentümerblock. Das ist die Zwischenmiete, ohne ein Mietverhältnis zu erfinden, das
+sich mit den beiden anderen überschneidet. Bei N24 W6 sind das **421 kWh Heizung,
+10,4 % des Jahresverbrauchs der Wohnung**.
+
+Die Vorprüfung folgt demselben Tag: `MISSING_INTERIM_READING_FOR_CHANGEOVER` verlangt die
+Zwischenablesung jetzt am Übergabetermin, ersatzweise am Vertragsende — die am 12.10.
+eingeführte umgekehrte Reihenfolge ist damit überholt. Stünden Vorprüfung und
+Verbrauchsabschnitt auf verschiedenen Tagen, verlangte die eine eine Ablesung, mit der die
+andere nicht rechnet.
+
+Die Mietvertrags-Route führt zusätzlich `handover_at`; ohne das wäre eine Korrektur des
+Übergabetermins nur an der Route vorbei möglich gewesen.
+
+---
+
 ## Stand 2026-10-12 — Nicht umlagefähige Kosten sperrten die Abrechnung
 
 `ALLOCATION_RULE_GAP` prüfte ALLE gebuchten Kostenarten darauf, ob ein Verteilschlüssel

@@ -481,6 +481,12 @@ export function registerAssetsHttpRoutes(api: any) {
                 'kaltmiete','nk_vorauszahlung','heizkosten_vorauszahlung','kaution',
                 'billing_mode','payment_method','rent_due_day','vat_option','vat_rate','notes',
                 'termination_date','termination_reason','actual_move_out',
+                /* Übergabetermine. Seit dem 13.10.2026 schneiden sie den
+                   Verbrauch zwischen zwei Nutzern (`nutzungsAbschnitt()`),
+                   während die Kosten nach Fläche am Vertrag hängen. Ohne sie
+                   in dieser Liste wäre eine Korrektur nur an der Route vorbei
+                   möglich. */
+                'handover_at',
                 'contract_document_path']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }
