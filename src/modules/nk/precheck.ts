@@ -433,29 +433,15 @@ export async function nkPreCheck(propertyId: number, year: number): Promise<PreC
   }
 
   // 15. MISSING_INTERIM_READING_FOR_CHANGEOVER
-  // Check if any lease changeovers during the year lack interim readings
-  const { rows: changeoverLeases } = await dbQuery(
-    `SELECT l.id, l.actual_move_out, l.unit_id FROM leases l
-     JOIN units u ON l.unit_id = u.id
-     WHERE u.property_id = $1 AND l.actual_move_out >= $2 AND l.actual_move_out <= $3`,
+  const { rows: wechselVertraege } = await dbQuery(
+    `SELECT l.id, l.lease_number, l.unit_id, l.end_date, l.actual_move_out, u.code AS unit_code
+       FROM leases l JOIN units u ON l.unit_id = u.id
+      WHERE u.property_id = $1
+        AND (l.end_date BETWEEN $2 AND $3 OR l.actual_move_out BETWEEN $2 AND $3)`,
     [propertyId, `${year}-01-01`, `${year}-12-31`]
   );
-
-  for (const cl of changeoverLeases) {
-    const unitMeters = meters.filter((m: any) => m.unit_id === cl.unit_id);
-    for (const meter of unitMeters) {
-      const moveOutReadings = readings.filter((r: any) =>
-        r.meter_id === meter.id && r.reading_type === 'move_out'
-      );
-      if (moveOutReadings.length === 0) {
-        findings.push({
-          code: 'MISSING_INTERIM_READING_FOR_CHANGEOVER',
-          severity: 'warning',
-          message: `No move-out reading for meter ${meter.meter_number} on lease changeover`,
-          details: { lease_id: cl.id, meter_id: meter.id },
-        });
-      }
-    }
+  for (const f of zwischenablesungFehlt(wechselVertraege as any, meters as any, readings as any)) {
+    findings.push(f);
   }
 
   // 16. MISSING_SERVICE_PERIOD_HEATING
@@ -680,6 +666,78 @@ export function nutzerwechselOhneAufteilung(
         + 'anwendbare Aufteilung nach § 9b Abs. 3 HeizkostenV.',
       details: { unit_code: code, von: abschnitt.von, bis: abschnitt.bis },
     });
+  }
+  return out;
+}
+
+/**
+ * Wie weit darf die Zwischenablesung vom Nutzerwechsel entfernt liegen?
+ *
+ * Drei Tage. Enger als die sieben Tage, die eine ÜBERGABE vor dem
+ * Mietbeginn haben darf (`EINZUGSSTAND_TOLERANZ_TAGE`): Dort geht es um einen
+ * terminlichen Vorlauf, der zum Geschäft gehört. Hier geht es um den Schnitt
+ * zwischen zwei Abrechnungen, und der soll auf dem Tag liegen.
+ */
+export const WECHSEL_TOLERANZ_TAGE = 3;
+
+/**
+ * Mietverhältnisse, die im Zeitraum enden, ohne Zwischenablesung am
+ * Nutzerwechsel.
+ *
+ * KORREKTUR 12.10.2026. Die Regel verlangte bisher irgendeine Ablesung vom Typ
+ * `move_out` an den Zählern der Wohnung — ohne Datum. Zwei Dinge waren daran
+ * falsch:
+ *
+ *   1. **Der Tag fehlte.** Eine Ablesung vom Februar erfüllte die Regel für
+ *      einen Auszug im November.
+ *   2. **Der falsche Tag war gemeint.** Maßgeblich ist der Nutzerwechsel, also
+ *      das VERTRAGSENDE — bis dahin trägt der Vormieter die Kosten. Bei N24 W6
+ *      liegt die Übergabe am 15.11.2025, das Vertragsende am 30.11.2025; eine
+ *      Ablesung zum 15.11. schneidet die Abrechnung an der falschen Stelle.
+ *
+ * Maßgeblich ist deshalb `end_date`; `actual_move_out` dient nur noch als
+ * Ersatz, wenn kein Vertragsende erfasst ist, und bleibt im Übrigen eine
+ * informative Angabe zum Übergabetermin.
+ *
+ * Als Zwischenablesung zählt JEDE Ablesung innerhalb der Toleranz, nicht nur
+ * eine vom Typ `move_out`. Was zählt, ist der Stand an diesem Tag — nicht,
+ * welches Etikett jemand beim Erfassen gewählt hat.
+ */
+export function zwischenablesungFehlt(
+  vertraege: { id: number; lease_number?: string | null; unit_id: number;
+    unit_code?: string | null; end_date?: string | Date | null;
+    actual_move_out?: string | Date | null }[],
+  meters: { id: number; unit_id?: number | null; meter_number: string }[],
+  readings: { meter_id: number; read_at: string | Date }[],
+  toleranzTage = WECHSEL_TOLERANZ_TAGE,
+): PreCheckFinding[] {
+  const out: PreCheckFinding[] = [];
+
+  for (const v of vertraege) {
+    const wechsel = v.end_date ? isoTag(v.end_date) : (v.actual_move_out ? isoTag(v.actual_move_out) : null);
+    if (!wechsel) continue;
+
+    const uebergabe = v.actual_move_out ? isoTag(v.actual_move_out) : null;
+    const zusatz = uebergabe && uebergabe !== wechsel
+      ? ` Die Wohnungsübergabe war am ${uebergabe}; für die Abrechnung zählt das `
+        + 'Vertragsende, bis dahin trägt der Vormieter die Kosten.'
+      : '';
+
+    for (const meter of meters.filter(m => m.unit_id === v.unit_id)) {
+      if (findeEinzugsstand(meter.id, wechsel, readings as any, toleranzTage)) continue;
+      out.push({
+        code: 'MISSING_INTERIM_READING_FOR_CHANGEOVER',
+        severity: 'warning',
+        message: `Zähler ${meter.meter_number}: keine Zwischenablesung zum Nutzerwechsel am `
+          + `${wechsel} (± ${toleranzTage} Tage). § 9b Abs. 1 HeizkostenV verlangt sie; ohne `
+          + 'sie wird der Verbrauch zwischen Vor- und Nachmieter aufgeteilt statt gemessen.'
+          + zusatz,
+        details: {
+          lease_id: v.id, meter_id: meter.id, meter_number: meter.meter_number,
+          unit_code: v.unit_code ?? null, wechsel, uebergabe,
+        },
+      });
+    }
   }
   return out;
 }

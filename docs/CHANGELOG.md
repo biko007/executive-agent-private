@@ -4,6 +4,31 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — Zwischenablesung: der Schnitt liegt am Vertragsende
+
+Die Vorprüfung `MISSING_INTERIM_READING_FOR_CHANGEOVER` verlangte bisher *irgendeine*
+Ablesung vom Typ `move_out` an den Zählern der Wohnung — ohne Datumsbezug und am falschen
+Tag orientiert. Zwei Fehler in einer Regel:
+
+- **Ohne Datum.** Eine Ablesung vom Februar erfüllte die Regel für einen Auszug im
+  November. Die Sperre war damit faktisch wirkungslos.
+- **Am falschen Tag.** Maßgeblich war `actual_move_out`, also der Übergabetermin. Für die
+  Abrechnung zählt aber das **Vertragsende**: Bis dahin trägt der Vormieter die Kosten.
+  Bei N24 W6 liegen die beiden 15 Tage auseinander (Übergabe 15.11.2025, Vertragsende
+  30.11.2025) — eine Ablesung vom Übergabetag würde die Abrechnung 15 Tage zu früh
+  schneiden und den Verbrauch dieser Tage dem Nachmieter zuschlagen.
+
+Neu ist die reine Funktion `zwischenablesungFehlt()`: Sie ankert am `end_date` des
+endenden Mietverhältnisses (Rückfall `actual_move_out`, wenn kein Vertragsende erfasst
+ist), sucht je Zähler eine Ablesung innerhalb von **± 3 Tagen** und zählt dabei **jede**
+Ablesung — was zählt, ist der Stand an diesem Tag, nicht das Etikett beim Erfassen.
+Fallen Vertragsende und Übergabe auseinander, nennt die Meldung beide Daten.
+
+`actual_move_out` bleibt als Übergabedatum informativ und geht in die Kostenverteilung
+nicht ein.
+
+---
+
 ## Stand 2026-10-12 — Mietverhältnisse: Vertragsparteien und Dokumentpfad nachtragbar
 
 Zwei Lücken in den Routen, die beim N24-Nachtrag aufgefallen sind und beide nur den Weg
