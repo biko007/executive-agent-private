@@ -557,6 +557,35 @@ describe('Goldfile 6: Multi-tenant + mixed billing modes', () => {
       expect(excludedItems.length).toBeGreaterThan(0);
     }
   });
+
+  /* KORREKTUR 12.10.2026. Der Anteil eines ausgeschlossenen Mietverhältnisses
+     wurde ZWEIMAL in den Eigentümerblock gelegt: einmal als unverteilter Rest
+     (`vacancy_owner_share`), weil `allocateCosts()` nur die abzurechnenden
+     Mietverhältnisse kennt, und danach noch einmal ausdrücklich als
+     `excluded_billing_mode`.
+
+     Hier: drei gleich große Wohnungen, 1.800 € nach Fläche, eine davon
+     pauschal vermietet. Richtig sind 600 € je Wohnung. Vorher wies die
+     Abrechnung 2.400 € aus — mehr, als gebucht war. */
+  it('verteilt genau den gebuchten Betrag, ohne den Anteil doppelt zu zählen', async () => {
+    const result = await computeNk(propId, 2024);
+    const summe = result.statements.reduce(
+      (s, st) => s + st.items.reduce((a, i) => a + i.amount, 0), 0);
+    expect(summe).toBeCloseTo(1800, 2);
+
+    const ownerBlock = result.statements.find(s => s.is_owner_block)!;
+    const ausgeschlossen = ownerBlock.items
+      .filter(i => i.item_type === 'excluded_billing_mode')
+      .reduce((a, i) => a + i.amount, 0);
+    const leerstand = ownerBlock.items
+      .filter(i => i.item_type === 'vacancy_owner_share')
+      .reduce((a, i) => a + i.amount, 0);
+
+    // Eine von drei gleich großen Wohnungen ist pauschal vermietet.
+    expect(ausgeschlossen).toBeCloseTo(600, 2);
+    // Es steht nichts leer, also bleibt daneben kein Leerstandsanteil.
+    expect(leerstand).toBeCloseTo(0, 2);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

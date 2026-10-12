@@ -361,27 +361,26 @@ export async function computeNk(
       }
     }
 
-    // Vacancy share → owner block
-    if (allocation.vacancyAmount > 0) {
-      vacancyItems.push({
-        item_type: 'vacancy_owner_share',
-        cost_category_id: catId,
-        allocation_rule_id: rule.id,
-        related_lease_id: null,
-        total_property: totalAmount,
-        allocation_basis: rule.key_type,
-        share_numerator: allocation.vacancyNumerator,
-        share_denominator: allocation.vacancyDenominator,
-        share_fraction: allocation.vacancyFraction,
-        amount: allocation.vacancyAmount,
-        rounding_remainder: null,
-        source_booking_ids: sourceBookingIds,
-        notes: 'Leerstandsanteil',
-        metadata_jsonb: null,
-      });
-    }
+    /* Anteil der inklusive vermieteten Wohnungen → Eigentümerblock.
 
-    // Excluded billing mode share → owner block
+       KORREKTUR 12.10.2026. Dieser Anteil wurde ZWEIMAL gezählt. `allocateCosts()`
+       bekommt nur die abzurechnenden Mietverhältnisse; was auf eine inklusive
+       vermietete Wohnung entfällt, bleibt dort unverteilt und kommt als
+       `vacancyAmount` zurück. Anschließend hat diese Schleife denselben Betrag
+       ein zweites Mal als `excluded_billing_mode` in den Eigentümerblock gelegt.
+
+       Bei N24 2025 waren das 577,85 € auf 3.237,59 € gebuchte Kosten: Die
+       Abrechnung verteilte 3.815,44 € und damit mehr, als überhaupt gebucht war.
+       Die Mieterbeträge blieben richtig — falsch waren der Eigentümerblock und
+       die Objektsumme, also genau die Zahl, die gegen die Rechnungen stimmen muss.
+       Betroffen sind nur Objekte mit inklusive vermieteten Wohnungen, derzeit
+       N24 und L19; MG24 hat keine.
+
+       Beide Posten bleiben erhalten — der Eigentümer soll sehen, was Leerstand
+       ist und was auf die inklusive vermieteten Wohnungen entfällt. Gezählt wird
+       der Betrag aber nur einmal: Der Leerstandsposten wird um die Anteile der
+       inklusive-Mietverhältnisse vermindert. */
+    const exclFuerRegel: ItemResult[] = [];
     for (const excl of excluded_leases) {
       const exclLease = input.leases.find(l => l.id === excl.lease_id);
       if (!exclLease) continue;
@@ -408,7 +407,7 @@ export async function computeNk(
 
       if (exclShare > 0) {
         const exclAmount = roundKaufmaennisch(totalAmount * exclShare);
-        excludedItems.push({
+        exclFuerRegel.push({
           item_type: 'excluded_billing_mode',
           cost_category_id: catId,
           allocation_rule_id: rule.id,
@@ -425,6 +424,47 @@ export async function computeNk(
           metadata_jsonb: null,
         });
       }
+    }
+    excludedItems.push(...exclFuerRegel);
+
+    const exclSumme = exclFuerRegel.reduce((s, i) => s + i.amount, 0);
+    const leerstand = roundKaufmaennisch(allocation.vacancyAmount - exclSumme);
+
+    if (leerstand < -0.005) {
+      /* Darf nicht vorkommen: Der Anteil der inklusive-Mietverhältnisse ist Teil
+         des unverteilten Rests. Tritt es doch ein, stimmt eine Bezugsgröße nicht
+         (etwa eine Fläche, die in der einen Rechnung zählt und in der anderen
+         nicht). Dann lieber eine sichtbare Warnung als eine stille Verschiebung. */
+      warnings.push({
+        code: 'EXCLUDED_SHARE_EXCEEDS_VACANCY',
+        severity: 'warning',
+        message: `Kostenart "${rule.category_code}": Der Anteil der inklusive vermieteten `
+          + `Wohnungen (${exclSumme.toFixed(2)}) übersteigt den unverteilten Rest `
+          + `(${allocation.vacancyAmount.toFixed(2)}). Der Leerstandsposten wird auf 0 gesetzt.`,
+        details: { category: rule.category_code, excluded: exclSumme, vacancy: allocation.vacancyAmount },
+      });
+    }
+
+    // Vacancy share → owner block
+    if (leerstand > 0) {
+      vacancyItems.push({
+        item_type: 'vacancy_owner_share',
+        cost_category_id: catId,
+        allocation_rule_id: rule.id,
+        related_lease_id: null,
+        total_property: totalAmount,
+        allocation_basis: rule.key_type,
+        share_numerator: allocation.vacancyNumerator,
+        share_denominator: allocation.vacancyDenominator,
+        share_fraction: totalAmount > 0 ? leerstand / totalAmount : 0,
+        amount: leerstand,
+        rounding_remainder: null,
+        source_booking_ids: sourceBookingIds,
+        notes: exclSumme > 0
+          ? 'Leerstandsanteil (ohne die Anteile der inklusive vermieteten Wohnungen)'
+          : 'Leerstandsanteil',
+        metadata_jsonb: null,
+      });
     }
   }
 

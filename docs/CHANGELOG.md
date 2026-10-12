@@ -4,6 +4,45 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-12 — Der Anteil ausgeschlossener Mietverhältnisse wurde doppelt gezählt
+
+Beim Freischalten von N24 2025 verteilte die Abrechnung **3.815,44 €**, obwohl nur
+**3.237,59 €** gebucht waren. Ursache: `allocateCosts()` bekommt nur die abzurechnenden
+Mietverhältnisse. Was auf eine inklusive vermietete Wohnung entfällt, bleibt dort
+unverteilt und kommt als `vacancyAmount` zurück — und anschließend legte die Engine
+denselben Betrag ein zweites Mal als `excluded_billing_mode` in den Eigentümerblock.
+
+Die Mieterbeträge waren richtig. Falsch waren der Eigentümerblock und die Objektsumme,
+also genau die Zahl, die gegen die Rechnungen stimmen muss. Betroffen sind nur Objekte
+mit inklusive vermieteten Wohnungen: **N24 und L19**. MG24 hat keine und bleibt
+unverändert.
+
+Beide Posten bleiben erhalten — der Eigentümer soll sehen, was Leerstand ist und was auf
+die inklusive vermieteten Wohnungen entfällt. Gezählt wird der Betrag nur einmal: Der
+Leerstandsposten wird um die Anteile der inklusive-Mietverhältnisse vermindert. Übersteigt
+der ausgeschlossene Anteil den unverteilten Rest, meldet die Engine
+`EXCLUDED_SHARE_EXCEEDS_VACANCY` statt still zu verschieben.
+
+Das Goldfile-Szenario 6 prüft jetzt, dass die Summe aller Posten dem gebuchten Betrag
+entspricht — die Prüfung fehlte, und genau deshalb blieb der Fehler unbemerkt.
+
+---
+
+## Stand 2026-10-12 — N24 W6: Nutzerwechsel gemessen statt geschätzt
+
+Die sechs Blocker für N24 2025 sind weg. Der M-Bus-Logger zeichnet **wöchentlich** auf,
+montags um 00:00 Uhr; die Aufzeichnung vom **01.12.2025, 00:00:20 Uhr** ist damit der
+Stand am Ende des 30.11.2025 — auf zwanzig Sekunden genau der Vertragsschnitt zwischen
+Schweigert-Hasi und Westhauser. Quelle sind die Exporte, die Fa. Maurer am 08.01.2026
+bereits entlang der Vertragsgrenze geteilt aus dem Logger gezogen hat.
+
+Nebenbei ist damit eine offene Frage vom Vortag beantwortet: Die Zählerreihen aus dem
+Logger lagen zum Jahresende durchweg unter den im Zähler gespeicherten Stichtagswerten.
+Es ist keine Skalenfrage — der letzte Logeintrag des Jahres ist der **29.12.**, nicht der
+31.12.
+
+---
+
 ## Stand 2026-10-12 — N24 2025: Umlageregeln und die ersten Kostenbuchungen
 
 Elf Umlageregeln für N24 ab 2025, nach dem Vorbild der eddi24-Abrechnung 2024 für
