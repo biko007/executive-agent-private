@@ -4,6 +4,39 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — Owner-Ablesung MG24 und die Frage, wer in N24 abliest
+
+Zwei fehlende Stände erfasst, sechs Ablesungen um die Owner-Ablesung vom 31.12.2025
+ergänzt. Dabei sind drei Dinge aufgeklärt worden, die vorher offen waren.
+
+**Der Wandlerfaktor 50 ist bestätigt.** Die Mail an energiekonzept vom 07.01.2026 nennt
+die Rohanzeige des Summenzählers 1LGZ0071678615 zum 31.12.2025: 1.8.0 = 66,9 und
+2.8.0 = 101,9. Mal 50 sind das 3.345 und 5.095 kWh — dieselben Werte, mit denen die
+Abrechnung rechnet. Das Portal von energiekonzept nimmt die Rohanzeige gar nicht an,
+sondern verlangt den bereits umgerechneten Wert.
+
+**Die SWT-Endabrechnung für MG24 ist damit widerlegbar.** Sie setzt für dasselbe
+Bezugsregister bereits zum 21.08.2025 den Stand 243,993 an und rechnet daraus 12.200 kWh
+ab. Der Eigentümer hat am 16.09.2025 8,3 und am 31.12.2025 66,9 abgelesen. Ein Zählwerk
+läuft nicht rückwärts. Der Stand vom 16.09.2025 ist jetzt erfasst.
+
+**Die 79 kWh am PV-Zähler waren kein Ablesefehler.** Das Gerät ist ein Zweiwegezähler und
+stand auf 1.8.0 = 4.421 und 2.8.0 = 79 kWh. Das Portal lässt dort nur ein Feld
+„Einspeisung" zu, also wurden die 79 gemeldet. Die Erzeugung steht auf 1.8.0.
+
+**Wer liest in N24 ab?** Niemand vor Ort. Die Rechnungen zeigen den Unterschied: N24
+zahlt eine GSM-Gebühr für die Miete eines Gateways, MG24 nicht. Dazu schreibt
+energiekonzept selbst, die Ablesung der Stromzähler sei „nur erforderlich, sofern diese
+nicht durch uns auslesbar sind". In MG24 fährt deshalb jemand hin, in N24 nicht.
+
+Zu den Ständen vom 31.12.2025: Für MG24 war je ein Stand aus der Abrechnung der
+Kundenanlage erfasst. Die Owner-Ablesung desselben Tages weicht um 1 bis 10 kWh ab. Der
+erfasste Wert bleibt der der Abrechnung — nicht weil er richtiger wäre, sondern weil er
+mit dem Anfangsstand und der abgerechneten Menge zusammenpasst. Die Owner-Ablesung steht
+vollständig in der Notiz des jeweiligen Standes.
+
+---
+
 ## Stand 2026-10-13 — Was die PV-Anlagen einbringen, und was eine Umstellung brächte
 
 Reine Rechnung, keine Datenänderung. `scripts/pv-wirtschaftlichkeit.ts` macht die
