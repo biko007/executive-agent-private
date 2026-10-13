@@ -1,0 +1,35 @@
+{
+  "_hinweis": [
+    "MCP-Konfiguration für den Casameta-Portal-Agenten.",
+    "Der Browser läuft mit demselben persistenten Profil wie das Login-Skript —",
+    "nur so ist der Agent beim Start bereits angemeldet und sieht das Passwort nie.",
+    "`--save-trace` erzeugt die nachspielbare trace.zip, die das Protokoll verlangt.",
+    "`--isolated` ist bewusst NICHT gesetzt: Es würde das Profil ignorieren.",
+    "HEADLESS, gemessen: Unter Xvfb scheitert auf diesem VPS jeder Screenshot",
+    "(Protocol error Page.captureScreenshot), headless nicht. Screenshots sind",
+    "Protokollpflicht, also headless.",
+    "Die Version von @playwright/mcp ist gepinnt, damit ein stiller Versionssprung",
+    "nicht mitten in einer Abrechnung das Verhalten ändert."
+  ],
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.83",
+        "--headless",
+        "--browser",
+        "chromium",
+        "--user-data-dir",
+        "/home/biko/.local/share/biko-portals/casameta/profile",
+        "--save-trace",
+        "--output-dir",
+        "/home/biko/.local/share/biko-portals/casameta/mcp-output",
+        "--viewport-size",
+        "1280,720",
+        "--allowed-origins",
+        "https://portal.casameta.de;https://challenges.cloudflare.com;https://cdnjs.cloudflare.com"
+      ]
+    }
+  }
+}

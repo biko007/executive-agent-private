@@ -4867,6 +4867,15 @@ export default function (api: any) {
       api.logger.error(`[wiki] Migration failed: ${e.message}`);
     }
 
+    // ── Casameta-Portal-Agent: Protokolltabellen ──────────────────────────
+    try {
+      const casametaMigrationsDir = path.join(__dirname, 'src/modules/casameta/migrations');
+      const casametaApplied = await runMigrations(casametaMigrationsDir, 'casameta');
+      if (casametaApplied > 0) api.logger.info(`[casameta] Applied ${casametaApplied} migration(s)`);
+    } catch (e: any) {
+      api.logger.error(`[casameta] Migration failed: ${e.message}`);
+    }
+
     // ── Instagram Edit Queue Recovery (E4a) ────────────────────────────────
     try {
       const recovered = await recoverStaleJobs();
