@@ -850,6 +850,22 @@ wie auf einem eigenen über `xvfb-run` mit passender Geometrie. Headless liefert
 Screenshots und Trace vollständig. Screenshots sind Protokollpflicht, also
 headless.
 
+### Messergebnis 13.10.2026: Turnstile lässt den Serverbrowser nicht durch
+
+Der erste echte Login-Versuch ist belegt daran gescheitert. Im Diagnoselauf
+blieb das Feld `#Captcha` an jeder Station leer, und die Seitenkonsole meldete
+`Turnstile Fehler: 600010`. Cloudflare führt die Gruppe `600*` als „Generic
+challenge failure — Bot behavior detected". Danach lädt das Portal die
+Loginseite neu und setzt das Formular zurück; der zweite Schritt
+(`PasswordRequired`) wird nie erreicht.
+
+Folge für die Architektur: **Der Portalzugriff vom VPS aus ist derzeit nicht
+tragfähig.** Die hinterlegten Zugangsdaten sind davon unberührt und bis heute
+ungeprüft — das Portal hat sie nie bewertet. Offen und nicht umgangen:
+Ein sichtbarer Browser unter Xvfb (ohne Screenshotpflicht beim reinen Login)
+ist ungetestet; die tragfähige Alternative ist der Betrieb über den
+Owner-Browser. Einzelheiten: `report-casameta-login-diagnose-20261013.md`.
+
 ### Browser-Versionen
 
 Drei Stellen wollen verschiedene Builds, alle in `~/.cache/ms-playwright`:

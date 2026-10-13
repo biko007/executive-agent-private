@@ -36,9 +36,13 @@
  *   bun run scripts/casameta-login.ts              # anmelden, Zustand sichern
  *   bun run scripts/casameta-login.ts --pruefen    # nur prüfen, ob Sitzung gilt
  *   bun run scripts/casameta-login.ts --selbsttest # Zustand verwerfen, neu anmelden
+ *   bun run scripts/casameta-login.ts --erzwingen --diagnose
+ *       wie oben, zusaetzlich Trace, Screenshot je Station und befund.json in
+ *       ~/.local/share/biko-portals/casameta/diagnose/<zeitstempel>/ (700).
+ *       Der Screenshot zeigt den Login-Namen im Formular — er bleibt lokal.
  */
 import { chromium, type BrowserContext } from 'playwright';
-import { readFileSync, existsSync, mkdirSync, chmodSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -48,6 +52,7 @@ const ENV_DATEI = join(homedir(), '.config', 'biko-portals', 'env');
 const BASIS = join(homedir(), '.local', 'share', 'biko-portals', 'casameta');
 const PROFIL = join(BASIS, 'profile');
 const ZUSTAND = join(BASIS, 'storage_state.json');
+const DIAGNOSE_BASIS = join(BASIS, 'diagnose');
 
 /** Wartezeit für das Turnstile-Token. Großzügig: Die Prüfung läuft im
  *  Hintergrund und braucht auf einem VPS ohne GPU spürbar länger als am
@@ -56,9 +61,24 @@ const TURNSTILE_MS = 45_000;
 
 export interface LoginErgebnis {
   ok: boolean;
-  grund?: 'keine-zugangsdaten' | 'turnstile-sichtbar' | 'anmeldung-abgelehnt' | 'fehler';
+  grund?: 'keine-zugangsdaten' | 'turnstile-sichtbar' | 'anmeldung-abgelehnt'
+        | 'browser-start' | 'fehler';
   meldung: string;
+  /** Letzter erreichter Schritt — die Diagnosefrage schlechthin. */
+  schritt?: Schritt;
+  /** Ordner mit Trace, Screenshots und befund.json, nur bei --diagnose. */
+  diagnoseOrdner?: string;
 }
+
+/** Die Stationen des zweistufigen Logins, in der Reihenfolge des Ablaufs. */
+export type Schritt =
+  | 'browser-start'
+  | 'startseite'
+  | 'email-eingetragen'
+  | 'email-abgeschickt'
+  | 'passwortfeld-erschienen'
+  | 'passwort-abgeschickt'
+  | 'angemeldet';
 
 function envLesen(): { benutzer: string; passwort: string } | null {
   if (!existsSync(ENV_DATEI)) return null;
@@ -109,7 +129,7 @@ async function sichtbareChallenge(ctx: BrowserContext): Promise<boolean> {
   }
 }
 
-async function anmelden(): Promise<LoginErgebnis> {
+async function anmelden(diagnose = false): Promise<LoginErgebnis> {
   const zugang = envLesen();
   if (!zugang) {
     return {
@@ -120,24 +140,68 @@ async function anmelden(): Promise<LoginErgebnis> {
   }
   verzeichnisseAnlegen();
 
-  /* Headless, siehe Kopfkommentar — unter Xvfb gäbe es keine Screenshots.
-     Locale und Zeitzone werden gesetzt, damit das Portal deutsche Zahlen- und
-     Datumsformate liefert; daran hängt die ganze Feldzuordnung. */
-  const ctx = await chromium.launchPersistentContext(PROFIL, {
-    headless: true,
-    viewport: { width: 1280, height: 720 },
-    locale: 'de-DE',
-    timezoneId: 'Europe/Berlin',
-  });
+  /* Der Browserstart lag bis 13.10.2026 VOR dem try-Block. Scheiterte er, kam
+     die Ursache nie bei der aufrufenden Stelle an — die Meldung lautete nur
+     "unerwarteter Abbruch". Jetzt liegt er innerhalb. */
+  let ctx: BrowserContext | undefined;
+  let schritt: Schritt = 'browser-start';
+  let ordner = '';
+  const befund: Record<string, unknown> = { beginn: new Date().toISOString() };
+  const konsole: string[] = [];
+
+  /* Ab dem Moment, in dem das Passwort im Formular steht, wird keine
+     Playwright-Meldung mehr durchgereicht — sie kann den Feldinhalt enthalten.
+     Davor ist sie die einzige Diagnosequelle und wird gebraucht. */
+  let passwortImFormular = false;
+
+  /** Screenshot plus Zustandsnotiz je Station. Nur mit --diagnose. */
+  const station = async (seite: any, name: Schritt): Promise<void> => {
+    schritt = name;
+    if (!diagnose || !ordner) return;
+    try {
+      await seite.screenshot({ path: join(ordner, `${name}.png`), fullPage: true });
+      befund[name] = {
+        url: seite.url(),
+        turnstileToken: await turnstileGefuellt(seite),
+        passwortfeld: await seite.locator('input[type="password"]').count() > 0,
+        meldung: await portalMeldung(seite),
+      };
+    } catch { /* Diagnose darf den Ablauf nie zum Scheitern bringen */ }
+  };
 
   try {
+    ctx = await chromium.launchPersistentContext(PROFIL, {
+      headless: true,
+      viewport: { width: 1280, height: 720 },
+      locale: 'de-DE',
+      timezoneId: 'Europe/Berlin',
+    });
+
+    if (diagnose) {
+      ordner = join(DIAGNOSE_BASIS, new Date().toISOString().replace(/[:.]/g, '-'));
+      mkdirSync(ordner, { recursive: true });
+      chmodSync(ordner, 0o700);
+      await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false });
+    }
+
     const seite = ctx.pages()[0] ?? await ctx.newPage();
-    await seite.goto(START, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    seite.on('console', (m: any) => {
+      if (konsole.length < 50) konsole.push(`${m.type()}: ${m.text()}`.slice(0, 300));
+    });
+    seite.on('pageerror', (e: any) => {
+      if (konsole.length < 50) konsole.push(`pageerror: ${String(e).slice(0, 300)}`);
+    });
+
+    const antwort = await seite.goto(START, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    befund.startStatus = antwort?.status() ?? null;
+    befund.startUrl = seite.url();
+    await station(seite, 'startseite');
 
     if (await sichtbareChallenge(ctx)) {
+      befund.sichtbareChallenge = true;
       return {
-        ok: false, grund: 'turnstile-sichtbar',
-        meldung: 'Cloudflare Turnstile verlangt eine sichtbare Bestätigung. '
+        ok: false, grund: 'turnstile-sichtbar', schritt, diagnoseOrdner: ordner,
+        meldung: 'Cloudflare Turnstile verlangt eine sichtbare Bestaetigung. '
           + 'Sie wird nicht umgangen. Der Login muss einmal von Hand erfolgen.',
       };
     }
@@ -145,13 +209,30 @@ async function anmelden(): Promise<LoginErgebnis> {
     // Schritt 1: E-Mail-Adresse
     await seite.fill('#EMail', zugang.benutzer);
     await warteAufTurnstile(seite);
+    await station(seite, 'email-eingetragen');
     await seite.click('#loginBtn');
+    await seite.waitForTimeout(1500);
+    await station(seite, 'email-abgeschickt');
 
     // Schritt 2: Passwort — das Feld erscheint erst nach dem ersten Absenden.
     const passwortFeld = seite.locator('input[type="password"]').first();
-    await passwortFeld.waitFor({ state: 'visible', timeout: 30_000 });
+    try {
+      await passwortFeld.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch {
+      /* Das Portal hat auf die E-Mail-Adresse hin kein Passwortfeld geliefert.
+         Das ist eine eigene, benennbare Ursache und kein allgemeiner Fehler. */
+      return {
+        ok: false, grund: 'anmeldung-abgelehnt', schritt, diagnoseOrdner: ordner,
+        meldung: 'Das Portal hat nach dem ersten Schritt kein Passwortfeld '
+          + `angezeigt. Letzte Adresse: ${seite.url()}. `
+          + `Meldung der Seite: ${(await portalMeldung(seite)) || 'keine'}.`,
+      };
+    }
+    await station(seite, 'passwortfeld-erschienen');
+
     /* `fill` schreibt direkt in den Wert, ohne Tastaturereignisse zu
        protokollieren. Der Wert taucht dadurch in keinem Trace-Eintrag auf. */
+    passwortImFormular = true;
     await passwortFeld.fill(zugang.passwort);
     await warteAufTurnstile(seite);
     await Promise.all([
@@ -159,38 +240,86 @@ async function anmelden(): Promise<LoginErgebnis> {
       seite.click('#loginBtn'),
     ]);
     await seite.waitForTimeout(2500);
+    await station(seite, 'passwort-abgeschickt');
 
     if (seite.url().includes('/login/')) {
       if (await sichtbareChallenge(ctx)) {
+        befund.sichtbareChallenge = true;
         return {
-          ok: false, grund: 'turnstile-sichtbar',
+          ok: false, grund: 'turnstile-sichtbar', schritt, diagnoseOrdner: ordner,
           meldung: 'Nach der Passworteingabe erscheint eine sichtbare '
             + 'Cloudflare-Challenge. Sie wird nicht umgangen.',
         };
       }
+      const meldung = await portalMeldung(seite);
       return {
-        ok: false, grund: 'anmeldung-abgelehnt',
-        meldung: 'Das Portal hat die Anmeldung abgelehnt und bleibt auf der '
-          + 'Loginseite. Benutzername oder Passwort stimmen nicht, oder das '
-          + 'Konto ist gesperrt.',
+        ok: false, grund: 'anmeldung-abgelehnt', schritt, diagnoseOrdner: ordner,
+        meldung: 'Das Portal bleibt auf der Loginseite. Meldung der Seite: '
+          + `${meldung || 'keine'}. Letzte Adresse: ${seite.url()}.`,
       };
     }
 
     await ctx.storageState({ path: ZUSTAND });
     chmodSync(ZUSTAND, 0o600);
-    return { ok: true, meldung: 'Login OK' };
+    await station(seite, 'angemeldet');
+    return { ok: true, meldung: 'Login OK', schritt, diagnoseOrdner: ordner };
   } catch (e: any) {
-    /* Die Fehlermeldung von Playwright kann den Feldinhalt enthalten. Sie wird
-       deshalb nicht durchgereicht, nur ihr Typ. */
+    /* Vor der Passworteingabe ist die Meldung unverfaenglich und notwendig.
+       Danach wird nur der Fehlertyp genannt. */
+    const detail = passwortImFormular
+      ? `${e?.name ?? 'Fehler'} (Einzelheiten unterdrueckt, koennten Feldinhalte enthalten)`
+      : `${e?.name ?? 'Fehler'}: ${String(e?.message ?? '').slice(0, 400)}`;
+    befund.fehler = detail;
     return {
-      ok: false, grund: 'fehler',
-      meldung: `Der Anmeldevorgang ist abgebrochen (${e?.name ?? 'Fehler'}). `
-        + 'Einzelheiten stehen bewusst nicht hier, weil die Meldung Feldinhalte '
-        + 'enthalten kann.',
+      ok: false,
+      grund: schritt === 'browser-start' ? 'browser-start' : 'fehler',
+      schritt, diagnoseOrdner: ordner,
+      meldung: `Abbruch im Schritt "${schritt}": ${detail}`,
     };
   } finally {
-    await ctx.close();
+    befund.schritt = schritt;
+    befund.konsole = konsole;
+    befund.ende = new Date().toISOString();
+    if (ctx) {
+      if (diagnose && ordner) {
+        await ctx.tracing.stop({ path: join(ordner, 'trace.zip') }).catch(() => {});
+      }
+      await ctx.close().catch(() => {});
+    }
+    if (diagnose && ordner) {
+      try {
+        writeFileSync(join(ordner, 'befund.json'), JSON.stringify(befund, null, 2), { mode: 0o600 });
+      } catch { /* nichts */ }
+    }
   }
+}
+
+/** Steht ein Turnstile-Token im versteckten Feld? Nur ja/nein, nie der Wert. */
+async function turnstileGefuellt(seite: any): Promise<boolean> {
+  try {
+    return await seite.evaluate(() => {
+      const f = document.querySelector('#Captcha') as HTMLInputElement | null;
+      return !!f && (f.value ?? '').length > 0;
+    });
+  } catch { return false; }
+}
+
+/** Sichtbarer Hinweis- oder Fehlertext der Seite. Das ist Ausgabe des Portals,
+ *  keine Eingabe von uns — genau diese Zeile beantwortet die Frage, ob die
+ *  Zugangsdaten beanstandet wurden. */
+async function portalMeldung(seite: any): Promise<string> {
+  try {
+    return await seite.evaluate(() => {
+      const treffer: string[] = [];
+      const wahl = '.validation-summary-errors, .field-validation-error, .alert, '
+        + '.text-danger, [role="alert"]';
+      document.querySelectorAll(wahl).forEach(el => {
+        const t = (el as HTMLElement).innerText?.trim();
+        if (t) treffer.push(t);
+      });
+      return treffer.join(' | ').slice(0, 500);
+    });
+  } catch { return ''; }
 }
 
 async function warteAufTurnstile(seite: any): Promise<void> {
@@ -238,8 +367,11 @@ async function main() {
     process.exit(0);
   }
 
-  const e = await anmelden();
+  const diagnose = argv.includes('--diagnose');
+  const e = await anmelden(diagnose);
   console.log(e.ok ? 'Login OK' : `Login fehlgeschlagen: ${e.meldung}`);
+  if (e.schritt) console.log(`Letzter Schritt: ${e.schritt}`);
+  if (e.diagnoseOrdner) console.log(`Diagnose: ${e.diagnoseOrdner}`);
   process.exit(e.ok ? 0 : 1);
 }
 
