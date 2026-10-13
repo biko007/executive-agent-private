@@ -4,6 +4,34 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — L19: die beiden unbekannten Zähler sind identifiziert
+
+Eine SWT-Ablesebestätigung vom 08.07.2025 nannte sechs Stände, von denen vier nicht zu
+bikosoc passten — darunter zwei Zähler, die hier gar nicht geführt wurden. Die Rechnungen
+der beiden Wohnungsverträge klären beides.
+
+**L19 hat fünf Stromzählpunkte, nicht zwei.** Neben Wärmestrom (64128135) und
+Allgemeinstrom (64128140) gibt es den Haushaltsstrom der beiden Wohnungen im zweiten
+Obergeschoss, geführt auf dem Vertrag des Eigentümers: `1ISK0068679824` (2. OG links,
+am 29.09.2025 gegen `1ISK0086922705` getauscht) und `64128137` (2. OG rechts). Alle drei
+sind jetzt mit insgesamt 18 Ständen von 2023 bis 2026 erfasst und als nicht NK-relevant
+gekennzeichnet.
+
+Damit passt die Ablesebestätigung in ihrer **Struktur** genau: fünf Stromregister
+(64128135 mit HT und NT, dazu 64128137, 64128140 und 1ISK0068679824) plus Wasser.
+
+**Ihre Werte stimmen trotzdem für drei der fünf Register nicht** — und zwar um
+Größenordnungen: gemeldet HT 13.904 gegen abgerechnete 83.755. Entscheidend ist, dass
+diese Meldung **in keine Rechnung eingegangen** ist: Die Stadtwerke rechnen für den 30.06.
+und 31.07.2025 mit eigenen Hochrechnungen weiter. An den erfassten Ständen ist deshalb
+nichts geändert; sie stammen aus den Rechnungen, nach denen tatsächlich abgerechnet wird.
+Die Abweichung steht als Vermerk an beiden Zählern.
+
+Ein Zählertausch war am 13.03.2025 für 64128140 angekündigt, ist aber bis mindestens
+31.07.2026 nicht erfolgt — die Rechnungen führen den Zähler durchgehend.
+
+---
+
 ## Stand 2026-10-13 — MG24 aus dem EnergyPortal, und der erste Allgemeinstrom in der Umlage
 
 Das Portal ist die genauere Quelle als die Abrechnung: Es führt die Stände auf drei
