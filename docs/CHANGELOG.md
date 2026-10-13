@@ -4,6 +4,37 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — MG24 aus dem EnergyPortal, und der erste Allgemeinstrom in der Umlage
+
+Das Portal ist die genauere Quelle als die Abrechnung: Es führt die Stände auf drei
+Nachkommastellen, die Abrechnung rundet. Zwei Stände sind darauf geschärft (667 → 666,575
+und 3.558 → 3.557,731), zwei neue Stände vom 01.09.2026 kamen dazu.
+
+**Die Owner-Ablesung vom 31.12.2025 steht jetzt als eigener Stand neben dem Portalwert**,
+nicht mehr nur in dessen Notiz. Beide sind an diesem Tag richtig — der eine ist, was am
+Gerät stand, der andere, womit energiekonzept rechnet. Unterschieden werden sie über
+`reader_name`; die Differenz von 2 bis 10 kWh bleibt damit sichtbar, statt in einer Notiz
+zu verschwinden.
+
+**Erster Allgemeinstrom in der MG24-Umlage:** 413,33 EUR brutto für 24.06.–31.12.2025,
+umlagefähig nach BetrKV § 2 Nr. 11, Kostenart `beleuchtung`. Dazu war eine Umlageregel
+nötig — eine umlagefähige Kostenart ohne Regel sperrt die Abrechnung
+(ALLOCATION_RULE_GAP). Angelegt nach Fläche, wie alle anderen flächenbezogenen Kostenarten
+in MG24. MG24 2025 steigt dadurch von 13.439,84 auf 13.853,17 EUR, also um genau den
+gebuchten Betrag. Der Preisansatz bleibt vorläufig: Angesetzt ist der Mieterstromtarif,
+den der Vermieter sich selbst in Rechnung stellt.
+
+**Der alte Einspruchsgrund gegen die Stadtwerke ist als überholt gekennzeichnet.** Die
+Abrechnung der Kundenanlage rechnet selbst mit dem Wandlerfaktor 50 — er ist also richtig,
+und die dort vermutete Rückforderung von rund 4.744 EUR besteht nicht. Der Widerspruch
+bleibt, aber aus einem anderen Grund: Nicht der Faktor ist falsch, sondern der Ablesewert.
+
+Die Mieterstromrechnungen 2025 liegen im Portal nur als Testrechnung vor und tauchen in
+keiner Mahnung von März bis September 2026 auf. Sie sind an den Zählern als offene
+Forderung mit dem Status „Versand ungeklärt" vermerkt — als Ertrag ist nichts gebucht.
+
+---
+
 ## Stand 2026-10-13 — Owner-Ablesung MG24 und die Frage, wer in N24 abliest
 
 Zwei fehlende Stände erfasst, sechs Ablesungen um die Owner-Ablesung vom 31.12.2025
