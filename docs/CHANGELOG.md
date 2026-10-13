@@ -4,6 +4,26 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — MG24 Hausstrom erstes Halbjahr: keine Umlage
+
+Zwei Owner-Entscheidungen in den Buchungen festgehalten.
+
+**Der Hausstrom vom 01.01. bis 16.06.2025 wird nicht umgelegt.** Er lief über einen
+gemeinsamen Zählpunkt; ein eigener Allgemeinstromzähler besteht erst ab 24.06.2025.
+Welcher Teil der 900 kWh auf den Allgemeinstrom entfiel, ist nicht zu belegen — statt
+weiter zu schätzen, trägt der Eigentümer die vollen 450,08 EUR.
+
+Das ist mehr als ein Vermerk: Der Betrag war bereits gebucht und nach einer
+Arbeitsannahme geteilt (93,19 zu 6,81 Prozent, also 419,42 EUR umlagefähig und 30,66 EUR
+nicht). Die Entscheidung kippt den umlagefähigen Teil. **MG24 2025 sinkt dadurch von
+13.853,17 auf 13.433,75 EUR** — die Differenz ist genau diese 419,42 EUR. Die
+Arbeitsannahme ist gegenstandslos, weitere Recherche zur Aufteilung entfällt.
+
+**Der Hilfsstrom der Pelletanlage bleibt im Allgemeinstrom.** Keine Herauslösung in die
+Heizkosten; er wird weiter nach BetrKV § 2 Nr. 11 nach Fläche verteilt.
+
+---
+
 ## Stand 2026-10-13 — L19: die beiden unbekannten Zähler sind identifiziert
 
 Eine SWT-Ablesebestätigung vom 08.07.2025 nannte sechs Stände, von denen vier nicht zu
