@@ -731,14 +731,7 @@ export function registerAssetsHttpRoutes(api: any) {
                    weniger liefert als das spaetere GET, ist genau die Lese-/
                    Schreib-Asymmetrie, die am 13.10.2026 zum Datenverlust
                    gefuehrt hat. */
-                const { rows: frisch } = await dbQuery(
-                  `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
-                     FROM security_deposits sd
-                     JOIN leases l ON l.id = sd.lease_id
-                     JOIN units u ON u.id = l.unit_id
-                     JOIN properties p ON p.id = u.property_id
-                    WHERE sd.id = $1`, [rows[0].id]);
-                json(res, 201, mapDepositRow(frisch[0] ?? rows[0]));
+                json(res, 201, mapDepositRow(await kautionMitBezug(rows[0].id) ?? rows[0]));
                 return;
               }
               err(res, 405, 'Method not allowed');
@@ -749,7 +742,10 @@ export function registerAssetsHttpRoutes(api: any) {
               'SELECT * FROM security_deposits WHERE id = $1', [depositId]);
             if (before.length === 0) { err(res, 404, 'Kaution nicht gefunden'); return; }
 
-            if (req.method === 'GET') { json(res, 200, mapDepositRow(before[0])); return; }
+            if (req.method === 'GET') {
+              json(res, 200, mapDepositRow(await kautionMitBezug(depositId) ?? before[0]));
+              return;
+            }
 
             if (req.method === 'PATCH') {
               const body = await parseJsonBody<any>(req);
@@ -773,14 +769,7 @@ export function registerAssetsHttpRoutes(api: any) {
               await audit.log({ module: 'assets', action: 'security_deposit.update',
                 entityType: 'security_deposit', entityId: String(depositId),
                 before: before[0], after: after[0] });
-              const { rows: frisch } = await dbQuery(
-                `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
-                   FROM security_deposits sd
-                   JOIN leases l ON l.id = sd.lease_id
-                   JOIN units u ON u.id = l.unit_id
-                   JOIN properties p ON p.id = u.property_id
-                  WHERE sd.id = $1`, [depositId]);
-              json(res, 200, mapDepositRow(frisch[0] ?? after[0]));
+              json(res, 200, mapDepositRow(await kautionMitBezug(depositId) ?? after[0]));
               return;
             }
 
@@ -2047,6 +2036,19 @@ function mapLeaseRow(row: any) {
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),
   };
+}
+
+/** Eine Kaution mit Objekt, Einheit und Vertragsnummer. Alle drei Antwortwege
+ *  — Liste, Einzelsatz, POST und PATCH — liefern dadurch dieselben Felder. */
+async function kautionMitBezug(id: unknown): Promise<any | null> {
+  const { rows } = await dbQuery(
+    `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
+       FROM security_deposits sd
+       JOIN leases l ON l.id = sd.lease_id
+       JOIN units u ON u.id = l.unit_id
+       JOIN properties p ON p.id = u.property_id
+      WHERE sd.id = $1`, [id]);
+  return rows[0] ?? null;
 }
 
 function mapDepositRow(row: any) {
