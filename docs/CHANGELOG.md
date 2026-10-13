@@ -4,6 +4,33 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — Was die PV-Anlagen einbringen, und was eine Umstellung brächte
+
+Reine Rechnung, keine Datenänderung. `scripts/pv-wirtschaftlichkeit.ts` macht die
+Arithmetik des Reports wiederholbar: alle Eingangsgrößen als benannte Konstanten mit
+Quellenkommentar, Ausgabe als Szenariotabelle je Objekt.
+
+Gerechnet wird als Jahressaldo aus Sicht des Eigentümers — Erlöse minus Kosten,
+einschließlich des Stroms, den er für sich selbst bezieht. Der Saldo ist bei N24 deshalb
+negativ; er ist kein Gewinn, sondern der Nettoaufwand der Stromversorgung. Vergleichbar
+sind die Szenarien nur, weil in jedem dieselben Posten stecken. Eine Nulllinie „keine PV,
+keine Kundenanlage" macht die Tabelle erst lesbar.
+
+Ergebnis: Die Anlagen bringen gegenüber keiner PV **3.396 €/Jahr** (N24) und
+**3.463 €/Jahr** (MG24). Die einzige Änderung, die sich rechnet, ist in beiden Häusern
+dieselbe — die Abrechnung selbst machen, Messstellenbetrieb lassen: **+622** und
+**+760 €/Jahr**. Volleinspeisung und Rückzug aus dem Mieterstrom sind beide schlechter.
+Die Rangfolge hält in allen acht Preisvarianten der Sensitivität ±20 %.
+
+Zwei Stellen, an denen die Rechnung bewusst nicht so tut, als wüsste sie mehr: Für N24 ist
+die PV-Erzeugung nirgends gemessen, und die Gegenprobe über die tatsächlich eingegangenen
+EEG-Zahlungen ergibt 1.260 kWh/kWp — zu viel, um zu stimmen. Szenario D unterstellte
+zunächst perfekte zeitliche Deckung des Eigenbedarfs; das ist bei einer Wärmepumpe falsch,
+die im Winter läuft, während die Anlage im Sommer liefert. Jetzt steht dort ein
+Deckungsgrad mit Spanne 40–60 %, und er ist der empfindlichste Hebel des Szenarios.
+
+---
+
 ## Stand 2026-10-13 — Die Stromzähler der Kundenanlagen sind erfasst
 
 19 Stromzähler mit 35 Ständen angelegt — bis dahin war von den beiden
