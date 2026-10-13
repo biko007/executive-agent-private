@@ -36,6 +36,8 @@
  *   bun run scripts/casameta-login.ts              # anmelden, Zustand sichern
  *   bun run scripts/casameta-login.ts --pruefen    # nur prüfen, ob Sitzung gilt
  *   bun run scripts/casameta-login.ts --selbsttest # Zustand verwerfen, neu anmelden
+ *   bun run scripts/casameta-login.ts --konto mg24       # Zugang je Objekt
+ *   bun run scripts/casameta-login.ts --konten             # welche sind da?
  *   bun run scripts/casameta-login.ts --erzwingen --diagnose
  *       wie oben, zusaetzlich Trace, Screenshot je Station und befund.json in
  *       ~/.local/share/biko-portals/casameta/diagnose/<zeitstempel>/ (700).
@@ -50,9 +52,33 @@ const PORTAL = 'https://portal.casameta.de';
 const START = `${PORTAL}/login/checkbrowser?ReturnUrl=%2f`;
 const ENV_DATEI = join(homedir(), '.config', 'biko-portals', 'env');
 const BASIS = join(homedir(), '.local', 'share', 'biko-portals', 'casameta');
-const PROFIL = join(BASIS, 'profile');
-const ZUSTAND = join(BASIS, 'storage_state.json');
 const DIAGNOSE_BASIS = join(BASIS, 'diagnose');
+
+/* MEHRERE KONTEN. Casameta fuehrt je Objekt einen eigenen Zugang (Owner-Angabe
+   13.10.2026). Jedes Konto braucht ein EIGENES Browserprofil und einen eigenen
+   Sitzungszustand — teilten sie sich eines, wuerde die Anmeldung am zweiten
+   Konto die des ersten verdraengen, und es waere im Nachhinein nicht mehr
+   feststellbar, in wessen Abrechnung der Agent gerade schreibt. */
+export const KONTEN = ['mg24', 'n24'] as const;
+export type Konto = (typeof KONTEN)[number];
+
+/** Env-Schluessel eines Kontos. Ohne Konto gelten die alten Schluessel ohne
+ *  Objektteil weiter — so bleibt eine bestehende Hinterlegung gueltig. */
+export function envSchluessel(konto?: string): { benutzer: string; passwort: string } {
+  if (!konto) return { benutzer: 'CASAMETA_USER', passwort: 'CASAMETA_PASSWORD' };
+  const k = konto.toUpperCase();
+  return { benutzer: `CASAMETA_${k}_USER`, passwort: `CASAMETA_${k}_PASSWORD` };
+}
+
+/** Profil-, Sitzungs- und Diagnosepfad eines Kontos. Ohne Konto die alten
+ *  Pfade, damit eine vorhandene Sitzung nicht verwaist. */
+export function kontoPfade(konto?: string): { profil: string; zustand: string } {
+  if (!konto) {
+    return { profil: join(BASIS, 'profile'), zustand: join(BASIS, 'storage_state.json') };
+  }
+  const ordner = join(BASIS, 'konten', konto.toLowerCase());
+  return { profil: join(ordner, 'profile'), zustand: join(ordner, 'storage_state.json') };
+}
 
 /** Wartezeit für das Turnstile-Token. Großzügig: Die Prüfung läuft im
  *  Hintergrund und braucht auf einem VPS ohne GPU spürbar länger als am
@@ -80,28 +106,57 @@ export type Schritt =
   | 'passwort-abgeschickt'
   | 'angemeldet';
 
-function envLesen(): { benutzer: string; passwort: string } | null {
+function envLesen(konto?: string): { benutzer: string; passwort: string } | null {
   if (!existsSync(ENV_DATEI)) return null;
   const inhalt = readFileSync(ENV_DATEI, 'utf-8');
-  const b = inhalt.match(/^CASAMETA_USER=(.*)$/m);
-  const p = inhalt.match(/^CASAMETA_PASSWORD=(.*)$/m);
-  if (!b || !p || !b[1].trim() || !p[1].trim()) return null;
-  return { benutzer: b[1].trim(), passwort: p[1].trim() };
+  const schluessel = envSchluessel(konto);
+  const lies = (name: string): string => {
+    const t = inhalt.match(new RegExp(`^${name}=(.*)$`, 'm'));
+    return t ? t[1].trim() : '';
+  };
+  let benutzer = lies(schluessel.benutzer);
+  let passwort = lies(schluessel.passwort);
+  /* Rueckfall auf die Schluessel ohne Objektteil: Solange nur ein Zugang
+     hinterlegt ist, soll ein Aufruf mit --konto nicht ins Leere laufen. */
+  if ((!benutzer || !passwort) && konto) {
+    const alt = envSchluessel();
+    benutzer = benutzer || lies(alt.benutzer);
+    passwort = passwort || lies(alt.passwort);
+  }
+  if (!benutzer || !passwort) return null;
+  return { benutzer, passwort };
 }
 
-function verzeichnisseAnlegen(): void {
-  mkdirSync(PROFIL, { recursive: true });
+/** Welche Konten sind hinterlegt? Nur die Kennungen, nie die Werte. */
+export function hinterlegteKonten(): string[] {
+  if (!existsSync(ENV_DATEI)) return [];
+  const inhalt = readFileSync(ENV_DATEI, 'utf-8');
+  const gefunden = new Set<string>();
+  for (const zeile of inhalt.split('\n')) {
+    const t = zeile.match(/^CASAMETA_([A-Z0-9]+)_USER=(.+)$/);
+    if (t && t[2].trim()) gefunden.add(t[1].toLowerCase());
+  }
+  if (/^CASAMETA_USER=.+$/m.test(inhalt)) gefunden.add('(ohne Objektangabe)');
+  return [...gefunden].sort();
+}
+
+function verzeichnisseAnlegen(profil: string): void {
+  mkdirSync(profil, { recursive: true });
   chmodSync(BASIS, 0o700);
-  chmodSync(PROFIL, 0o700);
+  chmodSync(profil, 0o700);
+  /* Auch die Zwischenebene ~/konten/<code> darf nicht lesbar sein. */
+  const eltern = join(profil, '..');
+  try { chmodSync(eltern, 0o700); } catch { /* bei den Altpfaden identisch */ }
 }
 
 /** Ist die gespeicherte Sitzung noch gültig? Ohne Anmeldung, nur ein Aufruf
  *  der Startseite: Landet er auf /login/..., ist sie abgelaufen. */
-async function sitzungGueltig(): Promise<boolean> {
-  if (!existsSync(ZUSTAND)) return false;
+async function sitzungGueltig(konto?: string): Promise<boolean> {
+  const { zustand } = kontoPfade(konto);
+  if (!existsSync(zustand)) return false;
   const browser = await chromium.launch({ headless: true });
   try {
-    const ctx = await browser.newContext({ storageState: ZUSTAND });
+    const ctx = await browser.newContext({ storageState: zustand });
     const seite = await ctx.newPage();
     const antwort = await seite.goto(PORTAL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     const gueltig = !!antwort && !seite.url().includes('/login/');
@@ -129,16 +184,19 @@ async function sichtbareChallenge(ctx: BrowserContext): Promise<boolean> {
   }
 }
 
-async function anmelden(diagnose = false): Promise<LoginErgebnis> {
-  const zugang = envLesen();
+async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis> {
+  const zugang = envLesen(konto);
+  const schluessel = envSchluessel(konto);
+  const { profil, zustand } = kontoPfade(konto);
   if (!zugang) {
     return {
       ok: false, grund: 'keine-zugangsdaten',
-      meldung: `Zugangsdaten fehlen. Erwartet werden CASAMETA_USER und `
-        + `CASAMETA_PASSWORD in ${ENV_DATEI}. Anzulegen mit ~/bin/casameta-credentials.`,
+      meldung: `Zugangsdaten fehlen. Erwartet werden ${schluessel.benutzer} und `
+        + `${schluessel.passwort} in ${ENV_DATEI}. Anzulegen mit `
+        + `~/bin/casameta-credentials${konto ? ' ' + konto : ''}.`,
     };
   }
-  verzeichnisseAnlegen();
+  verzeichnisseAnlegen(profil);
 
   /* Der Browserstart lag bis 13.10.2026 VOR dem try-Block. Scheiterte er, kam
      die Ursache nie bei der aufrufenden Stelle an — die Meldung lautete nur
@@ -170,7 +228,7 @@ async function anmelden(diagnose = false): Promise<LoginErgebnis> {
   };
 
   try {
-    ctx = await chromium.launchPersistentContext(PROFIL, {
+    ctx = await chromium.launchPersistentContext(profil, {
       headless: true,
       viewport: { width: 1280, height: 720 },
       locale: 'de-DE',
@@ -178,7 +236,8 @@ async function anmelden(diagnose = false): Promise<LoginErgebnis> {
     });
 
     if (diagnose) {
-      ordner = join(DIAGNOSE_BASIS, new Date().toISOString().replace(/[:.]/g, '-'));
+      ordner = join(DIAGNOSE_BASIS,
+        `${konto ?? 'standard'}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
       mkdirSync(ordner, { recursive: true });
       chmodSync(ordner, 0o700);
       await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false });
@@ -259,8 +318,8 @@ async function anmelden(diagnose = false): Promise<LoginErgebnis> {
       };
     }
 
-    await ctx.storageState({ path: ZUSTAND });
-    chmodSync(ZUSTAND, 0o600);
+    await ctx.storageState({ path: zustand });
+    chmodSync(zustand, 0o600);
     await station(seite, 'angemeldet');
     return { ok: true, meldung: 'Login OK', schritt, diagnoseOrdner: ordner };
   } catch (e: any) {
@@ -340,35 +399,56 @@ async function warteAufTurnstile(seite: any): Promise<void> {
 async function main() {
   const argv = process.argv.slice(2);
 
+  /* --konto <code>. Ohne Angabe gelten die Schluessel und Pfade ohne
+     Objektteil, damit bestehende Aufrufe unveraendert funktionieren. */
+  const kIdx = argv.indexOf('--konto');
+  const konto = kIdx >= 0 ? (argv[kIdx + 1] ?? '').toLowerCase() : undefined;
+  if (kIdx >= 0 && !konto) {
+    console.log('Login fehlgeschlagen: --konto ohne Kennung. Bekannt: '
+      + KONTEN.join(', '));
+    process.exit(2);
+  }
+  if (konto && !/^[a-z0-9]{2,12}$/.test(konto)) {
+    console.log('Login fehlgeschlagen: Kennung enthaelt unerlaubte Zeichen.');
+    process.exit(2);
+  }
+
+  if (argv.includes('--konten')) {
+    const k = hinterlegteKonten();
+    console.log(k.length ? `Hinterlegt: ${k.join(', ')}` : 'Kein Zugang hinterlegt.');
+    process.exit(0);
+  }
+
   if (argv.includes('--selbsttest')) {
     /* Sitzung absichtlich verwerfen und prüfen, ob der Re-Login greift. */
-    if (existsSync(ZUSTAND)) {
-      writeFileSync(ZUSTAND, JSON.stringify({ cookies: [], origins: [] }), { mode: 0o600 });
+    const { zustand } = kontoPfade(konto);
+    if (existsSync(zustand)) {
+      writeFileSync(zustand, JSON.stringify({ cookies: [], origins: [] }), { mode: 0o600 });
       console.log('Selbsttest: Sitzungszustand ungültig gemacht.');
     } else {
       console.log('Selbsttest: kein Sitzungszustand vorhanden.');
     }
-    const gueltig = await sitzungGueltig();
+    const gueltig = await sitzungGueltig(konto);
     console.log(`Selbsttest: Sitzung gültig? ${gueltig ? 'ja' : 'nein'} (erwartet: nein)`);
     if (gueltig) { console.error('Selbsttest fehlgeschlagen.'); process.exit(1); }
-    const e = await anmelden();
+    const e = await anmelden(false, konto);
     console.log(e.ok ? 'Selbsttest: Re-Login OK' : `Selbsttest: ${e.meldung}`);
     process.exit(e.ok || e.grund === 'keine-zugangsdaten' ? 0 : 1);
   }
 
   if (argv.includes('--pruefen')) {
-    const gueltig = await sitzungGueltig();
+    const gueltig = await sitzungGueltig(konto);
     console.log(gueltig ? 'Sitzung gültig' : 'Sitzung abgelaufen');
     process.exit(gueltig ? 0 : 1);
   }
 
-  if (!argv.includes('--erzwingen') && await sitzungGueltig()) {
+  if (!argv.includes('--erzwingen') && await sitzungGueltig(konto)) {
     console.log('Login OK (bestehende Sitzung)');
     process.exit(0);
   }
 
   const diagnose = argv.includes('--diagnose');
-  const e = await anmelden(diagnose);
+  const e = await anmelden(diagnose, konto);
   console.log(e.ok ? 'Login OK' : `Login fehlgeschlagen: ${e.meldung}`);
   if (e.schritt) console.log(`Letzter Schritt: ${e.schritt}`);
   if (e.diagnoseOrdner) console.log(`Diagnose: ${e.diagnoseOrdner}`);
@@ -382,4 +462,4 @@ if (import.meta.main) {
   });
 }
 
-export { anmelden, sitzungGueltig, ZUSTAND, PROFIL, ENV_DATEI };
+export { anmelden, sitzungGueltig, ENV_DATEI, BASIS };

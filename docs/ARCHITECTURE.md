@@ -866,6 +866,30 @@ Ein sichtbarer Browser unter Xvfb (ohne Screenshotpflicht beim reinen Login)
 ist ungetestet; die tragfähige Alternative ist der Betrieb über den
 Owner-Browser. Einzelheiten: `report-casameta-login-diagnose-20261013.md`.
 
+### Zwei Konten, zwei Profile
+
+Casameta fuehrt **je Objekt einen eigenen Zugang** (Owner-Angabe 13.10.2026:
+getrennte Logins fuer MG24 und N24). Abgebildet ueber eine Objektkennung:
+
+| Gegenstand | ohne Kennung (Altstand) | mit Kennung |
+|---|---|---|
+| Env-Schluessel | `CASAMETA_USER` / `_PASSWORD` | `CASAMETA_MG24_USER` / `_PASSWORD` |
+| Browserprofil | `…/casameta/profile` | `…/casameta/konten/mg24/profile` |
+| Sitzungszustand | `…/casameta/storage_state.json` | `…/casameta/konten/mg24/storage_state.json` |
+
+Aufruf: `casameta-credentials mg24`, `casameta-login.ts --konto mg24`,
+`casameta-run … --konto mg24`. Ohne Kennung gelten die Altpfade weiter, damit
+eine bestehende Hinterlegung nicht verwaist.
+
+**Getrennte Profile sind nicht Komfort, sondern Pflicht.** Teilten sich beide
+Konten eines, verdraengte die Anmeldung am zweiten Objekt die des ersten — und
+im Nachhinein waere nicht mehr feststellbar, in wessen Abrechnung der Agent
+geschrieben hat. `casameta-run` schreibt deshalb je Lauf eine eigene
+MCP-Konfiguration mit dem Profilpfad des jeweiligen Kontos.
+`casameta-credentials` ergaenzt die env-Datei und ueberschreibt sie nicht, damit
+das Hinterlegen des zweiten Zugangs den ersten nicht loescht. Geprueft in
+`src/modules/casameta/__tests__/login-konten.test.ts`.
+
 ### Browser-Versionen
 
 Drei Stellen wollen verschiedene Builds, alle in `~/.cache/ms-playwright`:
