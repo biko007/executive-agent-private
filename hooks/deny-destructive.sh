@@ -231,11 +231,16 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
   RED_ZONE_HIT=""
   RED_ZONE_REPO=""           # git --show-toplevel des betroffenen Repos
   RED_ZONE_FAILCLOSED=false  # true = Push-Ziel unbestimmbar → Block ohne Flag-Option
+  RED_ZONE_IST_PUSH=false    # true = Treffer stammt aus der Pruefung in (A)
   REPO_PATH=""
 
   # (A) git push — FAIL-CLOSED: nur durchlassen wenn Diff-Status SICHER gruen ist.
   # Kein REPO_PATH / Diff-Fehler / Variable im Pfad → BLOCK (nicht allow).
-  if echo "$NORM" | grep -qE '\bgit\b.*\bpush\b'; then
+  # Das Unterkommando muss von Leerraum umgeben sein. Mit \b allein galt
+  # auch `git add scripts/hooks/pre-push` als Uebertragung, weil der
+  # Bindestrich eine Wortgrenze setzt (13.10.2026).
+  if echo "$NORM" | grep -qE '\bgit\b.*(^|[[:space:]])push([[:space:]]|$)'; then
+    RED_ZONE_IST_PUSH=true
     # Shell-Suffixe entfernen (2>&1, || true, && ..., ; ...) vor dem Parsen
     NORM_PUSH=$(printf '%s' "$NORM" \
       | sed 's/[[:space:]]*2>[>&]*[0-9]*//g' \
@@ -348,14 +353,23 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
         # Uhr durch einen Push, fuer den sie nie gedacht war.
         ARM_TTL="${ARM_TTL:-900}"
         FLAG_ALTER=$(( $(date +%s) - $(stat -c %Y "$STRAND_FLAG" 2>/dev/null || echo 0) ))
-        # Das Flag wird in BEIDEN Zweigen entfernt: Eine abgelaufene Freigabe
-        # darf auch beim naechsten Versuch nicht mehr greifen.
-        rm -f "$STRAND_FLAG"
         if [ "$FLAG_ALTER" -gt "$ARM_TTL" ]; then
+          # Eine abgelaufene Freigabe wird verworfen, nicht aufgeschoben: Sie
+          # darf auch beim naechsten Versuch nicht mehr greifen.
+          rm -f "$STRAND_FLAG"
           hook_log BLOCK "$STRAND" \
             "Freigabe abgelaufen (${FLAG_ALTER}s > ${ARM_TTL}s), verworfen: $RED_ZONE_HIT"
           DENY_REASON="Red Zone: $RED_ZONE_HIT (Freigabe abgelaufen — war ${FLAG_ALTER}s alt, Grenze ${ARM_TTL}s; /arm erneut geben)"
+        elif $RED_ZONE_IST_PUSH; then
+          # Hier bleibt das Flag liegen. Verbraucht wird es vom git-Hook
+          # scripts/hooks/pre-push, der erst laeuft, wenn der Vorgang
+          # tatsaechlich stattfindet. Verschwaende es schon hier, pruefte der
+          # pre-push-Hook gegen ein fehlendes Flag und blockierte genau das,
+          # was dieser Hook gerade durchgelassen hat.
+          hook_log ARMED "$STRAND" \
+            "Freigabe gueltig (Alter ${FLAG_ALTER}s), Verbrauch ueberlassen an pre-push: $RED_ZONE_HIT"
         else
+          rm -f "$STRAND_FLAG"
           hook_log ARMED "$STRAND" \
             "Armed-Flag verbraucht ($STRAND_FLAG, Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
           hook_notify "$STRAND" operativ \

@@ -165,6 +165,10 @@ cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner p
   env-/Secret-Dateien. Rote Befehle zusätzlich um Löschoperationen gegen `openclaw_core`
   erweitert. Details: `docs/ARCHITECTURE.md`, Abschnitt „Rote Zone".
 - **cc setzt `/arm` NIE selbst**
+- **Zwei Linien seit 13.10.2026:** `scripts/hooks/pre-push` prueft die tatsaechlich
+  uebertragenen Refs (auch aus einer SSH-Sitzung, auch Submodul-Inhalte) und
+  verbraucht die Freigabe; `~/.claude/hooks/deny-destructive.sh` bleibt zweite Linie
+  und verbraucht nur noch bei roten Befehlen. Fail-closed ist nicht armbar.
 - Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht).
   **Verfallsfrist seit 13.10.2026: 15 Minuten** (`ARM_TTL`, Vorgabe 900 s) — eine
   aeltere Freigabe wird verworfen. Zwischen `/arm push` und Push duerfen also nicht

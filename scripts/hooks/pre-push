@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# pre-push — Rote Zone am echten Push. Fail-closed.
+#
+# WARUM DIESER HOOK. Bis zum 13.10.2026 lag der Rote-Zone-Schutz allein im
+# PreToolUse-Hook von Claude Code. Der sieht nur, was durch Claude Code laeuft —
+# ein Push aus einer gewoehnlichen SSH-Sitzung wurde ueberhaupt nicht geprueft.
+# Und er prueft `@{u}..HEAD`, also den aktuellen Branch gegen seinen Upstream,
+# unabhaengig davon, was der Befehl tatsaechlich uebertraegt.
+#
+# Dieser Hook prueft, was git wirklich schiebt: Git uebergibt auf der
+# Standardeingabe je Ref eine Zeile
+#     <lokale Ref> <lokaler SHA> <entfernte Ref> <entfernter SHA>
+# und als Argumente den Namen und die URL des Remotes. Damit ist der
+# Commit-Bereich eindeutig, auch bei neuen Branches und beim Push eines anderen
+# Branches als HEAD.
+#
+# ARBEITSTEILUNG MIT dem Claude-Code-Hook: Bei einem Push PRUEFT
+# deny-destructive.sh die Freigabe nur noch, VERBRAUCHT sie aber nicht —
+# verbraucht wird sie hier, wo der Push tatsaechlich stattfindet. Sonst haette
+# der frueher laufende PreToolUse-Hook das Flag weggenommen und dieser Hook
+# haette gegen ein fehlendes Flag geprueft. Bei roten BEFEHLEN (ohne Push)
+# verbraucht weiterhin deny-destructive.sh.
+#
+# Exit 0 = Push laeuft, Exit 1 = git bricht ab.
+set -uo pipefail
+
+NULLSHA='0000000000000000000000000000000000000000'
+RED_ZONE_CONF="${RED_ZONE_CONF:-$HOME/.config/openclaw/red-zone.conf}"
+HOOK_LOG="${HOOK_LOG:-$HOME/.claude/hooks.log}"
+ARM_TTL="${ARM_TTL:-900}"
+NOTIFY="${PREPUSH_NOTIFY:-$HOME/.scripts/notify}"
+
+REMOTE_NAME="${1:-origin}"
+
+# ── Protokoll ───────────────────────────────────────────────────────────────
+# Gleiches Format wie deny-destructive.sh, damit beide Linien in einer Datei
+# nebeneinander lesbar sind. Nie fatal.
+hook_log() {
+  local dir size
+  dir=$(dirname "$HOOK_LOG")
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ -f "$HOOK_LOG" ]; then
+    size=$(stat -c %s "$HOOK_LOG" 2>/dev/null || echo 0)
+    if [ "$size" -gt 1048576 ]; then mv -f "$HOOK_LOG" "$HOOK_LOG.1" 2>/dev/null || true; fi
+  fi
+  printf '%s [%s] [%s] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >> "$HOOK_LOG" 2>/dev/null || true
+}
+
+# ── Strang ──────────────────────────────────────────────────────────────────
+# Bewusst schlicht gehalten: Der Strang entscheidet nur, welches Flag gilt und
+# wohin die Meldung geht. Die Pfadmuster sind dieselben wie in
+# deny-destructive.sh; bei Aenderung dort bitte hier mitziehen.
+strang_bestimmen() {
+  local p="$1"
+  p=$(realpath -m "$p" 2>/dev/null || printf '%s' "$p")
+  case "$p" in
+    "$HOME/hdcc"|"$HOME/hdcc"/*)                 printf 'hdcc' ;;
+    */executive-agent|*/executive-agent/*)       printf 'bikosoc' ;;
+    */executive-dashboard|*/executive-dashboard/*) printf 'bikosoc' ;;
+    */openclaw/workspace|*/openclaw/workspace/*) printf 'bikosoc' ;;
+    *)                                           printf 'unknown' ;;
+  esac
+}
+
+REPO=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -z "$REPO" ]; then
+  hook_log BLOCK unknown "pre-push: kein Repo-Root auflösbar — fail-closed"
+  echo "pre-push: Repo-Root nicht auflösbar — Push abgebrochen." >&2
+  exit 1
+fi
+STRAND=$(strang_bestimmen "$REPO")
+
+case "$STRAND" in
+  hdcc)    FLAGGE="$HOME/.armed-hdcc" ;;
+  bikosoc) FLAGGE="$HOME/.armed-bikosoc" ;;
+  *)       FLAGGE="" ;;
+esac
+
+# ── Rote Pfadmuster lesen ───────────────────────────────────────────────────
+MUSTER=()
+if [ -r "$RED_ZONE_CONF" ]; then
+  in_paths=false
+  while IFS= read -r zeile; do
+    zeile=$(echo "$zeile" | sed 's/#.*//' | xargs 2>/dev/null || true)
+    [ -z "$zeile" ] && continue
+    if [ "$zeile" = "[red-paths]" ]; then in_paths=true; continue; fi
+    case "$zeile" in \[*) in_paths=false; continue ;; esac
+    $in_paths && MUSTER+=("$zeile")
+  done < "$RED_ZONE_CONF"
+else
+  # Ohne Musterdatei ist nicht feststellbar, was rot ist → fail-closed.
+  hook_log BLOCK "$STRAND" "pre-push: red-zone.conf nicht lesbar ($RED_ZONE_CONF) — fail-closed"
+  echo "pre-push: $RED_ZONE_CONF nicht lesbar — Push abgebrochen." >&2
+  exit 1
+fi
+
+# treffer <pfad> — gibt das passende Muster aus, sonst nichts.
+treffer() {
+  local f="$1" p
+  for p in ${MUSTER+"${MUSTER[@]}"}; do
+    # shellcheck disable=SC2254  # Muster soll bewusst globben
+    if [[ "$f" == $p ]]; then printf '%s' "$p"; return 0; fi
+  done
+  return 1
+}
+
+# ── Submodul-Pointer ────────────────────────────────────────────────────────
+# Im Parent-Repo zeigt der Diff nur den Pfad des Submoduls, nie die Dateien
+# darin. Ein roter Pfad im Submodul waere also unsichtbar. Deshalb wird der
+# Bereich im Submodul selbst nachgeschlagen; geht das nicht, wird blockiert.
+submodul_pruefen() {
+  local pfad="$1" alt="$2" neu="$3" datei muster
+  local sub="$REPO/$pfad"
+  if [ ! -d "$sub/.git" ] && [ ! -f "$sub/.git" ]; then
+    printf 'FAILCLOSED:Submodul %s nicht ausgecheckt' "$pfad"; return 0
+  fi
+  if ! git -C "$sub" cat-file -e "$neu^{commit}" 2>/dev/null; then
+    printf 'FAILCLOSED:Submodul %s kennt den Zielstand %s nicht' "$pfad" "${neu:0:12}"; return 0
+  fi
+  local bereich="$neu"
+  if [ "$alt" != "$NULLSHA" ] && git -C "$sub" cat-file -e "$alt^{commit}" 2>/dev/null; then
+    bereich="$alt..$neu"
+  fi
+  local dateien
+  if ! dateien=$(git -C "$sub" diff --name-only "$bereich" 2>/dev/null); then
+    printf 'FAILCLOSED:Diff im Submodul %s fehlgeschlagen' "$pfad"; return 0
+  fi
+  while IFS= read -r datei; do
+    [ -z "$datei" ] && continue
+    if muster=$(treffer "$datei"); then
+      printf 'HIT:%s/%s matches %s' "$pfad" "$datei" "$muster"; return 0
+    fi
+  done <<< "$dateien"
+  return 0
+}
+
+# ── Refs von der Standardeingabe ────────────────────────────────────────────
+GEFUNDEN=""
+FAILCLOSED=false   # unbestimmbare Lage — blockiert IMMER, auch mit Freigabe
+GEPRUEFT=0
+
+while read -r lokale_ref lokaler_sha entfernte_ref entfernter_sha; do
+  [ -z "${lokale_ref:-}" ] && continue
+  GEPRUEFT=$((GEPRUEFT + 1))
+
+  if [ "$lokaler_sha" = "$NULLSHA" ]; then
+    hook_log PREPUSH "$STRAND" "erlaubt: $entfernte_ref wird geloescht (keine Dateien im Diff)"
+    continue
+  fi
+
+  if [ "$entfernter_sha" = "$NULLSHA" ]; then
+    # Neuer Branch: gegen den Hauptbranch des Remotes vergleichen.
+    basis=""
+    for kandidat in "refs/remotes/$REMOTE_NAME/main" "refs/remotes/$REMOTE_NAME/master"; do
+      if git rev-parse --verify -q "$kandidat" >/dev/null 2>&1; then
+        basis=$(git rev-parse "$kandidat"); break
+      fi
+    done
+    if [ -z "$basis" ]; then
+      # Kein Hauptbranch am Remote — etwa beim allerersten Vorgang in ein leeres
+      # Repo. Dann gibt es keinen sinnvollen Vergleichspunkt, also wird der
+      # GESAMTE Inhalt geprueft: Basis ist der leere Baum. Das ist strenger als
+      # ein Vergleich und macht den ersten Vorgang trotzdem moeglich.
+      basis=$(git hash-object -t tree /dev/null 2>/dev/null || true)
+      if [ -z "$basis" ]; then
+        GEFUNDEN="neuer Branch $lokale_ref: kein Vergleichspunkt bestimmbar"
+        FAILCLOSED=true
+        break
+      fi
+    fi
+    bereich="$basis..$lokaler_sha"
+  else
+    bereich="$entfernter_sha..$lokaler_sha"
+  fi
+
+  # --raw statt --name-only: Nur so ist zu sehen, ob ein Eintrag ein
+  # Submodul-Pointer ist (Modus 160000).
+  if ! roh=$(git diff --raw "$bereich" 2>/dev/null); then
+    GEFUNDEN="$lokale_ref: Diff $bereich fehlgeschlagen"
+    FAILCLOSED=true
+    break
+  fi
+
+  anzahl=0
+  while IFS= read -r zeile; do
+    [ -z "$zeile" ] && continue
+    anzahl=$((anzahl + 1))
+    meta=${zeile%%	*}
+    pfad=${zeile#*	}
+    # :<srcmode> <dstmode> <srcsha> <dstsha> <status>
+    set -- $meta
+    srcmode=${1#:}; dstmode=$2; srcsha=$3; dstsha=$4
+    if [ "$dstmode" = "160000" ] || [ "$srcmode" = "160000" ]; then
+      ergebnis=$(submodul_pruefen "$pfad" "$srcsha" "$dstsha")
+      case "$ergebnis" in
+        HIT:*)        GEFUNDEN="red path (Submodul): ${ergebnis#HIT:}"; break ;;
+        FAILCLOSED:*) GEFUNDEN="${ergebnis#FAILCLOSED:}"; FAILCLOSED=true; break ;;
+      esac
+      continue
+    fi
+    if muster=$(treffer "$pfad"); then
+      GEFUNDEN="red path: $pfad matches $muster"
+      break
+    fi
+  done <<< "$roh"
+
+  if [ -n "$GEFUNDEN" ]; then
+    hook_log PREPUSH "$STRAND" "$lokale_ref -> $entfernte_ref ($bereich, $anzahl Eintraege): $GEFUNDEN"
+    break
+  fi
+  hook_log PREPUSH "$STRAND" "erlaubt: $lokale_ref -> $entfernte_ref ($bereich, $anzahl Eintraege), kein roter Pfad"
+done
+
+if [ "$GEPRUEFT" -eq 0 ]; then
+  hook_log PREPUSH "$STRAND" "erlaubt: keine Refs auf der Standardeingabe"
+  exit 0
+fi
+
+[ -z "$GEFUNDEN" ] && exit 0
+
+# Eine unbestimmbare Lage ist durch keine Freigabe zu heilen: Steht nicht fest,
+# WAS uebertragen wird, kann auch nicht freigegeben werden, was uebertragen
+# wird. Gleiche Regel wie in deny-destructive.sh.
+if $FAILCLOSED; then
+  hook_log BLOCK "$STRAND" "pre-push: fail-closed: $GEFUNDEN"
+  echo "pre-push blockiert: $GEFUNDEN (fail-closed — auch eine Freigabe hilft hier nicht)" >&2
+  exit 1
+fi
+
+# ── Freigabe pruefen ────────────────────────────────────────────────────────
+if [ -z "$FLAGGE" ]; then
+  hook_log BLOCK "$STRAND" "pre-push: Strang unbestimmbar (repo=$REPO): $GEFUNDEN"
+  echo "pre-push blockiert: $GEFUNDEN (unbekannter Strang — fail-closed)" >&2
+  exit 1
+fi
+
+if [ ! -f "$FLAGGE" ]; then
+  hook_log BLOCK "$STRAND" "pre-push: not armed ($FLAGGE fehlt): $GEFUNDEN"
+  echo "pre-push blockiert: $GEFUNDEN (not armed — /arm push im Chat Hans_Dampf)" >&2
+  exit 1
+fi
+
+ALTER=$(( $(date +%s) - $(stat -c %Y "$FLAGGE" 2>/dev/null || echo 0) ))
+rm -f "$FLAGGE"
+if [ "$ALTER" -gt "$ARM_TTL" ]; then
+  hook_log BLOCK "$STRAND" "pre-push: Freigabe abgelaufen (${ALTER}s > ${ARM_TTL}s), verworfen: $GEFUNDEN"
+  echo "pre-push blockiert: $GEFUNDEN (Freigabe abgelaufen — war ${ALTER}s alt, Grenze ${ARM_TTL}s; /arm erneut geben)" >&2
+  exit 1
+fi
+
+hook_log ARMED "$STRAND" "pre-push: Freigabe verbraucht ($FLAGGE, Alter ${ALTER}s) durch: $GEFUNDEN"
+if [ "$STRAND" = "bikosoc" ] && [ -x "$NOTIFY" ]; then
+  ( timeout 5 "$NOTIFY" "[bikosoc] Push freigegeben (Freigabe ${ALTER}s alt): $GEFUNDEN" info operativ \
+      >/dev/null 2>&1 || true ) &
+fi
+exit 0

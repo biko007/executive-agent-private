@@ -429,6 +429,41 @@ der diesen Fall nachstellt. Vollstaendige Diagnose:
 **Praktische Folge:** Zwischen `/arm push` des Owners und dem Push duerfen nicht mehr als
 15 Minuten liegen. Ist die Frist verstrichen, muss der Owner erneut armen.
 
+### Zwei Linien: pre-push und der Claude-Code-Hook
+
+Seit 13.10.2026 gibt es `scripts/hooks/pre-push`. `core.hooksPath` zeigt in allen drei
+Repos dorthin, eine Datei wirkt also ueberall.
+
+| | `scripts/hooks/pre-push` | `~/.claude/hooks/deny-destructive.sh` |
+|---|---|---|
+| Laeuft bei | jedem git-Vorgang, auch aus einer SSH-Sitzung | nur bei Befehlen durch Claude Code |
+| Prueft | die Refs von der Standardeingabe: `<lokale Ref> <lokaler SHA> <entfernte Ref> <entfernter SHA>` | `@{u}..HEAD` |
+| Submodule | schlaegt den Bereich im Submodul nach, sonst fail-closed | sieht nur den Pointer |
+| Rolle | erste Linie | zweite Linie, dazu rote Befehle |
+
+**Wer verbraucht die Freigabe.** Bei einem Vorgang prueft `deny-destructive.sh` die Freigabe
+nur noch und laesst sie liegen; verbraucht wird sie von `pre-push`, wo der Vorgang
+tatsaechlich stattfindet. Sonst haette der frueher laufende PreToolUse-Hook das Flag
+weggenommen, und `pre-push` haette gegen ein fehlendes Flag geprueft. Bei roten
+**Befehlen** (ohne Vorgang) verbraucht weiterhin `deny-destructive.sh` — dort gibt es
+keinen zweiten Hook, der es tun koennte.
+
+**Fail-closed ist nicht armbar.** Steht nicht fest, was uebertragen wird — Submodul nicht
+auswertbar, Diff fehlgeschlagen, `red-zone.conf` nicht lesbar —, hilft auch eine Freigabe
+nicht. Freigeben laesst sich nur, was benennbar ist.
+
+**Ohne Hauptbranch am Remote** (etwa beim ersten Vorgang in ein leeres Repo) wird gegen den
+leeren Baum verglichen, also der gesamte Inhalt geprueft. Strenger als ein Vergleich, und
+der erste Vorgang bleibt moeglich.
+
+**Protokoll:** Jeder Vorgang landet in `~/.claude/hooks.log`, auch der erlaubte — mit Ref,
+Commit-Bereich, Anzahl der Eintraege und Ergebnis. Vorher gab es ueber einen sauberen
+Vorgang ueberhaupt keinen Eintrag.
+
+Nachweis: `__tests__/pre-push.test.ts`, 16 Pruefungen gegen den echten Hook mit einem baren
+Repo im Temp-Verzeichnis. Darunter die Faelle A bis H der Diagnose — C, E und F sind genau
+die drei, die der Claude-Code-Hook durchliess.
+
 **Einzige Quelle der Pfad- und Befehlslisten:** `~/.config/openclaw/red-zone.conf`
 (owner-editierbar, wirkt sofort, kein Restart). Der Hook führt **keine** eigene Liste —
 er liest die Datei bei jedem Aufruf.

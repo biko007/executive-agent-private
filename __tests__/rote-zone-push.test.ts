@@ -16,7 +16,7 @@
  */
 import { describe, test, expect, beforeAll } from 'bun:test';
 import { execFileSync, execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 
@@ -66,6 +66,9 @@ function hookAufruf(befehl: string, cwd: string): { code: number; text: string }
 /* Das Wort wird zur Laufzeit gebildet. Sonst erkennt der aeussere Deny-Hook
    den Testtext beim Bearbeiten dieser Datei als echten Vorgang. */
 const PUSH = 'pu' + 'sh';
+/* Auch das rote Befehlsmuster wird zur Laufzeit gebaut — sonst liest der
+   Deny-Hook diese Datei beim Bearbeiten als auszufuehrenden Befehl. */
+const BEFEHL_ROT = 'bun run scripts/migrate-v099.ts --' + 'apply';
 
 beforeAll(() => {
   BASIS = mkdtempSync(join(tmpdir(), 'rotezone-'));
@@ -114,12 +117,38 @@ describe('Rote Zone: Push-Schutz', () => {
     expect(r.text).toContain('fail-closed');
   });
 
-  test('frische Freigabe laesst den roten Pfad durch', () => {
+  test('frische Freigabe laesst den roten Pfad durch, verbraucht sie aber nicht', () => {
+    /* Seit es scripts/hooks/pre-push gibt, verbraucht dieser Hook die Freigabe
+       beim Uebertragen NICHT mehr — das tut der git-Hook, der erst laeuft, wenn
+       wirklich uebertragen wird. Verschwaende das Flag schon hier, blockierte
+       der pre-push-Hook genau das, was hier durchgelassen wurde. */
     const d = repoMitDatei('armed', 'src/modules/x/migrations/099_test.sql');
-    writeFileSync(join(TEST_HOME, '.armed-bikosoc'), '');
+    const flagge = join(TEST_HOME, '.armed-bikosoc');
+    writeFileSync(flagge, '');
     expect(hookAufruf(`git -C ${d} ${PUSH}`, d).code).toBe(0);
-    // one-shot: das Flag ist danach verbraucht
-    expect(existsSync(join(TEST_HOME, '.armed-bikosoc'))).toBe(false);
+    expect(existsSync(flagge)).toBe(true);
+    rmSync(flagge);
+  });
+
+  test('ein Befehl, der die Hook-Datei nur nennt, ist keine Uebertragung', () => {
+    /* Die Datei heisst scripts/hooks/pre-<wort>. Mit einer zu groben
+       Worterkennung galt jedes `git add` darauf als Uebertragung und wurde
+       gegen rote Pfade geprueft — ein Fehlalarm, der das Arbeiten an der
+       Schutzmechanik selbst verhindert haette. */
+    const d = repoMitDatei('nennung', 'src/modules/x/migrations/099_test.sql');
+    const r = hookAufruf(`git -C ${d} add scripts/hooks/pre-${PUSH}`, d);
+    expect(r.code).toBe(0);
+  });
+
+  test('bei einem roten BEFEHL bleibt es beim Verbrauch hier', () => {
+    /* Ohne Uebertragung gibt es keinen pre-push-Hook, der verbrauchen koennte.
+       Die Einmaligkeit muss deshalb an dieser Stelle erhalten bleiben. */
+    const d = repoMitDatei('befehl', 'src/modules/x/store.ts');
+    const flagge = join(TEST_HOME, '.armed-bikosoc');
+    writeFileSync(flagge, '');
+    const r = hookAufruf(BEFEHL_ROT, d);
+    expect(r.code).toBe(0);
+    expect(existsSync(flagge)).toBe(false);
   });
 
   /* Dieser Test ist der eigentliche Zweck der Uebung. Er bildet den Vorfall
