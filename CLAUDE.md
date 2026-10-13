@@ -165,7 +165,10 @@ cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner p
   env-/Secret-Dateien. Rote Befehle zusätzlich um Löschoperationen gegen `openclaw_core`
   erweitert. Details: `docs/ARCHITECTURE.md`, Abschnitt „Rote Zone".
 - **cc setzt `/arm` NIE selbst**
-- Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht)
+- Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht).
+  **Verfallsfrist seit 13.10.2026: 15 Minuten** (`ARM_TTL`, Vorgabe 900 s) — eine
+  aeltere Freigabe wird verworfen. Zwischen `/arm push` und Push duerfen also nicht
+  mehr als 15 Minuten liegen.
 - Manifest 11 erfüllt durch: Gates + Evidence-Bundle im Report + Owner-Freigabe
 
 ### Plan Mode

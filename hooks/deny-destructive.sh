@@ -341,9 +341,26 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
         hook_log BLOCK unknown "Strang unbestimmbar (repo=${RED_ZONE_REPO:-?} cwd=${_CWD:-?}): $RED_ZONE_HIT"
         DENY_REASON="Red Zone: $RED_ZONE_HIT (unbekannter Strang — fail-closed)"
       elif [ -f "$STRAND_FLAG" ]; then
+        # Eine Freigabe gilt fuer den Vorgang, der unmittelbar folgt — nicht
+        # unbegrenzt. Ohne Verfall autorisiert ein liegengebliebenes Flag Tage
+        # spaeter eine voellig andere Aktion. Genau das ist am 13.10.2026
+        # passiert: Freigabe vom 11.10. 07:32 Uhr, verbraucht am 13.10. 12:37
+        # Uhr durch einen Push, fuer den sie nie gedacht war.
+        ARM_TTL="${ARM_TTL:-900}"
+        FLAG_ALTER=$(( $(date +%s) - $(stat -c %Y "$STRAND_FLAG" 2>/dev/null || echo 0) ))
+        # Das Flag wird in BEIDEN Zweigen entfernt: Eine abgelaufene Freigabe
+        # darf auch beim naechsten Versuch nicht mehr greifen.
         rm -f "$STRAND_FLAG"
-        hook_log ARMED "$STRAND" "Armed-Flag verbraucht ($STRAND_FLAG) durch: $RED_ZONE_HIT"
-        hook_notify "$STRAND" operativ "[$STRAND] Armed-Flag verbraucht durch: $RED_ZONE_HIT"
+        if [ "$FLAG_ALTER" -gt "$ARM_TTL" ]; then
+          hook_log BLOCK "$STRAND" \
+            "Freigabe abgelaufen (${FLAG_ALTER}s > ${ARM_TTL}s), verworfen: $RED_ZONE_HIT"
+          DENY_REASON="Red Zone: $RED_ZONE_HIT (Freigabe abgelaufen — war ${FLAG_ALTER}s alt, Grenze ${ARM_TTL}s; /arm erneut geben)"
+        else
+          hook_log ARMED "$STRAND" \
+            "Armed-Flag verbraucht ($STRAND_FLAG, Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
+          hook_notify "$STRAND" operativ \
+            "[$STRAND] Armed-Flag verbraucht (Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
+        fi
       else
         # Nicht armed → blockieren, nur loggen, kein Telegram.
         hook_log BLOCK "$STRAND" "not armed ($STRAND_FLAG fehlt): $RED_ZONE_HIT"

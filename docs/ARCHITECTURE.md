@@ -415,6 +415,20 @@ Befehl ein rotes Muster, blockt `~/.claude/hooks/deny-destructive.sh` fail-close
 Owner einmalig `/arm push` im Chat Hans_Dampf gesetzt hat (`~/.armed-bikosoc`, one-shot).
 Der Agent setzt `/arm` nie selbst.
 
+**Verfallsfrist (seit 13.10.2026):** Eine Freigabe gilt nur noch `ARM_TTL` Sekunden,
+Vorgabe **900 (15 Minuten)**. Danach wird das Flag verworfen, nicht aufgeschoben — es
+greift auch beim naechsten Versuch nicht mehr. Alter und Grenze stehen im Hook-Log und in
+der Telegram-Meldung.
+
+Anlass war der Push `4c750fe` vom 13.10.2026: Er verbrauchte eine Freigabe vom 11.10.
+07:32 Uhr, die zwei Tage und fuenf Stunden unbenutzt herumgelegen hatte. Die Sperre hatte
+funktioniert — die Konstruktion hatte die Luecke. Nachweis: `__tests__/rote-zone-push.test.ts`,
+der diesen Fall nachstellt. Vollstaendige Diagnose:
+`report-rote-zone-sperre-diagnose-20261013.md`.
+
+**Praktische Folge:** Zwischen `/arm push` des Owners und dem Push duerfen nicht mehr als
+15 Minuten liegen. Ist die Frist verstrichen, muss der Owner erneut armen.
+
 **Einzige Quelle der Pfad- und Befehlslisten:** `~/.config/openclaw/red-zone.conf`
 (owner-editierbar, wirkt sofort, kein Restart). Der Hook führt **keine** eigene Liste —
 er liest die Datei bei jedem Aufruf.
