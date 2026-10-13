@@ -932,13 +932,50 @@ Seither gilt fuer jeden PATCH, der `notes` beruehrt:
 
 Durchgesetzt von `notizenVorbereiten()` in `src/modules/assets/routes.ts`,
 geprueft in `src/modules/assets/__tests__/notizen-schutz.test.ts`. Betroffen
-sind die PATCH-Routen fuer tenants, leases, meters, units, expense_bookings und
-security_deposits.
+sind die PATCH-Routen fuer tenants, leases, meters, units, expense_bookings,
+security_deposits, properties und der Upsert fuer heating-config.
 
 **Dieselbe Regel gilt fuer Antworten:** POST und PATCH liefern dieselben Felder
 wie das spaetere GET. Eine Schnittstelle, die beim Schreiben weniger
 zurueckgibt als beim Lesen, laedt genau zu dem Fehler ein, der oben passiert
 ist.
+
+**Und sie gilt fuer die Spaltenliste, nicht nur fuer den Mapper.** Beide
+Property-Abfragen zaehlten ihre Spalten einzeln auf und `p.notes` stand nicht
+dabei. Der Mapper lieferte das Feld, die Antwort war trotzdem immer `null` —
+ein Fehler, der erst beim zweiten Hinsehen am 13.10.2026 auffiel, weil an N24
+ohnehin keine Notiz stand. An MG24 standen 223 Zeichen, die niemand sehen
+konnte. Wer eine Spaltenliste pflegt, pflegt eine zweite Wahrheit; `notes`
+gehoert in beide.
+
+### Upserts duerfen nicht leeren, was nicht im Aufruf steht
+
+`PUT /api/assets/properties/:code/heating-config` ist ein Upsert mit
+`ON CONFLICT ... DO UPDATE SET` auf jedes Feld. Bis zum 13.10.2026 setzte er
+jedes Feld, das im Aufruf fehlte, auf `NULL`. Ein PUT, der nur das Heizsystem
+nachtragen wollte, haette damit den Verbrauchsschluessel 0/100 fuer N24 2025
+und dessen Begruendung geloescht — dieselbe Falle wie bei den Notizen, nur eine
+Ebene tiefer.
+
+Seither liest die Route den Bestand zuerst und uebernimmt ihn fuer jedes Feld,
+das der Aufruf nicht nennt (`feldUebernehmen()`). Ein ausdrueckliches `null`
+loescht weiterhin. Das Audit-Log fuehrt jetzt auch den Vorher-Stand — ohne den
+waere ein Ueberschreiben nicht rekonstruierbar, und genau daran hing am
+13.10.2026 die Wiederherstellung der vier Zaehlernotizen.
+
+### Wo Anlagen stehen
+
+Eine Tabelle fuer Geraete und Waermeerzeuger gibt es nicht. Stammdaten einer
+Anlage — Typenschild, Fabriknummer, Steuerungsstatistik, Laufzeiten — stehen im
+`notes`-Feld des Objekts, die abrechnungsrelevanten Parameter des Jahres in
+`property_heating_config`. Beispiel: die Weishaupt WWP S 35 ID (Fabr.-Nr.
+30541164) in N24, erfasst am 13.10.2026 aus dem Ortstermin.
+
+Das ist bewusst klein gehalten. Eine eigene Tabelle waere eine Migration und
+damit Rote Zone; fuer derzeit eine Waermepumpe und einen Pelletkessel traegt
+das den Aufwand nicht. Kommen weitere Anlagen mit eigenen Wartungsterminen,
+Gewaehrleistungsfristen oder Ablesereihen hinzu, ist das eine
+Architekturentscheidung des Owners und kein Nebenprodukt.
 
 ### Kautionen: security_deposits
 

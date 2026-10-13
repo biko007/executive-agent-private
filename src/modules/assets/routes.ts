@@ -177,7 +177,7 @@ export function registerAssetsHttpRoutes(api: any) {
                 const { rows } = await dbQuery(
                   `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
                           p.ownership_start, p.ownership_end, p.billing_period_start_month,
-                          p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
+                          p.heating_type, p.co2_cost_relevant, p.notes, p.active, p.created_at, p.updated_at,
                           p.construction_year, p.primary_energy_kwh_m2, p.current_market_value,
                           p.monthly_rent_override, p.purchase_price_total,
                           COUNT(u.id)::int AS unit_count,
@@ -248,7 +248,7 @@ export function registerAssetsHttpRoutes(api: any) {
                 const { rows } = await dbQuery(
                   `SELECT p.id, p.code, p.name, p.street, p.postal_code, p.city, p.property_type, p.owner,
                           p.ownership_start, p.ownership_end, p.billing_period_start_month,
-                          p.heating_type, p.co2_cost_relevant, p.active, p.created_at, p.updated_at,
+                          p.heating_type, p.co2_cost_relevant, p.notes, p.active, p.created_at, p.updated_at,
                           p.construction_year, p.primary_energy_kwh_m2, p.current_market_value,
                           p.monthly_rent_override, p.purchase_price_total,
                           COALESCE((SELECT SUM(l.kaltmiete) FROM leases l JOIN units u2 ON u2.id = l.unit_id
@@ -261,6 +261,9 @@ export function registerAssetsHttpRoutes(api: any) {
                 const body = await parseJsonBody(req);
                 const { rows: before } = await dbQuery('SELECT * FROM properties WHERE code = $1 AND active = true', [propertyId]);
                 if (before.length === 0) { err(res, 404, 'Property not found'); return; }
+
+                const notizFehler = notizenVorbereiten(body, before[0]);
+                if (notizFehler) { err(res, 400, notizFehler); return; }
 
                 const sets: string[] = [];
                 const params: unknown[] = [];
@@ -1022,6 +1025,20 @@ async function handleHeatingConfig(req: IncomingMessage, res: ServerResponse, pr
     const body = await parseJsonBody(req);
     if (!body.year || !body.heating_system) { err(res, 400, 'year and heating_system required'); return; }
 
+    // Diese Route ist ein Upsert. Bis zum 13.10.2026 hat sie jedes Feld, das im
+    // Aufruf fehlte, auf NULL gesetzt — ein PUT, der nur das Heizsystem
+    // nachtragen wollte, loeschte damit den Verbrauchsschluessel und den
+    // Vermerk. Das ist dieselbe Falle, die am selben Tag vier Zaehlernotizen
+    // gekostet hat. Jetzt gilt: Was nicht im Aufruf steht, bleibt stehen.
+    const { rows: bestand } = await dbQuery(
+      'SELECT * FROM property_heating_config WHERE property_id = $1 AND year = $2',
+      [propId, body.year]
+    );
+    const vorher = bestand[0] ?? null;
+
+    const notizFehler = notizenVorbereiten(body, vorher);
+    if (notizFehler) { err(res, 400, notizFehler); return; }
+
     const { rows } = await dbQuery(
       `INSERT INTO property_heating_config (property_id, year, heating_system, hot_water_via_heating,
          base_share_percent, consumption_share_percent, co2_emissions_kg, co2_cost_total,
@@ -1037,12 +1054,12 @@ async function handleHeatingConfig(req: IncomingMessage, res: ServerResponse, pr
          co2_tenant_share_percent = EXCLUDED.co2_tenant_share_percent,
          notes = EXCLUDED.notes
        RETURNING *`,
-      [propId, body.year, body.heating_system, body.hot_water_via_heating ?? true,
-       body.base_share_percent ?? null, body.consumption_share_percent ?? null,
-       body.co2_emissions_kg ?? null, body.co2_cost_total ?? null,
-       body.co2_tenant_share_percent ?? null, body.notes ?? null]
+      [propId, body.year, body.heating_system, feldUebernehmen(body, vorher, 'hot_water_via_heating', true),
+       feldUebernehmen(body, vorher, 'base_share_percent'), feldUebernehmen(body, vorher, 'consumption_share_percent'),
+       feldUebernehmen(body, vorher, 'co2_emissions_kg'), feldUebernehmen(body, vorher, 'co2_cost_total'),
+       feldUebernehmen(body, vorher, 'co2_tenant_share_percent'), feldUebernehmen(body, vorher, 'notes')]
     );
-    await audit.log({ module: 'assets', action: 'heating_config.upsert', entityType: 'property_heating_config', entityId: `${propertyCode}/${body.year}`, after: rows[0] });
+    await audit.log({ module: 'assets', action: 'heating_config.upsert', entityType: 'property_heating_config', entityId: `${propertyCode}/${body.year}`, before: vorher ?? undefined, after: rows[0] });
     json(res, 200, rows[0]);
   } else {
     err(res, 405, 'Method not allowed');
@@ -1915,6 +1932,20 @@ async function handleNkPeriodObligations(req: IncomingMessage, res: ServerRespon
  * Erfolgsfall steht in `body.notes` der zu schreibende Text; beruehrt der
  * Aufruf die Notiz gar nicht, bleibt das Feld unbesetzt.
  */
+/**
+ * feldUebernehmen — was nicht im Aufruf steht, bleibt stehen.
+ *
+ * Fuer Upsert-Routen, die mit einem vollstaendigen INSERT antworten. Ohne diese
+ * Regel setzt ein PUT, der nur ein Feld nachtragen will, alle uebrigen Felder
+ * auf NULL. Genau das haette am 13.10.2026 den Verbrauchsschluessel 0/100 fuer
+ * N24 2025 geloescht, waehrend nur das Heizsystem ergaenzt werden sollte.
+ */
+export function feldUebernehmen(body: any, vorher: any, feld: string, standard: unknown = null): unknown {
+  if (body?.[feld] !== undefined) return body[feld];
+  if (vorher && vorher[feld] !== undefined) return vorher[feld];
+  return standard;
+}
+
 export function notizenVorbereiten(body: any, bestandRow: any): string | null {
   const hatAnhang = body?.append_notes !== undefined;
   const hatErsatz = body?.notes !== undefined;
