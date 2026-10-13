@@ -361,6 +361,8 @@ export function registerAssetsHttpRoutes(api: any) {
               const sets: string[] = [];
               const params: unknown[] = [];
               let pi = 1;
+              const notizFehler = notizenVorbereiten(body, before[0]);
+              if (notizFehler) { err(res, 400, notizFehler); return; }
               for (const field of ['first_name','last_name','company_name','contact_person','email','phone','street','postal_code','city','iban','notes']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }
@@ -477,6 +479,8 @@ export function registerAssetsHttpRoutes(api: any) {
                  zu setzen — bei N24 standen die Vertrags-PDFs in SharePoint und
                  ließen sich mit dem Mietverhältnis nicht verknüpfen. Der einzige
                  Weg wäre ein Schreiben an der Route vorbei gewesen. */
+              const notizFehler = notizenVorbereiten(body, before[0]);
+              if (notizFehler) { err(res, 400, notizFehler); return; }
               for (const field of ['lease_number','lease_type','status','start_date','end_date',
                 'kaltmiete','nk_vorauszahlung','heizkosten_vorauszahlung','kaution',
                 'billing_mode','payment_method','rent_due_day','vat_option','vat_rate','notes',
@@ -645,6 +649,8 @@ export function registerAssetsHttpRoutes(api: any) {
                  im Zeitraum keine Ablesung vor Periodenbeginn liegt
                  (CONSUMPTION_START_ASSUMED_ZERO) — sonst waere die Abrechnung gesperrt,
                  obwohl der Nullstart belegt ist. */
+              const notizFehler = notizenVorbereiten(body, before[0]);
+              if (notizFehler) { err(res, 400, notizFehler); return; }
               for (const field of ['meter_number','provider','installed_at','removed_at',
                 'calibration_valid_until','is_main_meter','parent_meter_id','submetering_purpose','notes',
                 'active','initial_reading']) {
@@ -660,6 +666,125 @@ export function registerAssetsHttpRoutes(api: any) {
             } else {
               err(res, 405, 'Method not allowed');
             }
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
+      // ── Security Deposits ───────────────────────────────────────────────
+      // Die Tabelle gibt es seit V022, eine Route dafuer bis zum 13.10.2026
+      // nicht. Wer eine Kaution festhalten wollte, haette an der Schnittstelle
+      // vorbei in die Datenbank schreiben muessen — also gar nicht. Bewusst
+      // ohne DELETE: Eine Kaution wird zurueckgezahlt, nicht geloescht; dafuer
+      // gibt es returned_at und status.
+      if (resource === 'security-deposits') {
+        const depositId = segments[1];
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            if (!depositId) {
+              if (req.method === 'GET') {
+                const { query } = parseUrl(req.url || '');
+                let sql = `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
+                           FROM security_deposits sd
+                           JOIN leases l ON l.id = sd.lease_id
+                           JOIN units u ON u.id = l.unit_id
+                           JOIN properties p ON p.id = u.property_id`;
+                const params: unknown[] = [];
+                const wo: string[] = [];
+                if (query.lease_id) { wo.push(`sd.lease_id = $${params.length + 1}`); params.push(query.lease_id); }
+                if (query.property_code) { wo.push(`p.code = $${params.length + 1}`); params.push(query.property_code); }
+                if (query.status) { wo.push(`sd.status = $${params.length + 1}`); params.push(query.status); }
+                if (wo.length) sql += ' WHERE ' + wo.join(' AND ');
+                sql += ' ORDER BY p.code, u.code';
+                const { rows } = await dbQuery(sql, params);
+                json(res, 200, rows.map(mapDepositRow));
+                return;
+              }
+              if (req.method === 'POST') {
+                const body = await parseJsonBody<any>(req);
+                if (!body.lease_id || body.agreed_amount === undefined) {
+                  err(res, 400, 'lease_id und agreed_amount erforderlich'); return;
+                }
+                const { rows: lease } = await dbQuery('SELECT id FROM leases WHERE id = $1', [body.lease_id]);
+                if (lease.length === 0) { err(res, 404, 'Mietverhaeltnis nicht gefunden'); return; }
+                const { rows: vorhanden } = await dbQuery(
+                  'SELECT id FROM security_deposits WHERE lease_id = $1', [body.lease_id]);
+                if (vorhanden.length > 0) {
+                  err(res, 409, `Fuer dieses Mietverhaeltnis gibt es bereits eine Kaution (id ${vorhanden[0].id})`);
+                  return;
+                }
+                const { rows } = await dbQuery(
+                  `INSERT INTO security_deposits
+                     (lease_id, agreed_amount, due_amount, paid_amount, deposit_account,
+                      interest_amount, returned_at, deductions_amount, status, payment_dates, notes)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,'unknown'),$10,$11)
+                   RETURNING *`,
+                  [body.lease_id, body.agreed_amount, body.due_amount ?? null,
+                   body.paid_amount ?? 0, body.deposit_account ?? null,
+                   body.interest_amount ?? 0, body.returned_at ?? null,
+                   body.deductions_amount ?? 0, body.status ?? null,
+                   body.payment_dates ? JSON.stringify(body.payment_dates) : null,
+                   body.notes ?? null]);
+                await audit.log({ module: 'assets', action: 'security_deposit.create',
+                  entityType: 'security_deposit', entityId: String(rows[0].id), after: rows[0] });
+                /* Noch einmal mit den verbundenen Feldern lesen. Ein POST, der
+                   weniger liefert als das spaetere GET, ist genau die Lese-/
+                   Schreib-Asymmetrie, die am 13.10.2026 zum Datenverlust
+                   gefuehrt hat. */
+                const { rows: frisch } = await dbQuery(
+                  `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
+                     FROM security_deposits sd
+                     JOIN leases l ON l.id = sd.lease_id
+                     JOIN units u ON u.id = l.unit_id
+                     JOIN properties p ON p.id = u.property_id
+                    WHERE sd.id = $1`, [rows[0].id]);
+                json(res, 201, mapDepositRow(frisch[0] ?? rows[0]));
+                return;
+              }
+              err(res, 405, 'Method not allowed');
+              return;
+            }
+
+            const { rows: before } = await dbQuery(
+              'SELECT * FROM security_deposits WHERE id = $1', [depositId]);
+            if (before.length === 0) { err(res, 404, 'Kaution nicht gefunden'); return; }
+
+            if (req.method === 'GET') { json(res, 200, mapDepositRow(before[0])); return; }
+
+            if (req.method === 'PATCH') {
+              const body = await parseJsonBody<any>(req);
+              const notizFehler = notizenVorbereiten(body, before[0]);
+              if (notizFehler) { err(res, 400, notizFehler); return; }
+
+              const sets: string[] = [];
+              const params: unknown[] = [];
+              let pi = 1;
+              for (const field of ['agreed_amount','due_amount','paid_amount','deposit_account',
+                'interest_amount','returned_at','deductions_amount','status','notes']) {
+                if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
+              }
+              if (body.payment_dates !== undefined) {
+                sets.push(`payment_dates = $${pi++}`); params.push(JSON.stringify(body.payment_dates));
+              }
+              if (sets.length === 0) { err(res, 400, 'Kein Feld zum Aendern'); return; }
+              params.push(depositId);
+              const { rows: after } = await dbQuery(
+                `UPDATE security_deposits SET ${sets.join(', ')} WHERE id = $${pi} RETURNING *`, params);
+              await audit.log({ module: 'assets', action: 'security_deposit.update',
+                entityType: 'security_deposit', entityId: String(depositId),
+                before: before[0], after: after[0] });
+              const { rows: frisch } = await dbQuery(
+                `SELECT sd.*, l.lease_number, u.code AS unit_code, p.code AS property_code
+                   FROM security_deposits sd
+                   JOIN leases l ON l.id = sd.lease_id
+                   JOIN units u ON u.id = l.unit_id
+                   JOIN properties p ON p.id = u.property_id
+                  WHERE sd.id = $1`, [depositId]);
+              json(res, 200, mapDepositRow(frisch[0] ?? after[0]));
+              return;
+            }
+
+            err(res, 405, 'Method not allowed');
           } catch (e: any) { err(res, 500, e.message); }
         });
         return true;
@@ -959,6 +1084,8 @@ async function handlePropertyUnits(req: IncomingMessage, res: ServerResponse, pr
       const sets: string[] = [];
       const params: unknown[] = [];
       let pi = 1;
+      const notizFehler = notizenVorbereiten(body, before[0]);
+      if (notizFehler) { err(res, 400, notizFehler); return; }
       for (const field of ['code','unit_type','floor','living_area_qm','usable_area_qm','allocation_area_qm','rooms','has_balcony','has_heating','notes']) {
         if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
       }
@@ -1429,6 +1556,9 @@ async function handleExpenseBookings(
     const setze = (spalte: string, wert: unknown) => {
       werte.push(wert); felder.push(`${spalte} = $${werte.length}`);
     };
+    const notizFehler = notizenVorbereiten(body, vorher[0]);
+    if (notizFehler) { err(res, 400, notizFehler); return; }
+
     if (typeof body?.umlagefaehig === 'boolean') setze('umlagefaehig', body.umlagefaehig);
     if (typeof body?.notes === 'string') setze('notes', body.notes);
     if (typeof body?.document_path === 'string') setze('document_path', body.document_path);
@@ -1778,6 +1908,52 @@ async function handleNkPeriodObligations(req: IncomingMessage, res: ServerRespon
 
 // ── Row mappers ─────────────────────────────────────────────────────────────
 
+/**
+ * notizenVorbereiten — entscheidet, was in die Spalte `notes` geschrieben wird.
+ *
+ * WARUM ES DAS GIBT. Am 13.10.2026 hat ein Skript an vier Zaehlern mehrere
+ * tausend Zeichen Vorarbeit geloescht: Es las den Bestand ueber die Liste,
+ * die `notes` damals gar nicht auslieferte, rechnete deshalb mit leerem Text
+ * und schrieb nur den neuen Absatz zurueck. Der Fehler war nicht das Skript —
+ * es war eine Schnittstelle, bei der Lesen und Schreiben nicht zusammenpassen.
+ *
+ * Seither gilt:
+ *   - `append_notes` haengt an. Der Aufrufer muss den Bestand nicht kennen.
+ *   - `notes` ersetzt und ist nur zusammen mit `replace_notes: true` erlaubt.
+ *   - `notes` allein wird abgelehnt.
+ *
+ * Rueckgabe: ein Fehlertext, wenn der Aufruf abzulehnen ist, sonst null. Im
+ * Erfolgsfall steht in `body.notes` der zu schreibende Text; beruehrt der
+ * Aufruf die Notiz gar nicht, bleibt das Feld unbesetzt.
+ */
+export function notizenVorbereiten(body: any, bestandRow: any): string | null {
+  const hatAnhang = body?.append_notes !== undefined;
+  const hatErsatz = body?.notes !== undefined;
+
+  if (!hatAnhang && !hatErsatz) return null;
+  if (hatAnhang && hatErsatz) {
+    return 'append_notes und notes schliessen einander aus';
+  }
+
+  if (hatAnhang) {
+    if (typeof body.append_notes !== 'string' || !body.append_notes.trim()) {
+      return 'append_notes muss ein nicht leerer Text sein';
+    }
+    const bestand = String(bestandRow?.notes ?? '').trim();
+    const zusatz = body.append_notes.trim();
+    body.notes = bestand ? `${bestand}\n\n${zusatz}` : zusatz;
+    delete body.append_notes;
+    return null;
+  }
+
+  if (body.replace_notes !== true) {
+    return 'notes ersetzt den vorhandenen Text vollstaendig und ist deshalb nur '
+      + 'mit replace_notes: true erlaubt. Zum Anhaengen append_notes verwenden.';
+  }
+  delete body.replace_notes;
+  return null;
+}
+
 function mapPropertyRow(row: any) {
   return {
     id: row.id,
@@ -1794,6 +1970,7 @@ function mapPropertyRow(row: any) {
     heating_type: row.heating_type,
     co2_cost_relevant: row.co2_cost_relevant,
     active: row.active,
+    notes: row.notes ?? null,
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),
     unit_count: row.unit_count ?? 0,
@@ -1825,6 +2002,7 @@ function mapTenantRow(row: any) {
     city: row.city,
     iban: row.iban || null,
     active: row.active,
+    notes: row.notes ?? null,
     active_lease_count: row.active_lease_count ?? 0,
     // Display aliases for frontend
     name,
@@ -1871,6 +2049,28 @@ function mapLeaseRow(row: any) {
   };
 }
 
+function mapDepositRow(row: any) {
+  return {
+    id: row.id,
+    lease_id: row.lease_id,
+    lease_number: row.lease_number ?? null,
+    property_code: row.property_code ?? null,
+    unit_code: row.unit_code ?? null,
+    agreed_amount: num(row.agreed_amount),
+    due_amount: num(row.due_amount),
+    paid_amount: num(row.paid_amount),
+    deposit_account: row.deposit_account,
+    interest_amount: num(row.interest_amount),
+    returned_at: dateStr(row.returned_at),
+    deductions_amount: num(row.deductions_amount),
+    status: row.status,
+    payment_dates: row.payment_dates ?? null,
+    notes: row.notes ?? null,
+    created_at: ts(row.created_at),
+    updated_at: ts(row.updated_at),
+  };
+}
+
 function mapMeterRow(row: any) {
   return {
     id: row.id,
@@ -1886,6 +2086,7 @@ function mapMeterRow(row: any) {
     is_main_meter: row.is_main_meter,
     parent_meter_id: row.parent_meter_id,
     submetering_purpose: row.submetering_purpose,
+    notes: row.notes ?? null,
     active: row.active,
     created_at: ts(row.created_at),
     updated_at: ts(row.updated_at),

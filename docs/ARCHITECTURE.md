@@ -915,6 +915,45 @@ Ein sichtbarer Browser unter Xvfb (ohne Screenshotpflicht beim reinen Login)
 ist ungetestet; die tragfähige Alternative ist der Betrieb über den
 Owner-Browser. Einzelheiten: `report-casameta-login-diagnose-20261013.md`.
 
+### Notizen: lesen und schreiben passen zusammen
+
+Jede `notes`-Spalte im Assets-Modul wird von der zugehoerigen GET-Route auch
+ausgeliefert. Das war bis zum 13.10.2026 nicht so: `mapMeterRow` fuehrte das
+Feld nicht, und ein Skript, das den Bestand ueber die Liste las, hat deshalb an
+vier Zaehlern mehrere tausend Zeichen Vorarbeit ueberschrieben.
+
+Seither gilt fuer jeden PATCH, der `notes` beruehrt:
+
+| Feld | Wirkung |
+|---|---|
+| `append_notes` | haengt an; der Aufrufer muss den Bestand nicht kennen |
+| `notes` + `replace_notes: true` | ersetzt ausdruecklich |
+| `notes` allein | **wird mit 400 abgelehnt** |
+
+Durchgesetzt von `notizenVorbereiten()` in `src/modules/assets/routes.ts`,
+geprueft in `src/modules/assets/__tests__/notizen-schutz.test.ts`. Betroffen
+sind die PATCH-Routen fuer tenants, leases, meters, units, expense_bookings und
+security_deposits.
+
+**Dieselbe Regel gilt fuer Antworten:** POST und PATCH liefern dieselben Felder
+wie das spaetere GET. Eine Schnittstelle, die beim Schreiben weniger
+zurueckgibt als beim Lesen, laedt genau zu dem Fehler ein, der oben passiert
+ist.
+
+### Kautionen: security_deposits
+
+Die Tabelle gibt es seit V022, eine Route dafuer erst seit dem 13.10.2026.
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| GET | `/api/assets/security-deposits` | Liste, filterbar nach `lease_id`, `property_code`, `status` |
+| GET | `/api/assets/security-deposits/:id` | Einzelsatz |
+| POST | `/api/assets/security-deposits` | anlegen; `lease_id` und `agreed_amount` sind Pflicht, je Mietverhaeltnis genau eine Kaution (409 bei Dublette) |
+| PATCH | `/api/assets/security-deposits/:id` | aendern |
+
+**Kein DELETE.** Eine Kaution wird zurueckgezahlt, nicht geloescht; dafuer gibt
+es `returned_at` und `status`.
+
 ### Betriebsskripte: ops/bin
 
 `~/bin/casameta-credentials` und `~/bin/casameta-run` lagen bis zum 13.10.2026
