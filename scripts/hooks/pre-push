@@ -59,6 +59,10 @@ strang_bestimmen() {
     */executive-agent|*/executive-agent/*)       printf 'bikosoc' ;;
     */executive-dashboard|*/executive-dashboard/*) printf 'bikosoc' ;;
     */openclaw/workspace|*/openclaw/workspace/*) printf 'bikosoc' ;;
+    # Der Live-Pfad ist ~/.openclaw/workspace — der Punkt verhindert, dass das
+    # Muster darueber greift (dort muesste ein / direkt vor "openclaw" stehen).
+    # Ohne diese Zeile waere das Parent-Repo "unknown" und damit nie freigebbar.
+    */.openclaw/workspace|*/.openclaw/workspace/*) printf 'bikosoc' ;;
     *)                                           printf 'unknown' ;;
   esac
 }

@@ -121,6 +121,32 @@ describe('pre-push: Grundlagen', () => {
     expect(statSync(PRE_PUSH).mode & 0o111).toBeGreaterThan(0);
   });
 
+  test('das Parent-Repo wird als Strang bikosoc erkannt', () => {
+    /* Der Live-Pfad ist ~/.openclaw/workspace. Der Punkt verhindert, dass das
+       Muster ohne Punkt greift — dort muesste ein Schraegstrich direkt vor
+       "openclaw" stehen. Ohne die Variante mit Punkt waere das Parent-Repo
+       "unbekannter Strang" und damit nie freigebbar. */
+    const wurzel = join(BASIS, 'strang', '.openclaw');
+    mkdirSync(wurzel, { recursive: true });
+    const remote = join(wurzel, 'remote.git');
+    const work = join(wurzel, 'workspace');
+    const heim = join(BASIS, 'strang', 'home');
+    mkdirSync(heim, { recursive: true });
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+    execFileSync('git', ['clone', '-q', remote, work]);
+    g(work, 'config', 'user.email', 'test@example.invalid');
+    g(work, 'config', 'user.name', 'test');
+    g(work, 'config', 'core.hooksPath', HOOKS_DIR);
+    const fall = { wurzel, remote, work, heim, log: join(wurzel, 'hooks.log') };
+    commit(work, 'liesmich.md', 'Basis\n', 'basis');
+    uebertragen(fall, ['origin', 'main']);
+    commit(work, 'src/modules/x/migrations/099_test.sql', '-- ddl\n', 'rot');
+    const r = uebertragen(fall, ['origin', 'main']);
+    expect(r.code).not.toBe(0);
+    expect(r.text).toContain('not armed');          // nicht "unbekannter Strang"
+    expect(r.text).not.toContain('unbekannter Strang');
+  });
+
   test('ohne lesbare Musterdatei wird fail-closed blockiert', () => {
     const f = neuerFall('ohne-conf');
     grundstein(f);
