@@ -866,6 +866,27 @@ Ein sichtbarer Browser unter Xvfb (ohne Screenshotpflicht beim reinen Login)
 ist ungetestet; die tragfähige Alternative ist der Betrieb über den
 Owner-Browser. Einzelheiten: `report-casameta-login-diagnose-20261013.md`.
 
+### Betriebsskripte: ops/bin
+
+`~/bin/casameta-credentials` und `~/bin/casameta-run` lagen bis zum 13.10.2026
+ausschliesslich im Home — nicht gesichert, nicht nachvollziehbar, bei einem
+Neuaufbau des Servers verloren. Seither sind sie unter `ops/bin/` versioniert.
+
+| | |
+|---|---|
+| Quelle | `ops/bin/*` im Repo |
+| Ausspielen | `bash scripts/install-ops-bin.sh` — kopiert nach `~/bin`, `chmod 700`, idempotent |
+| Drift-Pruefung | `scripts/smoke-test.ts` Check 16, gleiche Mechanik wie Check 15 fuer die Claude-Code-Hooks |
+
+Kopiert wird, nicht verlinkt: Ein Symlink zeigt ins Leere, sobald das Repo
+umzieht oder auf einem anderen Stand steht; Betriebswerkzeuge muessen auch dann
+laufen. Die Rechte sind 700 statt 755, weil `casameta-credentials` ein Passwort
+entgegennimmt — die Datei enthaelt zwar keines, schreibt aber eine, die eines
+enthaelt.
+
+Gegen `red-zone.conf` geprueft: Kein rotes Muster trifft auf `ops/bin/*` zu.
+Das Muster `*credentials*.json` verlangt die Endung `.json`.
+
 ### Zwei Konten, zwei Profile
 
 Casameta fuehrt **je Objekt einen eigenen Zugang** (Owner-Angabe 13.10.2026:

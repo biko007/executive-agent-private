@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# casameta-run <auftragsdatei.md> — einen Portal-Agentenlauf ausführen.
+#
+# Ablauf:
+#   1. Lauf-ID und Lauf-Ordner anlegen
+#   2. Sitzung sicherstellen (deterministisches Login-Skript, ohne Sprachmodell)
+#   3. claude -p mit Playwright-MCP starten, Systemprompt aus dem Repo
+#   4. Protokoll auswerten: Postgres, Dropbox, Telegram
+#
+# Der Agent sieht das Passwort nie: Schritt 2 legt den Sitzungszustand ab,
+# Schritt 3 startet damit bereits angemeldet.
+set -euo pipefail
+
+AGENT="$HOME/.openclaw/workspace/.openclaw/extensions/executive-agent"
+BASIS="$HOME/.local/share/biko-portals/casameta"
+LAEUFE="$BASIS/runs"
+
+# ── PATH haerten ────────────────────────────────────────────────────────────
+# `ssh host befehl` startet eine NICHT-interaktive Shell. ~/.bashrc bricht dort
+# in Zeile 6 ab ("If not running interactively, don't do anything") — und genau
+# danach stehen die PATH-Zeilen fuer bun und npm-global. Ohne dieses Haerten
+# endet der Aufruf mit "bun: command not found"; so geschehen am 13.10.2026 beim
+# ersten Login-Test des Owners, der dadurch "Login fehlgeschlagen" ohne Grund
+# meldete, obwohl das Portal nie kontaktiert wurde.
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
+
+werkzeug_pruefen() {
+  local fehlt=""
+  for w in "$@"; do command -v "$w" >/dev/null 2>&1 || fehlt="$fehlt $w"; done
+  if [ -n "$fehlt" ]; then
+    echo "Abbruch: nicht auffindbar:$fehlt" >&2
+    echo "Bitte melden — der Suchpfad des Servers ist unvollstaendig." >&2
+    exit 1
+  fi
+}
+
+werkzeug_pruefen bun claude npx
+
+AUFTRAG="${1:-}"
+if [ -z "$AUFTRAG" ] || [ ! -f "$AUFTRAG" ]; then
+  echo "Aufruf: casameta-run <auftragsdatei.md> [--objekt <code>] [--jahr <jjjj>] [--modus lesen|schreiben] [--konto <code>]" >&2
+  exit 2
+fi
+shift
+
+OBJEKT=""; JAHR=""; MODUS="lesen"; KONTO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --objekt) OBJEKT="${2:-}"; shift 2;;
+    --jahr)   JAHR="${2:-}";   shift 2;;
+    --modus)  MODUS="${2:-}";  shift 2;;
+    --konto)  KONTO="${2:-}";  shift 2;;
+    *) echo "Unbekanntes Argument: $1" >&2; exit 2;;
+  esac
+done
+
+# Casameta fuehrt je Objekt einen eigenen Zugang. Ohne --konto wird der des
+# Objekts verwendet; nur wenn auch das fehlt, gelten die Schluessel ohne
+# Objektteil (eine einzelne, alte Hinterlegung).
+if [ -z "$KONTO" ]; then KONTO="$OBJEKT"; fi
+KONTO="$(printf '%s' "$KONTO" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$KONTO" ] && ! printf '%s' "$KONTO" | grep -qE '^[a-z0-9]{2,12}$'; then
+  echo "Abbruch: Kontokennung enthaelt unerlaubte Zeichen." >&2; exit 2
+fi
+KONTO_ARG=""
+if [ -n "$KONTO" ]; then KONTO_ARG="--konto $KONTO"; fi
+
+# Sprechende Lauf-ID nach Manifest 12: YYMMDD-<zweck>-<objekt>
+RUN_ID="$(date +%y%m%d)-${MODUS}-${OBJEKT:-portal}-$(date +%H%M)"
+ORDNER="$LAEUFE/$RUN_ID"
+mkdir -p "$ORDNER/screenshots"
+chmod 700 "$BASIS" "$LAEUFE" "$ORDNER"
+
+cat > "$ORDNER/lauf.json" <<JSON
+{
+  "runId": "$RUN_ID",
+  "propertyCode": ${OBJEKT:+\"$OBJEKT\"}${OBJEKT:-null},
+  "periodYear": ${JAHR:-null},
+  "mode": "$MODUS",
+  "account": ${KONTO:+\"$KONTO\"}${KONTO:-null},
+  "taskFile": "$(basename "$AUFTRAG")",
+  "status": "fertig"
+}
+JSON
+: > "$ORDNER/aktionen.jsonl"
+cp "$AUFTRAG" "$ORDNER/auftrag.md"
+
+echo "Lauf $RUN_ID"
+
+# ── Sitzung sicherstellen ───────────────────────────────────────────────────
+cd "$AGENT"
+if ! bun run scripts/casameta-login.ts $KONTO_ARG; then
+  echo "Abbruch: keine gültige Sitzung." >&2
+  sed -i 's/"status": "fertig"/"status": "fehler"/' "$ORDNER/lauf.json"
+  bun run scripts/casameta-protokoll.ts "$ORDNER" || true
+  exit 1
+fi
+
+# ── Agentenlauf ─────────────────────────────────────────────────────────────
+# Der Systemprompt liegt versioniert im Repo, nicht hier — so ist jede Änderung
+# an den Sicherheitsregeln nachvollziehbar.
+SYSTEM="$(cat "$AGENT/docs/casameta-agent.md")"
+PROMPT="$(cat "$ORDNER/auftrag.md")
+
+--- Rahmen dieses Laufs ---
+Lauf-ID: $RUN_ID
+Lauf-Ordner: $ORDNER
+Protokolldatei: $ORDNER/aktionen.jsonl
+Screenshots nach: $ORDNER/screenshots/
+Objekt: ${OBJEKT:-nicht angegeben}
+Jahr: ${JAHR:-nicht angegeben}
+Modus: $MODUS"
+
+# Jedes Konto hat ein eigenes Browserprofil — sonst wuerde die Sitzung des
+# einen Objekts die des anderen verdraengen. Die MCP-Vorlage wird deshalb je
+# Lauf auf das passende Profil umgeschrieben.
+if [ -n "$KONTO" ]; then
+  PROFIL="$BASIS/konten/$KONTO/profile"
+else
+  PROFIL="$BASIS/profile"
+fi
+MCP="$ORDNER/mcp.json"
+sed "s#$BASIS/profile#$PROFIL#" "$AGENT/config/casameta-mcp.json" > "$MCP"
+
+claude -p "$PROMPT" \
+  --append-system-prompt "$SYSTEM" \
+  --mcp-config "$MCP" \
+  --allowedTools "mcp__playwright,Read,Write,Bash" \
+  > "$ORDNER/agent-ausgabe.txt" 2>&1 || {
+    echo "Agentenlauf mit Fehler beendet — Protokoll wird trotzdem ausgewertet." >&2
+    sed -i 's/"status": "fertig"/"status": "fehler"/' "$ORDNER/lauf.json"
+  }
+
+# ── Protokoll ───────────────────────────────────────────────────────────────
+bun run scripts/casameta-protokoll.ts "$ORDNER"

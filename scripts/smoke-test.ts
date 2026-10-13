@@ -737,6 +737,58 @@ function checkClaudeHooks() {
   }
 }
 
+// ── 16. BETRIEBSSKRIPTE ops/bin (Drift-Check) ───────────────────────────────
+
+// Gleiche Mechanik wie Check 15, nur fuer ~/bin. Der Anlass ist derselbe: Am
+// 13.10.2026 lagen casameta-credentials und casameta-run ausschliesslich im
+// Home. Eine Korrektur daran war weder gesichert noch nachvollziehbar, und ein
+// Neuaufbau des Servers haette sie verloren.
+
+function checkOpsBin() {
+  const REPO_BIN_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'ops', 'bin');
+  const LIVE_BIN_DIR = path.join(HOME, 'bin');
+
+  let dateien: string[] = [];
+  try {
+    dateien = fs.readdirSync(REPO_BIN_DIR).sort();
+  } catch {
+    fail('ops/bin', `Verzeichnis fehlt: ${REPO_BIN_DIR}`);
+    return;
+  }
+  if (dateien.length === 0) {
+    fail('ops/bin', 'keine Skripte im Repo — erwartet wurden mindestens die casameta-Werkzeuge');
+    return;
+  }
+
+  for (const name of dateien) {
+    const live = path.join(LIVE_BIN_DIR, name);
+    const repo = path.join(REPO_BIN_DIR, name);
+    const label = `ops/bin ${name}`;
+
+    let stat: ReturnType<typeof fs.statSync> | null = null;
+    try { stat = fs.statSync(live); } catch {
+      fail(label, 'fehlt in ~/bin/ — scripts/install-ops-bin.sh ausführen');
+      continue;
+    }
+    if (!(stat.mode & 0o111)) {
+      fail(label, 'nicht ausführbar — scripts/install-ops-bin.sh ausführen');
+      continue;
+    }
+
+    try {
+      const liveHash = execSync(`sha256sum "${live}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+      const repoHash = execSync(`sha256sum "${repo}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+      if (liveHash === repoHash) {
+        pass(label, `vorhanden + ausführbar + kein Drift (${liveHash.slice(0, 12)}…)`);
+      } else {
+        fail(label, `Drift erkannt (live: ${liveHash.slice(0, 12)}… ≠ repo: ${repoHash.slice(0, 12)}…) — scripts/install-ops-bin.sh ausführen`);
+      }
+    } catch (e: any) {
+      fail(label, `Hash-Vergleich fehlgeschlagen: ${e.message}`);
+    }
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -800,6 +852,7 @@ async function main() {
 
   // 15. Claude Code Hooks (Drift-Check)
   checkClaudeHooks();
+  checkOpsBin();
 
   // ── Report ──────────────────────────────────────────────────────────────
 
