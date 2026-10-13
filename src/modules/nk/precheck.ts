@@ -765,7 +765,7 @@ export function zwischenablesungFehlt(
   vertraege: { id: number; lease_number?: string | null; unit_id: number;
     unit_code?: string | null; end_date?: string | Date | null;
     actual_move_out?: string | Date | null }[],
-  meters: { id: number; unit_id?: number | null; meter_number: string }[],
+  meters: { id: number; unit_id?: number | null; meter_number: string; medium?: string | null }[],
   readings: { meter_id: number; read_at: string | Date }[],
   toleranzTage = WECHSEL_TOLERANZ_TAGE,
 ): PreCheckFinding[] {
@@ -782,7 +782,16 @@ export function zwischenablesungFehlt(
         + 'mit der Übergabe.'
       : '';
 
-    for (const meter of meters.filter(m => m.unit_id === v.unit_id)) {
+    /* Strom bleibt aussen vor. Eine Zwischenablesung braucht nur ein Zaehler,
+       dessen Verbrauch die Abrechnung zwischen Vor- und Nachmieter aufteilt.
+       Haushalts- und Mieterstrom tut das nie: Er laeuft ueber einen eigenen
+       Stromliefervertrag zwischen Mieter und Versorger und taucht in der
+       Nebenkostenabrechnung ueberhaupt nicht auf. Ohne diese Zeile sperrte das
+       blosse Erfassen der Mieterstromzaehler die Abrechnung — bei N24 2025 am
+       13.10.2026 genau so eingetreten. Gas bleibt bewusst geprueft: Eine
+       Etagenheizung wird sehr wohl umgelegt. */
+    for (const meter of meters.filter(
+      m => m.unit_id === v.unit_id && m.medium !== 'electricity')) {
       if (findeEinzugsstand(meter.id, wechsel, readings as any, toleranzTage)) continue;
       out.push({
         code: 'MISSING_INTERIM_READING_FOR_CHANGEOVER',

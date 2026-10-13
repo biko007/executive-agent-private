@@ -4,6 +4,43 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — Die Stromzähler der Kundenanlagen sind erfasst
+
+19 Stromzähler mit 35 Ständen angelegt — bis dahin war von den beiden
+Mieterstromanlagen in bikosoc nichts abgebildet.
+
+**Der Zähler, um den es ging, ist gefunden.** Die N24-Wärmepumpe hängt an Submeter
+`1LGZ0064308208` (energiekonzept-Vertrag 341-V008). Verbrauch 2024: **13.961,7 kWh**,
+19.10.–31.12.2023: 3.234,1 kWh. Der Allgemeinstrom läuft über `1LGZ0064308209` mit
+4.438,1 kWh in 2024. Beide werden auf die Kundennummer der La Perla GmbH selbst
+abgerechnet, zum Mieterstromtarif von 31,54 ct/kWh. Der Stand zum 31.12.2025 fehlt
+weiterhin — für 2025 gibt es keine Jahresabrechnung der Kundenanlage.
+
+**Auch die MG24-Lücke ist geschlossen.** Der Allgemeinstrom vom 01.01. bis 16.06.2025
+lief über `1EMH0012291975` (Stadtwerke Kd 133224-348661, Wandlerfaktor 50): 900,0 kWh,
+378,22 EUR netto. Gebucht ist davon nichts — der Auftrag verbietet Kostenbuchungen mit
+geschätztem Preis, und für den Mieterstromtarif 2025 fehlt der Beleg.
+
+**Fehlalarm in der Vorprüfung behoben.** `zwischenablesungFehlt()` verlangte eine
+Wechselablesung für *jeden* Wohnungszähler — auch für Stromzähler. Das blosse Erfassen
+der N24-Mieterstromzähler sperrte dadurch die Abrechnung 2025: N24 fiel von „bereit,
+0 Blocker" auf einen Blocker. Mieterstrom wird aber nie zwischen Vor- und Nachmieter
+aufgeteilt; er läuft über einen eigenen Liefervertrag und kommt in der
+Nebenkostenabrechnung nicht vor. Strom ist jetzt ausgenommen, Gas bewusst nicht — eine
+Etagenheizung wird sehr wohl umgelegt. Zwei Zeilen weiter oben in derselben Datei war
+Strom längst ausgenommen; die Stelle war schlicht übersehen worden. Vier Tests dazu.
+
+**L19 Ultramess — Bauart geklärt, Medium bewusst unverändert.** Das Zählerfoto vom
+23.12.2025 zeigt für `53650734` dasselbe Typenschild wie für den Wärmemengenzähler
+`53650511`: Ultramess C, Art. 1100104803, Θ 0–105 °C, ΔΘ 3–100 K, dazu der Aufdruck
+„Heat Meter". Die vier Geräte, die eddi24 als „KWZ" abrechnet, sind also Wärmezähler;
+die erfassten m³ sind deren Volumenregister. Ein Wärmezähler führt beide Register, die
+Einheit allein unterscheidet daher nicht zwischen Trink- und Heizwasser. Welches Volumen
+das Register zählt — Warmwasserzapfung oder Heizkreis —, ist weiter offen; deshalb bleibt
+das Medium unverändert. Eine Umtypisierung ohne Beleg würde die Abrechnung verfälschen.
+
+---
+
 ## Stand 2026-10-13 — Mieterstrom N24 und MG24: drei Leseskripte, ein Befund
 
 Recherche zum Mieterstrommodell beider Objekte. Keine Datenänderung — aber ein Befund, der

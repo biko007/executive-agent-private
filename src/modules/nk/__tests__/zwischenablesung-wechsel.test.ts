@@ -125,4 +125,32 @@ describe('zwischenablesungFehlt', () => {
   it('hält die Toleranz bei drei Tagen', () => {
     expect(WECHSEL_TOLERANZ_TAGE).toBe(3);
   });
+
+  /* Mieterstrom laeuft ueber einen eigenen Liefervertrag und wird nie zwischen
+     Vor- und Nachmieter aufgeteilt. Vor dem 13.10.2026 verlangte die Pruefung
+     auch fuer Stromzaehler eine Wechselablesung; das blosse Erfassen der
+     N24-Mieterstromzaehler sperrte dadurch die Abrechnung 2025. */
+  it('verlangt für Stromzähler keine Wechselablesung', () => {
+    const strom = [{ id: 300, unit_id: 10, meter_number: 'N24-W6-STROM', medium: 'electricity' }];
+    const f = zwischenablesungFehlt([vertrag({ end_date: '2025-11-30' })], strom, []);
+    expect(f).toHaveLength(0);
+  });
+
+  it('verlangt sie für Wasser und Wärme weiterhin', () => {
+    const gemischt = [
+      { id: 300, unit_id: 10, meter_number: 'N24-W6-STROM', medium: 'electricity' },
+      { id: 301, unit_id: 10, meter_number: 'N24-W6-KW', medium: 'cold_water' },
+      { id: 302, unit_id: 10, meter_number: 'N24-W6-WAERME', medium: 'heat' },
+      { id: 303, unit_id: 10, meter_number: 'N24-W6-GAS', medium: 'gas' },
+    ];
+    const f = zwischenablesungFehlt([vertrag({ end_date: '2025-11-30' })], gemischt, []);
+    expect(f.map(x => x.details?.meter_number).sort())
+      .toEqual(['N24-W6-GAS', 'N24-W6-KW', 'N24-W6-WAERME']);
+  });
+
+  it('prüft Zähler ohne Medienangabe weiterhin', () => {
+    /* Ein Zaehler ohne `medium` darf nicht stillschweigend durchrutschen. */
+    const f = zwischenablesungFehlt([vertrag({ end_date: '2025-11-30' })], ZAEHLER, []);
+    expect(f.length).toBeGreaterThan(0);
+  });
 });
