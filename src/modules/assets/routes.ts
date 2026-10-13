@@ -1670,13 +1670,19 @@ async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, me
         for (const r of sortedReadings) {
           const { rows } = await client.query(
             `INSERT INTO meter_readings (meter_id, value, unit, reading_type, period_start, period_end,
-               read_at, source, reader_name, is_estimated, estimate_method, estimate_reason, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+               read_at, source, reader_name, is_estimated, estimate_method, estimate_reason, notes,
+               document_path)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
             [meterId, r.value, r.unit, r.reading_type || 'annual',
              r.period_start || null, r.period_end || null,
              r.read_at || new Date().toISOString(), r.source || 'manual',
              r.reader_name || null, r.is_estimated || false,
-             r.estimate_method || null, r.estimate_reason || null, r.notes || null]
+             r.estimate_method || null, r.estimate_reason || null, r.notes || null,
+             /* Belegpfad. Ein Zählerstand ohne Beleg ist nicht nachprüfbar — bei
+                einem Foto oder einer Versorgerrechnung ist der Pfad die einzige
+                Spur zurück zur Quelle. Die Spalte gab es von Anfang an, die
+                Route führte sie nur nicht (ergänzt 13.10.2026). */
+             r.document_path || null]
           );
           results.push(rows[0]);
         }
@@ -1714,13 +1720,15 @@ async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, me
 
       const { rows } = await dbQuery(
         `INSERT INTO meter_readings (meter_id, value, unit, reading_type, period_start, period_end,
-           read_at, source, reader_name, is_estimated, estimate_method, estimate_reason, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+           read_at, source, reader_name, is_estimated, estimate_method, estimate_reason, notes,
+           document_path)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
         [meterId, body.value, body.unit, body.reading_type || 'annual',
          body.period_start || null, body.period_end || null,
          body.read_at || new Date().toISOString(), body.source || 'manual',
          body.reader_name || null, body.is_estimated || false,
-         body.estimate_method || null, body.estimate_reason || null, body.notes || null]
+         body.estimate_method || null, body.estimate_reason || null, body.notes || null,
+         body.document_path || null]
       );
       await audit.log({ module: 'assets', action: 'meter_reading.create', entityType: 'meter_reading', entityId: String(rows[0].id), after: rows[0] });
       json(res, 201, rows[0]);
@@ -1734,7 +1742,7 @@ async function handleMeterReadings(req: IncomingMessage, res: ServerResponse, me
     const sets: string[] = [];
     const params: unknown[] = [];
     let pi = 1;
-    for (const field of ['value','unit','reading_type','period_start','period_end','read_at','source','reader_name','is_estimated','estimate_method','estimate_reason','notes']) {
+    for (const field of ['value','unit','reading_type','period_start','period_end','read_at','source','reader_name','is_estimated','estimate_method','estimate_reason','notes','document_path']) {
       if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
     }
     if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }

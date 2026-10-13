@@ -4,6 +4,28 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — L19 und S28: 20 Zähler mit 53 Ständen erfasst
+
+Für L19 und S28 war bisher kein einziger Zähler in bikosoc. Jetzt stehen dort **20 Zähler
+mit 53 Ständen**, jeder Stand mit Belegpfad.
+
+L19 (11 Zähler): vier Wärmemengenzähler, vier Wasserzähler, der Gemeindewasserzähler und
+**zwei** Liegenschaftsstromzähler — Wärmepumpe und Allgemeinstrom. Deren Zählernummern
+standen in keinem Dokument; sie sind aus dem Zählerschrankfoto vom 23.12.2025 abgelesen.
+Die Stände 31.12.2023 und 31.12.2024 stammen aus der eddi24-Abrechnung 2024, die
+Jahresendstände 2025 Bild für Bild aus den Zählerfotos.
+
+S28 (9 Zähler): Hauptwasserzähler, vier Wohnungswasserzähler, zwei Warmwasserzähler und
+drei Stromzähler — darunter der am 24.04.2025 ausgebaute Zwischenzähler und der am
+27.11.2025 getauschte Hauptstromzähler.
+
+**`document_path` fehlte in der Ablesungsroute.** Die Spalte existierte, aber weder die
+Bulk- noch die Einzelanlage noch die Änderung führten sie. Ein Zählerstand ohne Beleg ist
+nicht nachprüfbar — bei einem Foto oder einer Versorgerrechnung ist der Pfad die einzige
+Spur zurück zur Quelle. Alle drei Wege führen das Feld jetzt.
+
+---
+
 ## Stand 2026-10-13 — Verbrauch nach Protokoll, Umlage nach Vertrag
 
 Owner-Entscheidung vom 13.10.2026. Zwei Schnitte, die bisher derselbe waren, laufen jetzt
