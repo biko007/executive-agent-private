@@ -4,6 +4,58 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — L19: die Zähler der Stadtwerke gefunden, die bisherigen waren die falschen
+
+Die Restlückenliste der Zählererfassung stellte sechs Fragen. Fünf sind beantwortet, und
+die Antwort fiel anders aus als erwartet: **Die drei Zähler, die in L19 als
+Liegenschaftszähler geführt wurden, sind nicht die Zähler, nach denen die Stadtwerke
+abrechnen.**
+
+Gesucht waren die Stände 31.12.2024 der beiden Apator-Zähler aus dem Zählerschrank.
+Gefunden wurde, dass diese beiden Geräte in **keiner** Versorgerrechnung vorkommen.
+Abgerechnet wird über drei andere Zähler, jeder mit eigener Kundennummer und eigenem
+Vertrag:
+
+| Zähler | Was | Vertrag | Verbrauch 2025 |
+|---|---|---|---|
+| `64128135` | Wärmestrom Wärmepumpe (HT+NT) | 133224-237713 / 106952 | 12.708 kWh |
+| `64128140` | Allgemeinstrom Gemeinschaftsanlage | 133224-237714 / 106953 | 419 kWh |
+| `Z2001676` | Wasser und Schmutzwasser | 133224-239992 / 108963+108964 | 476 m³ |
+
+Alle drei sind mit je fünf Ständen angelegt, Anfangs- und Endstand 2025 belegt. Die
+Endstände zum 31.12.2025 standen in den Rechnungen vom 17.08.2026: Die Stadtwerke mussten
+den Abrechnungszeitraum 01.08.2025–31.07.2026 am Preiswechsel zum 01.01.2026 teilen und
+weisen deshalb einen Stand zum 31.12.2025 aus. Plausibilitätsprobe Wärmestrom: 12.708 kWh
+gegen 12.742 kWh Brennstoffbezug in der eddi24-Abrechnung 2024.
+
+`Z2001676` ist der Zenner-Zähler aus dem Hausfoto vom 23.12.2025, dessen Funktion offen
+war — auf dem Gerät steht „20-2001676", die Stadtwerke führen ihn als „Z2001676".
+
+**Der bisherige „Gemeindewasserzähler" 40450611 verliert das Kennzeichen Hauptzähler.**
+Er zählt 2025 nur 37,865 m³ gegen 476 m³ am Hausanschluss — ein Zwölftel. Zwei Hauptzähler
+für dasselbe Medium hätten zwei Nenner nebeneinander gestellt und die Verbrauchsverteilung
+doppelt gezählt.
+
+**Die vier „Kaltwasserzähler" der Wohnungen sind Wärmezähler.** Ihre Typenschilder auf den
+Zählerfotos tragen dieselbe Artikelnummer wie die vier Wärmemengenzähler des Hauses und die
+Angaben Θ 0–105 °C sowie ΔΘ 3–100 K — Temperaturangaben, die ein Trinkwasserzähler nicht
+führt. Die Mengenprobe bestätigt das: zusammen 26,345 m³ im Jahr, also 6,6 m³ je Wohnung,
+etwa 18 Liter am Tag. Das ist für einen Haushalt unmöglich und für einen Heizkreis normal.
+Folge: **L19 hat keine Trinkwasserzähler in den Wohnungen.** Wasser und Schmutzwasser 2025
+lassen sich nicht nach Verbrauch verteilen. Die Geräte bleiben unverändert erfasst, damit
+die bisherige Datenlage nachvollziehbar bleibt; der Schlüssel ist eine Owner-Entscheidung.
+
+Nebenbefund aus den Rechnungen: Die Verträge **237710** und **237712** sind der
+Haushaltsstrom der beiden Wohnungen im 2. Obergeschoss, geführt auf den Eigentümer.
+
+Für S28 sind die Stände des alten und des neuen Hauptstromzählers aus der Rechnung vom
+08.01.2026 dokumentiert — der letzte Stand des alten Zählers (13.299 kWh am 26.11.2025)
+ist eine echte Ablesung des Netzbetreibers. Der Stand des neuen Zählers zum 31.12.2025
+bleibt offen: Die Endabrechnung vom 19.02.2026 rechnet nur Wasser und Abwasser ab, der
+Stromvertrag läuft weiter.
+
+---
+
 ## Stand 2026-10-13 — L19 und S28: 20 Zähler mit 53 Ständen erfasst
 
 Für L19 und S28 war bisher kein einziger Zähler in bikosoc. Jetzt stehen dort **20 Zähler
