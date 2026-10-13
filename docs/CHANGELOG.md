@@ -4,6 +4,36 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-13 — Mieterstrom N24 und MG24: drei Leseskripte, ein Befund
+
+Recherche zum Mieterstrommodell beider Objekte. Keine Datenänderung — aber ein Befund, der
+die Abrechnung 2025 betrifft: **Für N24 und MG24 ist 2025 keine einzige Stromkostenbuchung
+vorhanden, und N24 hat in bikosoc keinen einzigen Stromzähler**, obwohl das Messkonzept
+acht Submeter vorsieht, darunter einen eigenen für „Wärmepumpe + Heizung".
+
+Die Konstruktion in beiden Häusern ist eine Kundenanlage nach § 3 Nr. 24a EnWG.
+energiekonzept ortenau verkauft dabei keinen Strom, sondern betreibt die Messstellen und
+rechnet ab; Stromlieferant gegenüber den Mietern ist der Eigentümer selbst (N24: La Perla
+GmbH, MG24: Jürgen Bickel). Deshalb enthält keine energiekonzept-Rechnung eine
+Kilowattstunde — sie sind reine Dienstleistungsrechnungen.
+
+Für die Recherche sind drei Leseskripte entstanden, die auch künftig taugen:
+
+- `suche-mail-energiekonzept.ts` — Postfachsuche über Microsoft Graph `$search`, gibt
+  Datum, Absender, Betreff und Anhangsnamen aus. `$search` durchsucht auch Anhangsnamen,
+  deshalb findet eine Suche nach einer Kundennummer auch die Rechnung, die sie nur im
+  PDF-Namen trägt.
+- `hole-sharepoint-datei.ts` — lädt eine Datei aus SharePoint über den Pfad aus
+  `sharepoint_files`. Über den Pfad und nicht über die Graph-Item-ID, weil die Tabelle für
+  die meisten Einträge keine ID führt.
+- `hole-mail-anhang.ts` — lädt Mailanhänge, die auf ein Namensmuster passen.
+
+Alle drei schreiben nichts — weder ins Postfach noch in SharePoint noch in die Datenbank.
+
+Bericht: `report-mieterstrom-energiekonzept-recherche-20261013.md`.
+
+---
+
 ## Stand 2026-10-13 — L19: die Zähler der Stadtwerke gefunden, die bisherigen waren die falschen
 
 Die Restlückenliste der Zählererfassung stellte sechs Fragen. Fünf sind beantwortet, und
