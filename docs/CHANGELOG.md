@@ -24,6 +24,38 @@ Heizkosten; er wird weiter nach BetrKV § 2 Nr. 11 nach Fläche verteilt.
 
 ---
 
+## Stand 2026-10-13 — N24 aus dem EnergyPortal: die PV-Rechnung steht auf Messwerten
+
+Drei Platzhalter haben ihre Nummer bekommen (Whg. 5 `1LGZ0064308150`, Erzeugung
+`1MCS0010125166`, alter Summenzähler `1MCS0010125156`), 24 Stände sind erfasst, fünf
+Vermerke gesetzt.
+
+**Die PV-Wirtschaftlichkeit beruht für N24 nicht mehr auf Annahmen.** Statt der
+unterstellten 1.000 kWh/kWp stehen jetzt gemessene Werte: Erzeugung 2024
+**23.039,5 kWh** (813 kWh/kWp), Einspeisung **7.721,4 kWh**, Netzbezug
+**14.075,65 kWh**, PV-Eigenverbrauch 15.318,1 kWh. Das Rechenskript nimmt eine
+gemessene Einspeisung jetzt direkt entgegen, statt sie aus Verbrauch minus
+Netzbezug abzuleiten — der Umweg unterschlug die Verluste, bei N24 immerhin
+863 kWh im Jahr.
+
+Der Wert der Anlage sinkt damit von 3.396 auf **2.921 EUR/Jahr**: Es wird
+deutlich weniger eingespeist als angenommen (7.721 statt 13.279 kWh). Die
+Rangfolge der Szenarien bleibt — B schlägt alles.
+
+**Die EEG-Gegenprobe wird dadurch schärfer, nicht stimmiger.** Für die gemessenen
+7.721 kWh wären 578 EUR fällig; eingegangen sind 2025 aber 1.545 EUR. Die
+Differenz von rund 967 EUR lässt sich nicht mehr mit einer zu hoch angenommenen
+Erzeugung erklären. Klärung nur über die Einspeiseabrechnung.
+
+**Wärmepumpenstrom 2025 bleibt unbestimmbar.** Der Stand zum 31.12.2025 ist
+nirgends belegt — das Portal zeigt nur den letzten Stand (01.06.2026), die
+Jahresabrechnung 2025 ist nicht erstellt, die RLM-Daten beginnen erst 04/2026.
+Eingegrenzt auf 17.195,8 bis 40.988,2 kWh, aber nicht zeitanteilig teilbar: Eine
+Wärmepumpe zieht im Winter ein Vielfaches des Sommerwerts. Es wird nichts
+geschätzt; der Befund steht am Zähler und als Warnung in der Vorprüfung.
+
+---
+
 ## Stand 2026-10-13 — L19: die beiden unbekannten Zähler sind identifiziert
 
 Eine SWT-Ablesebestätigung vom 08.07.2025 nannte sechs Stände, von denen vier nicht zu

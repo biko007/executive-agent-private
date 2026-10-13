@@ -33,6 +33,11 @@ interface Objekt {
   verbrauchWaermepumpe: number;
   /** Gemessener Netzbezug der Kundenanlage. */
   netzbezug: number;
+  /** Gemessene Einspeisung ins Netz, falls bekannt. Ist sie gemessen, wird der
+   *  PV-Eigenverbrauch daraus abgeleitet (Erzeugung minus Einspeisung) statt aus
+   *  Verbrauch minus Netzbezug. Das ist genauer: Der zweite Weg unterschlaegt die
+   *  Leitungs- und Wandlungsverluste, die bei N24 2024 immerhin 863 kWh ausmachen. */
+  einspeisungGemessen?: number;
   preisMieterstrom: number;      // EUR/kWh netto
   grundpreisMieterstrom: number; // EUR/Jahr netto je Vertrag
   preisReststrom: number;        // EUR/kWh netto
@@ -57,12 +62,15 @@ function eegMisch(kwp: number, bis10: number, ueber10: number): number {
 const N24: Objekt = {
   name: 'N24',
   kwp: 28.35,
-  erzeugung: 28350,            // ANNAHME 1.000 kWh/kWp — nicht gemessen
-  verbrauchDritte: 6469.5,     // Whg 1, 2, 6 auf zwölf Monate hochgerechnet
-  vertraegeDritte: 3,
+  /* GEMESSEN, nicht mehr geschaetzt: EnergyPortal energiekonzept, 13.10.2026.
+     Basisjahr 2024 — das erste volle Jahr der Kundenanlage. */
+  erzeugung: 23039.5,          // gemessen 2024 (813 kWh/kWp); 2025: 24.183,85
+  verbrauchDritte: 7583.8,     // Whg 1 1.162 + Whg 2 1.976 + Whg 5 2.618,8 + Whg 6 1.827
+  vertraegeDritte: 4,
   verbrauchOwner: 20946.7,     // WP 13.961,7 + Allgemein 4.438,1 + Whg3 1.950,6 + Whg4 596,3
   verbrauchWaermepumpe: 13961.7,
-  netzbezug: 12345,            // 13.731 kWh / 406 Tage * 365
+  netzbezug: 14075.65,         // gemessen, Uebergabezaehler 1MCS0010125165
+  einspeisungGemessen: 7721.4, // gemessen, Register 2.8.0
   preisMieterstrom: 0.3154,
   grundpreisMieterstrom: 96.445,
   preisReststrom: 0.29256,     // SWT RLM 04/2026, variable Bestandteile netto
@@ -99,9 +107,18 @@ const MG24: Objekt = {
 interface Ergebnis { name: string; erloese: number; kosten: number; saldo: number; hinweis: string }
 
 function verbrauchGesamt(o: Objekt) { return o.verbrauchDritte + o.verbrauchOwner; }
-/** PV-Strom, der im Haus bleibt. Aus Messung: Verbrauch minus Netzbezug. */
-function pvEigenverbrauch(o: Objekt) { return verbrauchGesamt(o) - o.netzbezug; }
-function einspeisung(o: Objekt) { return Math.max(o.erzeugung - pvEigenverbrauch(o), 0); }
+/** PV-Strom, der im Haus bleibt. Wo die Einspeisung gemessen ist, wird sie
+ *  verwendet; sonst bleibt der Umweg ueber Verbrauch minus Netzbezug. */
+function pvEigenverbrauch(o: Objekt) {
+  return o.einspeisungGemessen !== undefined
+    ? o.erzeugung - o.einspeisungGemessen
+    : verbrauchGesamt(o) - o.netzbezug;
+}
+function einspeisung(o: Objekt) {
+  return o.einspeisungGemessen !== undefined
+    ? o.einspeisungGemessen
+    : Math.max(o.erzeugung - pvEigenverbrauch(o), 0);
+}
 
 function szenarioA(o: Objekt): Ergebnis {
   const erloese = o.verbrauchDritte * o.preisMieterstrom
@@ -183,12 +200,13 @@ function eur(n: number) { return n.toLocaleString('de-DE', { minimumFractionDigi
 
 function tabelle(o: Objekt, pvPreisE: number) {
   console.log(`\n═══════════ ${o.name} — ${o.kwp} kWp ═══════════`);
-  console.log(`  Erzeugung (Annahme)          ${eur(o.erzeugung).padStart(8)} kWh`);
+  const gemessen = o.einspeisungGemessen !== undefined;
+  console.log(`  Erzeugung ${(gemessen ? '(gemessen)' : '(Annahme)').padEnd(18)} ${eur(o.erzeugung).padStart(8)} kWh`);
   console.log(`  Verbrauch Dritte             ${eur(o.verbrauchDritte).padStart(8)} kWh`);
   console.log(`  Verbrauch Eigentümer         ${eur(o.verbrauchOwner).padStart(8)} kWh`);
   console.log(`  Netzbezug (gemessen)         ${eur(o.netzbezug).padStart(8)} kWh`);
-  console.log(`  PV-Eigenverbrauch (abgel.)   ${eur(pvEigenverbrauch(o)).padStart(8)} kWh`);
-  console.log(`  Einspeisung (abgeleitet)     ${eur(einspeisung(o)).padStart(8)} kWh`);
+  console.log(`  PV-Eigenverbrauch ${(gemessen ? '(gemessen)' : '(abgel.)').padEnd(10)} ${eur(pvEigenverbrauch(o)).padStart(8)} kWh`);
+  console.log(`  Einspeisung ${(gemessen ? '(gemessen)' : '(abgeleitet)').padEnd(16)} ${eur(einspeisung(o)).padStart(8)} kWh`);
   console.log(`  EEG-Satz Teileinspeisung     ${(o.eegTeil * 100).toFixed(3).padStart(8)} ct/kWh`);
   console.log(`  EEG-Satz Volleinspeisung     ${(o.eegVoll * 100).toFixed(3).padStart(8)} ct/kWh`);
   console.log('');
@@ -235,10 +253,12 @@ for (const [o, pvPreis] of [[N24, 0.25], [MG24, 0.25]] as [Objekt, number][]) {
    EEG-Zahlungen? */
 const eegIst2025 = 1545.35;
 console.log(`\n\nGegenprobe N24: EEG-Zahlungseingang 2025 = ${eur(eegIst2025)} EUR`);
-console.log(`  Das entspricht bei ${(N24.eegTeil * 100).toFixed(3)} ct/kWh einer Einspeisung von `
+console.log(`  Das entspraeche bei ${(N24.eegTeil * 100).toFixed(3)} ct/kWh einer Einspeisung von `
   + `${eur(eegIst2025 / N24.eegTeil)} kWh.`);
-console.log(`  Zusammen mit dem abgeleiteten Eigenverbrauch von ${eur(pvEigenverbrauch(N24))} kWh`);
-console.log(`  wäre die Erzeugung ${eur(eegIst2025 / N24.eegTeil + pvEigenverbrauch(N24))} kWh `
-  + `= ${((eegIst2025 / N24.eegTeil + pvEigenverbrauch(N24)) / N24.kwp).toFixed(0)} kWh/kWp.`);
-console.log('  Das liegt deutlich über dem Erfahrungswert von rund 1.000 kWh/kWp.');
-console.log('  Ohne die Einspeiseabrechnung ist nicht zu entscheiden, welche Größe falsch ist.');
+console.log(`  GEMESSEN eingespeist wurden 2024 aber nur ${eur(N24.einspeisungGemessen!)} kWh.`);
+console.log(`  Dafuer waeren ${eur(N24.einspeisungGemessen! * N24.eegTeil)} EUR faellig —`);
+console.log(`  rund ${eur(eegIst2025 - N24.einspeisungGemessen! * N24.eegTeil)} EUR weniger als eingegangen.`);
+console.log('  Die Differenz ist damit NICHT mehr durch eine zu hoch angenommene Erzeugung');
+console.log('  erklaerbar. Moegliche Gruende: Die Zahlung von 1.017,35 EUR am 17.11.2025');
+console.log('  rechnet mehr als zwoelf Monate nach, oder sie enthaelt eine Nachzahlung aus');
+console.log('  2023/24. Klaerung nur ueber die EEG-Einspeiseabrechnung (Kd 580080).');
