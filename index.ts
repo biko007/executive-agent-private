@@ -114,6 +114,7 @@ import { createDropboxAdapter } from './src/adapters/dropbox.js';
 import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
+  ergebnisKnoepfe,
 } from './src/modules/report-telegram/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3512,12 +3513,10 @@ export default function (api: any) {
        die Codezeile, also MIT Dateiname. `copy_text` setzt Bot API >= 7.11 voraus;
        sendTelegramHtmlWithMarkup() sendet bei Ablehnung ohne Knopf erneut. */
     function reportGoMarkup(name: string): unknown {
-      return {
-        inline_keyboard: [[{
-          text: 'go bikosoc kopieren',
-          copy_text: { text: reportGoBefehl(name) },
-        }]],
-      };
+      /* Eine Definition fuer beide Wege. Seit dem 14.10.2026 traegt die Zeile
+         zwei Knoepfe: den Kopierknopf und den Link zur Claude-App. Gebaut und
+         geprueft wird das im Modul report-telegram. */
+      return ergebnisKnoepfe(name);
     }
 
     /* HTML-Text der Folgenachricht. Der Befehl steht in <code>, damit Telegram ihn als

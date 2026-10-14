@@ -78,6 +78,18 @@ export function kuerzen(text: string, max: number): string {
 
 /* ── Kopfblock lesen ─────────────────────────────────────────────────────── */
 
+/**
+ * Maskierungen aufloesen, die innerhalb von Anfuehrungszeichen noetig sind.
+ *
+ * Aufgefallen am 14.10.2026 an der eigenen Testnachricht: `"Knopf \\"claude.ai\\"
+ * neben dem Kopierknopf"` kam mit sichtbaren Rueckstrichen beim Owner an. Wer
+ * einen Begriff im Kopfblock in Anfuehrungszeichen setzt, muss sie maskieren —
+ * dann muessen sie hier auch wieder verschwinden.
+ */
+function entmaskieren(w: string): string {
+  return w.replace(/\\(["'\\])/g, '$1');
+}
+
 /** Eine Zeile `schluessel: wert` — Anfuehrungszeichen aussen werden entfernt. */
 function wertVon(zeile: string): [string, string] | null {
   const m = zeile.match(/^([a-z_]+):\s*(.*)$/);
@@ -86,7 +98,7 @@ function wertVon(zeile: string): [string, string] | null {
   if ((w.startsWith('"') && w.endsWith('"')) || (w.startsWith("'") && w.endsWith("'"))) {
     w = w.slice(1, -1);
   }
-  return [m[1], w];
+  return [m[1], entmaskieren(w)];
 }
 
 /** Liste in der Form `[ "a", "b" ]` oder als Folge von `- a`-Zeilen. */
@@ -94,8 +106,10 @@ function listeVon(wert: string, folgezeilen: string[]): string[] {
   const w = wert.trim();
   if (w.startsWith('[')) {
     const innen = w.replace(/^\[/, '').replace(/\]$/, '');
-    return innen.split(/",\s*"|',\s*'/)
-      .map(s => s.replace(/^\s*["']?/, '').replace(/["']?\s*$/, '').trim())
+    /* Trennt nur an Anfuehrungszeichen, denen KEIN Rueckstrich vorangeht —
+       sonst zerfaellt ein Eintrag mit maskiertem Zitat in zwei. */
+    return innen.split(/(?<!\\)",\s*"|(?<!\\)',\s*'/)
+      .map(s => entmaskieren(s.replace(/^\s*["']?/, '').replace(/["']?\s*$/, '').trim()))
       .filter(Boolean);
   }
   return folgezeilen
@@ -196,6 +210,41 @@ export function ergebnisNachricht(k: Kopfblock, dateiname: string): string {
   zeilen.push(`⚙️ ${fuss.join(' · ')}`);
 
   return kuerzen(zeilen.join('\n'), ERGEBNIS_MAX);
+}
+
+/* ── Knoepfe unter der Ergebnisnachricht ─────────────────────────────────── */
+
+export const CLAUDE_URL = 'https://claude.ai/new';
+
+/** Vollstaendiger Go-Befehl: Grundbefehl plus Dateiname des Reports. */
+export function goBefehl(dateiname: string): string {
+  const basis = String(dateiname || '').split('/').pop()?.trim() ?? '';
+  return basis ? `go bikosoc ${basis}` : 'go bikosoc';
+}
+
+/**
+ * Inline-Keyboard der Ergebnisnachricht: Kopierknopf, dann Link.
+ *
+ * WARUM DER LINK EIN KNOPF IST (Owner-Korrektur 14.10.2026): In der alten Form
+ * stand `https://claude.ai/new` als Textzeile in der Go-Nachricht. Die ist
+ * entfallen, der Link wurde dabei versehentlich mit entfernt — er wird aber
+ * gebraucht: Der Owner tippt den Befehl in die Zwischenablage und braucht
+ * unmittelbar danach die Claude-App. Als URL-Knopf steht er in derselben
+ * Nachricht und oeffnet die App statt Safari.
+ *
+ * UNTEREINANDER, NICHT NEBENEINANDER (Owner 14.10.2026): Nebeneinander teilen
+ * sich beide Knoepfe die Zeilenbreite und werden schmal — auf dem Telefon trifft
+ * man sie schlechter, und der Kopierknopf ist der, der oft getippt wird. Jeder
+ * Knopf bekommt deshalb eine eigene Zeile und damit die volle Breite. Die
+ * Reihenfolge bleibt fest: erst kopieren, dann oeffnen, wie der Owner arbeitet.
+ */
+export function ergebnisKnoepfe(dateiname: string): unknown {
+  return {
+    inline_keyboard: [
+      [{ text: 'go bikosoc kopieren', copy_text: { text: goBefehl(dateiname) } }],
+      [{ text: 'claude.ai', url: CLAUDE_URL }],
+    ],
+  };
 }
 
 /** Ersatz-Kopfblock, wenn der Report keinen traegt. */

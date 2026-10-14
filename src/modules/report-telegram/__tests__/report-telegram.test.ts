@@ -6,6 +6,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
   statusSymbol, htmlEscape, dateiKlartext, kuerzen, ERGEBNIS_MAX,
+  ergebnisKnoepfe, goBefehl, CLAUDE_URL,
 } from '../index.js';
 
 const KOPF = `---
@@ -177,5 +178,66 @@ describe('kuerzen', () => {
   });
   test('kuerzt mit Auslassungszeichen', () => {
     expect(kuerzen('abcdefghij', 5)).toBe('abcd…');
+  });
+});
+
+describe('Knoepfe unter der Ergebnisnachricht', () => {
+  // Owner-Korrektur 14.10.2026: Der Link https://claude.ai/new war mit der
+  // alten Go-Nachricht entfallen und wird gebraucht.
+  const k = ergebnisKnoepfe('report-mg24-pelletbestand-20261014.md') as any;
+
+  test('zwei Zeilen mit je einem Knopf — untereinander', () => {
+    expect(k.inline_keyboard).toHaveLength(2);
+    expect(k.inline_keyboard[0]).toHaveLength(1);
+    expect(k.inline_keyboard[1]).toHaveLength(1);
+  });
+
+  test('Reihenfolge: erst kopieren, dann der Link', () => {
+    const [[eins], [zwei]] = k.inline_keyboard;
+    expect(eins.text).toBe('go bikosoc kopieren');
+    expect(eins.copy_text.text).toBe('go bikosoc report-mg24-pelletbestand-20261014.md');
+    expect(zwei.text).toBe('claude.ai');
+    expect(zwei.url).toBe(CLAUDE_URL);
+    expect(CLAUDE_URL).toBe('https://claude.ai/new');
+  });
+
+  test('der Linkknopf traegt keinen copy_text und umgekehrt', () => {
+    const [[eins], [zwei]] = k.inline_keyboard;
+    expect(eins.url).toBeUndefined();
+    expect(zwei.copy_text).toBeUndefined();
+  });
+
+  test('gilt unabhaengig vom Status — die Knoepfe haengen am Dateinamen', () => {
+    for (const name of ['report-a.md', 'report-b-20261014.md']) {
+      const z = (ergebnisKnoepfe(name) as any).inline_keyboard;
+      expect(z[0][0].copy_text.text).toBe(`go bikosoc ${name}`);
+      expect(z[1][0].url).toBe(CLAUDE_URL);
+    }
+  });
+
+  test('Pfad wird auf den Dateinamen reduziert', () => {
+    expect(goBefehl('/home/biko/bikosoc-spec/report-x.md')).toBe('go bikosoc report-x.md');
+    expect(goBefehl('')).toBe('go bikosoc');
+  });
+});
+
+describe('Maskierte Anfuehrungszeichen im Kopfblock', () => {
+  // Aufgefallen an der eigenen Testnachricht vom 14.10.2026: Rueckstriche
+  // standen sichtbar in der Telegram-Nachricht.
+  test('im Listeneintrag', () => {
+    const k = kopfblockLesen(
+      '---\nstatus: ok\nergebnis: [ "Knopf \\"claude.ai\\" neben dem Kopierknopf", "zweiter" ]\n---\n')!;
+    expect(k.ergebnis).toEqual(['Knopf "claude.ai" neben dem Kopierknopf', 'zweiter']);
+    expect(k.ergebnis[0]).not.toContain('\\');
+  });
+
+  test('im einfachen Feld', () => {
+    const k = kopfblockLesen('---\nstatus: ok\naktion: "Datei \\"x.md\\" prüfen"\n---\n')!;
+    expect(k.aktion).toBe('Datei "x.md" prüfen');
+  });
+
+  test('ein Komma im Eintrag trennt nicht', () => {
+    const k = kopfblockLesen('---\nstatus: ok\nergebnis: [ "a, b und c", "zwei" ]\n---\n')!;
+    expect(k.ergebnis).toEqual(['a, b und c', 'zwei']);
   });
 });

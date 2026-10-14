@@ -1072,6 +1072,13 @@ Statussymbole: ✅ fertig ohne Aktion · 👉 Owner muss handeln (dann steht „
 Aktion" direkt unter dem Titel) · ⚠️ Auffälligkeit · ❌ fehlgeschlagen ·
 ⏸ gestoppt oder wartet auf `/arm`.
 
+Unter der Abschlussnachricht stehen zwei Knöpfe **untereinander**, in dieser
+Reihenfolge: `go bikosoc kopieren` (Kopierknopf mit dem vollständigen Befehl)
+und `claude.ai` (Link auf `https://claude.ai/new`). Untereinander, weil
+nebeneinander beide schmal werden — auf dem Telefon trifft man den Kopierknopf
+dann schlechter, und genau der wird oft getippt. Der Link öffnet die Claude-App;
+der Projektlink würde am iPhone in Safari landen.
+
 Pläne (`~/.claude/plans/`) und HDCC-Pläne bleiben beim alten Weg: Sie werden im
 Volltext gelesen bzw. gehen in einen anderen Chat. Der Nutzungstext, der früher
 unter jeder Quittung stand, ist jetzt `/hilfe`.
