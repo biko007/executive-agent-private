@@ -1576,6 +1576,23 @@ async function handleExpenseBookings(
     }
     if (typeof body?.service_period_start === 'string') setze('service_period_start', body.service_period_start);
     if (typeof body?.service_period_end === 'string') setze('service_period_end', body.service_period_end);
+
+    /* Felder, die diese Route bewusst nicht aendert, werden ausdruecklich
+       abgelehnt statt stillschweigend ignoriert. Am 14.10.2026 hat ein Skript
+       amount_gross mitgeschickt, eine Erfolgsmeldung bekommen und eine Notiz
+       geschrieben, die eine Betragsaenderung behauptete — die nie stattfand.
+       Wer den Betrag aendern will, archiviert die Buchung und legt eine neue
+       an; nur so bleibt die Spur im Abrechnungsjahr nachvollziehbar. */
+    const GESPERRT = ['amount_gross','amount_net','vat_amount','vat_rate',
+      'property_id','cost_category_id','cost_category_code','unit_id'];
+    const verwendet = GESPERRT.filter(f => body?.[f] !== undefined);
+    if (verwendet.length > 0) {
+      err(res, 400, `${verwendet.join(', ')} ist über diese Route nicht änderbar. `
+        + 'Betrag, Objekt und Kostenart machen eine andere Buchung aus: alte Buchung '
+        + 'mit archived: true stilllegen und eine neue anlegen.');
+      return;
+    }
+
     if (felder.length === 0) {
       err(res, 400, 'umlagefaehig, notes, document_path, archived, service_period_start '
         + 'oder service_period_end erforderlich');

@@ -1014,6 +1014,21 @@ ohnehin keine Notiz stand. An MG24 standen 223 Zeichen, die niemand sehen
 konnte. Wer eine Spaltenliste pflegt, pflegt eine zweite Wahrheit; `notes`
 gehoert in beide.
 
+### Nicht aenderbare Felder werden abgelehnt, nicht ignoriert
+
+`PATCH /api/assets/properties/:code/expense-bookings/:id` aendert bewusst nur
+Umlagefaehigkeit, Leistungszeitraum, Notiz, Belegpfad und den Archivstatus.
+**Betrag, Objekt und Kostenart machen eine andere Buchung aus** — wer sie
+aendern will, legt die alte Buchung mit `archived: true` still und erstellt eine
+neue. So bleibt im Abrechnungsjahr nachvollziehbar, was wann galt.
+
+Bis zum 14.10.2026 wurden mitgeschickte gesperrte Felder jedoch stillschweigend
+verworfen, und die Route meldete Erfolg. Ein Skript schickte `amount_gross` mit,
+bekam 200 zurueck und schrieb eine Notiz ueber eine Betragsaenderung, die nie
+stattgefunden hatte. Jetzt antwortet die Route mit 400 und nennt den richtigen
+Weg. Gesperrt sind `amount_gross`, `amount_net`, `vat_amount`, `vat_rate`,
+`property_id`, `cost_category_id`, `cost_category_code` und `unit_id`.
+
 ### Upserts duerfen nicht leeren, was nicht im Aufruf steht
 
 `PUT /api/assets/properties/:code/heating-config` ist ein Upsert mit

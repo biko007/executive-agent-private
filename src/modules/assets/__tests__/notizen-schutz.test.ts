@@ -115,3 +115,24 @@ describe('feldUebernehmen', () => {
     expect(feldUebernehmen({ hot_water_via_heating: false }, vorher, 'hot_water_via_heating', true)).toBe(false);
   });
 });
+
+describe('gesperrte Felder im Buchungs-PATCH', () => {
+  // Die Liste steht in routes.ts; der Test haelt die Begruendung fest.
+  // Am 14.10.2026 schickte ein Skript amount_gross mit, bekam 200 zurueck und
+  // schrieb eine Notiz ueber eine Betragsaenderung, die nicht stattgefunden hat.
+  const GESPERRT = ['amount_gross','amount_net','vat_amount','vat_rate',
+    'property_id','cost_category_id','cost_category_code','unit_id'];
+
+  test('jedes gesperrte Feld ist benannt', () => {
+    expect(GESPERRT).toContain('amount_gross');
+    expect(GESPERRT).toContain('cost_category_id');
+    expect(GESPERRT.length).toBe(8);
+  });
+
+  test('erlaubte Felder sind nicht gesperrt', () => {
+    for (const f of ['umlagefaehig','notes','document_path','archived',
+                     'service_period_start','service_period_end']) {
+      expect(GESPERRT).not.toContain(f);
+    }
+  });
+});
