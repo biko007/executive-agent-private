@@ -337,3 +337,43 @@ describe('Leerzeile unter dem Link', () => {
     expect(n.split('\n').slice(-2)[0]).toBe(CLAUDE_URL);
   });
 });
+
+describe('Kopfblock steht in Zeile 1', () => {
+  // Nachzug 14.10.2026: Der Dropbox-Upload stellte einen "## DIGEST"-Block
+  // voran. Dadurch begann die Datei nicht mehr mit dem Kopfblock, und der
+  // Leser fand ihn nicht — er verlangt "---" in der ERSTEN Zeile.
+  test('gelesen, wenn --- die erste Zeile ist', () => {
+    const k = kopfblockLesen('---\ntitel: T\nstatus: ok\n---\n\n# Report\n')!;
+    expect(k).not.toBeNull();
+    expect(k.titel).toBe('T');
+  });
+
+  test('NICHT gelesen, wenn etwas davor steht — genau der Fehlerfall', () => {
+    const mitDigest = ['## DIGEST', '**Modus:** AUTO', '', '---', '',
+      '---', 'titel: T', 'status: ok', '---', '', '# Report'].join('\n');
+    expect(kopfblockLesen(mitDigest)).toBeNull();
+  });
+
+  test('auch eine Leerzeile davor verhindert das Lesen', () => {
+    expect(kopfblockLesen('\n---\ntitel: T\nstatus: ok\n---\n')).toBeNull();
+  });
+
+  test('ohne Kopfblock greift der Fallback und der Report wird angehaengt', () => {
+    const name = 'report-ohne-kopf-20261014.md';
+    expect(kopfblockLesen('# Nur Prosa\n\nText')).toBeNull();
+    const k = kopfblockFallback(name);
+    expect(k.fehlt).toBe(true);
+    expect(k.status).toBe('hinweis');
+    const n = ergebnisNachricht(k, name);
+    expect(n).toStartWith('⚠️');
+    expect(n).toContain('Kopfblock fehlt');
+    expect(n).toContain('Report im Anhang lesen');
+  });
+
+  test('ein Report mit Kopfblock enthaelt keinen DIGEST-Block mehr', () => {
+    // Die Regel: der Report beginnt mit dem Kopfblock, sonst nichts davor.
+    const roh = '---\ntitel: T\nstatus: ok\n---\n\n# Report\n\nText\n';
+    expect(roh.startsWith('---')).toBe(true);
+    expect(roh).not.toContain('## DIGEST');
+  });
+});

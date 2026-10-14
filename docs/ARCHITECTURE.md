@@ -1089,6 +1089,14 @@ Link: Der „Kopiert"-Hinweis nach dem Antippen des Knopfes legt sich über den
 unteren Rand der Nachricht und verdeckte sonst die letzte Zeile. Derselbe Kniff
 hielt schon in der alten Go-Nachricht (`report-golink-spacing2-20261008.md`).
 
+**Nach Dropbox geht der Report unverändert.** Bis zum 14.10.2026 stellte der
+Upload einen `## DIGEST`-Block voran. Seit jeder Report mit dem YAML-Kopfblock
+beginnt, standen dort beide untereinander — dieselben Angaben zweimal, und die
+Datei begann entgegen der eigenen Regel nicht mit dem Kopfblock. Schlimmer: Der
+Leser verlangt `---` in der **ersten** Zeile, fand den Block in der
+Dropbox-Fassung also gar nicht mehr. Der Digest bleibt nur für den alten
+Textweg erhalten.
+
 ### Der Titel der Übernahmemeldung
 
 Er kommt aus der **ersten Zeile der Auftragsdatei**, nicht aus dem Dateinamen —

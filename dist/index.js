@@ -662,7 +662,9 @@ export default function (api) {
     /**
      * Erzeugt einen kompakten 5-Zeilen-Digest aus Report-Inhalt.
      * Reihenfolge: ## Zusammenfassung/Summary-Abschnitt → erste 5 inhaltliche Zeilen.
-     * Wird oben im Dropbox-Upload vorangestellt; bei langen Reports als Telegram-Text.
+     * Nur noch fuer den alten Telegram-Textweg (Plaene, Reports ohne Kopfblock in
+     * der Uebergangszeit). Dem Dropbox-Upload wird seit dem 14.10.2026 NICHTS mehr
+     * vorangestellt — der Report beginnt mit seinem YAML-Kopfblock.
      */
     function generateDigest(content) {
         // Bevorzuge vorhandenen Zusammenfassungs-Abschnitt
@@ -3622,10 +3624,15 @@ export default function (api) {
                                 dropboxPath = `/bikosoc-plans/${file.name}`;
                             }
                             else {
-                                // Reports: Digest voranstellen
-                                uploadContent = digestText
-                                    ? `## DIGEST\n${digestText}\n\n---\n\n${content}`
-                                    : content;
+                                /* Reports gehen seit dem 14.10.2026 UNVERAENDERT nach Dropbox.
+                                   Vorher stellte der Upload einen "## DIGEST"-Block voran. Seit
+                                   jeder Report mit dem YAML-Kopfblock beginnt, stand dort beides
+                                   untereinander: erst der Digest, dann der Kopfblock — dieselben
+                                   Angaben zweimal, und die Datei begann entgegen der eigenen Regel
+                                   nicht mit dem Kopfblock. Der Digest hat damit keine Aufgabe
+                                   mehr; die Zusammenfassung steht im Kopfblock und in der
+                                   Telegram-Nachricht. */
+                                uploadContent = content;
                                 dropboxPath = `/bikosoc-reports/${file.name}`;
                             }
                             const uploadBuf = Buffer.from(uploadContent, 'utf-8');
