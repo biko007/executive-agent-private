@@ -155,6 +155,49 @@ describe('Rote Zone: Push-Schutz', () => {
      vom 13.10.2026 nach: Eine Freigabe vom 11.10. 07:32 Uhr lag zwei Tage
      unverbraucht herum und autorisierte dann einen Push, fuer den sie nie
      gedacht war. Seit der Verfallsfrist kann das nicht mehr passieren. */
+  /* Zwei Repo-Pfade in einem Befehl. Vor dem 14.10.2026 nahm der Hook jede
+     Zeile, in der ein `git -C /pfad` stand, und verkettete die Treffer zu einem
+     Pfad, den es nicht gibt: Er blockierte fail-closed mit
+     "diff-Pruefung fehlgeschlagen (/a\n/b)" und pruefte keines der beiden
+     Repos. Im Log steht das zweimal, zuletzt am 14.10.2026 um 10:17 Uhr.
+     Jetzt wird jeder genannte Pfad einzeln geprueft. */
+  test('zwei gruene Repo-Pfade in einem Befehl laufen durch', () => {
+    const a = repoMitDatei('zwei-gruen-a', 'src/modules/x/store.ts');
+    const b = repoMitDatei('zwei-gruen-b', 'src/modules/y/store.ts');
+    const r = hookAufruf(`git -C ${a} ${PUSH}\ngit -C ${b} ${PUSH}`, a);
+    expect(r.code).toBe(0);
+  });
+
+  test('ein roter Pfad im ZWEITEN Repo wird erkannt, nicht fail-closed', () => {
+    const a = repoMitDatei('zwei-rot-a', 'src/modules/x/store.ts');
+    const b = repoMitDatei('zwei-rot-b', 'src/modules/x/migrations/099_test.sql');
+    const r = hookAufruf(`git -C ${a} ${PUSH}\ngit -C ${b} ${PUSH}`, a);
+    expect(r.code).toBe(2);
+    expect(r.text).toContain('migrations/*.sql');
+    expect(r.text).toContain('not armed');
+    expect(r.text).not.toContain('fail-closed');
+  });
+
+  test('derselbe Pfad zweimal genannt ist kein unbestimmbares Ziel', () => {
+    /* Genau der Fall aus dem Log: beide Zeilen nennen dasselbe Repo. */
+    const d = repoMitDatei('zweimal-gleich', 'src/modules/x/migrations/099_test.sql');
+    const r = hookAufruf(`git -C ${d} status\ngit -C ${d} ${PUSH}`, d);
+    expect(r.code).toBe(2);
+    expect(r.text).toContain('not armed');
+    expect(r.text).not.toContain('fail-closed');
+  });
+
+  test('ein kaputtes Repo neben einem gruenen bleibt fail-closed', () => {
+    /* Die Einzelpruefung darf die Sperre nicht aufweichen: Scheitert der Diff
+       eines der genannten Repos, ist das Ziel nicht bestimmbar. */
+    const a = repoMitDatei('zwei-kaputt-a', 'src/modules/x/store.ts');
+    const b = repoMitDatei('zwei-kaputt-b', 'src/modules/x/store.ts');
+    execFileSync('git', ['-C', b, 'branch', '--unset-upstream']);
+    const r = hookAufruf(`git -C ${a} ${PUSH}\ngit -C ${b} ${PUSH}`, a);
+    expect(r.code).toBe(2);
+    expect(r.text).toContain('fail-closed');
+  });
+
   test('zwei Tage alte Freigabe wird NICHT akzeptiert', () => {
     const d = repoMitDatei('abgelaufen', 'src/modules/x/migrations/099_test.sql');
     const flagge = join(TEST_HOME, '.armed-bikosoc');

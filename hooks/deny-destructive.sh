@@ -232,7 +232,8 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
   RED_ZONE_REPO=""           # git --show-toplevel des betroffenen Repos
   RED_ZONE_FAILCLOSED=false  # true = Push-Ziel unbestimmbar → Block ohne Flag-Option
   RED_ZONE_IST_PUSH=false    # true = Treffer stammt aus der Pruefung in (A)
-  REPO_PATH=""
+  REPO_PATH=""               # erster genannter Repo-Pfad (Meldung, Strang)
+  REPO_PATHS=""              # alle genannten Repo-Pfade, einer je Zeile
 
   # (A) git push — FAIL-CLOSED: nur durchlassen wenn Diff-Status SICHER gruen ist.
   # Kein REPO_PATH / Diff-Fehler / Variable im Pfad → BLOCK (nicht allow).
@@ -248,11 +249,22 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
       | sed 's/[[:space:]]*&&.*//' \
       | sed 's/[[:space:]]*;.*//')
 
-    # Nur absolute Pfade akzeptieren — $VAR / "$VAR" werden abgelehnt
+    # Nur absolute Pfade akzeptieren — $VAR / "$VAR" werden abgelehnt.
+    # ALLE Vorkommen werden gesammelt. Nennt ein Befehl zwei Repos — etwa weil
+    # er mehrzeilig ist und in jeder Zeile ein `git -C /pfad` steht —, nahm die
+    # frühere Fassung jede passende Zeile und die Kommandosubstitution
+    # verkettete sie zu einem Pfad, den es nicht gibt. Der Hook blockierte dann
+    # fail-closed mit "diff-Prüfung fehlgeschlagen (/a\n/b)" und prüfte keines
+    # der beiden Repos. Festgestellt am 13.10.2026, erneut am 14.10.2026
+    # 10:17 Uhr. Jetzt wird jeder genannte Pfad einzeln geprüft.
     if echo "$NORM_PUSH" | grep -qE '\bgit\s+-C\s+/'; then
-      REPO_PATH=$(echo "$NORM_PUSH" | sed -n 's/.*\bgit\s\+-C\s\+\(\/[^ ]*\).*/\1/p')
+      REPO_PATHS=$(printf '%s\n' "$NORM_PUSH" \
+        | grep -oE '\bgit[[:space:]]+-C[[:space:]]+/[^[:space:]]+' \
+        | sed -E 's/^.*[[:space:]]//' \
+        | awk '!gesehen[$0]++' || true)
+      REPO_PATH=$(printf '%s\n' "$REPO_PATHS" | head -n1)
     elif echo "$NORM_PUSH" | grep -qE '^\s*cd\s+[~/]'; then
-      REPO_PATH=$(echo "$NORM_PUSH" | sed -n 's/^\s*cd\s\+\([^; &]*\).*/\1/p')
+      REPO_PATH=$(echo "$NORM_PUSH" | sed -n 's/^\s*cd\s\+\([^; &]*\).*/\1/p' | head -n1)
     fi
 
     # Expand tilde to $HOME
@@ -260,39 +272,51 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
       REPO_PATH="${HOME}${REPO_PATH#\~}"
     fi
 
+    # Der cd-Zweig nennt genau einen Pfad; die Tilde-Erweiterung oben betrifft
+    # nur ihn. Beim git -C-Zweig steht die Liste bereits.
+    if [ -z "$REPO_PATHS" ] && [ -n "$REPO_PATH" ]; then
+      REPO_PATHS="$REPO_PATH"
+    fi
+
     if [ -z "$REPO_PATH" ]; then
       # Kein aufloesbarer Repo-Pfad → fail-closed
       RED_ZONE_HIT="git push: Repo-Pfad nicht auflösbar"
       RED_ZONE_FAILCLOSED=true
-    elif ! CHANGED_FILES=$(git -C "$REPO_PATH" diff --name-only '@{u}..HEAD' 2>/dev/null); then
-      # git diff fehlgeschlagen (kein Upstream, kein gültiges Repo, etc.) → fail-closed
-      RED_ZONE_HIT="git push: diff-Prüfung fehlgeschlagen ($REPO_PATH)"
-      RED_ZONE_FAILCLOSED=true
-    elif [ -n "$CHANGED_FILES" ]; then
-      # Diff erfolgreich und Dateien vorhanden — gegen rote Pfade prüfen
-      IN_PATHS=false
-      while IFS= read -r cfgline; do
-        cfgline=$(echo "$cfgline" | sed 's/#.*//' | xargs)
-        [ -z "$cfgline" ] && continue
-        [ "$cfgline" = "[red-paths]" ] && IN_PATHS=true && continue
-        [[ "$cfgline" == \[* ]] && IN_PATHS=false && continue
-        if $IN_PATHS; then
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            # shellcheck disable=SC2254
-            if [[ "$f" == $cfgline ]]; then
-              RED_ZONE_HIT="red path: $f matches $cfgline"
-              break 2
-            fi
-          done <<< "$CHANGED_FILES"
+    else
+      # Jeder genannte Pfad wird für sich geprüft: ein fehlgeschlagener Diff
+      # ist fail-closed, ein roter Treffer in einem der Repos blockiert.
+      while IFS= read -r REPO_EINS; do
+        [ -z "$REPO_EINS" ] && continue
+        if ! CHANGED_FILES=$(git -C "$REPO_EINS" diff --name-only '@{u}..HEAD' 2>/dev/null); then
+          # git diff fehlgeschlagen (kein Upstream, kein gültiges Repo, etc.) → fail-closed
+          RED_ZONE_HIT="git push: diff-Prüfung fehlgeschlagen ($REPO_EINS)"
+          RED_ZONE_FAILCLOSED=true
+          break
         fi
-      done < "$RED_ZONE_CONF"
-      # Strang-Repo nur bei echtem red-path Treffer setzen (nicht bei fail-closed)
-      if [ -n "$RED_ZONE_HIT" ]; then
-        RED_ZONE_REPO=$(git -C "$REPO_PATH" rev-parse --show-toplevel 2>/dev/null || true)
-      fi
+        # leeres Diff (nichts zu pushen) → kein RED_ZONE_HIT → weiter
+        [ -z "$CHANGED_FILES" ] && continue
+        # Diff erfolgreich und Dateien vorhanden — gegen rote Pfade prüfen
+        IN_PATHS=false
+        while IFS= read -r cfgline; do
+          cfgline=$(echo "$cfgline" | sed 's/#.*//' | xargs)
+          [ -z "$cfgline" ] && continue
+          [ "$cfgline" = "[red-paths]" ] && IN_PATHS=true && continue
+          [[ "$cfgline" == \[* ]] && IN_PATHS=false && continue
+          if $IN_PATHS; then
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              # shellcheck disable=SC2254
+              if [[ "$f" == $cfgline ]]; then
+                RED_ZONE_HIT="red path: $f matches $cfgline"
+                # Strang-Repo nur bei echtem red-path Treffer setzen
+                RED_ZONE_REPO=$(git -C "$REPO_EINS" rev-parse --show-toplevel 2>/dev/null || true)
+                break 3
+              fi
+            done <<< "$CHANGED_FILES"
+          fi
+        done < "$RED_ZONE_CONF"
+      done <<< "$REPO_PATHS"
     fi
-    # else: leeres Diff (nichts zu pushen) → kein RED_ZONE_HIT → allow
   fi
 
   # (B) Red direct commands — match normalized command against regex patterns

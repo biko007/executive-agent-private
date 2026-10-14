@@ -452,6 +452,16 @@ keinen zweiten Hook, der es tun koennte.
 auswertbar, Diff fehlgeschlagen, `red-zone.conf` nicht lesbar —, hilft auch eine Freigabe
 nicht. Freigeben laesst sich nur, was benennbar ist.
 
+**Mehrere Repo-Pfade in einem Befehl (seit 14.10.2026).** `deny-destructive.sh` liest
+jetzt **alle** `git -C /pfad`-Vorkommen eines Befehls und prueft jedes Repo fuer sich.
+Vorher nahm `sed -n …p` jede passende Zeile, und die Kommandosubstitution verkettete die
+Treffer zu einem Pfad, den es nicht gibt. Ergebnis war ein fail-closed-Block mit
+verstuemmelter Meldung — `diff-Pruefung fehlgeschlagen (/a<NL>/b)` — bei dem **keines** der
+genannten Repos geprueft wurde. Im Hook-Log steht das zweimal, zuletzt am 14.10.2026 um
+10:17 Uhr. Die Sperre wird dadurch nicht weicher: Ein roter Treffer in einem der Repos
+blockiert, und scheitert der Diff eines davon, gilt weiter fail-closed. Nachweis: vier
+Faelle in `__tests__/rote-zone-push.test.ts`.
+
 **Ohne Hauptbranch am Remote** (etwa beim ersten Vorgang in ein leeres Repo) wird gegen den
 leeren Baum verglichen, also der gesamte Inhalt geprueft. Strenger als ein Vergleich, und
 der erste Vorgang bleibt moeglich.
