@@ -117,7 +117,7 @@ export async function erzeugeEingabeblatt(
       ORDER BY u.code NULLS FIRST, m.medium, m.meter_number`, [objekt.id]);
 
   const { rows: staende } = await dbQuery<any>(
-    `SELECT r.meter_id, r.read_at::date::text AS tag, r.value, r.reading_type
+    `SELECT r.meter_id, r.read_at::date::text AS tag, r.value, r.reading_type, r.is_estimated
        FROM meter_readings r
       WHERE r.meter_id = ANY($1)
         AND r.read_at >= $2::date - INTERVAL '40 days'
@@ -462,6 +462,16 @@ export async function erzeugeEingabeblatt(
     csvZeile('zaehler', `${m.meter_number} Verbrauch`, verbrauch, einheitVon(m.medium));
     if (!alt && m.initial_reading == null) {
       merkeLuecke(`Zähler ${m.meter_number}: kein Stand zum Periodenanfang und kein Anfangswert.`);
+    }
+    /* Ersatzwerte nach § 9a HeizkostenV sehen im Blatt aus wie Messwerte. Sie
+       muessen im Portal aber als Schaetzung kenntlich sein — der Mieter hat ein
+       Recht darauf zu wissen, welcher Teil gemessen und welcher geschaetzt ist. */
+    const geschaetzt = staende.some((r: any) =>
+      r.meter_id === m.id && r.is_estimated && r.tag >= von && r.tag <= bis);
+    if (geschaetzt) {
+      merkeLuecke(`Zähler ${m.meter_number}: ERSATZWERT nach § 9a HeizkostenV, keine Messung. `
+        + 'Im Portal als Schätzung kennzeichnen. Grund und Verfahren stehen im Vermerk '
+        + 'des Objekts.');
     }
     if (!neu) merkeLuecke(`Zähler ${m.meter_number}: kein Stand zum Periodenende.`);
   }

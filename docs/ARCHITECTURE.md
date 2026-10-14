@@ -1044,6 +1044,36 @@ loescht weiterhin. Das Audit-Log fuehrt jetzt auch den Vorher-Stand — ohne den
 waere ein Ueberschreiben nicht rekonstruierbar, und genau daran hing am
 13.10.2026 die Wiederherstellung der vier Zaehlernotizen.
 
+### Ersatzwerte nach § 9a HeizkostenV
+
+Faellt ein Erfassungsgeraet aus oder liefert es unplausible Werte, tritt nach
+§ 9a HeizkostenV ein Ersatzverfahren an seine Stelle — Vorjahr, vergleichbare
+Raeume oder Gradtage. In bikosoc traegt ein solcher Wert **keine Sonderstruktur**:
+Er steht als gewoehnliche Ablesung mit `is_estimated = true`, dazu
+`estimate_method` und `estimate_reason`. Die Engine rechnet damit wie mit einem
+Messwert und meldet je betroffener Einheit den Befund `ERSATZWERT_9A`. Das
+Casameta-Eingabeblatt fuehrt denselben Hinweis in der Lueckenliste.
+
+Das ist bewusst so: Ein Ersatzwert **muss** die Verteilung tragen, sonst
+entsteht genau die Luecke, die er schliessen soll — aber er muss in der
+Abrechnung als Schaetzung erkennbar bleiben. Der Mieter hat ein Recht darauf zu
+wissen, welcher Teil seiner Rechnung gemessen und welcher geschaetzt ist.
+
+Traegt ein Objekt keinen echten Zaehler mehr fuer die Einheit, bekommt der
+Ersatzwert einen eigenen Traeger im Zaehlerregister, dessen Nummer ihn als
+solchen ausweist (Beispiel `MG24-W3-ERSATZWERT-9A`). Die stillgelegten echten
+Geraete bleiben stillgelegt; ihre Staende sind erfasst, gehen aber nicht in die
+Abrechnung ein.
+
+**Der Fall, der das ausgeloest hat:** Die beiden Waermemengenzaehler der Wohnung
+W3 in MG24 melden 0,063 bzw. 3,47 kWh/m3, waehrend alle uebrigen
+Wohnungszaehler im Haus bei 12 bis 15 liegen. Sie wurden am 10.10.2026
+stillgelegt — und W3 fiel damit ganz aus dem Raumwaermetopf heraus und trug
+0,00 Euro, waehrend die beiden anderen Mieter und der Leerstand seinen Anteil
+mittrugen. Das war weder § 9a noch § 9b, sondern eine Luecke. Seit dem
+14.10.2026 traegt ein Ersatzwert aus der Waermebilanz des Objekts die
+Raumwaerme.
+
 ### Wo Anlagen stehen
 
 Eine Tabelle fuer Geraete und Waermeerzeuger gibt es nicht. Stammdaten einer

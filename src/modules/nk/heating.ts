@@ -464,11 +464,36 @@ function methodA(
     m.medium === 'heat' && !m.is_main_meter && m.unit_id,
   );
   const heatConsumptionByUnit = new Map<number, number>();
+  /* Ersatzwerte nach § 9a HeizkostenV. Faellt ein Erfassungsgeraet aus oder
+     liefert es unplausible Werte, tritt ein Ersatzverfahren an seine Stelle —
+     Vorjahr, vergleichbare Raeume oder Gradtage. Ein solcher Wert steht in
+     bikosoc als Ablesung mit is_estimated = true. Er rechnet wie ein Messwert,
+     muss in der Abrechnung aber als Schaetzung erkennbar sein: Der Mieter hat
+     ein Recht darauf zu wissen, welcher Teil seiner Rechnung gemessen und
+     welcher geschaetzt ist. Deshalb je betroffener Wohnung ein eigener Befund. */
+  const ersatzwertEinheiten = new Set<number>();
   for (const meter of unitHeatMeters) {
     if (!meter.unit_id) continue;
     const cons = calculateConsumption(meter.id, periodStart, periodEnd, readings);
     const existing = heatConsumptionByUnit.get(meter.unit_id) || 0;
     heatConsumptionByUnit.set(meter.unit_id, existing + cons);
+    const istErsatz = readings.some(r =>
+      r.meter_id === meter.id && r.is_estimated
+      && isoTag(r.read_at as any) >= periodStart && isoTag(r.read_at as any) <= periodEnd);
+    if (istErsatz) ersatzwertEinheiten.add(meter.unit_id);
+  }
+  for (const unitId of ersatzwertEinheiten) {
+    const unit = units.find(u => u.id === unitId);
+    const menge = Math.round(heatConsumptionByUnit.get(unitId) || 0);
+    warnings.push({
+      code: 'ERSATZWERT_9A',
+      severity: 'warning',
+      message: `Einheit ${unit?.code ?? unitId}: Die Raumwaerme beruht auf einem `
+        + `Ersatzwert nach § 9a HeizkostenV (${menge} kWh), nicht auf einer Messung. `
+        + 'Grund ist der Ausfall oder die Unplausibilitaet der Erfassungsgeraete. '
+        + 'Der Wert wird durch Messwerte ersetzt, sobald wieder plausibel gemessen wird.',
+      details: { unit_id: unitId, unit_code: unit?.code ?? null, ersatzwert_kwh: menge },
+    });
   }
 
   const totalSqm = units.reduce((s, u) => s + (u.living_area_qm || 0), 0);
