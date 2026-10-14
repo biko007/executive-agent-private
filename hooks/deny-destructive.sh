@@ -396,8 +396,18 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
           rm -f "$STRAND_FLAG"
           hook_log ARMED "$STRAND" \
             "Armed-Flag verbraucht ($STRAND_FLAG, Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
-          hook_notify "$STRAND" operativ \
-            "[$STRAND] Armed-Flag verbraucht (Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
+          # Klartext statt Rohbefund (14.10.2026). Das Gateway setzt Symbol und
+          # Fettschrift und uebersetzt den Grund; faellt es aus, greift der
+          # alte Textweg ueber hook_notify.
+          if [ -x "$HOME/bin/notify-system" ]; then
+            ( timeout 8 "$HOME/bin/notify-system" ok "Freigabe genutzt" \
+                --grund "$RED_ZONE_HIT" \
+                --zeile "genutzt nach ${FLAG_ALTER} s" >/dev/null 2>&1 || true ) &
+            hook_log NOTIFY "$STRAND" "-> telegram/operativ (gestaltet): Freigabe genutzt"
+          else
+            hook_notify "$STRAND" operativ \
+              "Freigabe genutzt nach ${FLAG_ALTER} s"
+          fi
         fi
       else
         # Nicht armed → blockieren, nur loggen, kein Telegram.

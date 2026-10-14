@@ -408,6 +408,65 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   `OnCalendar`-Ausdruck, weil die Systemuhr auf UTC läuft).
   Einrichtung idempotent: `bash scripts/install-docs-mirror.sh`.
   Von Hand prüfen: `bun scripts/docs-mirror.ts --dry-run --json`.
+### Gestaltung der Systemmeldungen (seit 14.10.2026)
+
+Anlass war der Satz des Owners „die Nachrichten sind auch noch recht hässlich".
+Im Chat standen sichtbare Markdown-Sternchen, Trennlinien aus Bindestrichen,
+Umschriften wie „naechste", englische Brocken („Armed + push dispatched.") und
+roher Technikjargon samt Glob-Mustern.
+
+**Eine Stelle formt alle Systemmeldungen:** `src/modules/system-telegram`.
+Die Regeln stehen dort als Code und sind durch Tests festgehalten:
+
+| | |
+|---|---|
+| Auszeichnung | Telegram-**HTML** (`<b>`), nie Markdown |
+| Erste Zeile | Symbol + kurzer Titel, fett — gleiche Symbolik wie die Reports (✅ 👉 ⚠️ ❌ ⏸, dazu 🔓 für die Freigabe) |
+| Sprache | Deutsch mit echten Umlauten |
+| Technik | `roteZoneKlartext()` übersetzt `red path: …/hooks/x.sh matches hooks/**` in „Schutzhook geändert". Pfade, Hashes und Muster bleiben im Log |
+| Fristen | wo eine läuft, steht die Uhrzeit: „🔓 Freigabe aktiv bis 13:59 (einmalig)" |
+
+**Warum die Shell-Hooks kein HTML bauen.** Sie liefern nur Bausteine —
+`ops/bin/notify-system ok "Übertragen" --grund "<Rohbefund>" --zeile "…"`.
+Maskieren und Formatieren macht `/api/internal/notify` im Gateway. Ein
+Dateiname mit `<` kann die Nachricht damit nicht zerreißen, und die
+Übersetzungstabelle existiert nur einmal.
+
+**Das Briefing** wird weiterhin als Text aufgebaut; Überschriften tragen ein
+Markierungszeichen (`\u0001`). Erst am Ende wird der gesamte Text maskiert und
+nur diese Zeilen werden fett gesetzt. Dadurch ist jeder Termintitel und jeder
+Fahrzeugname sicher, ohne dass jede einzelne Einfügestelle daran denken muss.
+Alle drei Zustellwege (Zeitplan, Wiederholung, `/briefing`) senden mit
+`parse_mode HTML`; der Befehl sendet selbst und gibt nichts zurück, weil der
+Rückgabeweg des Frameworks kein `parse_mode` kennt.
+
+### Der Freigabe-Knopf der Roten Zone (seit 14.10.2026)
+
+Die Wartemeldung trug bisher eine rohe URL
+(`https://t.me/share/url?url=%2Farm%20push`). Sie trägt jetzt den Knopf
+**„🔓 Freigeben und übertragen"**, der dasselbe auslöst wie `/arm push`.
+
+Die Sicherheitszusage bleibt unverändert und liegt in
+`src/modules/arm-freigabe`:
+
+- **Nur der Owner.** `assertBoundOwner` auf die Telegram-Benutzerkennung,
+  danach `pruefeKnopf()`. Eine fremde Kennung wird abgewiesen, und die
+  Abweisung verrät nicht, ob überhaupt eine Freigabe aussteht.
+- **Nur einmal.** Jede Wartemeldung vergibt eine neue Kennung; der erste Druck
+  verbraucht sie. Ein Knopf aus einer früheren Lage läuft ins Leere.
+- **Nur 15 Minuten.** Über den Verfall entscheidet weiterhin der Deny-Hook
+  (`ARM_TTL`), nicht der Knopf. `ARM_TTL_SEK` im Modul ist der Spiegel davon.
+- **Nach Gebrauch verschwindet er.** Die Nachricht wird neu geschrieben
+  (`editMessageText` mit leerem Keyboard).
+
+**`/arm` ohne `push` startet keine wartende Übertragung** — auch dann nicht,
+wenn eine wartet. Es wäre bequemer, aber `/arm` gilt ebenso für Migrationen und
+Datenbankbefehle; ein Befehl mit zwei Wirkungen startet irgendwann etwas, das
+niemand gemeint hat. Statt dessen sagt die Antwort es ausdrücklich und bietet
+den Knopf an. Den Weg dorthin kennt der Leerlauf-Wächter nicht selbst: Er meldet
+die Lage an `/api/internal/arm-wartet`, weil den Druck auf den Knopf derselbe
+Prozess entgegennehmen muss, der die Kennung vergeben hat.
+
 ### Rote Zone (Zuschnitt 2026-10-10)
 
 Die Rote Zone ist das armbare Gate vor `git push`: trifft der Diff einen roten Pfad oder der

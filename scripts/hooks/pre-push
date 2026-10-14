@@ -29,6 +29,7 @@ RED_ZONE_CONF="${RED_ZONE_CONF:-$HOME/.config/openclaw/red-zone.conf}"
 HOOK_LOG="${HOOK_LOG:-$HOME/.claude/hooks.log}"
 ARM_TTL="${ARM_TTL:-900}"
 NOTIFY="${PREPUSH_NOTIFY:-$HOME/.scripts/notify}"
+NOTIFY_SYSTEM="${PREPUSH_NOTIFY_SYSTEM:-$HOME/bin/notify-system}"
 
 REMOTE_NAME="${1:-origin}"
 
@@ -254,8 +255,18 @@ if [ "$ALTER" -gt "$ARM_TTL" ]; then
 fi
 
 hook_log ARMED "$STRAND" "pre-push: Freigabe verbraucht ($FLAGGE, Alter ${ALTER}s) durch: $GEFUNDEN"
-if [ "$STRAND" = "bikosoc" ] && [ -x "$NOTIFY" ]; then
-  ( timeout 5 "$NOTIFY" "[bikosoc] Push freigegeben (Freigabe ${ALTER}s alt): $GEFUNDEN" info operativ \
-      >/dev/null 2>&1 || true ) &
+# Meldung an den Owner (14.10.2026 neu gestaltet): Klartext statt Rohbefund.
+# `notify-system` schickt nur die Bausteine; Symbol, Fettschrift und die
+# Uebersetzung des Grundes macht das Gateway (src/modules/system-telegram).
+# Faellt es aus, bleibt der alte Textweg als Rueckfall — eine Meldung ist
+# besser als keine.
+if [ "$STRAND" = "bikosoc" ]; then
+  if [ -x "$NOTIFY_SYSTEM" ]; then
+    ( timeout 8 "$NOTIFY_SYSTEM" ok "Übertragen" --grund "$GEFUNDEN" \
+        --zeile "Freigabe genutzt nach ${ALTER} s" >/dev/null 2>&1 || true ) &
+  elif [ -x "$NOTIFY" ]; then
+    ( timeout 5 "$NOTIFY" "Übertragen — Freigabe genutzt nach ${ALTER} s" info operativ \
+        >/dev/null 2>&1 || true ) &
+  fi
 fi
 exit 0

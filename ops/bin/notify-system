@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# notify-system — gestaltete Systemmeldung an den Owner-Chat.
+#
+# Aufruf:
+#   notify-system <lage> <titel> [--grund ROHTEXT] [--zeile TEXT]...
+#                                 [--fuss TEXT]... [--rolle operativ|dev]
+#
+#   --grund nimmt den Rohtext der Roten Zone („red path: … matches …"). Der
+#           Server uebersetzt ihn in Klartext und stellt ihn voran; die Hooks
+#           muessen die Uebersetzung nicht kennen.
+#
+#   lage: ok | aktion | hinweis | fehler | wartet | freigabe
+#
+# Beispiel:
+#   notify-system ok "Übertragen" \
+#     --zeile "Schutzhook geändert" --zeile "Freigabe genutzt nach 39 s"
+#
+# WARUM DIESER WEG. Die Hooks sind Shell-Skripte. HTML dort zu bauen und zu
+# maskieren waere fragil — ein Dateiname mit „<" zerrisse die Nachricht. Dieses
+# Skript schickt deshalb nur die Bausteine als blanken Text; die Gestaltung
+# macht src/modules/system-telegram in TypeScript, an einer gepruefte Stelle.
+#
+# Nie fatal: Jeder Fehler wird geschluckt. Eine Meldung, die nicht ankommt, darf
+# den Vorgang nicht abbrechen, der sie ausgeloest hat.
+set -uo pipefail
+
+ZIEL="${NOTIFY_SYSTEM_URL:-http://127.0.0.1:18789/api/internal/notify}"
+
+LAGE="${1:-}"; TITEL="${2:-}"
+if [ -z "$LAGE" ] || [ -z "$TITEL" ]; then
+  echo "Aufruf: notify-system <lage> <titel> [--zeile TEXT]... [--fuss TEXT]... [--rolle R]" >&2
+  exit 2
+fi
+shift 2
+
+ROLLE="operativ"
+GRUND=""
+ZEILEN=(); FUSS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --grund) GRUND="${2:-}"; shift 2 ;;
+    --zeile) ZEILEN+=("${2:-}"); shift 2 ;;
+    --fuss)  FUSS+=("${2:-}");   shift 2 ;;
+    --rolle) ROLLE="${2:-operativ}"; shift 2 ;;
+    *) echo "Unbekanntes Argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+# `message` bleibt gesetzt: Die Route verlangt es weiterhin, und wenn eine
+# aeltere Fassung der Route laeuft, kommt wenigstens der Klartext an.
+KLARTEXT="$TITEL"
+for z in ${ZEILEN+"${ZEILEN[@]}"}; do KLARTEXT="$KLARTEXT · $z"; done
+
+NUTZLAST=$(jq -nc \
+  --arg lage "$LAGE" --arg titel "$TITEL" --arg rolle "$ROLLE" --arg msg "$KLARTEXT" \
+  --arg grund "$GRUND" \
+  --args '{lage:$lage, titel:$titel, role:$rolle, message:$msg, grund:$grund,
+           zeilen:($ARGS.positional[:($ARGS.positional|length)]), fuss:[]}' \
+  ${ZEILEN+"${ZEILEN[@]}"} 2>/dev/null) || exit 0
+
+# Fusszeilen getrennt einhaengen, damit beide Listen sauber bleiben.
+if [ ${#FUSS[@]} -gt 0 ]; then
+  NUTZLAST=$(printf '%s' "$NUTZLAST" | jq -c --args '.fuss = $ARGS.positional' "${FUSS[@]}" 2>/dev/null) || exit 0
+fi
+
+timeout 5 curl -sS -X POST "$ZIEL" \
+  -H "Content-Type: application/json" --data-raw "$NUTZLAST" >/dev/null 2>&1 || true
+exit 0

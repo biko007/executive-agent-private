@@ -341,6 +341,16 @@ export async function leerlaufWaechter(opts: {
   stupsAbstandMinuten?: number;
   maxStupse?: number;
   melde?: (text: string) => void;
+  /**
+   * Eigener Weg fuer die Wartemeldung der Roten Zone.
+   *
+   * Sie traegt seit 14.10.2026 einen Knopf „Freigeben und übertragen". Den
+   * Druck darauf muss der Prozess entgegennehmen, der die Kennung vergeben hat
+   * — also das Gateway, nicht dieser Waechter. Deshalb meldet der Waechter die
+   * Lage dorthin, statt den Text selbst zu formulieren. Fehlt der Weg, bleibt
+   * es beim alten Textweg ueber `melde`.
+   */
+  meldeArm?: (w: { gegenstand?: string; zeitpunkt?: string }) => void;
   /** Hook-Protokoll. Nur für Tests — in Produktion wird ~/.claude/hooks.log gelesen. */
   hookProtokoll?: string;
   hookProtokollPfad?: string;
@@ -389,7 +399,8 @@ export async function leerlaufWaechter(opts: {
     if (zustand.armGemeldetFuer === arm.zeitpunkt) {
       return { ruht: 'Armierung wartet, bereits gemeldet' };
     }
-    opts.melde?.(armMeldung(arm));
+    if (opts.meldeArm) opts.meldeArm({ gegenstand: arm.gegenstand, zeitpunkt: arm.zeitpunkt });
+    else opts.melde?.(armMeldung(arm));
     zustand.armGemeldetFuer = arm.zeitpunkt;
     speichereZustand(zustandPfad, zustand);
     return { armWartung: arm.gegenstand || 'roter Pfad' };
@@ -416,7 +427,8 @@ export async function leerlaufWaechter(opts: {
     if (zustand.armGemeldetFuer === kennung) {
       return { ruht: 'Armierung wartet, bereits gemeldet' };
     }
-    opts.melde?.(armMeldung({ wartet: true, gegenstand: bedarf.gegenstand }));
+    if (opts.meldeArm) opts.meldeArm({ gegenstand: bedarf.gegenstand });
+    else opts.melde?.(armMeldung({ wartet: true, gegenstand: bedarf.gegenstand }));
     zustand.armGemeldetFuer = kennung;
     speichereZustand(zustandPfad, zustand);
     return { armWartung: bedarf.gegenstand || 'roter Pfad' };
