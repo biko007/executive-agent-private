@@ -1130,6 +1130,35 @@ Pläne (`~/.claude/plans/`) und HDCC-Pläne bleiben beim alten Weg: Sie werden i
 Volltext gelesen bzw. gehen in einen anderen Chat. Der Nutzungstext, der früher
 unter jeder Quittung stand, ist jetzt `/hilfe`.
 
+### L19: Was die „Kaltwasserzähler" wirklich messen (14.10.2026)
+
+Die vier Geräte, die eddi24 für L19 als **Kaltwasserzähler (KWZ)** abrechnet —
+`53650437`, `53650518`, `53650734`, `53650737` —, sind **Wärmezähler**. Belegt am
+Zählerfoto: Gehäuseaufdruck „Heat Meter", Typ WDV Molliné Ultramess C
+SensoStar 2U, Art. 1100104803, Θ 0–105 °C, ΔΘ 3–100 K; das Display zeigt **MWh**.
+Der abgelesene Wert stimmt ziffernweise mit dem Stand überein, den eddi24 als
+Kubikmeter verteilt — eddi24 liest also das **Energieregister** und verbucht es
+als Wasser.
+
+Dasselbe gilt für `40450611`, bei eddi24 „Gemeindewasserzähler, nur informativ":
+Es ist der **zentrale Wärmezähler der Wärmepumpe** (Display 400.577 MWh,
+16,134 kW). 2025: 37,865 MWh Wärme gegen 12,708 MWh Wärmestrom am
+Abrechnungszähler `64128135` — Jahresarbeitszahl 2,98.
+
+Gegenprobe über die Wärmebilanz 2024: vier „KWZ" (29,116) plus vier
+Wohnungs-Wärmezähler (7,701) ergeben 36,817 MWh gegen 43,169 MWh am zentralen
+Zähler — 85,3 %. 2025 sind es 86,1 %. Der Hauswasserzähler `Z2001676` misst
+dagegen 476 m³ im Jahr; die vier Geräte zusammen 26,345 — 5,5 %.
+
+**Folge für die Engine.** Für L19 darf `wasser` und `entwaesserung` **nicht** auf
+`key_type = 'consumption'` gestellt werden, solange die vier Geräte das Medium
+`cold_water` tragen: `allocateByConsumption()` nimmt jeden Wohnungszähler dieses
+Mediums und verteilte das Wasser dann nach Wärmezählerständen. Medium und
+Einheit stehen weiterhin auf `cold_water`/`m3`; die Umstellung auf Wärme ist eine
+Owner-Entscheidung, weil sie zugleich die Grundlage der Heizkostenverteilung
+ändert — eddi24 rechnet die Heizkosten nur über den ersten Satz der acht Geräte
+ab und weist „Kostenanteil Warmwasser: 0,00 €" aus.
+
 ### Ersatzwerte nach § 9a HeizkostenV
 
 Faellt ein Erfassungsgeraet aus oder liefert es unplausible Werte, tritt nach
