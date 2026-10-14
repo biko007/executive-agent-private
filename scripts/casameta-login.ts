@@ -32,12 +32,28 @@
  * mit der Folge, dass offen bleibt, ob Turnstile uns durchlässt. Das beantwortet
  * der erste echte Login-Test, nicht eine Annahme.
  *
+ * NACHTRAG 14.10.2026. Der Test ist gelaufen: Turnstile beanstandet den
+ * headless-Browser (Konsole `Turnstile Fehler: 600010`, Gruppe „Bot behavior
+ * detected"). Damit wird der ursprüngliche Plan nachgeholt — `--sichtbar`
+ * startet einen echten, sichtbaren Chromium auf dem vorhandenen Display.
+ * In dieser Betriebsart entfallen Screenshots; für den LOGIN sind sie
+ * entbehrlich, weil `befund.json` ohnehin das Entscheidende festhält: URL je
+ * Station, ob das Turnstile-Feld gefüllt ist, ob ein Passwortfeld erscheint und
+ * welche Meldung das Portal zeigt. Der Trace wird ohne Screenshots
+ * aufgezeichnet. Für den späteren Schreiblauf bleibt die Screenshot-Pflicht
+ * unberührt — die ist Sache des Agenten, nicht dieses Skripts.
+ *
+ * Auch `--sichtbar` umgeht nichts: Es ist derselbe Chromium mit derselben
+ * Automatisierung, nur mit echtem Fensterstapel. Erscheint eine sichtbare
+ * Challenge, bricht das Skript weiterhin ab.
+ *
  * Aufruf:
  *   bun run scripts/casameta-login.ts              # anmelden, Zustand sichern
  *   bun run scripts/casameta-login.ts --pruefen    # nur prüfen, ob Sitzung gilt
  *   bun run scripts/casameta-login.ts --selbsttest # Zustand verwerfen, neu anmelden
  *   bun run scripts/casameta-login.ts --konto mg24       # Zugang je Objekt
  *   bun run scripts/casameta-login.ts --konten             # welche sind da?
+ *   bun run scripts/casameta-login.ts --sichtbar    # sichtbarer Browser (Xvfb)
  *   bun run scripts/casameta-login.ts --erzwingen --diagnose
  *       wie oben, zusaetzlich Trace, Screenshot je Station und befund.json in
  *       ~/.local/share/biko-portals/casameta/diagnose/<zeitstempel>/ (700).
@@ -184,7 +200,7 @@ async function sichtbareChallenge(ctx: BrowserContext): Promise<boolean> {
   }
 }
 
-async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis> {
+async function anmelden(diagnose = false, konto?: string, sichtbar = false): Promise<LoginErgebnis> {
   const zugang = envLesen(konto);
   const schluessel = envSchluessel(konto);
   const { profil, zustand } = kontoPfade(konto);
@@ -204,7 +220,11 @@ async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis
   let ctx: BrowserContext | undefined;
   let schritt: Schritt = 'browser-start';
   let ordner = '';
-  const befund: Record<string, unknown> = { beginn: new Date().toISOString() };
+  const befund: Record<string, unknown> = {
+    beginn: new Date().toISOString(),
+    betriebsart: sichtbar ? 'sichtbar (Xvfb, ohne Screenshots)' : 'headless',
+    display: sichtbar ? (process.env.DISPLAY ?? '(nicht gesetzt)') : null,
+  };
   const konsole: string[] = [];
 
   /* Ab dem Moment, in dem das Passwort im Formular steht, wird keine
@@ -217,7 +237,9 @@ async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis
     schritt = name;
     if (!diagnose || !ordner) return;
     try {
-      await seite.screenshot({ path: join(ordner, `${name}.png`), fullPage: true });
+      if (!sichtbar) {
+        await seite.screenshot({ path: join(ordner, `${name}.png`), fullPage: true });
+      }
       befund[name] = {
         url: seite.url(),
         turnstileToken: await turnstileGefuellt(seite),
@@ -228,9 +250,12 @@ async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis
   };
 
   try {
+    /* Unter --sichtbar bestimmt der Fenstermanager die Groesse; ein erzwungenes
+       viewport waere ein Widerspruch zum echten Fenster. Das vorhandene Display
+       ist 1024x768 (gehoert dem Trading-System, wird nur mitbenutzt). */
     ctx = await chromium.launchPersistentContext(profil, {
-      headless: true,
-      viewport: { width: 1280, height: 720 },
+      headless: !sichtbar,
+      ...(sichtbar ? {} : { viewport: { width: 1280, height: 720 } }),
       locale: 'de-DE',
       timezoneId: 'Europe/Berlin',
     });
@@ -240,7 +265,9 @@ async function anmelden(diagnose = false, konto?: string): Promise<LoginErgebnis
         `${konto ?? 'standard'}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
       mkdirSync(ordner, { recursive: true });
       chmodSync(ordner, 0o700);
-      await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false });
+      /* Unter Xvfb scheitert jeder Screenshot an Page.captureScreenshot — das
+         wuerde auch den Trace zum Scheitern bringen. */
+      await ctx.tracing.start({ screenshots: !sichtbar, snapshots: true, sources: false });
     }
 
     const seite = ctx.pages()[0] ?? await ctx.newPage();
@@ -448,7 +475,13 @@ async function main() {
   }
 
   const diagnose = argv.includes('--diagnose');
-  const e = await anmelden(diagnose, konto);
+  const sichtbar = argv.includes('--sichtbar');
+  if (sichtbar && !process.env.DISPLAY) {
+    console.log('Login fehlgeschlagen: --sichtbar braucht ein Display. '
+      + 'Entweder DISPLAY=:1 setzen (Xvfb läuft dort) oder über xvfb-run starten.');
+    process.exit(1);
+  }
+  const e = await anmelden(diagnose, konto, sichtbar);
   console.log(e.ok ? 'Login OK' : `Login fehlgeschlagen: ${e.meldung}`);
   if (e.schritt) console.log(`Letzter Schritt: ${e.schritt}`);
   if (e.diagnoseOrdner) console.log(`Diagnose: ${e.diagnoseOrdner}`);

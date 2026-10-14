@@ -66,6 +66,14 @@ fi
 KONTO_ARG=""
 if [ -n "$KONTO" ]; then KONTO_ARG="--konto $KONTO"; fi
 
+# JSON-Werte vorbereiten. Die Kurzform ${X:+"$X"}${X:-null} schien naheliegend,
+# liefert bei gesetztem X aber BEIDE Teile: "mg24"mg24. Jeder Lauf mit Objekt
+# oder Konto schrieb damit ungueltiges JSON, das Protokollskript brach mit
+# "JSON Parse error" ab — der Lauf landete weder in Postgres noch in Dropbox.
+# Aufgefallen am 14.10.2026 beim Fail-closed-Selbsttest.
+if [ -n "$OBJEKT" ]; then OBJEKT_JSON="\"$OBJEKT\""; else OBJEKT_JSON="null"; fi
+if [ -n "$KONTO" ]; then KONTO_JSON="\"$KONTO\""; else KONTO_JSON="null"; fi
+
 # Sprechende Lauf-ID nach Manifest 12: YYMMDD-<zweck>-<objekt>
 RUN_ID="$(date +%y%m%d)-${MODUS}-${OBJEKT:-portal}-$(date +%H%M)"
 ORDNER="$LAEUFE/$RUN_ID"
@@ -75,10 +83,10 @@ chmod 700 "$BASIS" "$LAEUFE" "$ORDNER"
 cat > "$ORDNER/lauf.json" <<JSON
 {
   "runId": "$RUN_ID",
-  "propertyCode": ${OBJEKT:+\"$OBJEKT\"}${OBJEKT:-null},
+  "propertyCode": $OBJEKT_JSON,
   "periodYear": ${JAHR:-null},
   "mode": "$MODUS",
-  "account": ${KONTO:+\"$KONTO\"}${KONTO:-null},
+  "account": $KONTO_JSON,
   "taskFile": "$(basename "$AUFTRAG")",
   "status": "fertig"
 }

@@ -910,10 +910,46 @@ Loginseite neu und setzt das Formular zurück; der zweite Schritt
 
 Folge für die Architektur: **Der Portalzugriff vom VPS aus ist derzeit nicht
 tragfähig.** Die hinterlegten Zugangsdaten sind davon unberührt und bis heute
-ungeprüft — das Portal hat sie nie bewertet. Offen und nicht umgangen:
-Ein sichtbarer Browser unter Xvfb (ohne Screenshotpflicht beim reinen Login)
-ist ungetestet; die tragfähige Alternative ist der Betrieb über den
-Owner-Browser. Einzelheiten: `report-casameta-login-diagnose-20261013.md`.
+ungeprüft — das Portal hat sie nie bewertet.
+
+### Nachmessung 14.10.2026: der sichtbare Browser ändert nichts
+
+Der letzte offene Weg ist geprüft. `casameta-login.ts --sichtbar` startet einen
+echten, sichtbaren Chromium auf dem Display `:1`; Screenshots entfallen dabei,
+der Trace wird ohne sie aufgezeichnet, und `befund.json` hält fest, was zählt —
+URL je Station, Zustand des Turnstile-Feldes, Erscheinen des Passwortfeldes,
+Portalmeldung.
+
+**Ergebnis: identisch.** `Turnstile Fehler: 600010`, Feld `#Captcha` an allen
+drei Stationen leer, kein Passwortfeld. Die Betriebsart ist also nicht die
+Ursache. Damit ist die Hypothese aus dem Plan vom 13.10.2026 gemessen und
+verworfen, nicht bloß vermutet.
+
+| geprüft | Ergebnis |
+|---|---|
+| headless, 13.10.2026 | Turnstile 600010 |
+| sichtbar unter Xvfb, 14.10.2026 | Turnstile 600010 |
+
+Es bleiben zwei Wege, beide ohne Umgehung: Betrieb über den Owner-Browser, oder
+eddi24 nach einer Schnittstelle bzw. einer Freischaltung der Server-Adresse
+fragen. Einzelheiten: `report-casameta-agent-pilot-20261013.md`.
+
+### Der Lauf bricht ab, bevor der Agent startet
+
+`casameta-run` stellt die Sitzung über das deterministische Login-Skript sicher
+und bricht ab, wenn das nicht gelingt — der Sprachmodell-Agent wird in diesem
+Fall gar nicht aufgerufen. Am 14.10.2026 live geprüft: Der Lauf endete mit
+„Abbruch: keine gültige Sitzung", der Laufordner blieb ohne Aktionen, und die
+Protokollkette lief trotzdem vollständig durch (Postgres, Secret-Scan, Dropbox,
+Telegram) — ein gescheiterter Lauf ist damit genauso nachvollziehbar wie ein
+erfolgreicher.
+
+Dabei fiel ein Fehler auf, der jeden Lauf mit Objekt- oder Kontoangabe betraf:
+`lauf.json` entstand über `${X:+"$X"}${X:-null}`. Die Kurzform sieht richtig
+aus, liefert bei gesetztem `X` aber **beide** Teile — `"mg24"mg24`. Das JSON war
+ungültig, das Protokollskript brach mit `JSON Parse error` ab, und der Lauf
+landete weder in Postgres noch in Dropbox. Jetzt wird der Wert vorher in eine
+eigene Variable gelegt.
 
 ### Notizen: lesen und schreiben passen zusammen
 
