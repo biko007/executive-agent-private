@@ -1,9 +1,11 @@
 /**
  * meter-import/parser — Monatsbericht der Gebäudeautomation lesen.
  *
- * Aufbau eines Berichts: Zeile 1 trägt Objekt und Ebene
- * („Badhaus Tuttlingen - Report Zähler Wohnung E1"), darunter steht je Zähler
- * eine Spaltengruppe aus Zeitstempel, Zählerstand und „Verbrauch Vormonat".
+ * Aufbau eines Berichts: Zeile 1 trägt Objekt und Ebene, darunter steht je
+ * Zähler eine Spaltengruppe aus Zeitstempel, Zählerstand und „Verbrauch
+ * Vormonat". Die Gebäudeautomation benennt MG24 in dieser Zeile mit IHRER
+ * eigenen Anlagenbezeichnung, nicht mit unserem Kürzel; die Zuordnung steht
+ * als Suchschlüssel in `MAPPING_MG24` (config.ts).
  *
  * WICHTIG: Die Spalte „Verbrauch Vormonat" ist unbrauchbar. Jeder Bericht
  * enthält nur die letzten rund hundert Protokollzeilen; bei einem Zähler, der

@@ -14,7 +14,7 @@
  *     Stand(01.01.2025) = Stand(Ablesetag) − Jahr aktuell − Vorjahr
  *
  * Quelle der Zahlen: Owner-Ablesung an der GLT (Schneider-Panel
- * TPC230390-ISP01, Anlage „Badhaus Tuttlingen") vom 10.10.2026, übergeben im
+ * TPC230390-ISP01) vom 10.10.2026, übergeben im
  * Auftrag paket2-nachtrag-glt-zaehlerstaende-20261010.
  *
  * Geschrieben wird ausschließlich über die bestehende Core-Route

@@ -50,6 +50,11 @@ function stand(p: Partial<ZaehlerStand>): ZaehlerStand {
   };
 }
 
+/* Die Kopfzeilen unten tragen die Bezeichnung, die die Gebaeudeautomation in
+   ihre Berichte schreibt — Fremdtext, bewusst woertlich. Die Owner-Regel vom
+   14.10.2026 (intern nur das Kuerzel MG24) gilt fuer unsere eigenen Texte; ein
+   Testfall, der den echten Eingang nachstellt, muss ihn woertlich enthalten,
+   sonst prueft er nicht, was ankommt. */
 describe('Parser', () => {
   it('liest Überschrift, Ebene und absolute Stände', () => {
     const datei = berichtDatei('Badhaus Tuttlingen - Report Zähler Wohnung E1', [

@@ -408,6 +408,25 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   `OnCalendar`-Ausdruck, weil die Systemuhr auf UTC läuft).
   Einrichtung idempotent: `bash scripts/install-docs-mirror.sh`.
   Von Hand prüfen: `bun scripts/docs-mirror.ts --dry-run --json`.
+### Objektnamen: nur Kürzel
+
+Owner-Regel vom 14.10.2026 (Wortlaut in `docs/agent/PROJECT_OVERLAY.md`):
+intern ausschließlich `MG24`, `N24`, `L19`, `S28`, `I83`, `D4`; extern die
+ausgeschriebene Anschrift. Bei- und Spitznamen werden nicht verwendet.
+
+**Eine Stelle im Code trägt trotzdem einen fremden Namen:** der Schlüssel
+`'badhaus tuttlingen'` in `MAPPING_MG24` (`src/modules/meter-import/config.ts`).
+Er ist keine Benennung, sondern ein **Suchmuster** — die Gebäudeautomation
+schreibt genau diese Zeichenfolge in die Kopfzeile ihrer Monatsberichte. Wird er
+geändert, erkennt der Import die eingehenden Berichte nicht mehr. Dasselbe gilt
+für die Kopfzeilen in `meter-import.test.ts`: Ein Test, der den echten Eingang
+nachstellt, muss ihn wörtlich enthalten. Beide Stellen tragen eine Begründung.
+
+Ebenfalls unverändert bleiben fremde Dokumentnamen im SharePoint-Index
+(`sharepoint_files`, 27 Dateien): Sie spiegeln, wie die Dateien bei Dritten
+heißen; ein Umbenennen im Index träfe die Dateien nicht, sondern bräche nur die
+Zuordnung.
+
 ### Welcher Testlauf zaehlt
 
 **Das Gate ist `npm test`** — `scripts/run-tests.sh` startet **jede Testdatei in

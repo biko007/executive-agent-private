@@ -56,6 +56,13 @@ export type Mapping = Record<string, ObjektZuordnung>;
  * nichts steht — eine vorhandene Zuordnung wird nie überschrieben.
  */
 export const MAPPING_MG24: Mapping = {
+  /* FREMDBEZEICHNUNG, ABSICHTLICH SO STEHEN GELASSEN.
+     Owner-Regel vom 14.10.2026: intern heisst das Objekt MG24, Beinamen werden
+     nicht verwendet. Dieser Schluessel ist keine Benennung, sondern ein
+     SUCHMUSTER: Die Gebaeudeautomation schreibt genau diese Zeichenfolge in die
+     Kopfzeile ihrer Monatsberichte. Wird sie hier geaendert, erkennt der Import
+     die eingehenden Berichte nicht mehr. Das Objekt dahinter heisst `mg24` —
+     und nur dieses Kuerzel steht in Protokollen, Notizen und Meldungen. */
   'badhaus tuttlingen': {
     property: 'mg24',
     ebenen: {
