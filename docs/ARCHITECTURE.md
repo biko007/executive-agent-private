@@ -408,6 +408,29 @@ Automatisierte Report-Zustellung und Betriebs-Überwachung für cc-Läufe:
   `OnCalendar`-Ausdruck, weil die Systemuhr auf UTC läuft).
   Einrichtung idempotent: `bash scripts/install-docs-mirror.sh`.
   Von Hand prüfen: `bun scripts/docs-mirror.ts --dry-run --json`.
+### Welcher Testlauf zaehlt
+
+**Das Gate ist `npm test`** — `scripts/run-tests.sh` startet **jede Testdatei in
+einem eigenen bun-Prozess** und setzt `OPENCLAW_TEST=1`. Nur diese Zahlen
+gehoeren in einen Report.
+
+Ein blankes `bun test` (auch `npm run test:all-parallel`) laedt alle Dateien in
+**einen** Prozess. Rund zwanzig Testdateien setzen dort auf Modulebene
+`process.env.POSTGRES_URL` auf eine eigene Wegwerf-Datenbank und raeumen sie am
+Ende ab; die zuletzt geladene gewinnt, die uebrigen zeigen dann auf eine
+Datenbank, die es nicht mehr gibt. Ergebnis sind reproduzierbar **24 rote
+Tests**, die kein Befund sind — am 14.10.2026 gemessen sowohl auf `d3b0e44` als
+auch auf dem aktuellen Stand, mit identischer Liste.
+
+Damit das nicht noch einmal verwechselt wird, druckt `scripts/test-preload.ts`
+(eingehaengt ueber `bunfig.toml`) vor jedem blanken Lauf ein Warnbanner. Unter
+`OPENCLAW_TEST=1` bleibt es still.
+
+| Stand | Gate `npm test` | blankes `bun test` |
+|---|---|---|
+| `d3b0e44` (vor dem 14.10.) | 1.257 gruen · 0 rot · 0 uebersprungen, 88 Dateien | 1.233 gruen · 24 rot |
+| `ab5bab9` (14.10., nach der Umstellung) | 1.298 gruen · 0 rot · 0 uebersprungen, 90 Dateien | 1.274 gruen · 24 rot |
+
 ### Gestaltung der Systemmeldungen (seit 14.10.2026)
 
 Anlass war der Satz des Owners „die Nachrichten sind auch noch recht hässlich".

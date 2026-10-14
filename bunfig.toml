@@ -1,0 +1,4 @@
+# Warnbanner vor jedem blanken `bun test`. Siehe scripts/test-preload.ts.
+# `npm test` (scripts/run-tests.sh) setzt OPENCLAW_TEST=1 und bleibt still.
+[test]
+preload = ["./scripts/test-preload.ts"]
