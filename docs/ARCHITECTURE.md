@@ -1082,6 +1082,13 @@ HTML-Anker mit abweichender Beschriftung (`<a href=…>claude.ai</a>`): auch der
 löst die Rückfrage aus. Direkt öffnet nur die unmaskierte URL. Wer das später
 „schöner" machen will, baut die Rückfrage wieder ein.
 
+**Unter dem Link steht eine Leerzeile**, und zwar als `U+2800` (BRAILLE PATTERN
+BLANK) — eine echte Leerzeile schneidet Telegram am Nachrichtenende weg, dieses
+Zeichen ist kein Whitespace und bleibt stehen. Der Abstand gehört **unter** den
+Link: Der „Kopiert"-Hinweis nach dem Antippen des Knopfes legt sich über den
+unteren Rand der Nachricht und verdeckte sonst die letzte Zeile. Derselbe Kniff
+hielt schon in der alten Go-Nachricht (`report-golink-spacing2-20261008.md`).
+
 ### Der Titel der Übernahmemeldung
 
 Er kommt aus der **ersten Zeile der Auftragsdatei**, nicht aus dem Dateinamen —

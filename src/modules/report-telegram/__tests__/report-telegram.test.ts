@@ -6,7 +6,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
   statusSymbol, htmlEscape, dateiKlartext, kuerzen, ERGEBNIS_MAX,
-  ergebnisKnoepfe, goBefehl, CLAUDE_URL, titelAusAuftrag,
+  ergebnisKnoepfe, goBefehl, CLAUDE_URL, titelAusAuftrag, NACHLAUF,
 } from '../index.js';
 
 const KOPF = `---
@@ -136,10 +136,11 @@ describe('Nachricht 2: Ergebnis', () => {
     const k = { ...kopfblockLesen(KOPF)!, status: 'ok' as const, aktion: 'keine' };
     const z = ergebnisNachricht(k, 'report-x.md').split('\n');
     expect(z[1]).not.toContain('Ihre Aktion');
-    // Reihenfolge am Ende: … · Ihre Aktion · Fusszeile · Link
-    expect(z[z.length - 1]).toBe(CLAUDE_URL);
-    expect(z[z.length - 2]).toStartWith('⚙️');
-    expect(z[z.length - 3]).toContain('<b>Ihre Aktion:</b> keine');
+    // Reihenfolge am Ende: … · Ihre Aktion · Fusszeile · Link · Fuellzeile
+    expect(z[z.length - 1]).toBe('\u2800');
+    expect(z[z.length - 2]).toBe(CLAUDE_URL);
+    expect(z[z.length - 3]).toStartWith('⚙️');
+    expect(z[z.length - 4]).toContain('<b>Ihre Aktion:</b> keine');
     expect(z[0]).toStartWith('✅');
   });
 
@@ -153,7 +154,7 @@ describe('Nachricht 2: Ergebnis', () => {
     const n = ergebnisNachricht(k, 'x.md');
     expect(n.length).toBeLessThanOrEqual(ERGEBNIS_MAX);
     expect(n).toContain('…');
-    expect(n).toEndWith(CLAUDE_URL);
+    expect(n).toContain(`\n${CLAUDE_URL}`);
   });
 
   test('Tests ✗ und Rote Zone ja', () => {
@@ -207,7 +208,7 @@ describe('Knoepfe unter der Ergebnisnachricht', () => {
 
   test('der Link steht blank als letzte Zeile, nicht als Anker', () => {
     const n = ergebnisNachricht(kopfblockLesen(KOPF)!, 'report-x.md');
-    expect(n).toEndWith(CLAUDE_URL);
+    expect(n).toContain(`\n${CLAUDE_URL}`);
     expect(CLAUDE_URL).toBe('https://claude.ai/new');
     expect(n).not.toContain('<a ');   // ein Anker loest dieselbe Rueckfrage aus
   });
@@ -215,7 +216,7 @@ describe('Knoepfe unter der Ergebnisnachricht', () => {
   test('der Link bleibt auch bei langem Text erhalten', () => {
     const lang = { ...kopfblockLesen(KOPF)!, aufgabe: 'x'.repeat(3000) };
     const n = ergebnisNachricht(lang, 'report-x.md');
-    expect(n).toEndWith(CLAUDE_URL);
+    expect(n).toContain(`\n${CLAUDE_URL}`);
     expect(n.length).toBeLessThanOrEqual(ERGEBNIS_MAX);
   });
 
@@ -305,5 +306,34 @@ describe('Keine Dublette zwischen Titel und Dateizeile', () => {
   test('ohne Titel nur die Dateizeile', () => {
     const z = uebernahmeNachricht(bauen('', 'mg24-pellet-20261014.txt')).split('\n');
     expect(z).toHaveLength(3);
+  });
+});
+
+describe('Leerzeile unter dem Link', () => {
+  // Owner 14.10.2026. Eine echte Leerzeile schneidet Telegram am Ende weg;
+  // U+2800 ist kein Whitespace und bleibt stehen.
+  test('die Nachricht endet mit der unsichtbaren Fuellzeile', () => {
+    const n = ergebnisNachricht(kopfblockLesen(KOPF)!, 'report-x.md');
+    expect(n).toEndWith(NACHLAUF);
+    expect(NACHLAUF).toBe('\n\u2800');
+    expect(n.split('\n').pop()).toBe('\u2800');
+  });
+
+  test('U+2800 ist kein Whitespace — sonst wuerde es getrimmt', () => {
+    expect('\u2800'.trim()).toBe('\u2800');
+    expect('\u2800'.trim().length).toBe(1);
+  });
+
+  test('der Link steht in der vorletzten Zeile', () => {
+    const z = ergebnisNachricht(kopfblockLesen(KOPF)!, 'report-x.md').split('\n');
+    expect(z[z.length - 2]).toBe(CLAUDE_URL);
+  });
+
+  test('auch bei gekuerzter Nachricht bleibt alles stehen', () => {
+    const lang = { ...kopfblockLesen(KOPF)!, aufgabe: 'x'.repeat(3000) };
+    const n = ergebnisNachricht(lang, 'report-x.md');
+    expect(n.length).toBeLessThanOrEqual(ERGEBNIS_MAX);
+    expect(n).toEndWith(NACHLAUF);
+    expect(n.split('\n').slice(-2)[0]).toBe(CLAUDE_URL);
   });
 });

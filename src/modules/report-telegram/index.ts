@@ -270,6 +270,21 @@ export function uebernahmeNachricht(k: Kopfblock): string {
 export const ERGEBNIS_MAX = 800;
 
 /**
+ * Leerzeile unter dem Link (Owner 14.10.2026).
+ *
+ * Eine echte Leerzeile geht nicht: Telegram schneidet Whitespace am
+ * Nachrichtenende ab, sie verschwindet also. U+2800 (BRAILLE PATTERN BLANK) ist
+ * KEIN Whitespace, bleibt stehen und ist unsichtbar. Derselbe Kniff hielt schon
+ * in der alten Go-Nachricht (report-golink-spacing2-20261008.md, live belegt:
+ * die API gab den Text samt Fuellzeile unveraendert zurueck).
+ *
+ * Der Abstand gehoert UNTER den Link: Der „Kopiert"-Hinweis nach dem Antippen
+ * des Knopfes legt sich ueber den unteren Rand der Nachricht und verdeckt sonst
+ * die letzte Zeile.
+ */
+export const NACHLAUF = '\n\u2800';
+
+/**
  * Baut die Abschlussnachricht.
  *
  * Reihenfolge nach Owner-Vorgabe: Bei Status `aktion` steht „Ihre Aktion"
@@ -300,8 +315,11 @@ export function ergebnisNachricht(k: Kopfblock, dateiname: string): string {
      Anker: Beides laesst Telegram vorher nachfragen. Er steht nach der
      Fusszeile, damit die Zusammenfassung oben zusammenhaengt. Die Kuerzung
      greift davor, damit der Link auch bei langem Text erhalten bleibt. */
-  const kopf = kuerzen(zeilen.join('\n'), ERGEBNIS_MAX - CLAUDE_URL.length - 2);
-  return `${kopf}\n${CLAUDE_URL}`;
+  const kopf = kuerzen(
+    zeilen.join('\n'),
+    ERGEBNIS_MAX - CLAUDE_URL.length - NACHLAUF.length - 1,
+  );
+  return `${kopf}\n${CLAUDE_URL}${NACHLAUF}`;
 }
 
 /* ── Knoepfe unter der Ergebnisnachricht ─────────────────────────────────── */
