@@ -116,11 +116,21 @@ function formatAlertMessage(obl: AlertMatch, phase: string): string {
     `Fristende: ${obl.service_deadline_at}`;
 }
 
+/**
+ * Gestaltete Meldung (14.10.2026): Symbol und fetter Titel wie bei allen
+ * Systemmeldungen; der Fristtext steht darunter. `lage` ergibt sich aus der
+ * Dringlichkeit, die der Aufrufer ohnehin kennt.
+ */
 async function sendNotification(message: string, severity: string): Promise<void> {
+  const lage = severity === 'error' ? 'fehler' : severity === 'warn' ? 'hinweis' : 'ok';
   const resp = await fetch('http://127.0.0.1:18789/api/internal/notify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, severity }),
+    body: JSON.stringify({
+      message, severity,
+      lage, titel: 'Nebenkosten-Frist',
+      zeilen: message.split('\n').map(z => z.trim()).filter(Boolean),
+    }),
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');

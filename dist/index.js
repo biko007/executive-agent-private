@@ -3039,7 +3039,9 @@ export default function (api) {
                         weeklyEnabled: WEEKLY_SUMMARY_ENABLED,
                     });
                     if (action === 'weekly') {
-                        await sendTelegram(chatId, await buildWeeklySummary(today));
+                        await sendTelegramHtmlWithMarkup(chatId, systemNachricht({
+                            lage: 'ok', titel: 'Wochenübersicht',
+                        }) + `\n<code>${htmlEscapeSystem(await buildWeeklySummary(today))}</code>`, undefined);
                         api.logger.info('[executive-agent] Wochen-Zusammenfassung gesendet');
                     }
                     else if (action === 'silent') {

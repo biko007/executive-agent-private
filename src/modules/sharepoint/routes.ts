@@ -266,7 +266,11 @@ export function registerSharePointHttpRoutes(api: any) {
                 await fetch('http://127.0.0.1:18789/api/internal/notify', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ message: warnMsg, severity: 'warn' }),
+                  body: JSON.stringify({
+                    message: warnMsg, severity: 'warn',
+                    lage: 'hinweis', titel: 'SharePoint-Aufräumen',
+                    zeilen: [warnMsg.replace(/^⚠️\s*/, '')],
+                  }),
                 });
               } catch { /* notify best-effort */ }
               await audit.log({
@@ -368,12 +372,16 @@ export function registerSharePointHttpRoutes(api: any) {
           });
 
           // Telegram notify
-          const notifyMsg = `🗑️ SP cleanup-missing: ${deleted.length} files hard-deleted (${totalCount} eligible, ${excludedByLinks} excluded by links)`;
+          const notifyMsg = `${deleted.length} Datei(en) endgültig entfernt`
+            + ` · ${totalCount} in Frage gekommen · ${excludedByLinks} wegen Verknüpfungen behalten`;
           try {
             await fetch('http://127.0.0.1:18789/api/internal/notify', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ message: notifyMsg, severity: 'info' }),
+              body: JSON.stringify({
+                message: notifyMsg, severity: 'info',
+                lage: 'ok', titel: 'SharePoint-Aufräumen', zeilen: [notifyMsg],
+              }),
             });
           } catch { /* notify best-effort */ }
 
