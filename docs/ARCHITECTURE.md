@@ -934,6 +934,36 @@ Es bleiben zwei Wege, beide ohne Umgehung: Betrieb über den Owner-Browser, oder
 eddi24 nach einer Schnittstelle bzw. einer Freischaltung der Server-Adresse
 fragen. Einzelheiten: `report-casameta-agent-pilot-20261013.md`.
 
+### Das Eingabeblatt gibt es dreifach — und keine Arbeitsliste
+
+`erzeugeEingabeblatt(objekt, jahr)` schreibt nach `~/bikosoc-spec/casameta/`:
+
+| Datei | Zweck |
+|---|---|
+| `eingabeblatt-<objekt>-<jahr>.md` | zum Lesen, in Portalreihenfolge |
+| `eingabeblatt-<objekt>-<jahr>.csv` | `abschnitt;feld;wert;hinweis` |
+| `eingabeblatt-<objekt>-<jahr>.json` | dieselben Felder strukturiert, plus Kennzahlen und Lückenliste |
+
+Alle drei entstehen aus **denselben** `csvZeile()`-Aufrufen. Zwei getrennte
+Aufbauwege wären zwei Wahrheiten, und die eine würde irgendwann von der anderen
+abweichen, ohne dass es auffällt. Nachgeprüft: 131 CSV-Zeilen, 131 JSON-Felder,
+keine Abweichung.
+
+**Eine automatische Arbeitsliste gibt es bewusst nicht.** Der Versuch am
+14.10.2026 erzeugte sie aus den `FEHLT`-Feldern und lieferte für MG24 2025
+zweiundzwanzig „Blocker" — darunter neun Mieterstromzähler, die die
+Casameta-Abrechnung gar nicht aufhalten, weil in Abschnitt 6 keine
+verbrauchsabhängige Stromkostenart steht. Umgekehrt fehlten die echten
+Arbeitsschritte: Leerstandszeiträume und die § 9b-Einstellung stehen nirgends
+als `FEHLT`, sie sind ganz normale Werte, die nur eingetragen werden müssen.
+
+Eine richtige Einstufung bräuchte die Zuordnung Verteilerschlüssel → Medium
+(VKW → Kaltwasser, HK → Wärme). Die steht nicht in
+`system_settings.casameta_mapping`, und sie im Code zu erraten würde für andere
+Objekte falsche Listen erzeugen. Deshalb liefert das Blatt die Lückenliste, und
+welche Lücke die Abrechnung wirklich aufhält, wird im Report begründet statt
+geraten.
+
 ### Der Lauf bricht ab, bevor der Agent startet
 
 `casameta-run` stellt die Sitzung über das deterministische Login-Skript sicher

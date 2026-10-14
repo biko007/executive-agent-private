@@ -74,6 +74,7 @@ export interface EingabeblattErgebnis {
   luecken: string[];
   pfad_md: string;
   pfad_csv: string;
+  pfad_json: string;
 }
 
 export async function erzeugeEingabeblatt(
@@ -168,8 +169,14 @@ export async function erzeugeEingabeblatt(
   // ── Blatt aufbauen ────────────────────────────────────────────────────────
   const z: string[] = [];
   const csv: string[] = ['abschnitt;feld;wert;hinweis'];
-  const csvZeile = (abschnitt: string, feld: string, w: string, hinweis = '') =>
-    csv.push([abschnitt, feld, w, hinweis].map(csvFeld).join(';'));
+  /* Die JSON-Fassung entsteht aus denselben Aufrufen wie die CSV. Zwei
+     getrennte Aufbauwege waeren zwei Wahrheiten — und die eine wuerde
+     irgendwann von der anderen abweichen, ohne dass es auffaellt. */
+  const felder: { abschnitt: string; feld: string; wert: string; hinweis: string }[] = [];
+  const csvZeile = (abschnitt: string, feld: string, w: string, hinweis = '') => {
+    felder.push({ abschnitt, feld, wert: w, hinweis });
+    return csv.push([abschnitt, feld, w, hinweis].map(csvFeld).join(';'));
+  };
 
   z.push(`# Casameta-Eingabeblatt — ${objekt.name || objekt.code}, Abrechnung ${jahr}`);
   z.push('');
@@ -513,12 +520,47 @@ export async function erzeugeEingabeblatt(
   }
   z.push('');
 
+  /* KEINE AUTOMATISCHE ARBEITSLISTE. Naheliegend waere, aus den FEHLT-Feldern
+     eine Reihenfolge fuer den ersten Schreiblauf zu erzeugen. Der Versuch am
+     14.10.2026 lieferte fuer MG24 2025 zweiundzwanzig "Blocker" — darunter neun
+     Mieterstromzaehler, die die Casameta-Abrechnung gar nicht aufhalten, weil in
+     Abschnitt 6 keine verbrauchsabhaengige Stromkostenart steht. Umgekehrt
+     fehlten die echten Arbeitsschritte, denn Leerstandszeitraeume und die
+     Paragraph-9b-Einstellung stehen nirgends als FEHLT; sie sind ganz normale
+     Werte, die nur eingetragen werden muessen.
+     Eine richtige Einstufung braucht die Zuordnung Verteilerschluessel zu
+     Medium — VKW zu Kaltwasser, HK zu Waerme. Die gibt es in
+     system_settings.casameta_mapping nicht, und sie im Code zu erraten wuerde
+     fuer andere Objekte falsche Listen erzeugen. Deshalb liefert das Blatt die
+     Lueckenliste (Abschnitt 7) und die Felder als JSON; welche Luecke die
+     Abrechnung wirklich aufhaelt, wird im Report begruendet und nicht geraten. */
+
   // ── Schreiben ─────────────────────────────────────────────────────────────
   if (!existsSync(ZIEL_DIR)) mkdirSync(ZIEL_DIR, { recursive: true });
   const md = join(ZIEL_DIR, `eingabeblatt-${objektCode}-${jahr}.md`);
   const cs = join(ZIEL_DIR, `eingabeblatt-${objektCode}-${jahr}.csv`);
+  const js = join(ZIEL_DIR, `eingabeblatt-${objektCode}-${jahr}.json`);
   writeFileSync(md, z.join('\n') + '\n');
   writeFileSync(cs, csv.join('\n') + '\n');
+  writeFileSync(js, JSON.stringify({
+    objekt: objektCode,
+    objekt_name: objekt.name || objekt.code,
+    jahr,
+    erzeugt_am: new Date().toISOString(),
+    /* Dieselbe Warnung wie im Blatt: die Datei fuehrt Mieternamen. */
+    hinweis: 'Interne Arbeitsdatei mit Mieternamen. Nicht in Reports, nicht in Telegram.',
+    kennzahlen: {
+      wohnungen: einheiten.length,
+      nutzerzeitraeume: vertraege.length,
+      zaehler_aktiv: zaehler.filter(m => m.active !== false).length,
+      zaehler_abgeschaltet: zaehler.filter(m => m.active === false).length,
+      kostenbuchungen: kosten.length,
+      umlagefaehig_anzahl: kosten.filter(k => k.umlagefaehig).length,
+      summe_umlagefaehig: Math.round(summeUmlagefaehig * 100) / 100,
+    },
+    felder,
+    luecken,
+  }, null, 2) + '\n');
 
   return {
     objekt: objektCode,
@@ -533,5 +575,6 @@ export async function erzeugeEingabeblatt(
     luecken,
     pfad_md: md,
     pfad_csv: cs,
+    pfad_json: js,
   };
 }
