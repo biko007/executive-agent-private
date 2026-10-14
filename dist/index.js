@@ -42,6 +42,7 @@ import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramI
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
 import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
 import { createDropboxAdapter } from './src/adapters/dropbox.js';
+import { kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, } from './src/modules/report-telegram/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -506,6 +507,48 @@ export default function (api) {
             return false;
         }
     }
+    /**
+     * Dokument mit HTML-Beschriftung und optionalem Inline-Keyboard.
+     *
+     * WARUM (Owner-Vorgabe 14.10.2026): Je Auftrag soll genau EINE
+     * Abschlussnachricht kommen. Vorher gingen Dokument, Textvorschau und
+     * Go-Nachricht getrennt raus — drei Nachrichten fuer ein Ergebnis. Als
+     * Beschriftung am Dokument traegt derselbe Text HTML und den Kopierknopf.
+     *
+     * Telegram begrenzt Beschriftungen auf 1024 Zeichen; die Nachricht selbst ist
+     * auf 800 begrenzt, der Abstand ist Reserve fuer Sonderzeichen-Maskierung.
+     */
+    async function sendTelegramDocumentHtml(chatId, filePath, captionHtml, replyMarkup) {
+        if (!telegramBotToken)
+            return false;
+        try {
+            const fileData = fs.readFileSync(filePath);
+            const blob = new Blob([fileData], { type: 'application/octet-stream' });
+            const form = new FormData();
+            form.append('chat_id', chatId);
+            form.append('document', blob, path.basename(filePath));
+            form.append('caption', captionHtml.slice(0, 1024));
+            form.append('parse_mode', 'HTML');
+            if (replyMarkup)
+                form.append('reply_markup', JSON.stringify(replyMarkup));
+            const res = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendDocument`, {
+                method: 'POST', body: form,
+            });
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                api.logger.warn(`[report-watcher] sendDocument(HTML) HTTP ${res.status}: ${body}`);
+                /* Lehnt Telegram den Knopf ab (copy_text braucht Bot API >= 7.11),
+                   zweiter Versuch ohne Knopf — das Dokument ist wichtiger als der Knopf. */
+                if (replyMarkup)
+                    return sendTelegramDocumentHtml(chatId, filePath, captionHtml);
+            }
+            return res.ok;
+        }
+        catch (e) {
+            api.logger.error(`[report-watcher] sendTelegramDocumentHtml failed: ${e.message}`);
+            return false;
+        }
+    }
     async function getTelegramTargets(roleTag, opts = {}) {
         try {
             let bindings = await listActiveTelegramBindings(roleTag);
@@ -644,6 +687,7 @@ export default function (api) {
     // All registered plugin commands. When user sends one of these,
     // the AI agent must NOT respond — the command handler handles it.
     const REGISTERED_COMMANDS = new Set([
+        'hilfe',
         'brief', 'briefing', 'briefingtime',
         'calendar', 'meet', 'meetf', 'free',
         'inbox', 'yinbox', 'yverify', 'mailstatus', 'scanmail',
@@ -1635,6 +1679,36 @@ export default function (api) {
     function pnlSign(n) {
         return n >= 0 ? `+${fmtTradingNum(n)}` : fmtTradingNum(n);
     }
+    /**
+     * Der Nutzungstext, der bis zum 14.10.2026 unter jeder Inbox-Quittung stand.
+     *
+     * Er gehoerte nicht in jede Uebergabemeldung — dieselben vier Zeilen bei jedem
+     * Auftrag sind Rauschen. Wer sie braucht, ruft sie ab.
+     */
+    api.registerCommand({
+        name: 'hilfe',
+        description: 'Wie Auftraege an Claude Code kommen',
+        handler: async () => ({
+            text: [
+                '📘 *Auftraege an Claude Code*',
+                '',
+                '*Telegram:* `/do <text>`',
+                '*Datei-Drop:* `.txt` nach `~/inbox/` legen; Verarbeitung per systemd-user-Timer.',
+                '*Dropbox:* Datei in den Inbox-Ordner legen; der Poller holt sie ab.',
+                '',
+                'Zustellung erfolgt nur, wenn Claude Code gerade nichts abarbeitet.',
+                'Sonst bleibt die Datei liegen und wird beim naechsten Lauf erneut geprueft.',
+                '',
+                '*Je Auftrag kommen zwei Nachrichten:*',
+                '📥 beim Abholen — Titel, Dateiname, Uhrzeit, Warteschlange',
+                '✅ beim Abschluss — Aufgabe, Ergebnis, Ihre Aktion, Report im Anhang',
+                '',
+                '*Statussymbole:*',
+                '✅ fertig, keine Aktion · 👉 fertig, Sie muessen handeln',
+                '⚠️ fertig mit Auffaelligkeit · ❌ fehlgeschlagen · ⏸ gestoppt oder wartet auf /arm',
+            ].join('\n'),
+        }),
+    });
     api.registerCommand({
         name: 'trade',
         description: 'Trading-Status: Modus, Positionen, P&L',
@@ -3437,16 +3511,54 @@ export default function (api) {
                             digestText = generateDigest(reportContent);
                     }
                     catch { /* best-effort */ }
-                    // Send document
-                    if (isHdccPlan) {
+                    /* ── Zustellung (Owner-Neufassung 14.10.2026) ──────────────────────
+                       Je Auftrag genau ZWEI Nachrichten: eine beim Abholen, eine beim
+                       Abschluss. Vorher waren es bis zu fuenf — Dokument, Textvorschau oder
+                       Digest und die Go-Nachricht mit Link, und das bei Quittung wie Report.
+            
+                       Die Angaben kommen aus dem Kopfblock am Anfang des Reports, nicht aus
+                       dem Fliesstext. Fehlt er, sagt die Nachricht das und haengt den Report
+                       trotzdem an — geraten wird nichts.
+            
+                       HDCC-Plaene und bikosoc-Plaene bleiben beim alten Weg: Sie gehen in
+                       andere Chats bzw. werden im Volltext gelesen, und fuer sie gilt die
+                       Owner-Vorgabe nicht. */
+                    const kopf = isPlan ? null : (kopfblockLesen(reportContent) ?? kopfblockFallback(file.name));
+                    let neueForm = false;
+                    if (!isPlan && kopf) {
+                        neueForm = true;
+                        if (kopf.typ === 'uebernahme') {
+                            // Nachricht 1: nur Text, kein Dokument — eine Quittung braucht keinen Anhang.
+                            const text = uebernahmeNachricht(kopf);
+                            for (const chatId of await getTelegramTargets('dev', { fallbackToOperativ: true })) {
+                                await sendTelegramHtmlWithMarkup(chatId, text, null);
+                            }
+                            api.logger.info(`[report-watcher] Uebernahme gemeldet: ${file.name}`);
+                        }
+                        else {
+                            // Nachricht 2: Report als Dokument, Text als Beschriftung, Knopf dran.
+                            const text = ergebnisNachricht(kopf, file.name);
+                            const markup = reportGoMarkup(file.name);
+                            for (const chatId of await getTelegramTargets('dev', { fallbackToOperativ: true })) {
+                                await sendTelegramDocumentHtml(chatId, file.filePath, text, markup);
+                            }
+                            api.logger.info(`[report-watcher] Ergebnis gemeldet: ${file.name}`
+                                + ` (Status ${kopf.status}${kopf.fehlt ? ', Kopfblock fehlt' : ''},`
+                                + ` ${text.length} Zeichen)`);
+                        }
+                    }
+                    else if (isHdccPlan) {
                         await sendTelegramDocument(HDCC_CHAT_ID, file.filePath, `HDCC-Plan: ${file.name}`);
                     }
                     else {
                         const caption = isPlan ? `Plan: ${file.name}${file.note ?? ''}` : `Auto-Report: ${file.name}`;
                         await sendTelegramDocumentToRole('dev', file.filePath, caption, { fallbackToOperativ: true });
                     }
-                    // Send text: plans + short reports get full chunked content, long reports get digest
+                    // Textvorschau nur noch im alten Weg (Plaene). Bei der neuen Form traegt
+                    // die Dokument-Beschriftung den Text — ein zweites Mal waere ein Duplikat.
                     try {
+                        if (neueForm)
+                            throw new Error('neue Form — keine Textvorschau');
                         const content = reportContent || fs.readFileSync(file.filePath, 'utf-8');
                         const sendFullText = isPlan || content.length <= REPORT_CHUNK_SIZE;
                         if (isHdccPlan) {
@@ -3477,7 +3589,9 @@ export default function (api) {
                     // Folgenachricht mit Befehl, Link und Kopierknopf — eigene kurze Nachricht,
                     // damit sie parse_mode HTML und ein Inline-Keyboard tragen kann. Nicht fuer
                     // HDCC-Plaene: die gehen in einen anderen Chat.
-                    if (!isHdccPlan) {
+                    // Go-Nachricht nur noch im alten Weg. In der neuen Form haengt der
+                    // Kopierknopf am Dokument, und der Link claude.ai/new entfaellt.
+                    if (!isHdccPlan && !neueForm) {
                         try {
                             await sendReportGoNachricht(file.name);
                         }

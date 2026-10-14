@@ -260,7 +260,32 @@ export function processPromptInboxOnce(opts: {
   const reportDate = formatBerlinDate(now);
   const reportStamp = formatReportTimestamp(now);
   const reportPath = path.join(reportDir, `report-prompt-inbox-${reportStamp}.md`);
+  /* KOPFBLOCK ZUERST (Owner-Vorgabe 14.10.2026). Der Report-Watcher liest ihn
+     und formt daraus die Telegram-Nachricht „Aufgabe uebernommen". Vorher las er
+     den Fliesstext und schickte Dokument, Textvorschau und Quittung einzeln —
+     drei Nachrichten fuer eine Uebergabe.
+
+     Der Titel ist der Dateiname ohne Transportpraefixe; einen sprechenderen
+     Titel kennt die Inbox an dieser Stelle nicht, und Raten waere schlechter
+     als der Dateiname. */
+  const titel = erste.name
+    .replace(/^\d{4}-\d{2}-\d{2}T[\d-]+Z-/, '')
+    .replace(/^dropbox-\d{8}-\d{6}-/, '')
+    .replace(/^\d{8}-\d{6}-/, '')
+    .replace(/\.txt$/i, '');
+  const uhrzeit = new Intl.DateTimeFormat('de-DE', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
+  }).format(now);
   const body = [
+    '---',
+    'typ: uebernahme',
+    `titel: ${titel}`,
+    'status: ok',
+    `datei: ${erste.name}`,
+    `zeit: "${uhrzeit}"`,
+    `warteschlange: ${rest.length > 0 ? `${rest.length} wartend` : 'leer'}`,
+    '---',
+    '',
     `# Prompt-Inbox ${reportDate}`,
     '',
     '## Übergabe',
@@ -271,13 +296,6 @@ export function processPromptInboxOnce(opts: {
     rest.length > 0
       ? `- Noch in der Warteschlange: ${rest.length} (${rest.map(r => r.name).join(', ')})`
       : '- Noch in der Warteschlange: keine',
-    '',
-    '## Nutzung',
-    '',
-    '- Telegram: `/do <text>`',
-    '- Datei-Drop: `.txt` nach `~/inbox/` legen; Verarbeitung per systemd-user-Timer.',
-    '- Zustellung erfolgt nur, wenn Claude Code gerade nichts abarbeitet; sonst',
-    '  bleibt die Datei liegen und wird beim naechsten Lauf erneut geprueft.',
     '',
   ].join('\n');
   fs.writeFileSync(reportPath, body);

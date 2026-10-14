@@ -1044,6 +1044,38 @@ loescht weiterhin. Das Audit-Log fuehrt jetzt auch den Vorher-Stand — ohne den
 waere ein Ueberschreiben nicht rekonstruierbar, und genau daran hing am
 13.10.2026 die Wiederherstellung der vier Zaehlernotizen.
 
+### Telegram: zwei Nachrichten je Auftrag
+
+Bis zum 14.10.2026 schickte die Pipeline bis zu **fünf** Nachrichten je Auftrag:
+die Inbox-Quittung als Dokument, deren Textvorschau, den Report als Dokument,
+dessen Textvorschau oder Digest und die Go-Nachricht mit Kopierknopf und Link.
+Seither sind es **zwei**.
+
+| | Inhalt |
+|---|---|
+| **📥 beim Abholen** | reiner Text, kein Anhang: Titel, Dateiname ohne Transportpräfix, Uhrzeit, Warteschlange |
+| **Status-Symbol beim Abschluss** | der Report als Dokument, der Text als **Beschriftung** am Dokument, Kopierknopf dran |
+
+Dass der Text als Beschriftung am Dokument hängt, ist der Trick: So trägt eine
+einzige Nachricht Anhang, HTML und Inline-Keyboard. Telegram begrenzt
+Beschriftungen auf 1024 Zeichen, die Nachricht selbst auf 800 — der Abstand ist
+Reserve für die Maskierung von `&`, `<` und `>`.
+
+**Kein Prosa-Parsing mehr.** Die Angaben kommen aus einem YAML-Kopfblock am
+Anfang jedes Reports (`src/modules/report-telegram/`); das Format steht in
+`docs/agent/PROJECT_OVERLAY.md`. Vorher schnitt der Bot den Fließtext zurecht,
+und das Ergebnis hing davon ab, wie ein Report formuliert war. Fehlt der Block,
+meldet die Nachricht „Kopfblock fehlt", setzt ⚠️ und hängt den Report trotzdem
+an — der Report geht nie verloren, nur die Zusammenfassung wird blind.
+
+Statussymbole: ✅ fertig ohne Aktion · 👉 Owner muss handeln (dann steht „Ihre
+Aktion" direkt unter dem Titel) · ⚠️ Auffälligkeit · ❌ fehlgeschlagen ·
+⏸ gestoppt oder wartet auf `/arm`.
+
+Pläne (`~/.claude/plans/`) und HDCC-Pläne bleiben beim alten Weg: Sie werden im
+Volltext gelesen bzw. gehen in einen anderen Chat. Der Nutzungstext, der früher
+unter jeder Quittung stand, ist jetzt `/hilfe`.
+
 ### Ersatzwerte nach § 9a HeizkostenV
 
 Faellt ein Erfassungsgeraet aus oder liefert es unplausible Werte, tritt nach
