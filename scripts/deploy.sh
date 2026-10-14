@@ -31,6 +31,7 @@ DASHBOARD_DIR="${AGENT_DIR}/../executive-dashboard"
 TRADING_DIR="${AGENT_DIR}/../trading-agent"
 MARKER_DIR="${HOME}/.deploy-markers"
 NOTIFY_CMD="/home/biko/.scripts/notify"
+NOTIFY_SYSTEM_CMD="/home/biko/bin/notify-system"
 SETTLE_SECS=5   # seconds to wait after restart before health check
 
 # ── Services ───────────────────────────────────────────────────────────────
@@ -53,7 +54,15 @@ notify() {
   # Usage: notify "message" [info|warn|error]
   local msg="$1" sev="${2:-info}"
   log "NOTIFY [$sev]: $msg"
-  if [[ -x "$NOTIFY_CMD" ]]; then
+  # Gestaltete Meldung (14.10.2026). Faellt das Gateway gerade aus — beim
+  # Rueckbau durchaus moeglich —, greift der alte Textweg.
+  if [[ -x "$NOTIFY_SYSTEM_CMD" ]]; then
+    local lage="ok"
+    [[ "$sev" == "warn"  ]] && lage="hinweis"
+    [[ "$sev" == "error" ]] && lage="fehler"
+    "$NOTIFY_SYSTEM_CMD" "$lage" "Auslieferung" --zeile "$msg" --rolle dev 2>/dev/null || \
+      log "WARNING: notify-system failed (gateway may be restarting)"
+  elif [[ -x "$NOTIFY_CMD" ]]; then
     # Non-fatal — gateway may be down during rollback
     "$NOTIFY_CMD" "$msg" "$sev" dev 2>/dev/null || \
       log "WARNING: notify command failed (gateway may be restarting)"

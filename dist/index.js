@@ -43,6 +43,9 @@ import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.
 import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
 import { createDropboxAdapter } from './src/adapters/dropbox.js';
 import { kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, ergebnisKnoepfe, } from './src/modules/report-telegram/index.js';
+import { systemNachricht, uhrzeit as systemUhrzeit, htmlEscape as htmlEscapeSystem, roteZoneKlartext, } from './src/modules/system-telegram/index.js';
+import { KNOPF_PRAEFIX, ablaufZeitpunkt, knopfMarkup, pruefeKnopf, freigabeGesetztText, uebertragungGestartetText, startFehlgeschlagenText, knopfErledigtText, NUTZUNG_TEXT, } from './src/modules/arm-freigabe/index.js';
+import { wartetMeldung } from './src/modules/system-telegram/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -418,6 +421,33 @@ export default function (api) {
         api.logger.error('[executive-agent] markup-send nach allen Versuchen fehlgeschlagen');
         return { sent: false, withMarkup: false, error: 'alle Versuche fehlgeschlagen' };
     }
+    /**
+     * Der eine ausstehende Freigabe-Knopf.
+     *
+     * Es gibt immer hoechstens einen: Wartet ein roter Schritt, ist es GENAU
+     * dieser. Eine neue Wartemeldung ersetzt die alte Kennung — ein Knopf aus
+     * einer frueheren Lage soll nichts mehr ausloesen koennen.
+     */
+    let armKnopf = null;
+    /** Schreibt eine bereits gesendete Nachricht neu und nimmt ihr den Knopf. */
+    async function editiereNachricht(chatId, messageId, html) {
+        if (!telegramBotToken || !messageId)
+            return;
+        try {
+            await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/editMessageText`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: chatId, message_id: messageId, text: html,
+                    parse_mode: 'HTML', disable_web_page_preview: true,
+                    reply_markup: { inline_keyboard: [] },
+                }),
+            }, 15000);
+        }
+        catch (e) {
+            api.logger.warn(`[arm-knopf] Nachricht nicht aktualisiert: ${e.message}`);
+        }
+    }
     async function answerCallbackQuery(callbackQueryId, text) {
         if (!telegramBotToken)
             return;
@@ -754,7 +784,7 @@ export default function (api) {
         // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
         // Framework wraps prompts in "[Telegram sender timestamp] callback_data: <prefix>_<payload>"
         // envelope. Match both "callback_data: <prefix>" (current format) and "] <prefix>" (legacy).
-        const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'meeting_', 'bsync_', 'bweekly_', 'memdrop_'];
+        const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'meeting_', 'bsync_', 'bweekly_', 'memdrop_', KNOPF_PRAEFIX];
         if (CALLBACK_PREFIXES.some(p => prompt.includes('callback_data: ' + p) || prompt.includes('] ' + p))) {
             api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
             return {
@@ -1343,7 +1373,11 @@ export default function (api) {
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
-        const SEP = '━━━━━━━━━━━━━━━━━━━━';
+        /* RUBRIK markiert eine Ueberschrift. Am Ende wird der ganze Text maskiert
+           und nur diese Zeilen werden fett gesetzt — so kann kein Termintitel und
+           kein Fahrzeugname mit einem „<" die Nachricht zerreissen. Das Zeichen
+           kommt in keinem Inhalt vor. */
+        const RUBRIK = '\u0001';
         const fmtTime = new Intl.DateTimeFormat('de-DE', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
         const fmtDateFull = new Intl.DateTimeFormat('de-DE', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
         const parts = [];
@@ -1357,7 +1391,7 @@ export default function (api) {
                 ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
                 : loc.label;
         const astro = getAstroData(now, loc);
-        parts.push(`📅 *${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr*`);
+        parts.push(`${RUBRIK}📅 ${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr`);
         parts.push(`📍 ${locLabel}`);
         parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
         parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
@@ -1395,9 +1429,7 @@ export default function (api) {
             const w = weatherResult;
             const [td, tm, tu] = w.days;
             parts.push('');
-            parts.push(SEP);
-            parts.push(`🌤 *WETTER — ${loc.label}*`);
-            parts.push(SEP);
+            parts.push(`${RUBRIK}🌤 Wetter — ${loc.label}`);
             parts.push(`Jetzt: ${w.currentTemp}°C, ${w.currentDesc}`);
             if (w.todayRainHour !== null)
                 parts.push(`🌧 Regen ab ${String(w.todayRainHour).padStart(2, '0')}:00`);
@@ -1417,13 +1449,11 @@ export default function (api) {
                 const combined = [...mMsgs, ...yMsgs].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1));
                 const newest = combined[0];
                 parts.push('');
-                parts.push(SEP);
-                parts.push('📬 *INBOX*');
-                parts.push(SEP);
+                parts.push(`${RUBRIK}📬 Posteingang`);
                 if (m365Count > 0)
-                    parts.push(`- ${m365Count} ungelesene M365-Mail${m365Count > 1 ? 's' : ''}`);
+                    parts.push(`• ${m365Count} ungelesene M365-Mail${m365Count > 1 ? 's' : ''}`);
                 if (yahooCount > 0)
-                    parts.push(`- ${yahooCount} ungelesene Yahoo-Mail${yahooCount > 1 ? 's' : ''}`);
+                    parts.push(`• ${yahooCount} ungelesene Yahoo-Mail${yahooCount > 1 ? 's' : ''}`);
                 if (newest)
                     parts.push(`  → Neueste: "${newest.subject}" — ${newest.from}`);
             }
@@ -1444,9 +1474,7 @@ export default function (api) {
                     byDay.get(key).push({ ev, z });
                 }
                 parts.push('');
-                parts.push(SEP);
-                parts.push('📆 *KALENDER*');
-                parts.push(SEP);
+                parts.push(`${RUBRIK}📆 Kalender`);
                 for (const dayKey of [...byDay.keys()].sort()) {
                     const eintraege = byDay.get(dayKey).sort((a, b) => {
                         if (a.z.ganztags !== b.z.ganztags)
@@ -1488,10 +1516,8 @@ export default function (api) {
             const ds = listDrafts('draft', 5);
             if (ds.length > 0) {
                 parts.push('');
-                parts.push(SEP);
-                parts.push('✏️ *DRAFTS*');
-                parts.push(SEP);
-                parts.push(`- ${ds.length} Entwürf${ds.length > 1 ? 'e' : ''} offen`);
+                parts.push(`${RUBRIK}✏️ Entwürfe`);
+                parts.push(`• ${ds.length} Entwürf${ds.length > 1 ? 'e' : ''} offen`);
                 for (let i = 0; i < ds.length; i++) {
                     const to = ds[i].to?.join(', ') || '?';
                     parts.push(`  → #${i + 1}: "${ds[i].subject}" an ${to}`);
@@ -1507,10 +1533,10 @@ export default function (api) {
             if (lastWeight && wt7) {
                 const arrow = wt7.direction === 'up' ? '↗' : wt7.direction === 'down' ? '↘' : '→';
                 const sign = wt7.change > 0 ? '+' : '';
-                healthLines.push(`- Gewicht:  ${wt7.current} kg  (Trend: ${arrow} ${sign}${wt7.change} kg/Woche)`);
+                healthLines.push(`• Gewicht:  ${wt7.current} kg  (Trend: ${arrow} ${sign}${wt7.change} kg/Woche)`);
             }
             else if (lastWeight) {
-                healthLines.push(`- Gewicht:  ${lastWeight.value?.toFixed(1)} kg`);
+                healthLines.push(`• Gewicht:  ${lastWeight.value?.toFixed(1)} kg`);
             }
             // Last night sleep (dedup by day, pick longest)
             const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -1549,7 +1575,7 @@ export default function (api) {
                 healthLines.push(sleepLine);
             }
             else {
-                healthLines.push('- Schlaf:   Keine Schlafdaten (letzte Nacht)');
+                healthLines.push('• Schlaf:   Keine Schlafdaten (letzte Nacht)');
             }
             // HRV (D2: display only, no new alerts)
             const hrvTrend = await getHrvTrend(7).catch(() => null);
@@ -1564,26 +1590,24 @@ export default function (api) {
             // Readiness (D2: display only, no new alerts)
             const lastReadiness = await lastEntry('readiness').catch(() => null);
             if (lastReadiness && lastReadiness.readiness_score != null) {
-                healthLines.push(`- Readiness: ${lastReadiness.readiness_score}/100`);
+                healthLines.push(`• Readiness: ${lastReadiness.readiness_score}/100`);
             }
             // Temperature deviation
             const lastTemp = await lastEntry('temperature').catch(() => null);
             if (lastTemp && lastTemp.temp_deviation != null) {
                 const sign = lastTemp.temp_deviation > 0 ? '+' : '';
-                healthLines.push(`- Temperatur: ${sign}${lastTemp.temp_deviation.toFixed(1)} °C`);
+                healthLines.push(`• Temperatur: ${sign}${lastTemp.temp_deviation.toFixed(1)} °C`);
             }
             // Alerts
             const alerts = await checkHealthAlerts();
             const activeAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'warning');
             if (activeAlerts.length > 0) {
                 const alertIcons = { critical: '🔴', warning: '⚠️' };
-                healthLines.push(`- Alerts:   ${activeAlerts.length > 1 ? `${activeAlerts.length} aktiv` : '⚠️ 1 aktiv'} → "${activeAlerts[0].message}"`);
+                healthLines.push(`• Alerts:   ${activeAlerts.length > 1 ? `${activeAlerts.length} aktiv` : '⚠️ 1 aktiv'} → "${activeAlerts[0].message}"`);
             }
             if (healthLines.length > 0) {
                 parts.push('');
-                parts.push(SEP);
-                parts.push('❤️ *HEALTH*');
-                parts.push(SEP);
+                parts.push(`${RUBRIK}❤️ Gesundheit`);
                 parts.push(...healthLines);
             }
         }
@@ -1593,35 +1617,40 @@ export default function (api) {
             const deadlines = allDeadlines.filter((w) => w.severity === 'overdue' || w.daysLeft <= 60);
             if (deadlines.length > 0) {
                 parts.push('');
-                parts.push(SEP);
-                parts.push('🚗 *FUHRPARK — FRISTEN*');
-                parts.push(SEP);
+                parts.push(`${RUBRIK}🚗 Fuhrpark — Fristen`);
                 for (const w of deadlines) {
                     const icon = w.vehicleType === 'car' ? '🚗' : '🏍';
                     const label = w.field === 'tuev' ? 'TÜV' : 'Versicherung';
                     if (w.severity === 'overdue') {
-                        parts.push(`- ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
+                        parts.push(`• ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
                     }
                     else {
                         const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
-                        parts.push(`- ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE}) ⚠️`);
+                        parts.push(`• ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE}) ⚠️`);
                     }
                 }
                 // Add "Alle anderen: kein Handlungsbedarf" if there are vehicles without deadlines
                 const allVehicles = await listVehicles();
                 const vehiclesWithDeadlines = new Set(deadlines.map((d) => d.vehicleName));
                 if (allVehicles.length > deadlines.length) {
-                    parts.push('- Alle anderen: kein Handlungsbedarf');
+                    parts.push('• Alle anderen: kein Handlungsbedarf');
                 }
             }
         }
         catch { /* fleet deadlines optional */ }
-        return parts.join('\n').trim();
+        /* Telegram-HTML: alles maskieren, dann nur die Rubrikzeilen fett setzen.
+           Vorher ging der Text als Markdown raus, ohne parse_mode — im Chat standen
+           die Sternchen sichtbar da (Owner, 14.10.2026). */
+        return parts.join('\n').trim().split('\n')
+            .map(z => z.startsWith('\u0001')
+            ? `<b>${htmlEscapeSystem(z.slice(1))}</b>`
+            : htmlEscapeSystem(z))
+            .join('\n');
     }
     api.registerCommand({
         name: 'briefing',
         description: 'Tages-Briefing: Wetter + Kalender + Gesundheit + Drafts',
-        handler: async () => {
+        handler: async (ctx) => {
             try {
                 const BRIEFING_TIMEOUT_MS = 45000;
                 const briefingWork = async () => {
@@ -1638,6 +1667,14 @@ export default function (api) {
                 };
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                 const text = await Promise.race([briefingWork(), timeoutPromise]);
+                /* Selbst senden statt zurueckgeben: Der Rueckgabeweg des Frameworks
+                   kennt kein parse_mode, und das Briefing ist seit 14.10.2026 HTML.
+                   Ohne das stuenden die Tags sichtbar im Chat. */
+                const ziel = (await assertBoundOwner(ctx)).chatId;
+                if (ziel) {
+                    await sendTelegramHtmlWithMarkup(ziel, text, undefined);
+                    return { text: '' };
+                }
                 return { text };
             }
             catch (e) {
@@ -2348,31 +2385,52 @@ export default function (api) {
             }
             const mode = String(ctx?.args || '').trim().toLowerCase();
             if (mode !== '' && mode !== 'push') {
-                return { text: 'Nutzung: /arm  oder  /arm push' };
+                return { text: NUTZUNG_TEXT };
             }
             try {
                 const fs = await import('fs');
                 const flagPath = `${process.env.HOME}/.armed-bikosoc`;
                 fs.writeFileSync(flagPath, `armed by owner at ${new Date().toISOString()}\n`);
+                const ablauf = ablaufZeitpunkt();
                 if (mode !== 'push') {
-                    await notifyRoleUnlessOrigin('operativ', guard.chatId, 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).');
-                    api.logger.info('[arm] Red Zone armed (one-shot)');
-                    return { text: 'Rote Zone SCHARFGESTELLT — naechste rote Aktion wird durchgelassen (one-shot).' };
+                    /* `/arm` allein setzt die Freigabe und sonst nichts — auch dann nicht,
+                       wenn eine Uebertragung wartet. Es waere bequemer, sie gleich mit zu
+                       starten; es waere aber auch gefaehrlicher: `/arm` gilt ebenso fuer
+                       Migrationen und Datenbankbefehle, und ein Befehl mit zwei Wirkungen
+                       startet irgendwann etwas, das der Owner nicht gemeint hat. Statt
+                       dessen sagt die Antwort ausdruecklich, was fehlt — und der Knopf an
+                       der Wartemeldung erledigt es mit einem Tippen. */
+                    const wartet = !!armKnopf && !armKnopf.verbraucht;
+                    const text = freigabeGesetztText(ablauf, wartet);
+                    api.logger.info(`[arm] Freigabe gesetzt (einmalig, bis ${systemUhrzeit(ablauf)})`);
+                    if (guard.chatId) {
+                        await sendTelegramHtmlWithMarkup(guard.chatId, text, wartet && armKnopf ? knopfMarkup(armKnopf.kennung) : undefined);
+                        return { text: '' };
+                    }
+                    return { text: 'Freigabe gesetzt.' };
                 }
-                // Reihenfolge: erst armen, dann dispatchen. Schlaegt der Dispatch fehl, ist das
-                // Flag gesetzt (one-shot) und der Owner kann "push" selbst nachreichen — der
-                // umgekehrte Weg liefe in den Red-Zone-Block.
+                // Reihenfolge: erst freigeben, dann anstossen. Schlaegt der Anstoss fehl, ist
+                // die Freigabe gesetzt (einmalig) und der Owner kann "push" selbst nachreichen —
+                // der umgekehrte Weg liefe in die Sperre der Roten Zone.
                 try {
                     sendPromptToBikosocTmux('push');
                 }
                 catch (e) {
-                    api.logger.error(`[arm] push-Dispatch fehlgeschlagen: ${e.message}`);
-                    await notifyRoleUnlessOrigin('operativ', guard.chatId, `Armed — push-Dispatch fehlgeschlagen: ${e.message}`);
-                    return { text: `Armed — push-Dispatch fehlgeschlagen: ${e.message}` };
+                    api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
+                    if (guard.chatId) {
+                        await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
+                        return { text: '' };
+                    }
+                    return { text: `Start fehlgeschlagen: ${e.message}` };
                 }
-                await notifyRoleUnlessOrigin('operativ', guard.chatId, 'Armed + push dispatched.');
-                api.logger.info('[arm] Red Zone armed (one-shot) + push an tmux bikosoc uebergeben');
-                return { text: 'Armed + push dispatched.' };
+                api.logger.info('[arm] Freigabe gesetzt (einmalig) + Anstoss an die Sitzung bikosoc');
+                if (armKnopf)
+                    armKnopf.verbraucht = true;
+                if (guard.chatId) {
+                    await sendTelegramHtmlWithMarkup(guard.chatId, uebertragungGestartetText(ablauf), undefined);
+                    return { text: '' };
+                }
+                return { text: 'Freigegeben und gestartet.' };
             }
             catch (e) {
                 api.logger.error(`[arm] Fehler: ${e.message}`);
@@ -2716,6 +2774,54 @@ export default function (api) {
                 }
                 return;
             }
+            // ── armpush_ callbacks (Freigabe-Knopf der Roten Zone) ──
+            //
+            // Derselbe Vorgang wie `/arm push`, nur mit einem Tippen statt einer
+            // getippten Zeile. Die Sicherheit bleibt unveraendert:
+            //   - assertBoundOwner: nur die hinterlegte Owner-Kennung,
+            //   - pruefeKnopf: nur die zuletzt vergebene Kennung, und nur einmal,
+            //   - die Freigabe selbst verfaellt weiterhin nach 15 Minuten im Hook.
+            // Nach der Benutzung verliert die Nachricht ihren Knopf.
+            const armCb = parseCallbackEvent(event, KNOPF_PRAEFIX.replace(/_$/, ''));
+            if (armCb) {
+                const chatId = armCb.chatId || armCb.senderId;
+                const senderId = String(armCb.senderId || '');
+                const guard = await assertBoundOwner({ chatId, senderId });
+                const pruefung = pruefeKnopf({
+                    kennung: String(armCb.payload || ''),
+                    erwartet: armKnopf?.kennung ?? null,
+                    senderId,
+                    ownerId: guard.ok ? senderId : null,
+                    verbraucht: !!armKnopf?.verbraucht,
+                });
+                if (!pruefung.ok) {
+                    api.logger.warn(`[arm-knopf] abgewiesen (${pruefung.grund}, Absender ${senderId.slice(0, 12)})`);
+                    if (chatId)
+                        await sendTelegramHtmlWithMarkup(chatId, pruefung.antwort, undefined);
+                    return;
+                }
+                armKnopf.verbraucht = true;
+                const ablauf = ablaufZeitpunkt();
+                try {
+                    const fs = await import('fs');
+                    fs.writeFileSync(`${process.env.HOME}/.armed-bikosoc`, `armed by owner at ${new Date().toISOString()}\n`);
+                    sendPromptToBikosocTmux('push');
+                }
+                catch (e) {
+                    api.logger.error(`[arm-knopf] Anstoss fehlgeschlagen: ${e.message}`);
+                    if (chatId)
+                        await sendTelegramHtmlWithMarkup(chatId, startFehlgeschlagenText(e.message), undefined);
+                    return;
+                }
+                api.logger.info('[arm-knopf] Freigabe erteilt und Anstoss an die Sitzung bikosoc');
+                if (armKnopf?.messageId && armKnopf.chatId) {
+                    await editiereNachricht(armKnopf.chatId, armKnopf.messageId, knopfErledigtText(ablauf));
+                }
+                else if (chatId) {
+                    await sendTelegramHtmlWithMarkup(chatId, knopfErledigtText(ablauf), undefined);
+                }
+                return;
+            }
             // ── memdrop_ callbacks (Memory fact rejection confirmation) ──
             const memdropCb = parseCallbackEvent(event, 'memdrop');
             if (memdropCb) {
@@ -2851,7 +2957,7 @@ export default function (api) {
                     retry.attempts++;
                     api.logger.info(`[executive-agent] Briefing-Retry Versuch ${retry.attempts} (Backoff ${backoffMs}ms)`);
                     await sleep(backoffMs);
-                    const sent = await sendTelegram(retry.chatId, retry.text);
+                    const sent = (await sendTelegramHtmlWithMarkup(retry.chatId, retry.text, undefined)).sent;
                     if (sent) {
                         api.logger.info(`[executive-agent] Briefing-Retry erfolgreich (Versuch ${retry.attempts})`);
                         pendingBriefingRetry = null;
@@ -2885,7 +2991,7 @@ export default function (api) {
                     };
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
                     const text = await Promise.race([briefingWork(), timeoutPromise]);
-                    const sent = await sendTelegram(chatId, text);
+                    const sent = (await sendTelegramHtmlWithMarkup(chatId, text, undefined)).sent;
                     if (sent) {
                         lastBriefingDate = today;
                         api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
@@ -2940,10 +3046,15 @@ export default function (api) {
                         api.logger.info('[executive-agent] Daily Health Check grün — kein Telegram (Meldungsdisziplin)');
                     }
                     else if (report.status === 'green') {
-                        await sendTelegram(chatId, '🟢 Daily Health Check — alle Systeme OK');
+                        await sendTelegramHtmlWithMarkup(chatId, systemNachricht({
+                            lage: 'ok', titel: 'Tagesprüfung', zeilen: ['alle Systeme in Ordnung'],
+                        }), undefined);
                     }
                     else {
-                        await sendTelegram(chatId, formatHealthReport(report, 'Daily Health Check'));
+                        await sendTelegramHtmlWithMarkup(chatId, systemNachricht({
+                            lage: report.status === 'red' ? 'fehler' : 'hinweis',
+                            titel: 'Tagesprüfung mit Befund',
+                        }) + `\n<code>${htmlEscapeSystem(formatHealthReport(report, 'Tagesprüfung'))}</code>`, undefined);
                     }
                 }
             }
@@ -3747,7 +3858,16 @@ export default function (api) {
                 lastPaneContentHash = contentHash;
                 lastWaitNotifyAt = now;
                 const preview = lastLines.slice(0, 200);
-                await sendTelegramToRole('dev', `⏳ cc wartet auf Eingabe (tmux bikosoc):\n\n\`\`\`\n${preview}\n\`\`\``, { fallbackToOperativ: true });
+                /* Vorher ein Markdown-Codeblock, gesendet ohne parse_mode — die drei
+                   Backticks standen sichtbar im Chat. Jetzt HTML mit <code>. */
+                const ziel = getCachedTelegramTarget('dev', { fallbackToOperativ: true });
+                if (ziel) {
+                    await sendTelegramHtmlWithMarkup(ziel, systemNachricht({
+                        lage: 'wartet',
+                        titel: 'Sitzung wartet auf Eingabe',
+                        zeilen: ['Claude Code in der Sitzung bikosoc'],
+                    }) + `\n<code>${htmlEscapeSystem(preview)}</code>`, undefined);
+                }
                 api.logger.info('[wait-notifier] Notification sent');
             }
             catch (e) {
@@ -4247,6 +4367,51 @@ export default function (api) {
             }
         },
     });
+    // ── Internal: Wartemeldung der Roten Zone mit Freigabe-Knopf ──────────────
+    //
+    // Der Leerlauf-Waechter (scripts/prompt-inbox-poll.ts) laeuft als eigener
+    // Prozess und kann keinen Knopf anbieten: Den Druck darauf muss derselbe
+    // Prozess entgegennehmen, der die Kennung vergeben hat. Er meldet die Lage
+    // deshalb hierher, und die Nachricht entsteht hier.
+    api.registerHttpRoute({
+        auth: 'plugin', match: 'exact',
+        path: '/api/internal/arm-wartet',
+        handler: async (req, res) => {
+            if (req.method !== 'POST') {
+                res.writeHead(405, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+                return;
+            }
+            try {
+                const chunks = [];
+                for await (const chunk of req)
+                    chunks.push(chunk);
+                const body = JSON.parse(Buffer.concat(chunks).toString());
+                const grund = String(body.grund || '').slice(0, 500);
+                const zeitpunkt = body.zeitpunkt ? new Date(String(body.zeitpunkt)) : undefined;
+                const chatId = getCachedTelegramTarget('operativ', { fallbackToOperativ: true });
+                if (!chatId) {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: 'operativ Telegram binding not configured' }));
+                    return;
+                }
+                /* Neue Lage, neue Kennung: Ein Knopf aus einer frueheren Wartemeldung
+                   soll nichts mehr ausloesen. */
+                const kennung = Math.random().toString(36).slice(2, 12);
+                const ablauf = ablaufZeitpunkt();
+                const text = wartetMeldung(grund, zeitpunkt && !isNaN(zeitpunkt.getTime()) ? zeitpunkt : undefined);
+                const erg = await sendTelegramHtmlWithMarkup(chatId, text, knopfMarkup(kennung));
+                armKnopf = { kennung, chatId, messageId: erg.messageId, ablauf, verbraucht: false };
+                res.writeHead(erg.sent ? 200 : 502, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: erg.sent, knopf: erg.withMarkup }));
+            }
+            catch (e) {
+                api.logger.error(`[arm-wartet] ${e.message}`);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: e.message }));
+            }
+        },
+    });
     // ── Internal Notify (localhost only — nginx allow 127.0.0.1; deny all) ─────
     api.registerHttpRoute({
         auth: 'plugin', match: 'exact',
@@ -4271,7 +4436,32 @@ export default function (api) {
                 const severity = ['info', 'warn', 'error'].includes(body.severity) ? body.severity : 'info';
                 const defaultEmoji = { info: 'ℹ️', warn: '⚠️', error: '🔴' };
                 const emoji = typeof body.emoji === 'string' && body.emoji.length > 0 ? body.emoji : defaultEmoji[severity];
-                const text = `${emoji} ${message}`;
+                /* GESTALTETE SYSTEMMELDUNG (14.10.2026).
+                   Nennt der Aufrufer `lage` und `titel`, baut systemNachricht() daraus die
+                   Meldung in Telegram-HTML: fette Kopfzeile mit Symbol, darunter die Punkte.
+                   Jeder Wert wird dort maskiert — die Shell-Aufrufer liefern blanken Text und
+                   muessen nichts ueber HTML wissen.
+                   Ohne `lage` bleibt alles wie bisher: Emoji plus Text, ohne parse_mode. So
+                   bricht kein bestehender Aufrufer. */
+                const lagen = ['ok', 'aktion', 'hinweis', 'fehler', 'wartet', 'freigabe'];
+                const gestaltet = typeof body.lage === 'string' && lagen.includes(body.lage)
+                    && typeof body.titel === 'string' && body.titel.trim().length > 0;
+                /* `grund` ist der Rohtext der Roten Zone, etwa
+                   „red path (Submodul): …/hooks/deny-destructive.sh matches hooks/**".
+                   Er wird hier in Klartext uebersetzt und als erster Punkt gesetzt. Die
+                   Hooks muessen die Uebersetzungstabelle dadurch nicht kennen. */
+                const zeilen = Array.isArray(body.zeilen) ? body.zeilen.map(String) : [];
+                if (typeof body.grund === 'string' && body.grund.trim()) {
+                    zeilen.unshift(roteZoneKlartext(body.grund));
+                }
+                const text = gestaltet
+                    ? systemNachricht({
+                        lage: body.lage,
+                        titel: String(body.titel),
+                        zeilen,
+                        fuss: Array.isArray(body.fuss) ? body.fuss.map(String) : [],
+                    })
+                    : `${emoji} ${message}`;
                 const role = body.role === 'dev' ? 'dev' : 'operativ';
                 const chatId = getCachedTelegramTarget(role, { fallbackToOperativ: role === 'dev' });
                 if (!chatId) {
@@ -4288,7 +4478,10 @@ export default function (api) {
                 const tgRes = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: chatId, text }),
+                    body: JSON.stringify({
+                        chat_id: chatId, text,
+                        ...(gestaltet ? { parse_mode: 'HTML', disable_web_page_preview: true } : {}),
+                    }),
                 }, 15000);
                 const tgBody = await tgRes.json();
                 if (!tgRes.ok) {

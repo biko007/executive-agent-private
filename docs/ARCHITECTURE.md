@@ -440,6 +440,15 @@ Alle drei Zustellwege (Zeitplan, Wiederholung, `/briefing`) senden mit
 `parse_mode HTML`; der Befehl sendet selbst und gibt nichts zurück, weil der
 Rückgabeweg des Frameworks kein `parse_mode` kennt.
 
+**Umgestellte Meldungswege.** Neben der Roten Zone und dem Briefing gehen
+jetzt auch diese über die gemeinsame Gestaltung: Auslieferung
+(`scripts/deploy.sh`), Sicherung (`scripts/openclaw-backup` — vorher
+`parse_mode=Markdown` direkt an die Bot-API, ein Unterstrich im Dateinamen
+reichte für eine abgewiesene Nachricht), Tagesprüfung (08:00) und der
+Warte-Melder der Sitzung. Nicht angefasst sind die Antworten auf getippte
+Befehle (Reise-, Banking- und Memory-Dialoge): Sie erscheinen nur auf
+Anforderung, und ihre Umstellung wäre ein eigener, breiter Eingriff.
+
 ### Der Freigabe-Knopf der Roten Zone (seit 14.10.2026)
 
 Die Wartemeldung trug bisher eine rohe URL

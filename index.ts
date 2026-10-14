@@ -3363,9 +3363,14 @@ export default function (api: any) {
           } else if (action === 'silent') {
             api.logger.info('[executive-agent] Daily Health Check grün — kein Telegram (Meldungsdisziplin)');
           } else if (report.status === 'green') {
-            await sendTelegram(chatId, '🟢 Daily Health Check — alle Systeme OK');
+            await sendTelegramHtmlWithMarkup(chatId, systemNachricht({
+              lage: 'ok', titel: 'Tagesprüfung', zeilen: ['alle Systeme in Ordnung'],
+            }), undefined);
           } else {
-            await sendTelegram(chatId, formatHealthReport(report, 'Daily Health Check'));
+            await sendTelegramHtmlWithMarkup(chatId, systemNachricht({
+              lage: report.status === 'red' ? 'fehler' : 'hinweis',
+              titel: 'Tagesprüfung mit Befund',
+            }) + `\n<code>${htmlEscapeSystem(formatHealthReport(report, 'Tagesprüfung'))}</code>`, undefined);
           }
         }
       } catch (e: any) {
@@ -4201,7 +4206,16 @@ export default function (api: any) {
         lastWaitNotifyAt = now;
 
         const preview = lastLines.slice(0, 200);
-        await sendTelegramToRole('dev', `⏳ cc wartet auf Eingabe (tmux bikosoc):\n\n\`\`\`\n${preview}\n\`\`\``, { fallbackToOperativ: true });
+        /* Vorher ein Markdown-Codeblock, gesendet ohne parse_mode — die drei
+           Backticks standen sichtbar im Chat. Jetzt HTML mit <code>. */
+        const ziel = getCachedTelegramTarget('dev', { fallbackToOperativ: true });
+        if (ziel) {
+          await sendTelegramHtmlWithMarkup(ziel, systemNachricht({
+            lage: 'wartet',
+            titel: 'Sitzung wartet auf Eingabe',
+            zeilen: ['Claude Code in der Sitzung bikosoc'],
+          }) + `\n<code>${htmlEscapeSystem(preview)}</code>`, undefined);
+        }
         api.logger.info('[wait-notifier] Notification sent');
       } catch (e: any) {
         api.logger.warn(`[wait-notifier] Error: ${e.message}`);
