@@ -520,6 +520,37 @@ der diesen Fall nachstellt. Vollstaendige Diagnose:
 **Praktische Folge:** Zwischen `/arm push` des Owners und dem Push duerfen nicht mehr als
 15 Minuten liegen. Ist die Frist verstrichen, muss der Owner erneut armen.
 
+### Eine Freigabe für Agent-Repo und Submodul-Pointer (seit 14.10.2026)
+
+Ein Vorgang besteht aus **zwei** Übertragungen: erst das Agent-Repo, dann der
+Zeiger im Parent, der nur den eben freigegebenen Stand benennt. Das kostete
+zwei Freigaben — die erste verbrauchte das Agent-Repo, der Zeiger lief in die
+Sperre. Am 13. und am 14.10.2026 jeweils einmal passiert. **Owner-Entscheidung
+vom 14.10.2026: eine Freigabe deckt beides.**
+
+Umgesetzt als **Nachlaufmarke**, nicht als längeres Zeitfenster. Beim Verbrauch
+der Freigabe schreibt `scripts/hooks/pre-push` die übertragenen SHA nach
+`<Flagge>.nachlauf`. Eine zweite rote Übertragung läuft nur durch, wenn **alle
+sechs** Bedingungen zugleich gelten:
+
+1. die Marke ist höchstens `NACHLAUF_TTL` Sekunden alt (Vorgabe **300**),
+2. der Vorgang enthält genau **eine** Ref,
+3. der rote Befund stammt aus einem **Submodul-Zeiger**,
+4. **jeder** Zeiger im Bereich zeigt auf einen SHA, der in der Marke steht —
+   also auf genau den Inhalt, der eben freigegeben wurde,
+5. außerhalb der Zeiger liegt **kein** roter Pfad im Bereich,
+6. die Marke wird dabei verbraucht; eine dritte Übertragung ist gesperrt.
+
+Damit deckt die Freigabe denselben Inhalt zweimal, aber **nie neuen Inhalt**.
+Ein Zeiger auf einen ungeprüften Stand, eine eigene rote Datei im Parent, ein
+zweiter Vorgang oder eine abgelaufene Marke führen unverändert in die Sperre.
+Die Verfallsfrist der Freigabe selbst (`ARM_TTL`, 900 s) bleibt unberührt.
+
+Nachweis: sechs Fälle in `__tests__/pre-push.test.ts`, je einer pro Bedingung.
+Der Claude-Code-Hook braucht dafür keine Änderung: Im Parent zeigt
+`@{u}..HEAD` nur den Submodulpfad, und der trifft kein rotes Muster — geblockt
+hat dort immer `pre-push`.
+
 ### Zwei Linien: pre-push und der Claude-Code-Hook
 
 Seit 13.10.2026 gibt es `scripts/hooks/pre-push`. `core.hooksPath` zeigt in allen drei

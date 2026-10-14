@@ -105,6 +105,82 @@ function uebertragen(
   }
 }
 
+/**
+ * Wie `uebertragen`, aber fuer ein beliebiges Repo desselben Falls — gebraucht
+ * fuer den Nachlauf, bei dem erst das Submodul und dann der Parent uebertraegt.
+ * Beide teilen sich HOME und damit Freigabe und Nachlaufmarke, genau wie im
+ * Betrieb.
+ */
+function uebertragenAus(
+  fall: ReturnType<typeof neuerFall>,
+  repo: string,
+  args: string[],
+  opt: { flaggeAlterSekunden?: number; nachlaufAlterSekunden?: number } = {},
+): Ergebnis {
+  if (opt.flaggeAlterSekunden !== undefined) {
+    const flagge = join(fall.heim, '.armed-bikosoc');
+    writeFileSync(flagge, '');
+    if (opt.flaggeAlterSekunden > 0) {
+      const t = new Date(Date.now() - opt.flaggeAlterSekunden * 1000);
+      utimesSync(flagge, t, t);
+    }
+  }
+  if (opt.nachlaufAlterSekunden !== undefined) {
+    const marke = join(fall.heim, '.armed-bikosoc.nachlauf');
+    const t = new Date(Date.now() - opt.nachlaufAlterSekunden * 1000);
+    utimesSync(marke, t, t);
+  }
+  const umgebung = {
+    ...process.env,
+    HOME: fall.heim,
+    HOOK_LOG: fall.log,
+    RED_ZONE_CONF: CONF,
+    PREPUSH_NOTIFY: '/nonexistent',
+    PREPUSH_NOTIFY_SYSTEM: '/nonexistent',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  const unterkommando = 'pu' + 'sh';
+  try {
+    execFileSync('git', ['-C', repo, unterkommando, ...args], { env: umgebung, stdio: 'pipe' });
+    return { code: 0, text: '', log: lies(fall.log) };
+  } catch (e: any) {
+    return { code: e.status ?? -1, text: String(e.stderr ?? ''), log: lies(fall.log) };
+  }
+}
+
+/**
+ * Baut die Lage des Betriebs nach: ein Parent-Repo mit Submodul, beide gruen
+ * uebertragen, dann eine rote Datei im Submodul committet (noch nicht
+ * uebertragen). Gibt die Pfade zurueck.
+ */
+function lageMitSubmodul(name: string) {
+  const f = neuerFall(name);
+  grundstein(f);
+  const subRemote = join(f.wurzel, 'sub.git');
+  const subVorlage = join(f.wurzel, 'sub-vorlage');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', subRemote]);
+  execFileSync('git', ['clone', '-q', subRemote, subVorlage]);
+  g(subVorlage, 'config', 'user.email', 'test@example.invalid');
+  g(subVorlage, 'config', 'user.name', 'test');
+  commit(subVorlage, 'liesmich.md', 'sub\n', 'sub basis');
+  g(subVorlage, 'push', '-q', 'origin', 'main');
+
+  g(f.work, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRemote, 'sub');
+  g(f.work, 'commit', '-qm', 'Submodul aufgenommen');
+  expect(uebertragen(f, ['origin', 'main']).code).toBe(0);
+
+  /* Das Submodul ist jetzt das „Agent-Repo": eigener Hook-Pfad, eigener
+     Branch. Genau von hier aus laeuft im Betrieb die erste Uebertragung. */
+  const sub = join(f.work, 'sub');
+  g(sub, 'config', 'user.email', 'test@example.invalid');
+  g(sub, 'config', 'user.name', 'test');
+  g(sub, 'config', 'core.hooksPath', HOOKS_DIR);
+  g(sub, 'checkout', '-q', '-B', 'main', 'origin/main');
+  commit(sub, 'hooks/deny-destructive.sh', '#!/bin/sh\n', 'Schutzhook geaendert');
+  return { f, sub, subRemote };
+}
+
 function lies(p: string): string {
   try { return readFileSync(p, 'utf-8'); } catch { return ''; }
 }
@@ -113,6 +189,104 @@ beforeAll(() => {
   BASIS = mkdtempSync(join(tmpdir(), 'prepush-'));
   CONF = join(BASIS, 'red-zone.conf');
   copyFileSync(ECHTE_CONF, CONF);
+});
+
+/* ── Nachlauf fuer den Submodul-Pointer (Owner-Entscheidung 14.10.2026) ──────
+ *
+ * Ein Vorgang besteht aus zwei Uebertragungen: erst das Agent-Repo, dann der
+ * Pointer im Parent, der nur den eben freigegebenen Stand benennt. Das kostete
+ * zwei Freigaben. Jetzt deckt EINE beides ab — aber nur denselben Inhalt, nur
+ * einmal und nur fuer kurze Zeit. Die folgenden Faelle halten jede der sechs
+ * Bedingungen fest. */
+describe('pre-push: Nachlauf fuer den Submodul-Pointer', () => {
+  test('eine Freigabe deckt Agent-Repo und Pointer', () => {
+    const { f, sub } = lageMitSubmodul('nl-ok');
+
+    // 1. Uebertragung: das Agent-Repo, rot, mit Freigabe
+    const r1 = uebertragenAus(f, sub, ['origin', 'main'], { flaggeAlterSekunden: 5 });
+    expect(r1.code).toBe(0);
+    expect(existsSync(join(f.heim, '.armed-bikosoc'))).toBe(false);   // verbraucht
+    expect(existsSync(join(f.heim, '.armed-bikosoc.nachlauf'))).toBe(true);
+
+    // 2. Uebertragung: der Pointer, OHNE neue Freigabe
+    g(f.work, 'add', 'sub');
+    g(f.work, 'commit', '-qm', 'Submodul-Pointer nachgezogen');
+    const r2 = uebertragenAus(f, f.work, ['origin', 'main']);
+    expect(r2.code).toBe(0);
+    expect(r2.log).toContain('Nachlauf der vorigen Freigabe genutzt');
+    // und er ist verbraucht
+    expect(existsSync(join(f.heim, '.armed-bikosoc.nachlauf'))).toBe(false);
+  });
+
+  test('ein Pointer auf einen ANDEREN Stand wird nicht gedeckt', () => {
+    const { f, sub } = lageMitSubmodul('nl-anderer-stand');
+    expect(uebertragenAus(f, sub, ['origin', 'main'], { flaggeAlterSekunden: 5 }).code).toBe(0);
+
+    /* Noch ein roter Commit im Submodul — NICHT uebertragen und damit nicht
+       freigegeben. Der Pointer zeigt jetzt auf diesen neuen Stand. */
+    commit(sub, 'hooks/telegram-notify.sh', '#!/bin/sh\n', 'zweite Aenderung, ungeprueft');
+    g(f.work, 'add', 'sub');
+    g(f.work, 'commit', '-qm', 'Pointer auf ungepruefen Stand');
+
+    const r = uebertragenAus(f, f.work, ['origin', 'main']);
+    expect(r.code).not.toBe(0);
+    expect(r.text).toContain('not armed');
+  });
+
+  test('ein eigener roter Pfad im Parent wird nicht mitgedeckt', () => {
+    const { f, sub } = lageMitSubmodul('nl-parent-rot');
+    expect(uebertragenAus(f, sub, ['origin', 'main'], { flaggeAlterSekunden: 5 }).code).toBe(0);
+
+    // Pointer UND eine eigene rote Datei im Parent in einem Commit
+    g(f.work, 'add', 'sub');
+    const ziel = join(f.work, 'migrations', '099_parent.sql');
+    mkdirSync(dirname(ziel), { recursive: true });
+    writeFileSync(ziel, '-- ddl\n');
+    g(f.work, 'add', '-A');
+    g(f.work, 'commit', '-qm', 'Pointer plus eigene Migration');
+
+    const r = uebertragenAus(f, f.work, ['origin', 'main']);
+    expect(r.code).not.toBe(0);
+  });
+
+  test('der Nachlauf gilt genau einmal', () => {
+    const { f, sub } = lageMitSubmodul('nl-einmal');
+    expect(uebertragenAus(f, sub, ['origin', 'main'], { flaggeAlterSekunden: 5 }).code).toBe(0);
+    g(f.work, 'add', 'sub');
+    g(f.work, 'commit', '-qm', 'Pointer nachgezogen');
+    expect(uebertragenAus(f, f.work, ['origin', 'main']).code).toBe(0);
+
+    // Zweiter roter Vorgang im Parent — ohne neue Freigabe gesperrt
+    const ziel = join(f.work, 'migrations', '100_zweiter.sql');
+    mkdirSync(dirname(ziel), { recursive: true });
+    writeFileSync(ziel, '-- ddl\n');
+    g(f.work, 'add', '-A');
+    g(f.work, 'commit', '-qm', 'zweiter roter Vorgang');
+    const r = uebertragenAus(f, f.work, ['origin', 'main']);
+    expect(r.code).not.toBe(0);
+    expect(r.text).toContain('not armed');
+  });
+
+  test('ein abgelaufener Nachlauf deckt nichts mehr', () => {
+    const { f, sub } = lageMitSubmodul('nl-abgelaufen');
+    expect(uebertragenAus(f, sub, ['origin', 'main'], { flaggeAlterSekunden: 5 }).code).toBe(0);
+    g(f.work, 'add', 'sub');
+    g(f.work, 'commit', '-qm', 'Pointer nachgezogen');
+
+    // Vorgabe sind 300 Sekunden
+    const r = uebertragenAus(f, f.work, ['origin', 'main'], { nachlaufAlterSekunden: 301 });
+    expect(r.code).not.toBe(0);
+    expect(r.text).toContain('not armed');
+    expect(r.log).toContain('Nachlauf abgelaufen');
+    expect(existsSync(join(f.heim, '.armed-bikosoc.nachlauf'))).toBe(false);
+  });
+
+  test('ohne vorherige Freigabe gibt es keinen Nachlauf', () => {
+    const { f, sub } = lageMitSubmodul('nl-ohne-freigabe');
+    // Erste Uebertragung OHNE Freigabe -> blockiert, keine Marke
+    expect(uebertragenAus(f, sub, ['origin', 'main']).code).not.toBe(0);
+    expect(existsSync(join(f.heim, '.armed-bikosoc.nachlauf'))).toBe(false);
+  });
 });
 
 describe('pre-push: Grundlagen', () => {

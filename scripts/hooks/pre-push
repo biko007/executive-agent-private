@@ -21,6 +21,28 @@
 # haette gegen ein fehlendes Flag geprueft. Bei roten BEFEHLEN (ohne Push)
 # verbraucht weiterhin deny-destructive.sh.
 #
+# NACHLAUF FUER DEN SUBMODUL-POINTER (Owner-Entscheidung 14.10.2026).
+# Ein Vorgang besteht aus ZWEI Uebertragungen: erst das Agent-Repo, dann der
+# Pointer im Parent, der nur den eben freigegebenen Stand benennt. Bis zum
+# 14.10.2026 kostete das zwei Freigaben — die erste verbrauchte das Agent-Repo,
+# der Pointer lief in die Sperre. Der Owner hat entschieden, beides mit EINER
+# Freigabe zu erledigen.
+#
+# Umgesetzt als Nachlaufmarke, nicht als laengeres Fenster. Beim Verbrauch der
+# Freigabe schreibt dieser Hook die uebertragenen SHA nach <FLAGGE>.nachlauf.
+# Eine zweite rote Uebertragung wird NUR dann durchgelassen, wenn ALLE diese
+# Bedingungen zugleich gelten:
+#
+#   1. die Marke ist hoechstens NACHLAUF_TTL Sekunden alt (Vorgabe 300),
+#   2. der Push enthaelt genau EINE Ref,
+#   3. der rote Befund stammt aus einem SUBMODUL-Pointer,
+#   4. JEDER Pointer im Bereich zeigt auf einen SHA, der in der Marke steht —
+#      also auf genau den Inhalt, der eben freigegeben wurde,
+#   5. ausserhalb der Pointer liegt KEIN roter Pfad im Bereich,
+#   6. die Marke wird dabei verbraucht; eine dritte Uebertragung ist gesperrt.
+#
+# Damit deckt die Freigabe denselben Inhalt zweimal, aber nie neuen Inhalt.
+#
 # Exit 0 = Push laeuft, Exit 1 = git bricht ab.
 set -uo pipefail
 
@@ -28,6 +50,7 @@ NULLSHA='0000000000000000000000000000000000000000'
 RED_ZONE_CONF="${RED_ZONE_CONF:-$HOME/.config/openclaw/red-zone.conf}"
 HOOK_LOG="${HOOK_LOG:-$HOME/.claude/hooks.log}"
 ARM_TTL="${ARM_TTL:-900}"
+NACHLAUF_TTL="${NACHLAUF_TTL:-300}"
 NOTIFY="${PREPUSH_NOTIFY:-$HOME/.scripts/notify}"
 NOTIFY_SYSTEM="${PREPUSH_NOTIFY_SYSTEM:-$HOME/bin/notify-system}"
 
@@ -141,9 +164,17 @@ submodul_pruefen() {
 }
 
 # ── Refs von der Standardeingabe ────────────────────────────────────────────
+# Die Eingabe wird GEPUFFERT statt direkt gelesen: Der Nachlauf (siehe Kopf)
+# darf nur bei genau einer Ref greifen, und das ist erst feststellbar, wenn
+# alle Zeilen vorliegen. Ohne Puffer waere die Eingabe nach der Schleife weg.
+EINGABE=$(cat)
+REFS_GESAMT=$(printf '%s\n' "$EINGABE" | grep -c '[^[:space:]]' || true)
+
 GEFUNDEN=""
 FAILCLOSED=false   # unbestimmbare Lage — blockiert IMMER, auch mit Freigabe
 GEPRUEFT=0
+BEREICH_TREFFER=""  # Commit-Bereich der Ref, in der der Befund steckt
+LOKALE_SHAS=()      # alle uebertragenen SHA — Inhalt der Nachlaufmarke
 
 while read -r lokale_ref lokaler_sha entfernte_ref entfernter_sha; do
   [ -z "${lokale_ref:-}" ] && continue
@@ -211,11 +242,19 @@ while read -r lokale_ref lokaler_sha entfernte_ref entfernter_sha; do
   done <<< "$roh"
 
   if [ -n "$GEFUNDEN" ]; then
+    BEREICH_TREFFER="$bereich"
     hook_log PREPUSH "$STRAND" "$lokale_ref -> $entfernte_ref ($bereich, $anzahl Eintraege): $GEFUNDEN"
     break
   fi
   hook_log PREPUSH "$STRAND" "erlaubt: $lokale_ref -> $entfernte_ref ($bereich, $anzahl Eintraege), kein roter Pfad"
-done
+done <<< "$EINGABE"
+
+# Alle uebertragenen SHA sammeln — unabhaengig davon, wo die Schleife abbrach.
+while read -r _lref _lsha _rref _rsha; do
+  [ -z "${_lsha:-}" ] && continue
+  [ "$_lsha" = "$NULLSHA" ] && continue
+  LOKALE_SHAS+=("$_lsha")
+done <<< "$EINGABE"
 
 if [ "$GEPRUEFT" -eq 0 ]; then
   hook_log PREPUSH "$STRAND" "erlaubt: keine Refs auf der Standardeingabe"
@@ -231,6 +270,63 @@ if $FAILCLOSED; then
   hook_log BLOCK "$STRAND" "pre-push: fail-closed: $GEFUNDEN"
   echo "pre-push blockiert: $GEFUNDEN (fail-closed — auch eine Freigabe hilft hier nicht)" >&2
   exit 1
+fi
+
+# ── Nachlauf: deckt die eben verbrauchte Freigabe diesen Pointer? ──────────
+#
+# Gibt 0 zurueck, wenn ALLE sechs Bedingungen aus dem Kopf erfuellt sind.
+# Jede Verletzung fuehrt zu 1 — und damit in die normale Freigabepruefung,
+# also zur Sperre, wenn keine Freigabe vorliegt.
+nachlauf_deckt_ab() {
+  local marke="$FLAGGE.nachlauf" alter zeile meta pfad srcmode dstmode srcsha dstsha
+
+  [ -f "$marke" ] || return 1
+  alter=$(( $(date +%s) - $(stat -c %Y "$marke" 2>/dev/null || echo 0) ))
+  if [ "$alter" -gt "$NACHLAUF_TTL" ]; then
+    rm -f "$marke"
+    hook_log BLOCK "$STRAND" "pre-push: Nachlauf abgelaufen (${alter}s > ${NACHLAUF_TTL}s), verworfen"
+    return 1
+  fi
+
+  # (2) genau eine Ref
+  [ "$REFS_GESAMT" = "1" ] || return 1
+  # (3) der Befund stammt aus einem Submodul-Pointer
+  case "$GEFUNDEN" in 'red path (Submodul):'*) ;; *) return 1 ;; esac
+  [ -n "$BEREICH_TREFFER" ] || return 1
+
+  local roh
+  # --no-abbrev: Ohne das kuerzt git die SHA auf sieben Zeichen, und der
+  # Vergleich mit der Marke (volle 40) ginge immer daneben.
+  roh=$(git diff --raw --no-abbrev "$BEREICH_TREFFER" 2>/dev/null) || return 1
+
+  while IFS= read -r zeile; do
+    [ -z "$zeile" ] && continue
+    meta=${zeile%%	*}
+    pfad=${zeile#*	}
+    set -- $meta
+    srcmode=${1#:}; dstmode=$2; srcsha=$3; dstsha=$4
+    if [ "$dstmode" = "160000" ] || [ "$srcmode" = "160000" ]; then
+      # (4) der Pointer muss auf einen eben freigegebenen Stand zeigen
+      grep -qxF "$dstsha" "$marke" 2>/dev/null || return 1
+      continue
+    fi
+    # (5) ausserhalb der Pointer darf nichts Rotes im Bereich liegen
+    if treffer "$pfad" >/dev/null; then return 1; fi
+  done <<< "$roh"
+
+  # (6) einmalig
+  rm -f "$marke"
+  return 0
+}
+
+if nachlauf_deckt_ab; then
+  hook_log ARMED "$STRAND" \
+    "pre-push: Nachlauf der vorigen Freigabe genutzt (derselbe Stand) durch: $GEFUNDEN"
+  if [ "$STRAND" = "bikosoc" ] && [ -x "$NOTIFY_SYSTEM" ]; then
+    ( timeout 8 "$NOTIFY_SYSTEM" ok "Übertragen" --grund "$GEFUNDEN" \
+        --zeile "Zeiger nachgezogen, dieselbe Freigabe" >/dev/null 2>&1 || true ) &
+  fi
+  exit 0
 fi
 
 # ── Freigabe pruefen ────────────────────────────────────────────────────────
@@ -255,6 +351,16 @@ if [ "$ALTER" -gt "$ARM_TTL" ]; then
 fi
 
 hook_log ARMED "$STRAND" "pre-push: Freigabe verbraucht ($FLAGGE, Alter ${ALTER}s) durch: $GEFUNDEN"
+
+# Nachlaufmarke: die eben freigegebenen SHA. Sie erlaubt GENAU EINE weitere
+# rote Uebertragung, und nur einen Submodul-Pointer, der auf einen dieser
+# Staende zeigt (Bedingungen im Kopf). Ohne Treffer ist sie wirkungslos.
+if [ ${#LOKALE_SHAS[@]} -gt 0 ]; then
+  ( umask 077; printf '%s\n' "${LOKALE_SHAS[@]}" > "$FLAGGE.nachlauf" ) 2>/dev/null || true
+  hook_log ARMED "$STRAND" \
+    "pre-push: Nachlauf gesetzt (${#LOKALE_SHAS[@]} Stand/Staende, ${NACHLAUF_TTL}s)"
+fi
+
 # Meldung an den Owner (14.10.2026 neu gestaltet): Klartext statt Rohbefund.
 # `notify-system` schickt nur die Bausteine; Symbol, Fettschrift und die
 # Uebersetzung des Grundes macht das Gateway (src/modules/system-telegram).
