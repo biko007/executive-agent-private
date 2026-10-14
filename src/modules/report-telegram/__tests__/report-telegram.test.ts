@@ -6,7 +6,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
   statusSymbol, htmlEscape, dateiKlartext, kuerzen, ERGEBNIS_MAX,
-  ergebnisKnoepfe, goBefehl, CLAUDE_URL,
+  ergebnisKnoepfe, goBefehl, CLAUDE_URL, titelAusAuftrag,
 } from '../index.js';
 
 const KOPF = `---
@@ -136,7 +136,10 @@ describe('Nachricht 2: Ergebnis', () => {
     const k = { ...kopfblockLesen(KOPF)!, status: 'ok' as const, aktion: 'keine' };
     const z = ergebnisNachricht(k, 'report-x.md').split('\n');
     expect(z[1]).not.toContain('Ihre Aktion');
-    expect(z[z.length - 2]).toContain('<b>Ihre Aktion:</b> keine');
+    // Reihenfolge am Ende: … · Ihre Aktion · Fusszeile · Link
+    expect(z[z.length - 1]).toBe(CLAUDE_URL);
+    expect(z[z.length - 2]).toStartWith('⚙️');
+    expect(z[z.length - 3]).toContain('<b>Ihre Aktion:</b> keine');
     expect(z[0]).toStartWith('✅');
   });
 
@@ -145,11 +148,12 @@ describe('Nachricht 2: Ergebnis', () => {
     expect((ergebnisNachricht(k, 'x.md').match(/^• /gm) || []).length).toBe(3);
   });
 
-  test('laenger als 800 Zeichen wird gekuerzt', () => {
+  test('laenger als 800 Zeichen wird gekuerzt, der Link bleibt', () => {
     const k = { ...kopfblockLesen(KOPF)!, aufgabe: 'x'.repeat(2000) };
     const n = ergebnisNachricht(k, 'x.md');
     expect(n.length).toBeLessThanOrEqual(ERGEBNIS_MAX);
-    expect(n).toEndWith('…');
+    expect(n).toContain('…');
+    expect(n).toEndWith(CLAUDE_URL);
   });
 
   test('Tests ✗ und Rote Zone ja', () => {
@@ -186,33 +190,33 @@ describe('Knoepfe unter der Ergebnisnachricht', () => {
   // alten Go-Nachricht entfallen und wird gebraucht.
   const k = ergebnisKnoepfe('report-mg24-pelletbestand-20261014.md') as any;
 
-  test('zwei Zeilen mit je einem Knopf — untereinander', () => {
-    expect(k.inline_keyboard).toHaveLength(2);
+  test('genau ein Knopf — der Link steht im Text', () => {
+    // Als URL-Knopf fragte Telegram vor dem Oeffnen jedes Mal nach.
+    expect(k.inline_keyboard).toHaveLength(1);
     expect(k.inline_keyboard[0]).toHaveLength(1);
-    expect(k.inline_keyboard[1]).toHaveLength(1);
+    expect(k.inline_keyboard[0][0].text).toBe('go bikosoc kopieren');
+    expect(k.inline_keyboard[0][0].copy_text.text)
+      .toBe('go bikosoc report-mg24-pelletbestand-20261014.md');
   });
 
-  test('Reihenfolge: erst kopieren, dann der Link', () => {
-    const [[eins], [zwei]] = k.inline_keyboard;
-    expect(eins.text).toBe('go bikosoc kopieren');
-    expect(eins.copy_text.text).toBe('go bikosoc report-mg24-pelletbestand-20261014.md');
-    expect(zwei.text).toBe('claude.ai');
-    expect(zwei.url).toBe(CLAUDE_URL);
+  test('kein URL-Knopf mehr', () => {
+    const flach = JSON.stringify(k);
+    expect(flach).not.toContain('url');
+    expect(flach).not.toContain('claude.ai');
+  });
+
+  test('der Link steht blank als letzte Zeile, nicht als Anker', () => {
+    const n = ergebnisNachricht(kopfblockLesen(KOPF)!, 'report-x.md');
+    expect(n).toEndWith(CLAUDE_URL);
     expect(CLAUDE_URL).toBe('https://claude.ai/new');
+    expect(n).not.toContain('<a ');   // ein Anker loest dieselbe Rueckfrage aus
   });
 
-  test('der Linkknopf traegt keinen copy_text und umgekehrt', () => {
-    const [[eins], [zwei]] = k.inline_keyboard;
-    expect(eins.url).toBeUndefined();
-    expect(zwei.copy_text).toBeUndefined();
-  });
-
-  test('gilt unabhaengig vom Status — die Knoepfe haengen am Dateinamen', () => {
-    for (const name of ['report-a.md', 'report-b-20261014.md']) {
-      const z = (ergebnisKnoepfe(name) as any).inline_keyboard;
-      expect(z[0][0].copy_text.text).toBe(`go bikosoc ${name}`);
-      expect(z[1][0].url).toBe(CLAUDE_URL);
-    }
+  test('der Link bleibt auch bei langem Text erhalten', () => {
+    const lang = { ...kopfblockLesen(KOPF)!, aufgabe: 'x'.repeat(3000) };
+    const n = ergebnisNachricht(lang, 'report-x.md');
+    expect(n).toEndWith(CLAUDE_URL);
+    expect(n.length).toBeLessThanOrEqual(ERGEBNIS_MAX);
   });
 
   test('Pfad wird auf den Dateinamen reduziert', () => {
@@ -239,5 +243,67 @@ describe('Maskierte Anfuehrungszeichen im Kopfblock', () => {
   test('ein Komma im Eintrag trennt nicht', () => {
     const k = kopfblockLesen('---\nstatus: ok\nergebnis: [ "a, b und c", "zwei" ]\n---\n')!;
     expect(k.ergebnis).toEqual(['a, b und c', 'zwei']);
+  });
+});
+
+describe('Titel aus dem Auftragstext', () => {
+  // Owner 14.10.2026: Titel und Dateizeile waren fast immer identisch, weil der
+  // Titel aus dem Dateinamen kam.
+  const faelle: [string, string | null][] = [
+    ['Auftrag (Owner-Freigabe 14.10.2026 11:39, "testen"): Telegram-Nachrichten der '
+     + 'Report-/Inbox-Pipeline (Gruppe bikosoc-dev) neu gestalten. Ziel: je Auftrag zwei.',
+     'Telegram-Nachrichten der Report-/Inbox-Pipeline neu gestalten'],
+    ['Nachtrag zu telegram-design-20261014 (Owner 14.10.2026 11:52: Design gut, eine Korrektur):',
+     'Nachtrag · Design gut, eine Korrektur'],
+    ['Folgeauftrag zu report-x.md — Owner-Entscheidung 14.10.2026, 09:40: § 9a jetzt umsetzen.',
+     'Folgeauftrag · § 9a jetzt umsetzen'],
+    ['STOPP zu mail-entwurf-20261014: Entwurf NICHT im Postfach anlegen bzw., falls schon '
+     + 'angelegt, unverändert lassen.',
+     'Stopp · Entwurf NICHT im Postfach anlegen'],
+    ['AUFTRAG cc bikosoc: Casameta-Portal-Agent (Playwright) — Infrastruktur + Pilot MG24',
+     'Casameta-Portal-Agent'],
+    // Nur ein Verweis, keine Sache: kein Titel, die Dateizeile genuegt.
+    ['Folgeauftrag zu report-mg24-pelletbestand-20261014.md (nach Abschluss ausführen)', null],
+    // Nur eine Verwaltungsangabe: ebenfalls kein Titel.
+    ['Folgeauftrag zu report-x.md — Owner-Freigabe 14.10.2026 ("go bikosoc" auf den Report)', null],
+    // Nur der Auftragsname: steht schon in der Dateizeile.
+    ['Auftrag: n24-weishaupt-wp-zuordnung-20261013', null],
+    ['', null],
+  ];
+  for (const [eingabe, erwartet] of faelle) {
+    test(`"${eingabe.slice(0, 48)}…"`, () => {
+      expect(titelAusAuftrag(eingabe)).toBe(erwartet as any);
+    });
+  }
+
+  test('Uhrzeiten zerschneiden den Titel nicht', () => {
+    // Erste Fassung lieferte hier "52: Design gut".
+    const t = titelAusAuftrag('Nachtrag zu x-20261014 (Owner 14.10.2026 11:52: Design gut):');
+    expect(t).not.toContain('52');
+    expect(t).toBe('Nachtrag · Design gut');
+  });
+});
+
+describe('Keine Dublette zwischen Titel und Dateizeile', () => {
+  const bauen = (titel: string, datei: string) => kopfblockLesen(
+    ['---', 'typ: uebernahme', `titel: ${titel}`, 'status: ok',
+     `datei: ${datei}`, 'zeit: "11:45"', 'warteschlange: leer', '---', ''].join('\n'))!;
+
+  test('Titel gleich Dateiname — Titelzeile entfaellt', () => {
+    const z = uebernahmeNachricht(bauen('mg24-pellet-20261014', 'mg24-pellet-20261014.txt')).split('\n');
+    expect(z).toHaveLength(3);
+    expect(z[1]).toBe('📄 mg24-pellet-20261014.txt');
+  });
+
+  test('Titel sagt mehr — beide Zeilen', () => {
+    const z = uebernahmeNachricht(bauen('§ 9a jetzt umsetzen', 'mg24-w3-9a-20261014.txt')).split('\n');
+    expect(z).toHaveLength(4);
+    expect(z[1]).toBe('§ 9a jetzt umsetzen');
+    expect(z[2]).toBe('📄 mg24-w3-9a-20261014.txt');
+  });
+
+  test('ohne Titel nur die Dateizeile', () => {
+    const z = uebernahmeNachricht(bauen('', 'mg24-pellet-20261014.txt')).split('\n');
+    expect(z).toHaveLength(3);
   });
 });

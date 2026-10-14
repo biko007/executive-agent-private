@@ -1072,12 +1072,34 @@ Statussymbole: ✅ fertig ohne Aktion · 👉 Owner muss handeln (dann steht „
 Aktion" direkt unter dem Titel) · ⚠️ Auffälligkeit · ❌ fehlgeschlagen ·
 ⏸ gestoppt oder wartet auf `/arm`.
 
-Unter der Abschlussnachricht stehen zwei Knöpfe **untereinander**, in dieser
-Reihenfolge: `go bikosoc kopieren` (Kopierknopf mit dem vollständigen Befehl)
-und `claude.ai` (Link auf `https://claude.ai/new`). Untereinander, weil
-nebeneinander beide schmal werden — auf dem Telefon trifft man den Kopierknopf
-dann schlechter, und genau der wird oft getippt. Der Link öffnet die Claude-App;
-der Projektlink würde am iPhone in Safari landen.
+Unter der Abschlussnachricht steht **ein** Knopf: `go bikosoc kopieren`. Der
+Link `https://claude.ai/new` steht **als letzte Textzeile**, nicht als Knopf.
+
+**Warum nicht als Knopf:** Telegram fragt bei URL-Knöpfen auf fremde Domains vor
+dem Öffnen jedes Mal „Diesen Link öffnen?" — das kann der Bot nicht abschalten.
+Ein blanker Link im Nachrichtentext öffnet direkt. Dasselbe gilt für einen
+HTML-Anker mit abweichender Beschriftung (`<a href=…>claude.ai</a>`): auch der
+löst die Rückfrage aus. Direkt öffnet nur die unmaskierte URL. Wer das später
+„schöner" machen will, baut die Rückfrage wieder ein.
+
+### Der Titel der Übernahmemeldung
+
+Er kommt aus der **ersten Zeile der Auftragsdatei**, nicht aus dem Dateinamen —
+der steht ohnehin eine Zeile darunter. `titelAusAuftrag()` schneidet die
+Verwaltungsangabe ab („Auftrag (Owner-Freigabe 14.10.2026 11:39, "testen"):")
+und nimmt den Rest bis zum Ende des ersten Gedankens.
+
+Zwei Stolpersteine, beide gelöst und durch Tests festgehalten:
+
+- **Uhrzeiten.** Ein Schnitt am ersten Doppelpunkt zerlegt „11:52" und liefert
+  Titel wie „52: Design gut". Geschnitten wird deshalb nur an einem Doppelpunkt,
+  auf den **keine Ziffer** folgt.
+- **Reine Verwaltungsangaben.** Bleibt nach dem Schnitt nur „Owner-Freigabe
+  14.10.2026" übrig, liefert die Funktion `null` — dann zeigt die Meldung nur
+  die Dateizeile.
+
+Und wenn der Titel nach Normalisierung dem Dateinamen entspricht, entfällt die
+Titelzeile ganz. Vorher stand dieselbe Zeichenkette zweimal untereinander.
 
 Pläne (`~/.claude/plans/`) und HDCC-Pläne bleiben beim alten Weg: Sie werden im
 Volltext gelesen bzw. gehen in einen anderen Chat. Der Nutzungstext, der früher

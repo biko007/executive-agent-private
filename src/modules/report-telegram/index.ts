@@ -167,12 +167,99 @@ export function kopfblockLesen(markdown: string): Kopfblock | null {
 
 /* ── Nachricht 1: Abholen ────────────────────────────────────────────────── */
 
-export function uebernahmeNachricht(k: Kopfblock): string {
-  const zeilen = [
-    '📥 <b>Aufgabe übernommen</b>',
-    htmlEscape(k.titel || '(ohne Titel)'),
+/**
+ * Lesbarer Titel aus dem Text der Auftragsdatei.
+ *
+ * WARUM (Owner 14.10.2026): Der Titel kam bis dahin aus dem Dateinamen — und
+ * darunter stand derselbe Dateiname noch einmal mit Papierblatt davor. Zwei
+ * Zeilen, eine Information.
+ *
+ * Die Auftragsdateien tragen in der ersten Zeile fast immer einen Satz, der
+ * sagt, worum es geht: „Auftrag (Owner-Freigabe …): Telegram-Nachrichten der
+ * Report-Pipeline neu gestalten. Ziel: …". Diese Funktion schneidet die
+ * Verwaltungsangabe vorn ab und nimmt den Rest bis zum Satzende.
+ *
+ * Bleibt nach dem Abschneiden nur der Dateiname uebrig — etwa bei
+ * „Auftrag: n24-weishaupt-wp-zuordnung-20261013 / Basis: …" —, liefert die
+ * Funktion null. Die Nachricht zeigt dann nur die Dateizeile, statt dieselbe
+ * Zeichenkette zweimal zu bringen.
+ */
+export function titelAusAuftrag(inhalt: string): string | null {
+  const erste = String(inhalt ?? '').split('\n').map(z => z.trim()).find(Boolean);
+  if (!erste) return null;
+
+  /* 1. Art merken und das Vorspannstueck samt Verweis abschneiden. Ob etwas ein
+        Nachtrag, ein Folgeauftrag oder ein Stopp ist, gehoert in die Meldung —
+        der Verweis darauf, worauf es sich bezieht, nicht. */
+  let art = '';
+  let rest = erste;
+  const arten: [RegExp, string][] = [
+    [/^STOPP\s+zum?\s+\S+\s*/i, 'Stopp'],
+    [/^Nachtrag\s+zum?\s+\S+\s*/i, 'Nachtrag'],
+    [/^Folgeauftrag\s+zum?\s+\S+\s*/i, 'Folgeauftrag'],
+    [/^AUFTRAG\s+cc\s+bikosoc\s*/i, ''],
+    [/^Auftrag(\s+v\d+)?\s*/i, ''],
   ];
-  if (k.datei) zeilen.push(`📄 ${htmlEscape(dateiKlartext(k.datei))}`);
+  for (const [muster, name] of arten) {
+    if (muster.test(rest)) { art = name; rest = rest.replace(muster, ''); break; }
+  }
+
+  /* 2. Ab dem ersten Doppelpunkt, der KEINE Uhrzeit trennt. Ein Doppelpunkt mit
+        Ziffer dahinter gehoert zu "11:52"; einer mit Leerzeichen dahinter
+        trennt Verwaltungsangabe von Sache. Genau daran ist die erste Fassung
+        gescheitert: Sie schnitt bei "11" ab und lieferte Titel wie "52: Design
+        gut". */
+  const doppelpunkt = rest.match(/:(?!\d)\s*/);
+  if (doppelpunkt && doppelpunkt.index !== undefined) {
+    rest = rest.slice(doppelpunkt.index + doppelpunkt[0].length);
+  }
+
+  /* 3. Bis zum Ende des ersten Gedankens. Ein Nebensatz nach "bzw." oder ein
+        angehaengtes ", falls …" gehoert nicht in eine Kopfzeile. */
+  rest = rest.split(/\.\s|\s+[—–-]\s+|\s\/\s|\bbzw\.|,\s+(?:falls|sofern|soweit|wenn)\b/)[0];
+
+  /* 4. Klammerzusaetze, Reste und Satzzeichen weg. */
+  rest = rest
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[(),;:.\s]+$/, '')
+    .replace(/^[\s—–-]+/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  /* 5. Bleibt nur eine Verwaltungsangabe stehen — "Owner-Freigabe 14.10.2026" —,
+        sagt sie nichts ueber die Aufgabe. Dann lieber keinen Titel als einen
+        leeren. */
+  const ohneVerwaltung = rest
+    .replace(/\bOwner[- ](Freigabe|Entscheidung|Vorgabe|Antwort|Auskunft)\b/gi, '')
+    .replace(/\b\d{1,2}\.\d{1,2}\.\d{4}\b/g, '')
+    .replace(/\b\d{1,2}:\d{2}\b/g, '')
+    .replace(/[",\s]+/g, ' ')
+    .trim();
+
+  if (!rest || rest.length < 8 || ohneVerwaltung.length < 8) return null;
+  /* Nur ein Auftragsname? Der steht schon in der Dateizeile. */
+  if (/^[a-z0-9]+(-[a-z0-9]+)+$/.test(rest)) return null;
+
+  return kuerzen(art ? `${art} · ${rest}` : rest, 80);
+}
+
+/** Zum Vergleich: alles klein, nur Buchstaben und Ziffern. */
+function schluessel(t: string): string {
+  return String(t ?? '').toLowerCase().replace(/[^a-z0-9äöüß]/g, '');
+}
+
+export function uebernahmeNachricht(k: Kopfblock): string {
+  const zeilen = ['📥 <b>Aufgabe übernommen</b>'];
+  const datei = k.datei ? dateiKlartext(k.datei) : '';
+
+  /* Titel nur zeigen, wenn er mehr sagt als der Dateiname. Sonst stuende
+     dieselbe Zeichenkette zweimal untereinander (Owner 14.10.2026). */
+  const titel = (k.titel || '').trim();
+  const sagtMehr = titel && schluessel(titel) !== schluessel(datei.replace(/\.[a-z]+$/i, ''));
+  if (sagtMehr) zeilen.push(htmlEscape(titel));
+
+  if (datei) zeilen.push(`📄 ${htmlEscape(datei)}`);
+  if (!sagtMehr && !datei) zeilen.push('(ohne Titel)');
   const warte = k.warteschlange?.trim() || 'leer';
   zeilen.push(`🕐 ${htmlEscape(k.zeit || '')} · Warteschlange: ${htmlEscape(warte)}`);
   return zeilen.join('\n');
@@ -209,7 +296,12 @@ export function ergebnisNachricht(k: Kopfblock, dateiname: string): string {
   if (k.dauerMin !== null) fuss.push(`${k.dauerMin} Min.`);
   zeilen.push(`⚙️ ${fuss.join(' · ')}`);
 
-  return kuerzen(zeilen.join('\n'), ERGEBNIS_MAX);
+  /* Der Link als blanke URL in eigener Zeile — nicht als Knopf und nicht als
+     Anker: Beides laesst Telegram vorher nachfragen. Er steht nach der
+     Fusszeile, damit die Zusammenfassung oben zusammenhaengt. Die Kuerzung
+     greift davor, damit der Link auch bei langem Text erhalten bleibt. */
+  const kopf = kuerzen(zeilen.join('\n'), ERGEBNIS_MAX - CLAUDE_URL.length - 2);
+  return `${kopf}\n${CLAUDE_URL}`;
 }
 
 /* ── Knoepfe unter der Ergebnisnachricht ─────────────────────────────────── */
@@ -232,17 +324,21 @@ export function goBefehl(dateiname: string): string {
  * unmittelbar danach die Claude-App. Als URL-Knopf steht er in derselben
  * Nachricht und oeffnet die App statt Safari.
  *
- * UNTEREINANDER, NICHT NEBENEINANDER (Owner 14.10.2026): Nebeneinander teilen
- * sich beide Knoepfe die Zeilenbreite und werden schmal — auf dem Telefon trifft
- * man sie schlechter, und der Kopierknopf ist der, der oft getippt wird. Jeder
- * Knopf bekommt deshalb eine eigene Zeile und damit die volle Breite. Die
- * Reihenfolge bleibt fest: erst kopieren, dann oeffnen, wie der Owner arbeitet.
+ * NUR EIN KNOPF, DER LINK STEHT IM TEXT (Owner 14.10.2026, zweite Korrektur):
+ * Als Inline-Knopf fragte Telegram vor dem Oeffnen jedes Mal „Diesen Link
+ * oeffnen?" — eine Ruecksicherung, die der Bot fuer fremde Domains nicht
+ * abschalten kann. Ein blanker Link im Nachrichtentext oeffnet dagegen direkt.
+ * Deshalb traegt das Keyboard nur noch den Kopierknopf; der Link steht als
+ * letzte Textzeile, so wie frueher in der Go-Nachricht.
+ *
+ * WICHTIG, falls jemand das spaeter „schoener" machen will: Ein HTML-Anker mit
+ * abweichender Beschriftung (<a href=…>claude.ai</a>) loest dieselbe Rueckfrage
+ * aus wie der Knopf. Direkt oeffnet nur die unmaskierte URL.
  */
 export function ergebnisKnoepfe(dateiname: string): unknown {
   return {
     inline_keyboard: [
       [{ text: 'go bikosoc kopieren', copy_text: { text: goBefehl(dateiname) } }],
-      [{ text: 'claude.ai', url: CLAUDE_URL }],
     ],
   };
 }

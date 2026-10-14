@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { titelAusAuftrag } from '../report-telegram/index.js';
 import path from 'node:path';
 import {
   sendPromptToBikosocTmux, lesePaneInhalt, type TmuxRunner,
@@ -268,11 +269,11 @@ export function processPromptInboxOnce(opts: {
      Der Titel ist der Dateiname ohne Transportpraefixe; einen sprechenderen
      Titel kennt die Inbox an dieser Stelle nicht, und Raten waere schlechter
      als der Dateiname. */
-  const titel = erste.name
-    .replace(/^\d{4}-\d{2}-\d{2}T[\d-]+Z-/, '')
-    .replace(/^dropbox-\d{8}-\d{6}-/, '')
-    .replace(/^\d{8}-\d{6}-/, '')
-    .replace(/\.txt$/i, '');
+  /* Der Titel kommt aus der ERSTEN ZEILE der Auftragsdatei, nicht aus dem
+     Dateinamen — der steht ohnehin eine Zeile darunter. Liefert der Text
+     nichts Brauchbares, bleibt der Titel leer und die Meldung zeigt nur die
+     Dateizeile. */
+  const titel = titelAusAuftrag(text) ?? '';
   const uhrzeit = new Intl.DateTimeFormat('de-DE', {
     hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
   }).format(now);
