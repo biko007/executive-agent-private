@@ -184,6 +184,7 @@ export function sollZeilen(v: VertragSoll, bis: string, ab = SOLL_AB): SollZeile
  * Konto die Abdeckung eines Monats geprüft wird.
  */
 export const OBJEKT_KONTO: Record<string, number> = {
+  mg22: 7,
   n24: 4,
   mg24: 7, l19: 7, s28: 7, i83: 7, d4: 7,
 };
@@ -279,6 +280,16 @@ export interface Zahler {
   name: string | null;
   /** Begriffe, die im Verwendungszweck auf diesen Vertrag deuten (Objekt, Einheit). */
   stichworte: string[];
+  /**
+   * Der Name allein genuegt nicht — der Verwendungszweck muss ein Stichwort
+   * nennen.
+   *
+   * Gilt fuer Firmen. „Stadt Tuttlingen" steckt als Zeichenfolge in
+   * „Stadtwerke Tuttlingen GmbH"; ohne diese Pflicht wuerde jede Gutschrift
+   * der Stadtwerke die Garagenmiete der Stadt tilgen. Bei einer Privatperson
+   * ist der Name dagegen das verlaesslichste Merkmal, das die Bank liefert.
+   */
+  stichwort_pflicht?: boolean;
 }
 
 export type Grundlage = 'iban' | 'name_zweck' | 'manuell' | 'owner_hauptmieter';
@@ -296,6 +307,10 @@ const KEINE_MIETE = [
   'nebenkostenabrechnung', 'heizkostenabrechnung', 'betriebskostenabrechnung',
   'nebenkostenabr', 'heizkostenabr',
   'rueckzahlung', 'erstattung', 'gutschrift',
+  /* Die Stadt Tuttlingen zahlt nicht nur Garagenmiete: Am 13.12.2024 kamen
+     50.000,00 EUR als „MG 24 SANIERUNG Auszahlung Zuschuss Sanierung". Ein
+     Zuschuss ist keine Miete. */
+  'zuschuss', 'sanierung',
 ];
 
 /**
@@ -381,9 +396,14 @@ export function zuordnen(z: Zahlung, zahler: Zahler[]): { lease_id: number; grun
     const teile = normal(k.name).split(' ').filter(t => t.length >= 3);
     return teile.length > 0 && teile.every(t => name.includes(t));
   });
-  const vertraege = new Set(namentlich.map(t => t.lease_id));
+  /* Zahler mit Stichwortpflicht nehmen an Stufe 2 nur teil, wenn der
+     Verwendungszweck ihr Stichwort nennt. */
+  const stichwortTreffer = (k: Zahler) =>
+    k.stichworte.some(st => zweck.includes(normal(st)));
+  const zulaessig = namentlich.filter(k => !k.stichwort_pflicht || stichwortTreffer(k));
+  const vertraege = new Set(zulaessig.map(t => t.lease_id));
   if (vertraege.size === 1) {
-    return { lease_id: namentlich[0].lease_id, grundlage: 'name_zweck' };
+    return { lease_id: zulaessig[0].lease_id, grundlage: 'name_zweck' };
   }
 
   /* Zweiter Versuch ueber den NACHNAMEN allein — aber nur, wenn er im ganzen
@@ -397,7 +417,7 @@ export function zuordnen(z: Zahlung, zahler: Zahler[]): { lease_id: number; grun
   if (vertraege.size === 0) {
     const nachnamen = new Map<string, Set<number>>();
     for (const k of zahler) {
-      if (!k.name) continue;
+      if (!k.name || k.stichwort_pflicht) continue;
       const teile = normal(k.name).split(' ').filter(t => t.length >= 5);
       const nachname = teile[teile.length - 1];
       if (!nachname) continue;
@@ -417,8 +437,7 @@ export function zuordnen(z: Zahlung, zahler: Zahler[]): { lease_id: number; grun
   }
 
   /* Mehrdeutig — jetzt entscheidet der Verwendungszweck. */
-  const mitStichwort = namentlich.filter(k =>
-    k.stichworte.some(st => zweck.includes(normal(st))));
+  const mitStichwort = zulaessig.filter(stichwortTreffer);
   const eindeutig = new Set(mitStichwort.map(t => t.lease_id));
   if (eindeutig.size === 1) return { lease_id: mitStichwort[0].lease_id, grundlage: 'name_zweck' };
   return null;
@@ -505,28 +524,48 @@ export async function zahlerListe(): Promise<Zahler[]> {
   const { rows: hinterlegt } = await dbQuery<any>(
     `SELECT lease_id, iban, name FROM lease_payers WHERE active`);
   const { rows: stich } = await dbQuery<any>(`
-    SELECT l.id AS lease_id, p.code AS objekt, p.street, u.code AS einheit
+    SELECT l.id AS lease_id, p.code AS objekt, p.street, u.code AS einheit,
+           l.lease_type, u.unit_type
       FROM leases l JOIN units u ON u.id=l.unit_id JOIN properties p ON p.id=u.property_id`);
+  /* Eine Strasse taugt nur als Stichwort, wenn sie zu genau einem Objekt
+     gehoert. Marktgasse 22 und Marktgasse 24 teilen sie: Eine Gutschrift der
+     Stadtwerke mit „Rechnung 348661/Marktgasse 24" hat im Probelauf die
+     Garagenmiete der Marktgasse 22 getilgt. Ein mehrdeutiges Stichwort ist
+     kein Stichwort. */
+  const strassen = new Map<string, Set<string>>();
+  for (const s of stich) {
+    const str = String(s.street || '').replace(/\s*\d+.*$/, '').trim();
+    if (!str) continue;
+    const menge = strassen.get(str) || new Set<string>();
+    menge.add(s.objekt);
+    strassen.set(str, menge);
+  }
   const stichworte = new Map<number, string[]>();
   for (const s of stich) {
     /* Was im Verwendungszweck auf dieses Mietverhaeltnis deutet: Objektkuerzel,
        Strasse ohne Hausnummer, Einheit. Mehr nicht — „Miete" allein deutet auf
        nichts. */
-    const strasse = String(s.street || '').replace(/\s*\d+.*$/, '');
-    stichworte.set(s.lease_id, [s.objekt, strasse, s.einheit].filter(Boolean));
+    const rohStrasse = String(s.street || '').replace(/\s*\d+.*$/, '').trim();
+    const strasse = (strassen.get(rohStrasse)?.size || 0) === 1 ? rohStrasse : '';
+    /* Eine Garage nennt die Bank fast immer „Garage" und selten das Objekt:
+       Die Stadt Tuttlingen schreibt „MIETE GARAGE Miete Garage Marktg. 22 f.
+       NW" — die Strasse steht dort abgekuerzt und trifft „Marktgasse" nicht. */
+    const art = s.lease_type === 'garage' || s.unit_type === 'garage' ? 'garage' : null;
+    stichworte.set(s.lease_id, [s.objekt, strasse, s.einheit, art].filter(Boolean));
   }
   for (const h of hinterlegt) {
     liste.push({ lease_id: h.lease_id, iban: h.iban, name: h.name,
       stichworte: stichworte.get(h.lease_id) || [] });
   }
   const { rows: mieter } = await dbQuery<any>(`
-    SELECT lt.lease_id, t.first_name, t.last_name, t.company_name, t.iban
+    SELECT lt.lease_id, t.first_name, t.last_name, t.company_name, t.iban, t.tenant_type
       FROM lease_tenants lt JOIN tenants t ON t.id = lt.tenant_id`);
   for (const m of mieter) {
     const name = m.company_name || [m.first_name, m.last_name].filter(Boolean).join(' ');
     if (!name && !m.iban) continue;
     liste.push({ lease_id: m.lease_id, iban: m.iban || null, name: name || null,
-      stichworte: stichworte.get(m.lease_id) || [] });
+      stichworte: stichworte.get(m.lease_id) || [],
+      stichwort_pflicht: m.tenant_type === 'company' });
   }
   return liste;
 }

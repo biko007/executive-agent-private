@@ -199,6 +199,26 @@ describe('Hilfsfunktionen', () => {
     /* Ohne Mietwort bleibt ein hoher Strombetrag eine Stromzahlung. */
     expect(istKeineMiete('Stromabschlag Jahresrechnung', 70)).toBe(true);
   });
+  test('Firmenzahler braucht das Stichwort im Zweck', () => {
+    /* „Stadt Tuttlingen" steckt als Zeichenfolge in „Stadtwerke Tuttlingen
+       GmbH". Ohne Stichwortpflicht tilgt jede Gutschrift der Stadtwerke die
+       Garagenmiete der Stadt — 25 solche Eingaenge liegen im Bestand. */
+    const zahler = [{
+      lease_id: 52, iban: null, name: 'Stadt Tuttlingen',
+      stichworte: ['mg22', 'Marktgasse', 'G3', 'garage'], stichwort_pflicht: true,
+    }];
+    const umsatz = (name: string, zweck: string) => ({
+      id: 1, account_id: 7, booking_date: '2026-09-30', amount: 40,
+      counterparty_name: name, counterparty_iban: null, reference: zweck,
+    });
+    expect(zuordnen(umsatz('Stadt Tuttlingen', '/MIETE GARAGE Miete Garage Marktg.22 f. NW'), zahler))
+      .toEqual({ lease_id: 52, grundlage: 'name_zweck' });
+    expect(zuordnen(umsatz('Stadtwerke Tuttlingen GmbH', '133224 DTAUS Rechnung 237713/Leutenbergstraße 19'), zahler))
+      .toBeNull();
+    /* Auch die Stadt selbst nicht, wenn es nicht um die Garage geht. */
+    expect(zuordnen(umsatz('Stadt Tuttlingen', 'MG 24 SANIERUNG Auszahlung Zuschuss'), zahler))
+      .toBeNull();
+  });
   test('normal vereinheitlicht Umlaute und Satzzeichen', () => {
     expect(normal('Möller-Rippstein, Eva')).toBe('moeller rippstein eva');
     expect(normal(null)).toBe('');
