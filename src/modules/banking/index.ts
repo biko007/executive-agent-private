@@ -19,7 +19,7 @@ export {
   upsertInstitution, listInstitutions,
   createSession, updateSessionState, getDecryptedSession,
   listAccounts, upsertAccount, archiveAccount, deleteAccount,
-  insertTransaction, listTransactions,
+  insertTransaction, listTransactions, listTransactionsForDisplay,
   setPendingChallenge, getPendingChallenge, clearPendingChallenge, expireOldPendingChallenges,
   listActiveSessions, updateAccountBalance,
   hasReminderBeenSent, markReminderSent, clearReminders,

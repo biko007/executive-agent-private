@@ -11,7 +11,7 @@ import { createApprovalPreview, validateApprovalToken } from '../../middleware/a
 import { requiresApproval as checkRequiresApproval } from '../../middleware/approval-registry.js';
 import { isSensitiveRoute, markSensitiveResponse, checkSensitiveRateLimit } from '../../middleware/sensitive-body.js';
 import {
-  listInstitutions, listAccounts, listTransactions,
+  listInstitutions, listAccounts, listTransactions, listTransactionsForDisplay,
   archiveAccount, deleteAccount,
   upsertInstitution, decideReuse,
   getUniformInstitutionId, bulkArchiveAccounts, renameAccount,
@@ -208,7 +208,11 @@ export function registerBankingHttpRoutes(api: any) {
                 const limit = url.searchParams.get('limit')
                   ? parseInt(url.searchParams.get('limit')!, 10)
                   : undefined;
-                const txns = await listTransactions(accountId, from, to, limit);
+                /* Fuer die Anzeige: jede Buchung genau einmal und mit ihrer
+                   Zuordnung. Wer die Rohliste braucht, haengt ?roh=1 an. */
+                const txns = url.searchParams.get('roh') === '1'
+                  ? await listTransactions(accountId, from, to, limit)
+                  : await listTransactionsForDisplay(accountId, from, to, limit);
                 json(res, 200, txns);
               } catch (e: any) { err(res, 500, e.message); }
             });

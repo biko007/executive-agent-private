@@ -580,6 +580,75 @@ export async function listTransactions(
   return rows.map(mapTransaction);
 }
 
+/**
+ * Umsaetze fuer die Anzeige — ohne Dubletten und mit ihrer Zuordnung.
+ *
+ * Warum eine eigene Funktion neben `listTransactions`: Die Anzeige braucht
+ * zwei Dinge, die sonst niemand braucht, und `listTransactions` wird an anderer
+ * Stelle unveraendert gebraucht.
+ *
+ *   1. JEDE BUCHUNG GENAU EINMAL. 40 Umsaetze stehen doppelt im Bestand — aus
+ *      dem Kontoauszug nachgetragen und spaeter noch einmal von FinTS geliefert.
+ *      Die unterlegene Zeile traegt seit V042 einen Verweis auf die fuehrende
+ *      und wird hier weggelassen. Geloescht wird nichts.
+ *   2. DIE ZUORDNUNG. Zu welchem Objekt, welcher Einheit, welchem Mieter und
+ *      welchem Monat gehoert der Eingang? Steht nichts da, heisst das im
+ *      Dashboard „nicht zugeordnet" — und nicht etwa nichts.
+ */
+export async function listTransactionsForDisplay(
+  accountId: number,
+  from?: string,
+  to?: string,
+  limit = 500,
+): Promise<(Transaction & {
+  duplicateOf: number | null;
+  zuordnung: { objekt: string; einheit: string; mieter: string; monat: string; betrag: number }[];
+})[]> {
+  const params: unknown[] = [accountId];
+  let sql = `SELECT t.* FROM banking_transactions t
+              WHERE t.account_id = $1 AND t.duplicate_of IS NULL`;
+  if (from) { params.push(from); sql += ` AND t.booking_date >= $${params.length}`; }
+  if (to) { params.push(to); sql += ` AND t.booking_date <= $${params.length}`; }
+  sql += ' ORDER BY t.booking_date DESC, t.id DESC';
+  params.push(Math.min(limit, 500));
+  sql += ` LIMIT $${params.length}`;
+
+  const { rows } = await dbQuery<TransactionRow>(sql, params);
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => num(r.id));
+  const { rows: zu } = await dbQuery<any>(`
+    SELECT pl.transaction_id, pl.amount::float AS betrag,
+           to_char(r.period_month,'YYYY-MM') AS monat,
+           p.code AS objekt, u.code AS einheit,
+           coalesce(string_agg(DISTINCT coalesce(t.company_name,
+             trim(coalesce(t.first_name,'') || ' ' || coalesce(t.last_name,''))), ', '), '') AS mieter
+      FROM rent_payment_links pl
+      JOIN rent_ledger r ON r.id = pl.rent_ledger_id
+      JOIN leases l ON l.id = r.lease_id
+      JOIN units u ON u.id = l.unit_id
+      JOIN properties p ON p.id = u.property_id
+      LEFT JOIN lease_tenants lt ON lt.lease_id = l.id
+      LEFT JOIN tenants t ON t.id = lt.tenant_id
+     WHERE pl.transaction_id = ANY($1::bigint[])
+     GROUP BY pl.transaction_id, pl.amount, r.period_month, p.code, u.code
+     ORDER BY r.period_month`, [ids]);
+
+  const nachId = new Map<number, any[]>();
+  for (const z of zu) {
+    const liste = nachId.get(num(z.transaction_id)) || [];
+    liste.push({ objekt: z.objekt, einheit: z.einheit, mieter: z.mieter || '—',
+      monat: z.monat, betrag: z.betrag });
+    nachId.set(num(z.transaction_id), liste);
+  }
+
+  return rows.map((r) => ({
+    ...mapTransaction(r),
+    duplicateOf: r.duplicate_of == null ? null : num(r.duplicate_of as any),
+    zuordnung: nachId.get(num(r.id)) || [],
+  }));
+}
+
 // ── Pending Challenge CRUD (Etappe d) ─────────────────────────────────────────
 
 /**

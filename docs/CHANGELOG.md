@@ -4,6 +4,39 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-15 — Mietforderungen, Zahlungsabgleich und Lämpchen
+
+Bisher zeigte das Dashboard je Einheit nur die Kaltmiete, und ob ein Mieter gezahlt hat,
+stand nirgends. Der Abgleich lief über die Kontoauszüge von Hand — so sind fünf
+ausgefallene Monatsmieten erst im Oktober 2026 aufgefallen, die älteste zehn Monate alt.
+
+**Neu (V042, wartet auf /arm):** Aus jedem Mietvertrag entsteht für jeden Monat eine
+Forderung mit getrennten Bestandteilen; Bankeingänge werden ihr zugeordnet; je Mieter und
+Objekt zeigt ein Lämpchen grün oder rot. Die vier Einheiten des Eigentümers tragen das
+Vertragsmerkmal `owner_hauptmieter` und gelten stets als bezahlt — kein Code, der Namen
+kennt, denn die L19-Einheiten werden demnächst umgewandelt.
+
+**Die Zuordnungsregel in drei Stufen:** IBAN schlägt alles; sonst der Name, wenn er auf
+genau ein Mietverhältnis passt; sonst Name plus Stichwort aus dem Verwendungszweck. Eine
+vierte Stufe fängt gekürzte Banknamen über den Nachnamen ab, aber nur wenn dieser im
+Bestand eindeutig ist — „Rettenbacher" ja, „Bickel" nein. Kautionen und
+Abrechnungsnachzahlungen sind ausdrücklich keine Mieten: Ohne diese Sperre tilgte eine
+Kaution die ältesten Monate und ließ die jüngsten offen stehen.
+
+**Umsatzanzeige berichtigt.** Der Owner sah im Oktober scheinbar vertauschte Spalten. Die
+Ursache lag nicht in der Anzeige: 40 Buchungen standen doppelt im Bestand — einmal aus dem
+Kontoauszug nachgetragen, einmal später von FinTS geliefert —, und 235 nachgetragene
+Zeilen kamen mit vertauschten Feldern an. Der Nachtrag prüft auf vorhandene Umsätze, die
+spätere Synchronisierung prüft das umgekehrt nicht. Gelöscht wird nichts: Die unterlegene
+Zeile bekommt einen Verweis auf die führende und verschwindet nur aus der Anzeige, die
+jetzt dreizeilig ist — Datum und Gegenseite, Verwendungszweck, Buchungsart mit Zuordnung
+und Quelle.
+
+Gates: Build, Command-Guard, 1.335 Tests, Smoke 34/34. Schema-Drift ist erwartet, solange
+V042 nicht angewandt ist.
+
+---
+
 ## Stand 2026-10-15 — Vorauszahlungen lassen sich korrigieren
 
 `lease_charges` kannte nur Anlegen und Lesen. Eine einmal erfasste

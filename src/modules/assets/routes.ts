@@ -17,6 +17,10 @@ import {
   handleNkRerender, handleNkServe, handleNkRunList, handleNkRunDetail,
 } from '../nk/routes.js';
 import { handleObligationsAlert } from '../nk/alerts.js';
+import {
+  sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
+  dublettenMarkieren, laufenderMonat,
+} from './mietforderungen.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 import { erzeugeEingabeblatt } from './casameta.js';
 import { abrechnungAnsicht } from './abrechnung-ansicht.js';
@@ -101,6 +105,82 @@ export function registerAssetsHttpRoutes(api: any) {
     if (!resource) return false; // bare /api/assets — not handled
 
     try {
+      /* ── Mietforderungen: Sollstellung, Zuordnung, Laempchen ─────────────
+         Owner-Auftrag 15.10.2026. Lesend ohne Genehmigung; die drei Laeufe,
+         die Daten schreiben, sind genehmigungspflichtig registriert. */
+      if (resource === 'mietforderungen') {
+        const sub = segments[1];
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            if (sub === 'ampel' && req.method === 'GET') {
+              const stichtag = url.searchParams.get('stichtag') || undefined;
+              const [mieter, objekte] = await Promise.all([
+                ampelJeMieter(stichtag), ampelJeObjekt(stichtag),
+              ]);
+              json(res, 200, { stichtag: stichtag || new Date().toISOString().slice(0, 10), mieter, objekte });
+              return;
+            }
+            /* Monatsuebersicht eines Mietverhaeltnisses: Soll, Ist, Datum und
+               der Umsatz, aus dem die Zahlung stammt. */
+            if (sub === 'leases' && segments[2] && req.method === 'GET') {
+              const leaseId = parseInt(segments[2], 10);
+              const { rows } = await dbQuery(`
+                SELECT to_char(r.period_month,'YYYY-MM') AS monat,
+                       to_char(r.due_date,'YYYY-MM-DD') AS faellig,
+                       r.expected_amount::float AS soll, coalesce(r.paid_amount,0)::float AS ist,
+                       r.kaltmiete_amount::float AS kaltmiete, r.nk_amount::float AS nk,
+                       r.heizkosten_amount::float AS heizkosten, r.garage_amount::float AS garage,
+                       r.kitchen_amount::float AS kueche, r.anteil::float AS anteil,
+                       r.status, r.erzeugt, r.gilt_als_bezahlt,
+                       to_char(r.payment_date,'YYYY-MM-DD') AS gezahlt_am, r.notes,
+                       coalesce(json_agg(json_build_object(
+                         'transaction_id', pl.transaction_id, 'betrag', pl.amount::float,
+                         'grundlage', pl.grundlage,
+                         'datum', to_char(bt.booking_date,'YYYY-MM-DD'),
+                         'zahler', bt.counterparty_name, 'zweck', bt.reference)
+                       ) FILTER (WHERE pl.id IS NOT NULL), '[]') AS zahlungen
+                  FROM rent_ledger r
+                  LEFT JOIN rent_payment_links pl ON pl.rent_ledger_id = r.id
+                  LEFT JOIN banking_transactions bt ON bt.id = pl.transaction_id
+                 WHERE r.lease_id = $1
+                 GROUP BY r.id ORDER BY r.period_month`, [leaseId]);
+              json(res, 200, rows);
+              return;
+            }
+            /* Eingaenge, die keiner Forderung zugeordnet sind. Nur FinTS, nur
+               Eingaenge, nur ab 2025 — alles andere ist kein Mietthema. */
+            if (sub === 'offen' && req.method === 'GET') {
+              const { rows } = await dbQuery(`
+                SELECT t.id, to_char(t.booking_date,'YYYY-MM-DD') AS datum, t.amount::float AS betrag,
+                       t.counterparty_name AS zahler, left(t.reference, 120) AS zweck,
+                       a.display_name AS konto
+                  FROM banking_transactions t
+                  JOIN banking_accounts a ON a.id = t.account_id
+                 WHERE t.source='fints' AND t.amount > 0 AND t.booking_date >= '2025-01-01'
+                   AND t.duplicate_of IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM rent_payment_links l WHERE l.transaction_id = t.id)
+                 ORDER BY t.booking_date DESC LIMIT 200`);
+              json(res, 200, rows);
+              return;
+            }
+            if (req.method === 'POST' && (sub === 'sollstellung' || sub === 'zuordnung' || sub === 'dubletten')) {
+              const body = await parseJsonBody(req).catch(() => ({}));
+              const probelauf = body?.dry_run !== false;
+              if (sub === 'sollstellung') {
+                json(res, 200, await sollstellungErzeugen({ bis: body?.bis || laufenderMonat(), probelauf }));
+              } else if (sub === 'zuordnung') {
+                json(res, 200, await zahlungenZuordnen({ probelauf }));
+              } else {
+                json(res, 200, await dublettenMarkieren({ probelauf }));
+              }
+              return;
+            }
+            err(res, 404, 'Unbekannter Pfad unter /api/assets/mietforderungen');
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
       // ── Buchungsvorschlaege aus Bankumsaetzen ───────────────────────────
       // Liste, Bestaetigen, Verwerfen. Das Dashboard leitet /api/assets/*
       // pauschal an den Core weiter — dort ist nichts zu aendern.

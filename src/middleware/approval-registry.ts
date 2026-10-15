@@ -43,6 +43,9 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Lease Charges
   'lease-charges.create': { endpointKey: 'lease-charges.create', method: 'POST', pathPattern: '/api/assets/leases/:id/charges', requiresApproval: true, idempotency: false, description: 'Create lease charge' },
+  'mietforderungen.sollstellung': { endpointKey: 'mietforderungen.sollstellung', method: 'POST', pathPattern: '/api/assets/mietforderungen/sollstellung', requiresApproval: true, idempotency: false, description: 'Mietforderungen aus den Vertraegen erzeugen' },
+  'mietforderungen.zuordnung': { endpointKey: 'mietforderungen.zuordnung', method: 'POST', pathPattern: '/api/assets/mietforderungen/zuordnung', requiresApproval: true, idempotency: false, description: 'Zahlungseingaenge den Forderungen zuordnen' },
+  'mietforderungen.dubletten': { endpointKey: 'mietforderungen.dubletten', method: 'POST', pathPattern: '/api/assets/mietforderungen/dubletten', requiresApproval: true, idempotency: false, description: 'Doppelte Bankumsaetze markieren' },
   'lease-charges.update': { endpointKey: 'lease-charges.update', method: 'PATCH', pathPattern: '/api/assets/leases/:id/charges/:chargeId', requiresApproval: true, idempotency: false, description: 'Update lease charge' },
 
   // Expense Bookings

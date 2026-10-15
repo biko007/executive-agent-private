@@ -139,6 +139,8 @@ export interface TransactionRow {
   raw_payload: Record<string, unknown>;
   imported_at: Date;
   source: string;
+  /** Verweis auf den fuehrenden Umsatz derselben Buchung (V042). */
+  duplicate_of?: number | string | null;
 }
 
 export interface SessionRow {
