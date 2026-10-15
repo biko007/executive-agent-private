@@ -46,6 +46,7 @@
  * Zahlung fehlt oder zu gering ist.
  */
 import { query as dbQuery } from '../../shared/db/index.js';
+import { getSetting } from '../../shared/settings/index.js';
 
 /** Ab hier wird gerechnet — Owner-Vorgabe. */
 export const SOLL_AB = '2025-01-01';
@@ -331,6 +332,31 @@ const MIETERSTROM_HOECHSTBETRAG = 200;
 const MIETWORT = ['miete', 'mieten', 'vermietung', 'mietzahlung', 'alquiler', 'rent'];
 
 /**
+ * Eine Kaution, die sich nicht „Kaution" nennt.
+ *
+ * MG24 W3 hat am 30.04.2025 genau 3.580,00 € überwiesen — die vertragliche
+ * Kaution, im Verwendungszweck steht aber nur „Markgasse 24". Der Abgleich hat
+ * daraus anderthalb Monatsmieten getilgt und den offenen Mai 2025 verdeckt.
+ *
+ * Zwei Merkmale müssen zusammentreffen, sonst gilt die Zahlung als Miete: der
+ * Betrag stimmt mit der vereinbarten Kaution auf den Cent, und die Zahlung
+ * liegt im Umfeld des Mietbeginns.
+ */
+export const KAUTIONSFENSTER_TAGE = 60;
+
+export function istKautionNachBetrag(
+  betrag: number,
+  datum: string,
+  vertrag: { kaution: number | null; start_date: string },
+): boolean {
+  if (!vertrag.kaution || Math.abs(betrag - vertrag.kaution) > 0.005) return false;
+  const tage = Math.abs(
+    (Date.parse(datum + 'T00:00:00Z') - Date.parse(vertrag.start_date + 'T00:00:00Z'))
+    / 86400000);
+  return tage <= KAUTIONSFENSTER_TAGE;
+}
+
+/**
  * Spricht der Verwendungszweck dagegen, dass dies eine Mietzahlung ist?
  *
  * Der Betrag entscheidet mit: „miete juni plus 50 euro strom" über 1.540,00 €
@@ -444,6 +470,71 @@ export function zuordnen(z: Zahlung, zahler: Zahler[]): { lease_id: number; grun
 }
 
 /* ── Datenbank ──────────────────────────────────────────────────────────── */
+
+/**
+ * Nebenkosten-Vorauszahlung in der Mietforderung — oder nicht.
+ *
+ * Die Nebenkostenabrechnung 2025 rechnet nur die Vorauszahlungen an, die
+ * TATSAECHLICH GEZAHLT wurden (Owner-Entscheidung 15.10.2026, Reports
+ * n24-vz-belegt-setzen und mietrueckstaende-erfassen). Steckte die
+ * Vorauszahlung eines unbezahlten Monats zusaetzlich in der Mietforderung,
+ * schuldete der Mieter denselben Betrag zweimal: einmal als Rueckstand und
+ * einmal als Nachzahlung in der Abrechnung.
+ *
+ * Deshalb besteht die Forderung eines unbezahlt gebliebenen Monats in einem
+ * so abgerechneten Jahr nur aus Miete und Garage/Stellplatz/Kueche. Welche
+ * Objekte und Jahre das sind, steht in `system_settings` unter `nk-vz-regel`
+ * und nicht im Code — die Abrechnung 2026 wird spaeter genauso behandelt,
+ * ohne dass jemand eine Datei aendert.
+ *
+ * Form: `{ "<objekt>": { "<jahr>": "nur_gezahlt" } }`
+ */
+export const NK_VZ_REGEL_SCHLUESSEL = 'nk-vz-regel';
+
+export type NkVzRegel = Record<string, Record<string, string>>;
+
+export async function nkVzRegel(): Promise<NkVzRegel> {
+  return (await getSetting<NkVzRegel>(NK_VZ_REGEL_SCHLUESSEL).catch(() => undefined)) || {};
+}
+
+/** Gilt fuer dieses Objekt und dieses Jahr „Vorauszahlung nur wie gezahlt"? */
+export function vzNurGezahlt(regel: NkVzRegel, objekt: string, monat: string): boolean {
+  return regel?.[String(objekt).toLowerCase()]?.[monat.slice(0, 4)] === 'nur_gezahlt';
+}
+
+/**
+ * Was von einer offenen Forderung tatsaechlich verlangt wird.
+ *
+ * Die Vorauszahlung faellt nur insoweit weg, wie sie unbezahlt geblieben ist.
+ * Ein Monat, der voll bezahlt wurde, bleibt unberuehrt — dort ist die
+ * Vorauszahlung geflossen und wird in der Abrechnung angerechnet.
+ */
+export function offenNachVzRegel(
+  soll: number, ist: number, vz: number,
+): { offen: number; vz_entfallen: number } {
+  const offenRoh = Math.round((soll - ist) * 100) / 100;
+  if (offenRoh <= 0.004) return { offen: 0, vz_entfallen: 0 };
+  const weg = Math.min(Math.round(vz * 100) / 100, offenRoh);
+  return { offen: Math.round((offenRoh - weg) * 100) / 100, vz_entfallen: weg };
+}
+
+/**
+ * Umsaetze, die der Owner ausdruecklich aus dem Mietabgleich herausgenommen
+ * hat. Form: `{ "<umsatz-id>": "Begruendung" }` in `system_settings` unter
+ * `abgleich-ausnahmen`.
+ *
+ * Anlass: Der Eingang von 973,00 EUR am 05.05.2025 (MG24 W3, Verwendungszweck
+ * „1513571") ist keine Miete. Laut Buchungsliste 2025 ist die Maimiete
+ * vollstaendig offen; wofuer die 973,00 EUR stehen, klaert die Buchhaltung.
+ * Ohne diese Ausnahme tilgt der Betrag einen Teil der Maimiete, und das
+ * Mietforderungsbuch widerspricht der Abrechnung.
+ */
+export const AUSNAHMEN_SCHLUESSEL = 'abgleich-ausnahmen';
+
+export async function abgleichAusnahmen(): Promise<Record<string, string>> {
+  return (await getSetting<Record<string, string>>(AUSNAHMEN_SCHLUESSEL)
+    .catch(() => undefined)) || {};
+}
 
 /** Der laufende Monat als `YYYY-MM`. */
 export function laufenderMonat(heute = new Date()): string {
@@ -631,6 +722,14 @@ export async function zahlungenZuordnen(
     gelernte_zahler: 0, nicht_zugeordnet: [],
   };
   const zahler = await zahlerListe();
+  const ausnahmen = await abgleichAusnahmen();
+  /* Kautionsbetrag und Mietbeginn je Vertrag — fuer Zahlungen, die sich nicht
+     „Kaution" nennen. */
+  const { rows: vertragsdaten } = await dbQuery<any>(
+    `SELECT id, kaution::float AS kaution, to_char(start_date,'YYYY-MM-DD') AS start_date
+       FROM leases`);
+  const vertrag = new Map<number, { kaution: number | null; start_date: string }>(
+    vertragsdaten.map((v: any) => [v.id, { kaution: v.kaution, start_date: v.start_date }]));
 
   /* Beide Quellen, Eingänge ab dem Sollstellungsbeginn, jede Buchung einmal.
      Die Entdopplung läuft hier noch einmal über Konto, Tag und Betrag — auch
@@ -651,11 +750,29 @@ export async function zahlungenZuordnen(
 
   for (const z of zahlungen as Zahlung[]) {
     erg.geprueft++;
+    const ausnahme = ausnahmen[String(z.id)];
+    if (ausnahme) {
+      erg.nicht_zugeordnet.push({
+        id: z.id, datum: z.booking_date, betrag: z.amount,
+        name: z.counterparty_name || '', zweck: `AUSNAHME: ${ausnahme}`.slice(0, 80),
+      });
+      continue;
+    }
     const treffer = zuordnen(z, zahler);
     if (!treffer) {
       erg.nicht_zugeordnet.push({
         id: z.id, datum: z.booking_date, betrag: z.amount,
         name: z.counterparty_name || '', zweck: (z.reference || '').slice(0, 80),
+      });
+      continue;
+    }
+    /* Passt der Betrag auf die vereinbarte Kaution und liegt die Zahlung am
+       Mietbeginn, ist es keine Miete. */
+    const vd = vertrag.get(treffer.lease_id);
+    if (vd && istKautionNachBetrag(z.amount, z.booking_date, vd)) {
+      erg.nicht_zugeordnet.push({
+        id: z.id, datum: z.booking_date, betrag: z.amount,
+        name: z.counterparty_name || '', zweck: 'KAUTION (Betrag und Mietbeginn)',
       });
       continue;
     }
@@ -681,17 +798,27 @@ export async function zahlungenZuordnen(
     let rest = Math.round(z.amount * 100) / 100;
     const { rows: alle } = await dbQuery<any>(`
       SELECT r.id, to_char(r.period_month,'YYYY-MM-DD') AS monat,
-             r.expected_amount::float AS soll, r.paid_amount::float AS ist
+             r.expected_amount::float AS soll, r.paid_amount::float AS ist, r.erzeugt
         FROM rent_ledger r
        WHERE r.lease_id = $1 AND r.status <> 'paid'
          AND r.expected_amount > coalesce(r.paid_amount,0)
        ORDER BY r.period_month`, [treffer.lease_id]);
     /* Nennt der Verwendungszweck einen Monat, gilt er (§ 366 Abs. 1 BGB).
-       Sonst die älteste offene Forderung. */
+       Sonst die älteste offene Forderung (§ 366 Abs. 2 BGB).
+    
+       AUSNAHME: Von Hand erfasste Rückstände nimmt die Reihenfolge nicht mit.
+       Der Owner hat am 15.10.2026 sieben Monate ausdrücklich als unbezahlt
+       festgehalten, und die Nebenkostenabrechnung 2025 rechnet genau darauf
+       auf: Sie erkennt nur die Vorauszahlungen der tatsächlich gezahlten
+       Monate an. Würde eine spätere Zahlung ohne Monatsangabe diese Zeile
+       stillschweigend füllen, wanderte der Rückstand ans Ende der Reihe, und
+       Abrechnung und Forderungsbuch widersprächen sich. Nennt eine Zahlung
+       den Monat ausdrücklich, wird sie dort sehr wohl verrechnet. */
     const genannt = monatAusZweck(z.reference, z.booking_date);
     const offen = genannt
-      ? [...alle.filter((f: any) => f.monat === genannt), ...alle.filter((f: any) => f.monat !== genannt)]
-      : alle;
+      ? [...alle.filter((f: any) => f.monat === genannt),
+         ...alle.filter((f: any) => f.monat !== genannt && f.erzeugt)]
+      : alle.filter((f: any) => f.erzeugt);
     for (const f of offen) {
       if (rest <= 0.004) break;
       const fehlt = Math.round((f.soll - (f.ist || 0)) * 100) / 100;
@@ -710,6 +837,67 @@ export async function zahlungenZuordnen(
       erg.verrechnet++;
     }
     if (rest > 0.004) erg.offen_geblieben++;
+  }
+  return erg;
+}
+
+export interface VzRegelErgebnis {
+  geprueft: number;
+  gekuerzt: number;
+  summe_entfallen: number;
+  zeilen: { lease_id: number; objekt: string; einheit: string; monat: string;
+            vorher: number; nachher: number; vz_entfallen: number }[];
+}
+
+/**
+ * Die Vorauszahlungsregel auf die offenen Forderungen anwenden.
+ *
+ * Laeuft NACH der Zuordnung — erst dann steht fest, welcher Monat unbezahlt
+ * geblieben ist. Von Hand erfasste Zeilen bleiben unberuehrt: Die sieben
+ * Rueckstaende vom 15.10.2026 tragen die Regel schon im Betrag.
+ *
+ * Idempotent: Eine Zeile, bei der `vz_entfallen` bereits gesetzt ist, wird
+ * nicht zweimal gekuerzt.
+ */
+export async function vzRegelAnwenden(
+  opts: { probelauf?: boolean } = {},
+): Promise<VzRegelErgebnis> {
+  const regel = await nkVzRegel();
+  const erg: VzRegelErgebnis = { geprueft: 0, gekuerzt: 0, summe_entfallen: 0, zeilen: [] };
+  const { rows } = await dbQuery<any>(`
+    SELECT r.id, r.lease_id, to_char(r.period_month,'YYYY-MM') AS monat,
+           r.expected_amount::float AS soll, coalesce(r.paid_amount,0)::float AS ist,
+           coalesce(r.nk_amount,0)::float AS nk, coalesce(r.heizkosten_amount,0)::float AS heiz,
+           r.vz_entfallen::float AS entfallen, r.erzeugt, r.gilt_als_bezahlt,
+           p.code AS objekt, u.code AS einheit
+      FROM rent_ledger r
+      JOIN leases l ON l.id = r.lease_id
+      JOIN units u ON u.id = l.unit_id
+      JOIN properties p ON p.id = u.property_id
+     ORDER BY p.code, u.code, r.period_month`);
+  for (const z of rows) {
+    if (!z.erzeugt || z.gilt_als_bezahlt) continue;
+    if (!vzNurGezahlt(regel, z.objekt, z.monat)) continue;
+    if (z.entfallen > 0.004) continue;
+    erg.geprueft++;
+    const { offen, vz_entfallen } = offenNachVzRegel(z.soll, z.ist, z.nk + z.heiz);
+    if (vz_entfallen <= 0.004) continue;
+    const neu = Math.round((z.ist + offen) * 100) / 100;
+    erg.gekuerzt++;
+    erg.summe_entfallen = Math.round((erg.summe_entfallen + vz_entfallen) * 100) / 100;
+    erg.zeilen.push({ lease_id: z.lease_id, objekt: z.objekt, einheit: z.einheit,
+      monat: z.monat, vorher: z.soll, nachher: neu, vz_entfallen });
+    if (opts.probelauf) continue;
+    await dbQuery(
+      `UPDATE rent_ledger SET expected_amount=$1, vz_entfallen=$2,
+         status = CASE WHEN coalesce(paid_amount,0) >= $1 - 0.005 THEN 'paid' ELSE status END,
+         notes = coalesce(notes,'') || $3, updated_at=now()
+        WHERE id=$4`,
+      [neu, vz_entfallen,
+       `\nNebenkosten-Vorauszahlung von ${vz_entfallen.toFixed(2)} EUR aus der Forderung `
+       + `herausgenommen: Die Abrechnung ${z.monat.slice(0, 4)} rechnet nur gezahlte `
+       + `Vorauszahlungen an (Regel nk-vz-regel, ${new Date().toISOString().slice(0, 10)}).`,
+       z.id]);
   }
   return erg;
 }

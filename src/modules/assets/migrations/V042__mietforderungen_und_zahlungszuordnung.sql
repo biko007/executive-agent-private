@@ -40,7 +40,16 @@ ALTER TABLE rent_ledger
   -- Rueckstaende vom 15.10.2026 bleiben damit als Handeintrag erkennbar).
   ADD COLUMN IF NOT EXISTS erzeugt            boolean NOT NULL DEFAULT false,
   -- Owner-Einheit: gilt als bezahlt, ohne dass ein Umsatz existiert.
-  ADD COLUMN IF NOT EXISTS gilt_als_bezahlt   boolean NOT NULL DEFAULT false;
+  ADD COLUMN IF NOT EXISTS gilt_als_bezahlt   boolean NOT NULL DEFAULT false,
+  -- Nebenkosten-Vorauszahlung, die aus der Forderung herausgenommen wurde,
+  -- weil die Nebenkostenabrechnung des Jahres nur TATSAECHLICH GEZAHLTE
+  -- Vorauszahlungen anrechnet. Ohne diese Spalte wuerde der Mieter denselben
+  -- Betrag zweimal schulden: einmal als Mietrueckstand und einmal als
+  -- Nachzahlung in der Abrechnung. 0 = keine Kuerzung.
+  ADD COLUMN IF NOT EXISTS vz_entfallen       numeric(12,2) NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN rent_ledger.vz_entfallen IS
+  'Herausgenommene Nebenkosten-Vorauszahlung (Doppelbelastung vermeiden). expected_amount ist um diesen Betrag gekuerzt.';
 
 COMMENT ON COLUMN rent_ledger.anteil IS
   'Anteil des Monats laut Vertragslaufzeit, kaufmaennisch auf Tage gerechnet.';

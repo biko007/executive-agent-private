@@ -19,7 +19,7 @@ import {
 import { handleObligationsAlert } from '../nk/alerts.js';
 import {
   sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
-  dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB,
+  dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB, vzRegelAnwenden,
 } from './mietforderungen.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 import { erzeugeEingabeblatt } from './casameta.js';
@@ -178,13 +178,18 @@ export function registerAssetsHttpRoutes(api: any) {
               json(res, 200, rows);
               return;
             }
-            if (req.method === 'POST' && (sub === 'sollstellung' || sub === 'zuordnung' || sub === 'dubletten')) {
+            if (req.method === 'POST' && (sub === 'sollstellung' || sub === 'zuordnung'
+                || sub === 'dubletten' || sub === 'vz-regel')) {
               const body = await parseJsonBody(req).catch(() => ({}));
               const probelauf = body?.dry_run !== false;
               if (sub === 'sollstellung') {
                 json(res, 200, await sollstellungErzeugen({ bis: body?.bis || laufenderMonat(), probelauf }));
               } else if (sub === 'zuordnung') {
                 json(res, 200, await zahlungenZuordnen({ probelauf }));
+              } else if (sub === 'vz-regel') {
+                /* Laeuft nach der Zuordnung: nimmt die unbezahlte
+                   Nebenkosten-Vorauszahlung aus der Forderung. */
+                json(res, 200, await vzRegelAnwenden({ probelauf }));
               } else {
                 json(res, 200, await dublettenMarkieren({ probelauf }));
               }

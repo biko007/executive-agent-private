@@ -9,6 +9,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   werktag, anteilImMonat, sollZeilen, zuordnen, normal, laufenderMonat, tageImMonat, istKeineMiete,
+  istKautionNachBetrag, vzNurGezahlt, offenNachVzRegel, KAUTIONSFENSTER_TAGE,
   monatAusZweck, kontoFuer,
   type VertragSoll, type Zahler, type Zahlung,
 } from '../mietforderungen.js';
@@ -218,6 +219,43 @@ describe('Hilfsfunktionen', () => {
     /* Auch die Stadt selbst nicht, wenn es nicht um die Garage geht. */
     expect(zuordnen(umsatz('Stadt Tuttlingen', 'MG 24 SANIERUNG Auszahlung Zuschuss'), zahler))
       .toBeNull();
+  });
+  test('Kaution ueber Betrag und Mietbeginn erkennen', () => {
+    /* MG24 W3 hat am 30.04.2025 genau die vereinbarte Kaution von 3.580,00 EUR
+       ueberwiesen, im Zweck steht nur „Markgasse 24". Der Abgleich hat daraus
+       anderthalb Monatsmieten getilgt und den offenen Mai 2025 verdeckt. */
+    const v = { kaution: 3580, start_date: '2025-05-01' };
+    expect(istKautionNachBetrag(3580, '2025-04-30', v)).toBe(true);
+    /* Ein anderer Betrag ist Miete, auch am Mietbeginn. */
+    expect(istKautionNachBetrag(2130, '2025-05-01', v)).toBe(false);
+    /* Derselbe Betrag ein Jahr spaeter ist keine Kaution mehr. */
+    expect(istKautionNachBetrag(3580, '2026-05-01', v)).toBe(false);
+    expect(istKautionNachBetrag(3580, '2025-03-01', v)).toBe(false);
+    expect(istKautionNachBetrag(3580, '2025-05-01', { kaution: null, start_date: '2025-05-01' })).toBe(false);
+    expect(KAUTIONSFENSTER_TAGE).toBe(60);
+  });
+  test('Vorauszahlungsregel je Objekt und Jahr', () => {
+    const regel = { mg24: { '2025': 'nur_gezahlt' }, n24: { '2025': 'nur_gezahlt' } };
+    expect(vzNurGezahlt(regel, 'mg24', '2025-05')).toBe(true);
+    expect(vzNurGezahlt(regel, 'MG24', '2025-12')).toBe(true);
+    /* 2026 ist nicht abgerechnet — dort gilt die volle Forderung. */
+    expect(vzNurGezahlt(regel, 'mg24', '2026-01')).toBe(false);
+    /* S28 ist fuer 2025 nicht angesetzt. */
+    expect(vzNurGezahlt(regel, 's28', '2025-03')).toBe(false);
+    expect(vzNurGezahlt({}, 'n24', '2025-01')).toBe(false);
+  });
+  test('Vorauszahlung faellt nur so weit weg, wie sie unbezahlt ist', () => {
+    /* N24 W2, Dezember 2025: 1.650,00 Soll, nichts gezahlt, 200,00 VZ
+       → 1.450,00 bleiben, genau wie in der Handzeile vom 15.10.2026. */
+    expect(offenNachVzRegel(1650, 0, 200)).toEqual({ offen: 1450, vz_entfallen: 200 });
+    /* MG24 W3, Mai 2025: 2.130,00 abzueglich 300,00 VZ = 1.830,00. */
+    expect(offenNachVzRegel(2130, 0, 300)).toEqual({ offen: 1830, vz_entfallen: 300 });
+    /* Ein voll bezahlter Monat bleibt unberuehrt — die VZ ist geflossen. */
+    expect(offenNachVzRegel(1650, 1650, 200)).toEqual({ offen: 0, vz_entfallen: 0 });
+    /* Fehlt weniger als die Vorauszahlung, bleibt nichts offen. */
+    expect(offenNachVzRegel(1540, 1490, 350)).toEqual({ offen: 0, vz_entfallen: 50 });
+    /* Teilzahlung: 973,00 von 2.130,00 gezahlt, 300,00 VZ. */
+    expect(offenNachVzRegel(2130, 973, 300)).toEqual({ offen: 857, vz_entfallen: 300 });
   });
   test('normal vereinheitlicht Umlaute und Satzzeichen', () => {
     expect(normal('Möller-Rippstein, Eva')).toBe('moeller rippstein eva');

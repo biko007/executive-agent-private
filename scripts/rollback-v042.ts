@@ -35,7 +35,7 @@ const SCHRITTE = [
   `DROP TABLE IF EXISTS rent_payment_links`,
   `DROP TABLE IF EXISTS lease_payers`,
   `ALTER TABLE banking_transactions DROP COLUMN IF EXISTS duplicate_of`,
-  `ALTER TABLE rent_ledger DROP COLUMN IF EXISTS kaltmiete_amount, DROP COLUMN IF EXISTS nk_amount, DROP COLUMN IF EXISTS heizkosten_amount, DROP COLUMN IF EXISTS garage_amount, DROP COLUMN IF EXISTS kitchen_amount, DROP COLUMN IF EXISTS anteil, DROP COLUMN IF EXISTS erzeugt, DROP COLUMN IF EXISTS gilt_als_bezahlt`,
+  `ALTER TABLE rent_ledger DROP COLUMN IF EXISTS kaltmiete_amount, DROP COLUMN IF EXISTS nk_amount, DROP COLUMN IF EXISTS heizkosten_amount, DROP COLUMN IF EXISTS garage_amount, DROP COLUMN IF EXISTS kitchen_amount, DROP COLUMN IF EXISTS anteil, DROP COLUMN IF EXISTS erzeugt, DROP COLUMN IF EXISTS gilt_als_bezahlt, DROP COLUMN IF EXISTS vz_entfallen`,
   `ALTER TABLE leases DROP COLUMN IF EXISTS owner_hauptmieter`,
   `DELETE FROM schema_version WHERE module='assets' AND version=42`,
 ];

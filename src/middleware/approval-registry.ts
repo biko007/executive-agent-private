@@ -46,6 +46,7 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
   'mietforderungen.sollstellung': { endpointKey: 'mietforderungen.sollstellung', method: 'POST', pathPattern: '/api/assets/mietforderungen/sollstellung', requiresApproval: true, idempotency: false, description: 'Mietforderungen aus den Vertraegen erzeugen' },
   'mietforderungen.zuordnung': { endpointKey: 'mietforderungen.zuordnung', method: 'POST', pathPattern: '/api/assets/mietforderungen/zuordnung', requiresApproval: true, idempotency: false, description: 'Zahlungseingaenge den Forderungen zuordnen' },
   'mietforderungen.dubletten': { endpointKey: 'mietforderungen.dubletten', method: 'POST', pathPattern: '/api/assets/mietforderungen/dubletten', requiresApproval: true, idempotency: false, description: 'Doppelte Bankumsaetze markieren' },
+  'mietforderungen.vz-regel': { endpointKey: 'mietforderungen.vz-regel', method: 'POST', pathPattern: '/api/assets/mietforderungen/vz-regel', requiresApproval: true, idempotency: false, description: 'Unbezahlte Nebenkosten-Vorauszahlung aus den Forderungen nehmen' },
   'lease-charges.update': { endpointKey: 'lease-charges.update', method: 'PATCH', pathPattern: '/api/assets/leases/:id/charges/:chargeId', requiresApproval: true, idempotency: false, description: 'Update lease charge' },
 
   // Expense Bookings
