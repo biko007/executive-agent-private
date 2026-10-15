@@ -861,7 +861,12 @@ export function registerAssetsHttpRoutes(api: any) {
               const sets: string[] = [];
               const params: unknown[] = [];
               let pi = 1;
-              for (const field of ['key_type','base_share_percent','consumption_share_percent','valid_from','valid_until','source','notes']) {
+              // archived_at ist bewusst aenderbar: die Archiv-Route hat kein Gegenstueck, und der
+              // Ausschluss-Index allocation_rules_no_overlap ignoriert archivierte Regeln. Eine
+              // Regel mit falschem Schluessel laesst sich deshalb nicht durch Archivieren und
+              // Neuanlegen fuer denselben Zeitraum ersetzen - sie muss an der Stelle korrigiert
+              // und reaktiviert werden. Jede Aenderung landet im Audit-Log.
+              for (const field of ['key_type','base_share_percent','consumption_share_percent','valid_from','valid_until','source','notes','archived_at']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }
               if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }

@@ -4,6 +4,24 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-15 — Umlageregeln lassen sich korrigieren, nicht nur archivieren
+
+Die Owner-Regel vom 14.10.2026 stellt das Schmutzwasser von der Fläche auf den Verbrauch
+um. Für N24 war das nicht durchführbar: Der Ausschluss-Index
+`allocation_rules_no_overlap` verbietet zwei Regeln derselben Kostenart im selben
+Zeitraum und **ignoriert dabei archivierte Regeln**. Archivieren und neu anlegen — der
+Weg, den die Routen sonst für Buchungen vorschreiben — scheitert deshalb bei einer Regel,
+die für denselben Zeitraum gilt. Eine Gegenroute zum Archivieren gab es nicht.
+
+`PATCH /api/assets/allocation-rules/:id` nimmt jetzt zusätzlich `archived_at` an. Damit
+ist eine Regel mit falschem Schlüssel an ihrer Stelle korrigierbar und reaktivierbar; die
+Änderung landet wie jede andere im Audit-Log. Das ist auch die sachlich richtige Form:
+Eine von Anfang an falsche Regel ist keine zeitliche Änderung, sondern eine Berichtigung.
+
+Gates: Build, Command-Guard, 1.304 Tests, Schema-Drift, Smoke 34/34 — alle grün.
+
+---
+
 ## Stand 2026-10-13 — MG24 Hausstrom erstes Halbjahr: keine Umlage
 
 Zwei Owner-Entscheidungen in den Buchungen festgehalten.
