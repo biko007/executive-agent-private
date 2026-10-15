@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { query as dbQuery, getClient } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import { getCorrelationId, getRequestId } from '../../shared/correlation/index.js';
+import { getSetting } from '../../shared/settings/index.js';
 import { encrypt, decrypt } from './encryption.js';
 import type {
   Institution, InstitutionRow,
@@ -595,6 +596,49 @@ export async function listTransactions(
  *      welchem Monat gehoert der Eingang? Steht nichts da, heisst das im
  *      Dashboard „nicht zugeordnet" — und nicht etwa nichts.
  */
+/**
+ * Wiederkehrende Eingaenge, die zu keinem Mietvertrag gehoeren.
+ *
+ * Der Owner will sie in der Umsatzanzeige benannt sehen, statt sie als
+ * unbekannt stehen zu lassen — die drei Garagen Marktgasse 22 etwa gehoeren
+ * nicht in die Mietforderungen, solange er die Zuordnung nicht entschieden
+ * hat. Die Muster stehen in `system_settings` unter `kontozuordnung-hinweise`
+ * und nicht im Code: Wird eine Garage angelegt, faellt der Hinweis weg, ohne
+ * dass jemand eine Datei aendert.
+ */
+export interface Zuordnungshinweis {
+  label?: string;
+  muster?: { zweck?: string[]; name?: string[] };
+}
+
+/** Satzzeichen weg, Umlaute vereinheitlicht — „Marktg.22" trifft „marktg". */
+function hinweisNormal(s: string | null | undefined): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** Der Hinweis, der auf diesen Umsatz passt — oder null. */
+export function hinweisFuer(
+  hinweise: Record<string, Zuordnungshinweis>,
+  name: string | null | undefined,
+  zweck: string | null | undefined,
+): string | null {
+  const n = hinweisNormal(name);
+  const z = hinweisNormal(zweck);
+  for (const h of Object.values(hinweise || {})) {
+    if (!h?.label || !h.muster) continue;
+    const zTreffer = !h.muster.zweck?.length
+      || h.muster.zweck.some(w => z.includes(hinweisNormal(w)));
+    const nTreffer = !h.muster.name?.length
+      || h.muster.name.some(w => n.includes(hinweisNormal(w)));
+    if (zTreffer && nTreffer) return h.label;
+  }
+  return null;
+}
+
 export async function listTransactionsForDisplay(
   accountId: number,
   from?: string,
@@ -603,6 +647,7 @@ export async function listTransactionsForDisplay(
 ): Promise<(Transaction & {
   duplicateOf: number | null;
   zuordnung: { objekt: string; einheit: string; mieter: string; monat: string; betrag: number }[];
+  hinweis: string | null;
 })[]> {
   const params: unknown[] = [accountId];
   let sql = `SELECT t.* FROM banking_transactions t
@@ -642,11 +687,20 @@ export async function listTransactionsForDisplay(
     nachId.set(num(z.transaction_id), liste);
   }
 
-  return rows.map((r) => ({
-    ...mapTransaction(r),
-    duplicateOf: r.duplicate_of == null ? null : num(r.duplicate_of as any),
-    zuordnung: nachId.get(num(r.id)) || [],
-  }));
+  const hinweise = await getSetting<Record<string, Zuordnungshinweis>>('kontozuordnung-hinweise')
+    .catch(() => undefined) || {};
+
+  return rows.map((r) => {
+    const zuordnung = nachId.get(num(r.id)) || [];
+    return {
+      ...mapTransaction(r),
+      duplicateOf: r.duplicate_of == null ? null : num(r.duplicate_of as any),
+      zuordnung,
+      /* Der Hinweis ersetzt keine Zuordnung — er erscheint nur, wo keine ist. */
+      hinweis: zuordnung.length ? null
+        : hinweisFuer(hinweise, r.counterparty_name, r.reference),
+    };
+  });
 }
 
 // ── Pending Challenge CRUD (Etappe d) ─────────────────────────────────────────
