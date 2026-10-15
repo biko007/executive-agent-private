@@ -9,6 +9,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   werktag, anteilImMonat, sollZeilen, zuordnen, normal, laufenderMonat, tageImMonat, istKeineMiete,
+  monatAusZweck, kontoFuer,
   type VertragSoll, type Zahler, type Zahlung,
 } from '../mietforderungen.js';
 
@@ -176,11 +177,27 @@ describe('Zuordnung', () => {
 });
 
 describe('Hilfsfunktionen', () => {
-  test('istKeineMiete erkennt Kaution und Abrechnung', () => {
+  test('istKeineMiete erkennt Kaution, Abrechnung und Mieterstrom', () => {
     expect(istKeineMiete('Kaution Abert. Marktgasse 24')).toBe(true);
     expect(istKeineMiete('Nebenkostenabrechnung 2024')).toBe(true);
+    /* Mieterstrom: eigener Liefervertrag, keine Miete. */
+    expect(istKeineMiete('De Meo. Strom (January 25)')).toBe(true);
+    expect(istKeineMiete('341-003')).toBe(true);
     expect(istKeineMiete('Miete Marktgasse 24. 11/25')).toBe(false);
     expect(istKeineMiete(null)).toBe(false);
+  });
+  test('Mieterstrom-Sperre greift nicht bei einer Mietzahlung in Mietgroesse', () => {
+    /* S28 W2 zahlte 1.540,00 EUR mit „miete juni plus 50 euro strom" und
+       1.390,00 EUR mit „… August, Rabatt von 100 Euro fuer Strom". Die erste
+       Fassung verwarf beide und zeigte zwei Monate Rueckstand, die bezahlt
+       waren. */
+    expect(istKeineMiete('miete juni plus 50 euro strom', 1540)).toBe(false);
+    expect(istKeineMiete('Vermietung schonhalde28 August, Rabatt von 100 Euro fuer Strom', 1390)).toBe(false);
+    /* Der Abschlag selbst bleibt gesperrt — Betrag und Zweck sprechen dagegen. */
+    expect(istKeineMiete('De Meo. Strom (January 25)', 70)).toBe(true);
+    expect(istKeineMiete('341-003', 70)).toBe(true);
+    /* Ohne Mietwort bleibt ein hoher Strombetrag eine Stromzahlung. */
+    expect(istKeineMiete('Stromabschlag Jahresrechnung', 70)).toBe(true);
   });
   test('normal vereinheitlicht Umlaute und Satzzeichen', () => {
     expect(normal('Möller-Rippstein, Eva')).toBe('moeller rippstein eva');
@@ -188,5 +205,54 @@ describe('Hilfsfunktionen', () => {
   });
   test('laufenderMonat liefert YYYY-MM', () => {
     expect(laufenderMonat(new Date('2026-10-15T12:00:00Z'))).toBe('2026-10');
+  });
+});
+
+describe('Monat aus dem Verwendungszweck', () => {
+  /* § 366 Abs. 1 BGB: Nennt der Schuldner den Monat, gilt dieser — nicht die
+     aelteste offene Forderung. Die Mieter schreiben ihn auf Deutsch,
+     Englisch und Spanisch. */
+  test('deutsche Monatsnamen', () => {
+    expect(monatAusZweck('Miete Oktober 2025', '2025-10-01')).toBe('2025-10-01');
+    expect(monatAusZweck('Miete für den Monat November 2025', '2025-11-03')).toBe('2025-11-01');
+    expect(monatAusZweck('aprilmiete 2026 schönhalde 28', '2026-04-01')).toBe('2026-04-01');
+  });
+  test('englisch und spanisch', () => {
+    expect(monatAusZweck('October 2026', '2026-10-01')).toBe('2026-10-01');
+    expect(monatAusZweck('alquiler de enero 2026', '2026-01-02')).toBe('2026-01-01');
+    expect(monatAusZweck('Setiembre 2026', '2026-09-01')).toBe('2026-09-01');
+    expect(monatAusZweck('DE MEO. Rent + Nebenkost + Parking (August 25)', '2025-08-05')).toBe('2025-08-01');
+  });
+  test('Zahlformen', () => {
+    expect(monatAusZweck('Miete Marktgasse 24. 11/25', '2025-11-03')).toBe('2025-11-01');
+    expect(monatAusZweck('Miete 08/26 für Irisweg 83', '2026-07-27')).toBe('2026-08-01');
+    expect(monatAusZweck('Abschlag 2026-03', '2026-03-02')).toBe('2026-03-01');
+  });
+  test('Jahreswechsel ohne Jahresangabe', () => {
+    /* Im Januar gezahlte Dezembermiete gehoert ins Vorjahr. */
+    expect(monatAusZweck('Miete Dezember', '2026-01-05')).toBe('2025-12-01');
+    /* Im Dezember gezahlte Januarmiete ins Folgejahr. */
+    expect(monatAusZweck('Miete Januar', '2025-12-28')).toBe('2026-01-01');
+  });
+  test('ohne Monatsangabe kommt nichts zurueck', () => {
+    expect(monatAusZweck('Miete Elena Lazic', '2025-06-03')).toBeNull();
+    expect(monatAusZweck('Mietzahlung Schweigert Joshua', '2025-07-02')).toBeNull();
+    expect(monatAusZweck(null, '2025-07-02')).toBeNull();
+  });
+  test('kurze Kuerzel treffen nicht mitten im Wort', () => {
+    /* „mar" in „Marktgasse" darf nicht als Maerz gelesen werden. */
+    expect(monatAusZweck('Miete Marktgasse 24', '2025-05-02')).toBeNull();
+  });
+  test('zwei verschiedene Monate sind mehrdeutig', () => {
+    expect(monatAusZweck('Miete Januar und Februar', '2025-01-05')).toBeNull();
+  });
+});
+
+describe('Kontozuordnung', () => {
+  test('N24 laeuft ueber das La-Perla-Konto, alles andere ueber das Mietkonto', () => {
+    expect(kontoFuer('n24')).toBe(4);
+    expect(kontoFuer('MG24')).toBe(7);
+    expect(kontoFuer('s28')).toBe(7);
+    expect(kontoFuer('unbekannt')).toBe(7);
   });
 });

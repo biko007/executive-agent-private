@@ -19,7 +19,7 @@ import {
 import { handleObligationsAlert } from '../nk/alerts.js';
 import {
   sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
-  dublettenMarkieren, laufenderMonat,
+  dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB,
 } from './mietforderungen.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 import { erzeugeEingabeblatt } from './casameta.js';
@@ -144,11 +144,26 @@ export function registerAssetsHttpRoutes(api: any) {
                   LEFT JOIN banking_transactions bt ON bt.id = pl.transaction_id
                  WHERE r.lease_id = $1
                  GROUP BY r.id ORDER BY r.period_month`, [leaseId]);
-              json(res, 200, rows);
+              /* Ein Monat ohne Bankdaten ist weder bezahlt noch offen — die
+                 Monatszeile muss das sagen, sonst liest sie sich wie ein
+                 Rueckstand. Grau statt rot. */
+              const { rows: objekt } = await dbQuery<any>(`
+                SELECT p.code FROM leases l
+                  JOIN units u ON u.id = l.unit_id JOIN properties p ON p.id = u.property_id
+                 WHERE l.id = $1`, [leaseId]);
+              const monateMitDaten = objekt.length
+                ? (await abdeckung(SOLL_AB)).get(kontoFuer(objekt[0].code)) || new Set<string>()
+                : new Set<string>();
+              json(res, 200, (rows as any[]).map(z => ({
+                ...z,
+                bankdaten: !!z.gilt_als_bezahlt || monateMitDaten.has(z.monat),
+              })));
               return;
             }
-            /* Eingaenge, die keiner Forderung zugeordnet sind. Nur FinTS, nur
-               Eingaenge, nur ab 2025 — alles andere ist kein Mietthema. */
+            /* Eingaenge, die keiner Forderung zugeordnet sind. Beide Quellen,
+               nur Eingaenge, nur ab Sollstellungsbeginn — alles andere ist kein
+               Mietthema. Juli und August 2026 liegen ausschliesslich als
+               Kontoauszug vor; mit dem alten FinTS-Filter fehlten sie hier. */
             if (sub === 'offen' && req.method === 'GET') {
               const { rows } = await dbQuery(`
                 SELECT t.id, to_char(t.booking_date,'YYYY-MM-DD') AS datum, t.amount::float AS betrag,
@@ -156,10 +171,10 @@ export function registerAssetsHttpRoutes(api: any) {
                        a.display_name AS konto
                   FROM banking_transactions t
                   JOIN banking_accounts a ON a.id = t.account_id
-                 WHERE t.source='fints' AND t.amount > 0 AND t.booking_date >= '2025-01-01'
+                 WHERE t.amount > 0 AND t.booking_date >= $1
                    AND t.duplicate_of IS NULL
                    AND NOT EXISTS (SELECT 1 FROM rent_payment_links l WHERE l.transaction_id = t.id)
-                 ORDER BY t.booking_date DESC LIMIT 200`);
+                 ORDER BY t.booking_date DESC LIMIT 200`, [SOLL_AB]);
               json(res, 200, rows);
               return;
             }

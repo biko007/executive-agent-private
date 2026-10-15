@@ -29,11 +29,21 @@
  *     Vertragsmerkmal `owner_hauptmieter` und nicht an einer Liste im Code —
  *     die L19-Einheiten werden bald umgewandelt, dann genügt ein Haken.
  *
- * NUR FINTS. Für den Abgleich zählen ausschließlich Umsätze aus der
- * Banksynchronisierung. Die aus Kontoauszügen nachgetragenen Zeilen
- * (`source = 'pdf_import'`) bleiben außen vor: Sie sind beim Nachtragen teils
- * mit vertauschten Feldern angekommen und stehen für 40 Buchungen doppelt
- * neben der FinTS-Fassung.
+ * WELCHE UMSÄTZE ZÄHLEN. Erst hieß es „nur FinTS". Das war für die laufenden
+ * Monate richtig und für die Historie falsch: **Juli und August 2026 enthalten
+ * auf beiden Konten KEINEN einzigen FinTS-Umsatz**, September nur neun. Diese
+ * Monate stehen ausschließlich als Kontoauszug-Nachtrag im Bestand. Wer sie
+ * weglässt, erklärt dreizehn pünktliche Mieter zu Säumigen — genau das ist im
+ * ersten Probelauf passiert.
+ *
+ * Deshalb zählen beide Quellen, mit FinTS als Vorrang: Steht dieselbe Buchung
+ * in beiden, gewinnt die FinTS-Fassung; die nachgetragene bleibt außen vor.
+ *
+ * WAS NICHT BEWERTET WIRD. Ein Monat ohne jede Buchung auf dem Konto sagt
+ * nichts über den Mieter — er sagt nur, dass die Bankdaten fehlen. Solche
+ * Monate gelten weder als bezahlt noch als offen, sondern als „keine
+ * Bankdaten". Rot wird ein Mieter nur, wenn in einem Monat MIT Bankdaten eine
+ * Zahlung fehlt oder zu gering ist.
  */
 import { query as dbQuery } from '../../shared/db/index.js';
 
@@ -165,6 +175,92 @@ export function sollZeilen(v: VertragSoll, bis: string, ab = SOLL_AB): SollZeile
   return zeilen;
 }
 
+/**
+ * Welches Konto führt welches Objekt?
+ *
+ * Die Mieten aller Objekte des Eigentümers laufen über das Mietkonto; N24
+ * gehört der La Perla GmbH und läuft über deren Geschäftsgiro. Das ist eine
+ * Tatsache der Kontoführung, keine Annahme — sie entscheidet, für welches
+ * Konto die Abdeckung eines Monats geprüft wird.
+ */
+export const OBJEKT_KONTO: Record<string, number> = {
+  n24: 4,
+  mg24: 7, l19: 7, s28: 7, i83: 7, d4: 7,
+};
+export const KONTO_STANDARD = 7;
+
+/** Monatsnamen in den drei Sprachen, die in den Verwendungszwecken vorkommen. */
+const MONATSWORTE: Record<string, number> = {
+  januar: 1, january: 1, enero: 1, jan: 1,
+  februar: 2, february: 2, febrero: 2, feb: 2,
+  maerz: 3, march: 3, marzo: 3, mar: 3,
+  april: 4, abril: 4, apr: 4,
+  mai: 5, may: 5, mayo: 5,
+  juni: 6, june: 6, junio: 6, jun: 6,
+  juli: 7, july: 7, julio: 7, jul: 7,
+  august: 8, agosto: 8, aug: 8,
+  september: 9, septiembre: 9, setiembre: 9, sep: 9, sept: 9,
+  oktober: 10, october: 10, octubre: 10, okt: 10, oct: 10,
+  november: 11, noviembre: 11, nov: 11,
+  dezember: 12, december: 12, diciembre: 12, dez: 12, dec: 12,
+};
+
+/**
+ * Welchen Monat nennt der Verwendungszweck?
+ *
+ * Viele Mieter schreiben ihn hin: „Miete Oktober 2025", „October 26",
+ * „alquiler de enero 2026", „Miete Marktgasse 24. 11/25", „aprilmiete 2026".
+ * Wer das tut, hat Anspruch darauf, dass die Zahlung auf DIESEN Monat gebucht
+ * wird — § 366 Abs. 1 BGB: Die Tilgungsbestimmung des Schuldners geht vor.
+ * Erst ohne Angabe gilt die älteste offene Forderung.
+ *
+ * `bezug` ist das Buchungsdatum; aus ihm kommt das Jahr, wenn der Zweck keines
+ * nennt. Eine im Januar gezahlte Dezembermiete gehört ins Vorjahr.
+ */
+export function monatAusZweck(zweck: string | null | undefined, bezug: string): string | null {
+  const z = normal(zweck);
+  if (!z) return null;
+  const bezugJahr = Number(bezug.slice(0, 4));
+  const bezugMonat = Number(bezug.slice(5, 7));
+
+  /* Zuerst die Zahlformen: 11/25, 11/2025, 2025-11. Sie sind eindeutig. */
+  const roh = String(zweck);
+  const m1 = roh.match(/\b(0?[1-9]|1[0-2])\s*[\/.]\s*(20\d{2}|\d{2})\b/);
+  if (m1) {
+    const monat = Number(m1[1]);
+    const jahr = m1[2].length === 4 ? Number(m1[2]) : 2000 + Number(m1[2]);
+    if (jahr >= 2020 && jahr <= 2040) return `${jahr}-${String(monat).padStart(2, '0')}-01`;
+  }
+  const m2 = roh.match(/\b(20\d{2})-(0?[1-9]|1[0-2])\b/);
+  if (m2) return `${m2[1]}-${String(Number(m2[2])).padStart(2, '0')}-01`;
+
+  /* Dann die Wortform. „aprilmiete" schreibt der Mieter ohne Leerzeichen —
+     deshalb wird nicht auf Wortgrenzen geprüft, sondern auf Vorkommen. Kurze
+     Kürzel wie „mar" nur, wenn sie als eigenes Wort stehen: sonst träfe „mar"
+     in „Marktgasse". */
+  let gefunden: number | null = null;
+  for (const [wort, monat] of Object.entries(MONATSWORTE)) {
+    const treffer = wort.length <= 4
+      ? new RegExp(`(^| )${wort}( |$)`).test(z)
+      : z.includes(wort);
+    if (!treffer) continue;
+    if (gefunden !== null && gefunden !== monat) return null;  // mehrdeutig
+    gefunden = monat;
+  }
+  if (gefunden === null) return null;
+
+  const jahrImZweck = roh.match(/\b(20[2-4]\d)\b/);
+  let jahr = jahrImZweck ? Number(jahrImZweck[1]) : bezugJahr;
+  if (!jahrImZweck) {
+    /* Ohne Jahresangabe: Der genannte Monat liegt nahe am Buchungsmonat.
+       Eine im Januar gezahlte „Dezember"-Miete gehört ins Vorjahr, eine im
+       Dezember gezahlte „Januar"-Miete ins Folgejahr. */
+    if (gefunden - bezugMonat > 6) jahr -= 1;
+    else if (bezugMonat - gefunden > 6) jahr += 1;
+  }
+  return `${jahr}-${String(gefunden).padStart(2, '0')}-01`;
+}
+
 /* ── Zuordnung ──────────────────────────────────────────────────────────── */
 
 export interface Zahlung {
@@ -202,11 +298,38 @@ const KEINE_MIETE = [
   'rueckzahlung', 'erstattung', 'gutschrift',
 ];
 
-/** Spricht der Verwendungszweck dagegen, dass dies eine Mietzahlung ist? */
-export function istKeineMiete(zweck: string | null | undefined): boolean {
+/**
+ * Mieterstrom läuft als eigener Liefervertrag (§ 42a EnWG) und nicht über die
+ * Miete: W1 von N24 überweist monatlich 70,00 € mit dem Vertragszeichen
+ * „341-003", Familie De Meo denselben Betrag als „Strom". Ohne diese Sperre
+ * tilgen elf Stromabschläge eine Drittelmiete.
+ *
+ * In der normalisierten Form steht statt des Bindestrichs ein Leerzeichen:
+ * aus „341-003" wird „341 003".
+ */
+const MIETERSTROM = ['strom', '341 0'];
+
+/** Obergrenze eines Mieterstrom-Abschlags. Die Abschläge liegen bei 70,00 €. */
+const MIETERSTROM_HOECHSTBETRAG = 200;
+
+/** Wörter, die eine Zahlung ausdrücklich als Miete ausweisen — auch mehrsprachig. */
+const MIETWORT = ['miete', 'mieten', 'vermietung', 'mietzahlung', 'alquiler', 'rent'];
+
+/**
+ * Spricht der Verwendungszweck dagegen, dass dies eine Mietzahlung ist?
+ *
+ * Der Betrag entscheidet mit: „miete juni plus 50 euro strom" über 1.540,00 €
+ * ist eine Miete, die den Strom nur nebenbei erwähnt. Die erste Fassung hat
+ * genau diese Zahlung und eine zweite über 1.390,00 € verworfen und dem Mieter
+ * zwei Monate Rückstand angerechnet, die er bezahlt hatte.
+ */
+export function istKeineMiete(zweck: string | null | undefined, betrag?: number): boolean {
   const z = normal(zweck);
   if (!z) return false;
-  return KEINE_MIETE.some(w => z.includes(w));
+  if (KEINE_MIETE.some(w => z.includes(w))) return true;
+  if (!MIETERSTROM.some(w => z.includes(w))) return false;
+  if (betrag !== undefined && betrag > MIETERSTROM_HOECHSTBETRAG) return false;
+  return !MIETWORT.some(w => z.includes(w));
 }
 
 /** Satzzeichen weg, Umlaute vereinheitlicht, alles klein — für den Namensvergleich. */
@@ -238,7 +361,7 @@ export function normal(s: string | null | undefined): string {
  * den Zweck, nicht die Adresse.
  */
 export function zuordnen(z: Zahlung, zahler: Zahler[]): { lease_id: number; grundlage: Grundlage } | null {
-  if (istKeineMiete(z.reference)) return null;
+  if (istKeineMiete(z.reference, z.amount)) return null;
   const iban = String(z.counterparty_iban || '').replace(/\s+/g, '').toUpperCase();
   if (iban) {
     const treffer = zahler.filter(k => k.iban && k.iban.replace(/\s+/g, '').toUpperCase() === iban);
@@ -408,6 +531,39 @@ export async function zahlerListe(): Promise<Zahler[]> {
   return liste;
 }
 
+/**
+ * Für welche Monate liegen auf einem Konto überhaupt Bankdaten vor?
+ *
+ * Ein Monat gilt als abgedeckt, sobald er mindestens eine Buchung trägt —
+ * gleich aus welcher Quelle. Das ist bewusst grob: Ob ein einzelner Umsatz
+ * fehlt, lässt sich von außen nicht feststellen; ob ein ganzer Monat fehlt,
+ * sehr wohl. Und nur das trennt „hat nicht gezahlt" von „wissen wir nicht".
+ */
+export async function abdeckung(ab = SOLL_AB, bis?: string): Promise<Map<number, Set<string>>> {
+  const { rows } = await dbQuery<any>(`
+    SELECT account_id, to_char(booking_date,'YYYY-MM') AS monat, count(*)::int AS n
+      FROM banking_transactions
+     WHERE booking_date >= $1 ${bis ? 'AND booking_date <= $2' : ''}
+     GROUP BY account_id, to_char(booking_date,'YYYY-MM')`,
+    bis ? [ab, bis] : [ab]);
+  /* account_id ist bigint und kommt aus pg als Zeichenkette — ohne Number()
+     greift der spaetere Zugriff mit einer Zahl ins Leere, und jeder Monat
+     gaelte als „keine Bankdaten". Genau das ist im Probelauf passiert. */
+  const karte = new Map<number, Set<string>>();
+  for (const r of rows) {
+    const konto = Number(r.account_id);
+    const menge = karte.get(konto) || new Set<string>();
+    menge.add(r.monat);
+    karte.set(konto, menge);
+  }
+  return karte;
+}
+
+/** Das Konto, über das die Mieten eines Objekts laufen. */
+export function kontoFuer(objekt: string): number {
+  return OBJEKT_KONTO[String(objekt).toLowerCase()] ?? KONTO_STANDARD;
+}
+
 export interface ZuordnungErgebnis {
   geprueft: number;
   zugeordnet: number;
@@ -437,16 +593,22 @@ export async function zahlungenZuordnen(
   };
   const zahler = await zahlerListe();
 
-  /* Nur FinTS, nur Eingänge, nur ab dem Sollstellungsbeginn — und keine Zeile,
-     die bereits einer Forderung zugeordnet ist. */
+  /* Beide Quellen, Eingänge ab dem Sollstellungsbeginn, jede Buchung einmal.
+     Die Entdopplung läuft hier noch einmal über Konto, Tag und Betrag — auch
+     wenn `duplicate_of` noch nicht gesetzt ist, soll der Abgleich stimmen. */
   const { rows: zahlungen } = await dbQuery<any>(`
-    SELECT t.id, t.account_id, to_char(t.booking_date,'YYYY-MM-DD') AS booking_date,
-           t.amount::float, t.counterparty_name, t.counterparty_iban, t.reference
-      FROM banking_transactions t
-     WHERE t.source = 'fints' AND t.amount > 0 AND t.booking_date >= $1
-       AND t.duplicate_of IS NULL
-       AND NOT EXISTS (SELECT 1 FROM rent_payment_links l WHERE l.transaction_id = t.id)
-     ORDER BY t.booking_date, t.id`, [SOLL_AB]);
+    WITH kandidaten AS (
+      SELECT t.id, t.account_id, to_char(t.booking_date,'YYYY-MM-DD') AS booking_date,
+             t.amount::float AS amount, t.counterparty_name, t.counterparty_iban,
+             t.reference, t.source,
+             row_number() OVER (
+               PARTITION BY t.account_id, t.booking_date, t.amount
+               ORDER BY CASE WHEN t.source = 'fints' THEN 0 ELSE 1 END, t.id
+             ) AS rang
+        FROM banking_transactions t
+       WHERE t.amount > 0 AND t.booking_date >= $1 AND t.duplicate_of IS NULL
+         AND NOT EXISTS (SELECT 1 FROM rent_payment_links l WHERE l.transaction_id = t.id))
+    SELECT * FROM kandidaten WHERE rang = 1 ORDER BY booking_date, id`, [SOLL_AB]);
 
   for (const z of zahlungen as Zahlung[]) {
     erg.geprueft++;
@@ -478,12 +640,19 @@ export async function zahlungenZuordnen(
     }
 
     let rest = Math.round(z.amount * 100) / 100;
-    const { rows: offen } = await dbQuery<any>(`
-      SELECT r.id, r.expected_amount::float AS soll, r.paid_amount::float AS ist
+    const { rows: alle } = await dbQuery<any>(`
+      SELECT r.id, to_char(r.period_month,'YYYY-MM-DD') AS monat,
+             r.expected_amount::float AS soll, r.paid_amount::float AS ist
         FROM rent_ledger r
        WHERE r.lease_id = $1 AND r.status <> 'paid'
          AND r.expected_amount > coalesce(r.paid_amount,0)
        ORDER BY r.period_month`, [treffer.lease_id]);
+    /* Nennt der Verwendungszweck einen Monat, gilt er (§ 366 Abs. 1 BGB).
+       Sonst die älteste offene Forderung. */
+    const genannt = monatAusZweck(z.reference, z.booking_date);
+    const offen = genannt
+      ? [...alle.filter((f: any) => f.monat === genannt), ...alle.filter((f: any) => f.monat !== genannt)]
+      : alle;
     for (const f of offen) {
       if (rest <= 0.004) break;
       const fehlt = Math.round((f.soll - (f.ist || 0)) * 100) / 100;
@@ -514,6 +683,10 @@ export interface Ampel {
   /** Mieter-Kennungen des Vertrags — damit die Mieterliste ihr Laempchen findet. */
   tenant_ids: number[];
   owner_hauptmieter: boolean;
+  /** Konto, über das die Mieten dieses Objekts laufen. */
+  konto: number;
+  /** Fällige Monate, für die auf dem Konto keine Buchung vorliegt — nicht bewertet. */
+  monate_ohne_bankdaten: string[];
   /** Monatliches Gesamtsoll laut Vertrag — das, was unter „Miete/Mo" stehen soll. */
   monatssoll: number;
   bestandteile: { kaltmiete: number; nk: number; heizkosten: number; garage: number; kueche: number };
@@ -533,6 +706,7 @@ export interface Ampel {
  */
 export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
   const heute = stichtag || new Date().toISOString().slice(0, 10);
+  const deckung = await abdeckung(SOLL_AB, heute);
   const { rows } = await dbQuery<any>(`
     SELECT l.id AS lease_id, p.code AS objekt, u.code AS einheit, l.owner_hauptmieter,
            l.status, to_char(l.end_date,'YYYY-MM-DD') AS end_date,
@@ -561,10 +735,17 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
              coalesce(paid_amount,0)::float AS ist, gilt_als_bezahlt
         FROM rent_ledger WHERE lease_id=$1 AND due_date <= $2 ORDER BY period_month`,
       [v.lease_id, heute]);
-    let soll = 0; let ist = 0; const offen: string[] = [];
+    /* Nur Monate mit Bankdaten werden bewertet. Fuer die eigenen Einheiten
+       spielt die Abdeckung keine Rolle — dort gilt die Forderung ohnehin als
+       beglichen. */
+    const konto = kontoFuer(v.objekt);
+    const monateMitDaten = deckung.get(konto) || new Set<string>();
+    let soll = 0; let ist = 0; const offen: string[] = []; const ohneDaten: string[] = [];
     for (const z of f) {
+      const eigen = !!v.owner_hauptmieter || !!z.gilt_als_bezahlt;
+      if (!eigen && !monateMitDaten.has(z.monat)) { ohneDaten.push(z.monat); continue; }
       soll += z.soll;
-      const gezahlt = z.gilt_als_bezahlt || v.owner_hauptmieter ? z.soll : z.ist;
+      const gezahlt = eigen ? z.soll : z.ist;
       ist += gezahlt;
       if (z.soll - gezahlt > 0.005) offen.push(z.monat);
     }
@@ -577,6 +758,7 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
       lease_id: v.lease_id, objekt: v.objekt, einheit: v.einheit,
       mieter: v.mieter || '—', tenant_ids: (v.tenant_ids || []).map(Number),
       owner_hauptmieter: !!v.owner_hauptmieter,
+      konto, monate_ohne_bankdaten: ohneDaten,
       monatssoll,
       bestandteile: { kaltmiete: v.kaltmiete, nk: v.nk, heizkosten: v.heizkosten,
         garage: v.garage, kueche: v.kueche },

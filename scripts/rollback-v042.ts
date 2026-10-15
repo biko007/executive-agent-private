@@ -25,6 +25,12 @@ function postgresUrl(): string {
   return t[1];
 }
 
+/*
+ * banking_transactions.updated_at wird ABSICHTLICH NICHT zurueckgenommen.
+ * V027 hat der Tabelle den Trigger set_updated_at() ohne die passende Spalte
+ * gegeben; ohne updated_at bricht jede Aenderung an einem Umsatz ab. Die
+ * Spalte zu entfernen wuerde diesen Fehler wiederherstellen — sie bleibt.
+ */
 const SCHRITTE = [
   `DROP TABLE IF EXISTS rent_payment_links`,
   `DROP TABLE IF EXISTS lease_payers`,

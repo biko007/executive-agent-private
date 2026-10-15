@@ -4,7 +4,7 @@
 -- ableiten, sie mit den FinTS-Umsaetzen abgleichen und je Mieter und Objekt
 -- ein Laempchen zeigen. Dazu kommt die Berichtigung der Umsatzanzeige.
 --
--- Vier Aenderungen, alle additiv. Nichts wird geloescht, keine Spalte entfaellt.
+-- Fuenf Aenderungen, alle additiv. Nichts wird geloescht, keine Spalte entfaellt.
 
 -- ---------------------------------------------------------------------------
 -- 1. Hauptmieter des Eigentuemers als VERTRAGSMERKMAL
@@ -104,6 +104,25 @@ CREATE INDEX IF NOT EXISTS banking_transactions_duplicate_idx
 
 COMMENT ON COLUMN banking_transactions.duplicate_of IS
   'Zeigt auf den fuehrenden Umsatz derselben Buchung. Gesetzt = aus der Anzeige nehmen, nicht loeschen.';
+
+-- ---------------------------------------------------------------------------
+-- 5. updated_at bei banking_transactions NACHTRAGEN
+--
+-- V027 hat die Tabelle ohne updated_at angelegt, ihr aber den Trigger
+-- trg_banking_transactions_updated_at mit set_updated_at() gegeben. Die
+-- Funktion setzt NEW.updated_at — die Spalte fehlt. Folge: JEDE Aenderung an
+-- banking_transactions bricht mit
+--   ERROR: record "new" has no field "updated_at"
+-- ab. Das ist bisher niemandem aufgefallen, weil Umsaetze nur eingefuegt und
+-- nie geaendert wurden. Mit duplicate_of (Punkt 4) und der Korrektur der elf
+-- Auszugszeilen mit vertauschten Feldern wird erstmals geaendert; ohne diese
+-- Spalte scheitert beides.
+--
+-- Die drei uebrigen Banking-Tabellen aus V027 haben die Spalte; hier wird nur
+-- nachgezogen, was dort schon steht.
+-- ---------------------------------------------------------------------------
+ALTER TABLE banking_transactions
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
 -- Schema-Version fortschreiben.
 INSERT INTO schema_version (module, version, applied_at)
