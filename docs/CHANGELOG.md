@@ -4,6 +4,21 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-15 — Vorauszahlungen lassen sich korrigieren
+
+`lease_charges` kannte nur Anlegen und Lesen. Eine einmal erfasste
+Betriebskosten-Vorauszahlung war damit nicht mehr zu berichtigen — und genau das war
+noetig, als die DATEV-Buchungsliste 2025 zeigte, dass die Vorauszahlung eines MG24-Mieters
+erst einen Monat spaeter zu laufen begann als hinterlegt: Fuer Mai 2025 ist keine Zahlung
+eingegangen, die 3.580,00 EUR vom 30.04. sind die vertragliche Kaution.
+
+`PATCH /api/assets/leases/:id/charges/:chargeId` aendert jetzt Betrag, Gueltigkeit, Art,
+Steuersatz, Notiz und `archived_at`, mit Audit-Eintrag wie ueberall sonst.
+
+Gates: Build, Command-Guard, 1.304 Tests.
+
+---
+
 ## Stand 2026-10-15 — Die Dropbox-Liste verschwieg Unterordner
 
 `scripts/dropbox-holen.ts liste` filterte Ordnereintraege heraus und zeigte nur Dateien.

@@ -453,7 +453,7 @@ export function registerAssetsHttpRoutes(api: any) {
 
         await withContext({ requestId, actor, source: 'dashboard' }, async () => {
           try {
-            if (segments[2] === 'charges') { await handleLeaseCharges(req, res, leaseId); return; }
+            if (segments[2] === 'charges') { await handleLeaseCharges(req, res, leaseId, segments[3]); return; }
             if (segments[2] === 'end') { await handleLeaseEnd(req, res, leaseId); return; }
             if (segments[2] === 'revoke-end') { await handleLeaseRevokeEnd(req, res, leaseId); return; }
             if (segments[2] === 'move-out') { await handleLeaseMoveOut(req, res, leaseId); return; }
@@ -1319,7 +1319,37 @@ async function handleLeaseVertragsparteien(
   json(res, 201, rows[0]);
 }
 
-async function handleLeaseCharges(req: IncomingMessage, res: ServerResponse, leaseId: string) {
+async function handleLeaseCharges(
+  req: IncomingMessage, res: ServerResponse, leaseId: string, chargeId?: string,
+) {
+  /* Eine einzelne Position aendern. Ohne diesen Weg liesse sich eine einmal
+     angelegte Vorauszahlung nicht mehr berichtigen — und genau das war noetig,
+     als am 15.10.2026 aus der Buchungsliste hervorging, dass die
+     Vorauszahlung eines Mieters erst einen Monat spaeter zu laufen begann.
+     Jede Aenderung geht ins Audit-Log. */
+  if (chargeId && req.method === 'PATCH') {
+    const body = await parseJsonBody(req);
+    const { rows: before } = await dbQuery(
+      'SELECT * FROM lease_charges WHERE id = $1 AND lease_id = $2', [chargeId, leaseId]);
+    if (before.length === 0) { err(res, 404, 'Charge not found'); return; }
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let pi = 1;
+    for (const field of ['charge_type', 'amount', 'vat_rate', 'valid_from', 'valid_until', 'notes', 'archived_at']) {
+      if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
+    }
+    if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }
+    params.push(chargeId);
+    const { rows: after } = await dbQuery(
+      `UPDATE lease_charges SET ${sets.join(', ')} WHERE id = $${pi} RETURNING *`, params);
+    await audit.log({
+      module: 'assets', action: 'lease_charge.update', entityType: 'lease_charge',
+      entityId: String(chargeId), before: before[0], after: after[0],
+    });
+    json(res, 200, after[0]);
+    return;
+  }
+  if (chargeId) { err(res, 405, 'Method not allowed'); return; }
   if (req.method === 'GET') {
     const { rows } = await dbQuery(
       'SELECT * FROM lease_charges WHERE lease_id = $1 AND archived_at IS NULL ORDER BY valid_from DESC', [leaseId]

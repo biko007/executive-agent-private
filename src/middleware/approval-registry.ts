@@ -43,6 +43,7 @@ export const APPROVAL_ENDPOINTS: Record<string, ApprovalSpec> = {
 
   // Lease Charges
   'lease-charges.create': { endpointKey: 'lease-charges.create', method: 'POST', pathPattern: '/api/assets/leases/:id/charges', requiresApproval: true, idempotency: false, description: 'Create lease charge' },
+  'lease-charges.update': { endpointKey: 'lease-charges.update', method: 'PATCH', pathPattern: '/api/assets/leases/:id/charges/:chargeId', requiresApproval: true, idempotency: false, description: 'Update lease charge' },
 
   // Expense Bookings
   'expense-bookings.create': { endpointKey: 'expense-bookings.create', method: 'POST', pathPattern: '/api/assets/properties/:id/expense-bookings', requiresApproval: true, idempotency: false, description: 'Create expense booking' },
