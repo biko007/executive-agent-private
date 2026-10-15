@@ -4,6 +4,21 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-15 — Die Dropbox-Liste verschwieg Unterordner
+
+`scripts/dropbox-holen.ts liste` filterte Ordnereintraege heraus und zeigte nur Dateien.
+Ein Ordner, der ausschliesslich Unterordner enthaelt, sah damit aus wie ein leerer Ordner.
+Genau das ist am 15.10.2026 passiert: `transfer` zeigte sieben Dateien, der Unterordner
+`SWT-Rechnungen` mit 52 Belegen blieb unsichtbar, und der Report behauptete daraufhin, die
+beiden gesuchten SWT-Rechnungen lägen nicht mehr vor. Sie lagen die ganze Zeit dort.
+
+Die Liste nennt jetzt zuerst die Unterordner (`[Ordner] name/`) und dann die Dateien, mit
+beiden Anzahlen in der Kopfzeile. Die Lehre daneben gilt unabhaengig vom Code: Eine leere
+Trefferliste belegt nicht, dass nichts da ist — sie belegt nur, dass die Abfrage nichts
+gefunden hat.
+
+---
+
 ## Stand 2026-10-15 — Umlageregeln lassen sich korrigieren, nicht nur archivieren
 
 Die Owner-Regel vom 14.10.2026 stellt das Schmutzwasser von der Fläche auf den Verbrauch

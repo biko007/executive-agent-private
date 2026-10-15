@@ -46,7 +46,15 @@ async function main() {
     .sort((a: any, b: any) => a.name.localeCompare(b.name));
 
   if (befehl === 'liste') {
-    console.log(`${dateien.length} Datei(en) in ${ordner}`);
+    /* Unterordner mit ausgeben. Ohne sie sah ein Ordner, der nur Unterordner
+       enthaelt, wie ein leerer Ordner aus — am 15.10.2026 wurde deshalb
+       faelschlich berichtet, transfer/SWT-Rechnungen sei leer. */
+    const ordnerEintraege = eintraege
+      .filter((e: any) => (e.tag ?? e['.tag']) === 'folder')
+      .filter((e: any) => !regex || regex.test(e.name))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+    console.log(`${dateien.length} Datei(en) und ${ordnerEintraege.length} Unterordner in ${ordner}`);
+    for (const o of ordnerEintraege) console.log(`  [Ordner] ${o.name}/`);
     for (const d of dateien) {
       console.log(`  ${d.name}  (${Math.round((d.size ?? 0) / 1024)} kB)`);
     }
