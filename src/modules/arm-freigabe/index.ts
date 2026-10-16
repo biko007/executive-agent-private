@@ -38,18 +38,36 @@ export function ablaufZeitpunkt(jetzt: Date | number = Date.now()): number {
 
 /* ── Texte ────────────────────────────────────────────────────────────────── */
 
-/** Antwort auf `/arm` ohne Argument. */
-export function freigabeGesetztText(ablauf: Date | number, wartetUebertragung: boolean): string {
-  const zeilen = ['gilt für den nächsten roten Schritt'];
-  const fuss = [freigabeZeile(ablauf)];
-  if (wartetUebertragung) {
-    fuss.push('Eine Übertragung wartet. Dafür bitte den Knopf antippen — '
-      + '/arm allein startet sie nicht.');
-  }
-  return systemNachricht({ lage: 'freigabe', titel: 'Freigabe gesetzt', zeilen, fuss });
+/**
+ * Antwort auf `/arm` — ohne Argument wie mit `push`.
+ *
+ * GEAENDERT AM 16.10.2026. Bis dahin sagte die Quittung nur „Freigabe gesetzt"
+ * und liess offen, WOFUER. Der Owner musste raten, ob `/arm` fuer eine
+ * Migration, einen Push oder einen Neustart genuegt — und ob er `/arm push`
+ * haette senden muessen. Jetzt nennt die Antwort den Schritt, sofern cc ihn
+ * vorgemerkt hat, und sagt, was als Naechstes laeuft.
+ *
+ * @param schritt  Der vorgemerkte rote Schritt, oder null.
+ * @param gestartet Wurde die wartende Sitzung angestossen?
+ */
+export function freigabeGesetztText(
+  ablauf: Date | number, schritt: string | null, gestartet: boolean,
+): string {
+  const zeilen = schritt
+    ? [`freigegeben: ${schritt}`]
+    : ['gilt für den nächsten roten Schritt'];
+  zeilen.push(gestartet
+    ? 'cc führt ihn jetzt aus'
+    : 'cc führt ihn beim nächsten Schritt aus');
+  return systemNachricht({
+    lage: gestartet ? 'ok' : 'freigabe',
+    titel: gestartet ? 'Freigegeben und gestartet' : 'Freigabe gesetzt',
+    zeilen,
+    fuss: [freigabeZeile(ablauf)],
+  });
 }
 
-/** Antwort auf `/arm push` und auf den Knopf. */
+/** Antwort auf `/arm push` und auf den Knopf, wenn nichts vorgemerkt ist. */
 export function uebertragungGestartetText(ablauf: Date | number): string {
   return systemNachricht({
     lage: 'ok',
@@ -88,7 +106,9 @@ export function verbrauchtText(): string {
 }
 
 /** Falsche Nutzung von /arm. */
-export const NUTZUNG_TEXT = 'Nutzung: /arm  oder  /arm push';
+/* Seit 16.10.2026 sind beide gleichwertig; `push` bleibt nur, damit aeltere
+   Texte und der Knopf weiter stimmen. */
+export const NUTZUNG_TEXT = 'Nutzung: /arm  (oder gleichbedeutend /arm push)';
 
 /* ── Knopf ────────────────────────────────────────────────────────────────── */
 

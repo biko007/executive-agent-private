@@ -164,14 +164,17 @@ cc committet lokal, schreibt Report, **STOPPT vor Push/Deploy/Restart**. Owner p
   `hooks/**` und `.claude/hooks/**`, `.claude/settings*.json`, `.github/workflows/**`,
   env-/Secret-Dateien. Rote Befehle zusätzlich um Löschoperationen gegen `openclaw_core`
   erweitert. Details: `docs/ARCHITECTURE.md`, Abschnitt „Rote Zone".
-- **cc setzt `/arm` NIE selbst**
+- **cc setzt `/arm` NIE selbst.** cc darf nur den wartenden Schritt *anmelden*:
+  `bun run scripts/arm-vormerken.ts "<ein Satz>" <push|weiter|>`. Die Vormerkung
+  ist eine Beschriftung für die Telegram-Quittung — sie gibt nichts frei,
+  verlängert keine Frist und ersetzt keine Prüfung.
 - **Zwei Linien seit 13.10.2026:** `scripts/hooks/pre-push` prueft die tatsaechlich
   uebertragenen Refs (auch aus einer SSH-Sitzung, auch Submodul-Inhalte) und
   verbraucht die Freigabe; `~/.claude/hooks/deny-destructive.sh` bleibt zweite Linie
   und verbraucht nur noch bei roten Befehlen. Fail-closed ist nicht armbar.
 - Armed-Flag: `~/.armed-bikosoc` (one-shot, wird nach Verbrauch gelöscht).
   **Verfallsfrist seit 13.10.2026: 15 Minuten** (`ARM_TTL`, Vorgabe 900 s) — eine
-  aeltere Freigabe wird verworfen. Zwischen `/arm push` und Push duerfen also nicht
+  aeltere Freigabe wird verworfen. Zwischen `/arm` und dem roten Schritt duerfen also nicht
   mehr als 15 Minuten liegen.
 - Manifest 11 erfüllt durch: Gates + Evidence-Bundle im Report + Owner-Freigabe
 
@@ -256,7 +259,7 @@ aller betroffenen Repos prüfen. DONE nur bei vollständigen Gates; sonst PARTIA
 
 **Pflichtzeilen in jedem Report (ab 2026-10-10):**
 - `Rote Zone berührt: ja/nein (Pfade)` — bei `ja` die konkreten Pfade nennen und sagen,
-  ob `/arm push` nötig war oder noch ist. Bei `nein` genügt das Wort.
+  ob `/arm` nötig war oder noch ist. Bei `nein` genügt das Wort.
 - `Rückweg:` — der konkrete Befehl, mit dem die Änderung zurückgenommen wird
   (z. B. `git revert <sha>` + `scripts/deploy.sh openclaw-gateway`), plus was dabei
   NICHT zurückgedreht wird (Daten, Dropbox-Dateien, env-Werte, gelöschte Dateien).
@@ -299,7 +302,7 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **/ccgo** | Plan-Approval (Owner-only; Slug-Match-Prüfung: Folgeauftrag docs/TODO.md #1) |
 | **/do \<text\>** | Prompt-Dispatch an tmux bikosoc (injection-sicher, `--` Separator) |
 | **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
-| **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. `/arm push` armt zusätzlich und dispatcht danach „push" + Enter an tmux bikosoc (gleicher Helfer wie /do). Unbekanntes Argument armt NICHT (fail-closed) |
+| **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. **Seit 16.10.2026 sind `/arm` und `/arm push` gleichbedeutend** — beide geben frei UND stoßen den wartenden Schritt an. Angestoßen wird nur, was angemeldet ist: cc-Vormerkung (`scripts/arm-vormerken.ts`) oder sichtbar wartende Übertragung. Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
 
 **Meldungsdisziplin (2026-09-18) — Env-Flags in `~/.config/openclaw/env`:**

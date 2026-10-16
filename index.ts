@@ -122,9 +122,10 @@ import {
 } from './src/modules/system-telegram/index.js';
 import {
   ARM_TTL_SEK, KNOPF_PRAEFIX, ablaufZeitpunkt, knopfMarkup, pruefeKnopf,
-  freigabeGesetztText, uebertragungGestartetText, startFehlgeschlagenText,
+  freigabeGesetztText, startFehlgeschlagenText,
   knopfErledigtText, NUTZUNG_TEXT,
 } from './src/modules/arm-freigabe/index.js';
+import { vormerkungLesen, vormerkungLoeschen } from './src/modules/arm-freigabe/vormerkung.js';
 import { wartetMeldung } from './src/modules/system-telegram/index.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2631,7 +2632,7 @@ export default function (api: any) {
   // nicht unbemerkt scharfstellen.
   api.registerCommand({
     name: 'arm',
-    description: 'Red Zone: einmalig scharfstellen fuer naechste rote Aktion. /arm [push]',
+    description: 'Rote Zone: den naechsten roten Schritt einmalig freigeben und ausfuehren. /arm [push] — beide gleichbedeutend',
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
@@ -2639,6 +2640,11 @@ export default function (api: any) {
         return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
       }
 
+      /* Seit 16.10.2026 sind `/arm` und `/arm push` gleichwertig: Beide setzen
+         dieselbe Freigabe und stossen denselben wartenden Schritt an. `push`
+         bleibt nur als Alias erhalten, damit aeltere Texte und der Knopf weiter
+         stimmen. Ein unbekanntes Argument setzt weiterhin NICHTS — ein
+         Tippfehler darf die Rote Zone nicht scharfstellen. */
       const mode = String(ctx?.args || '').trim().toLowerCase();
       if (mode !== '' && mode !== 'push') {
         return { text: NUTZUNG_TEXT };
@@ -2647,49 +2653,52 @@ export default function (api: any) {
       try {
         const fs = await import('fs');
         const flagPath = `${process.env.HOME}/.armed-bikosoc`;
+
+        /* Was wartet? Nur cc weiss das; es legt die Angabe ab, wenn es vor
+           einem roten Schritt stehen bleibt. Fehlt sie, bleibt die Quittung
+           allgemein — die Freigabe wirkt davon unberuehrt. */
+        const vorgemerkt = vormerkungLesen(flagPath);
+        const knopfWartet = !!armKnopf && !armKnopf.verbraucht;
+        /* Angestossen wird, was vorgemerkt ist; ohne Vormerkung nur dann, wenn
+           eine Uebertragung wartet oder der Owner ausdruecklich `push` schrieb.
+           Damit startet der Befehl nie etwas, das niemand angemeldet hat. */
+        const anstoss = vorgemerkt
+          ? vorgemerkt.anstoss
+          : (knopfWartet || mode === 'push') ? 'push' : '';
+
         fs.writeFileSync(flagPath, `armed by owner at ${new Date().toISOString()}\n`);
         const ablauf = ablaufZeitpunkt();
 
-        if (mode !== 'push') {
-          /* `/arm` allein setzt die Freigabe und sonst nichts — auch dann nicht,
-             wenn eine Uebertragung wartet. Es waere bequemer, sie gleich mit zu
-             starten; es waere aber auch gefaehrlicher: `/arm` gilt ebenso fuer
-             Migrationen und Datenbankbefehle, und ein Befehl mit zwei Wirkungen
-             startet irgendwann etwas, das der Owner nicht gemeint hat. Statt
-             dessen sagt die Antwort ausdruecklich, was fehlt — und der Knopf an
-             der Wartemeldung erledigt es mit einem Tippen. */
-          const wartet = !!armKnopf && !armKnopf.verbraucht;
-          const text = freigabeGesetztText(ablauf, wartet);
-          api.logger.info(`[arm] Freigabe gesetzt (einmalig, bis ${systemUhrzeit(ablauf)})`);
-          if (guard.chatId) {
-            await sendTelegramHtmlWithMarkup(guard.chatId, text,
-              wartet && armKnopf ? knopfMarkup(armKnopf.kennung) : undefined);
-            return { text: '' };
-          }
-          return { text: 'Freigabe gesetzt.' };
-        }
-
         // Reihenfolge: erst freigeben, dann anstossen. Schlaegt der Anstoss fehl, ist
-        // die Freigabe gesetzt (einmalig) und der Owner kann "push" selbst nachreichen —
+        // die Freigabe gesetzt (einmalig) und der Owner kann "weiter" selbst nachreichen —
         // der umgekehrte Weg liefe in die Sperre der Roten Zone.
-        try {
-          sendPromptToBikosocTmux('push');
-        } catch (e: any) {
-          api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
-          if (guard.chatId) {
-            await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
-            return { text: '' };
+        if (anstoss) {
+          try {
+            sendPromptToBikosocTmux(anstoss);
+          } catch (e: any) {
+            api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
+            if (guard.chatId) {
+              await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
+              return { text: '' };
+            }
+            return { text: `Start fehlgeschlagen: ${e.message}` };
           }
-          return { text: `Start fehlgeschlagen: ${e.message}` };
+          if (armKnopf) armKnopf.verbraucht = true;
         }
 
-        api.logger.info('[arm] Freigabe gesetzt (einmalig) + Anstoss an die Sitzung bikosoc');
-        if (armKnopf) armKnopf.verbraucht = true;
+        /* Die Vormerkung ist verbraucht, sobald sie gemeldet wurde — sonst
+           nennt das naechste `/arm` denselben Schritt noch einmal. */
+        if (vorgemerkt) vormerkungLoeschen(flagPath);
+
+        const text = freigabeGesetztText(ablauf, vorgemerkt?.schritt ?? null, !!anstoss);
+        api.logger.info(`[arm] Freigabe gesetzt (einmalig, bis ${systemUhrzeit(ablauf)})`
+          + `${vorgemerkt ? `, vorgemerkt: ${vorgemerkt.schritt}` : ''}`
+          + `${anstoss ? `, Anstoss "${anstoss}"` : ', ohne Anstoss'}`);
         if (guard.chatId) {
-          await sendTelegramHtmlWithMarkup(guard.chatId, uebertragungGestartetText(ablauf), undefined);
+          await sendTelegramHtmlWithMarkup(guard.chatId, text, undefined);
           return { text: '' };
         }
-        return { text: 'Freigegeben und gestartet.' };
+        return { text: anstoss ? 'Freigegeben und gestartet.' : 'Freigabe gesetzt.' };
       } catch (e: any) {
         api.logger.error(`[arm] Fehler: ${e.message}`);
         return { text: `arm Fehler: ${e.message}` };
@@ -3112,17 +3121,24 @@ export default function (api: any) {
 
         armKnopf!.verbraucht = true;
         const ablauf = ablaufZeitpunkt();
+        /* Der Knopf erledigt denselben Schritt wie `/arm`. Also muss er auch
+           dieselbe Vormerkung verbrauchen — sonst nennt das naechste `/arm`
+           einen Schritt, der hier schon gelaufen ist. */
+        const knopfFlag = `${process.env.HOME}/.armed-bikosoc`;
+        const knopfVorgemerkt = vormerkungLesen(knopfFlag);
         try {
           const fs = await import('fs');
-          fs.writeFileSync(`${process.env.HOME}/.armed-bikosoc`,
+          fs.writeFileSync(knopfFlag,
             `armed by owner at ${new Date().toISOString()}\n`);
-          sendPromptToBikosocTmux('push');
+          sendPromptToBikosocTmux(knopfVorgemerkt?.anstoss || 'push');
         } catch (e: any) {
           api.logger.error(`[arm-knopf] Anstoss fehlgeschlagen: ${e.message}`);
           if (chatId) await sendTelegramHtmlWithMarkup(chatId, startFehlgeschlagenText(e.message), undefined);
           return;
         }
-        api.logger.info('[arm-knopf] Freigabe erteilt und Anstoss an die Sitzung bikosoc');
+        if (knopfVorgemerkt) vormerkungLoeschen(knopfFlag);
+        api.logger.info('[arm-knopf] Freigabe erteilt und Anstoss an die Sitzung bikosoc'
+          + `${knopfVorgemerkt ? `, vorgemerkt: ${knopfVorgemerkt.schritt}` : ''}`);
         if (armKnopf?.messageId && armKnopf.chatId) {
           await editiereNachricht(armKnopf.chatId, armKnopf.messageId, knopfErledigtText(ablauf));
         } else if (chatId) {

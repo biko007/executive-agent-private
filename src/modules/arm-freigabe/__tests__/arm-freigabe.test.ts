@@ -78,8 +78,8 @@ describe('Knopf und Frist', () => {
 describe('Texte', () => {
   const ABLAUF = new Date('2026-10-14T11:59:00Z');
   const ALLE = [
-    freigabeGesetztText(ABLAUF, false),
-    freigabeGesetztText(ABLAUF, true),
+    freigabeGesetztText(ABLAUF, null, false),
+    freigabeGesetztText(ABLAUF, 'Migration V043 anwenden', true),
     uebertragungGestartetText(ABLAUF),
     startFehlgeschlagenText('keine Sitzung'),
     knopfErledigtText(ABLAUF),
@@ -111,15 +111,31 @@ describe('Texte', () => {
   });
 
   test('die Ablaufzeit steht drin, wo eine Frist laeuft', () => {
-    expect(freigabeGesetztText(ABLAUF, false)).toContain('Freigabe aktiv bis 13:59 (einmalig)');
+    expect(freigabeGesetztText(ABLAUF, null, false)).toContain('Freigabe aktiv bis 13:59 (einmalig)');
     expect(uebertragungGestartetText(ABLAUF)).toContain('bis 13:59');
   });
 
-  test('bei wartender Uebertragung sagt /arm ausdruecklich, dass es sie nicht startet', () => {
-    const t = freigabeGesetztText(ABLAUF, true);
-    expect(t).toContain('Eine Übertragung wartet');
-    expect(t).toContain('/arm allein startet sie nicht');
-    expect(freigabeGesetztText(ABLAUF, false)).not.toContain('wartet');
+  /* GEAENDERT AM 16.10.2026. Vorher stand hier, dass `/arm` eine wartende
+     Uebertragung NICHT startet — und die Quittung sagte das auch. Genau diese
+     Trennung war die Verwirrung: Der Owner musste wissen, wann `push`
+     dazugehoert. Jetzt startet `/arm` den angemeldeten Schritt selbst, und die
+     Quittung nennt ihn beim Namen. */
+  test('die Quittung nennt den vorgemerkten Schritt', () => {
+    const t = freigabeGesetztText(ABLAUF, 'Migration V043 anwenden', true);
+    expect(t).toContain('freigegeben: Migration V043 anwenden');
+    expect(t).toContain('cc führt ihn jetzt aus');
+  });
+
+  test('ohne Vormerkung bleibt sie allgemein, nennt aber die Lage', () => {
+    const t = freigabeGesetztText(ABLAUF, null, false);
+    expect(t).toContain('gilt für den nächsten roten Schritt');
+    expect(t).toContain('cc führt ihn beim nächsten Schritt aus');
+    expect(t).not.toContain('freigegeben:');
+  });
+
+  test('ob gestartet wurde, steht im Titel — nicht im Kleingedruckten', () => {
+    expect(freigabeGesetztText(ABLAUF, null, true)).toContain('Freigegeben und gestartet');
+    expect(freigabeGesetztText(ABLAUF, null, false)).toContain('Freigabe gesetzt');
   });
 
   test('der Fehlerfall sagt, was der Owner selbst tun kann', () => {
