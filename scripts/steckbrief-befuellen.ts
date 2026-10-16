@@ -44,6 +44,22 @@ const Q = {
   gst_n24: 'SharePoint 3-La Perla GmbH/N24/Sonstiges/2024-03-13_N24 Grundsteuerwertbescheid.pdf',
   ea_n24: 'SharePoint N24/N24 - Gebaeudeakte/2. Doku Gewerke/7006_Bauphysik_K&F/'
        + 'Energieausweis_EneV-GEG-BW-2023_N24.pdf',
+  ea_mg24: 'SharePoint 6-Marktgasse 24/Gebaeudeakte/7. Haustechnik/Kurz & Fischer/'
+       + '2024-11-20_MG24_Kurz+Fischer_ endgueltiger Energieausweis.pdf, Registriernummer '
+       + 'BW-2024-005394132, ausgestellt 28.10.2024',
+  elster_l19: 'SharePoint 8_Juergen Bickel privat/2-Finanzen/Grundsteuererklaerung/GrdSt JB/'
+       + 'Leutenbergstr._19_ELSTER - Erklaerung zur Feststellung des Grundsteuerwerts.pdf',
+  elster_mg24: 'SharePoint 8_Juergen Bickel privat/2-Finanzen/Grundsteuererklaerung/GrdSt JB/'
+       + 'Marktgasse_24_ELSTER - Erklaerung zur Feststellung des Grundsteuerwerts.pdf',
+  elster_d4: 'SharePoint 8_Juergen Bickel privat/2-Finanzen/Grundsteuererklaerung/GrdSt JB/'
+       + 'Daimlerstr._4_ELSTER - Erklaerung zur Feststellung des Grundsteuerwerts.pdf',
+  elster_i83: 'SharePoint 8_Juergen Bickel privat/2-Finanzen/Grundsteuererklaerung/GrdSt JB/'
+       + 'Irisweg_83 Erklaerung zur Feststellung des Grundsteuerwerts.pdf, Zeile 8',
+  mail_l19: 'Postfach juergen.bickel@bikolino.com, Mail von Henry Haslinger vom 11.09.2024, '
+       + 'Betreff "L19 Mieterhoehung"',
+  ms26: 'Qualifizierter Mietspiegel der Stadt Tuttlingen, 17. Fortschreibung, Geltungsdauer '
+       + '27.07.2026 bis 27.07.2028, Mietwerttabelle beschlossen am 27.05.2026, Gemeinderat '
+       + '20.07.2026 (tuttlingen.de, Dokument id=34333, geladen am 16.10.2026)',
   owner_l19: 'Owner-Angabe 16.10.2026; Grundlage Teilungsunterlagen Saile vom 30.11.2015. '
        + 'Die Unterlagen selbst liegen noch nicht vor (Owner legt sie in Dropbox transfer/L19-Teilung ab).',
 };
@@ -122,6 +138,52 @@ const EINTRAEGE: Eintrag[] = [
   { objekt: 'l19', feld: 'grundstuecksflaeche',  zahl: 562,          quelle: Q.owner_l19, typ: 'owner', stand: '2015-11-30' },
   { objekt: 'l19', feld: 'wohnflaeche',          zahl: 438.99,       quelle: Q.owner_l19, typ: 'owner', stand: '2015-11-30',
     notiz: 'vier Sondereigentume laut Teilung' },
+
+  // ── Nachtrag 16.10.2026: Baujahr, Energie, Flurstuecke, Mietspiegel ─────
+  { objekt: 'mg24', feld: 'baujahr',             zahl: 1929,         quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28',
+    notiz: 'Baujahr Gebaeude laut Energieausweis; Baujahr des Waermeerzeugers 2024' },
+  { objekt: 'mg24', feld: 'energieausweis_art',  text: 'Bedarfsausweis nach GEG (Kurz und Fischer)', quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
+  { objekt: 'mg24', feld: 'energieausweis_wert', zahl: 220.5,        quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28',
+    notiz: 'Endenergiebedarf; Pflichtangabe in Immobilienanzeigen' },
+  { objekt: 'mg24', feld: 'energieausweis_primaer', zahl: 43.9,      quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
+  { objekt: 'mg24', feld: 'energieausweis_klasse', text: 'G',        quelle: Q.ea_mg24 + ' (Klasse aus dem Endenergiebedarf nach Paragraf 86 GEG)', typ: 'gerechnet', stand: '2024-10-28',
+    notiz: '220,5 kWh/(m2a) liegt in der Spanne 200 bis 250 und damit in Klasse G' },
+  { objekt: 'mg24', feld: 'energieausweis_bis',  datum: '2034-10-28', quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
+  { objekt: 'mg24', feld: 'energietraeger',      text: 'Pellets',    quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
+  { objekt: 'mg24', feld: 'gesamtinvestition',   zahl: 2500000,      quelle: 'bikosoc properties.purchase_price_total', typ: 'db', stand: '2026-10-16',
+    notiz: 'Gesamtaufwand einschliesslich Umbau. Der Kaufpreis der Urkunde betrug 340.000,00 EUR; '
+         + 'eine Baukostenaufstellung als Beleg fuer die 2.500.000,00 EUR liegt noch nicht vor.' },
+
+  { objekt: 'i83', feld: 'baujahr',              zahl: 1965,         quelle: Q.elster_i83, typ: 'sharepoint', stand: '2022-12-31',
+    notiz: 'Erklaerung zur Feststellung des Grundsteuerwerts, Bundesmodell NRW: Baujahr des Gebaeudes 1965' },
+  { objekt: 'i83', feld: 'flurstueck',           text: '442 und 443', quelle: Q.elster_i83, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'i83', feld: 'gemarkung',            text: 'Niederzuendorf (Koeln)', quelle: Q.elster_i83, typ: 'sharepoint', stand: '2022-12-31' },
+
+  { objekt: 'd4',  feld: 'flurstueck',           text: '2084/7',     quelle: Q.elster_d4, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'd4',  feld: 'gemarkung',            text: 'Wurmlingen', quelle: Q.elster_d4, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'd4',  feld: 'grundstuecksflaeche',  zahl: 1125,         quelle: Q.elster_d4, typ: 'sharepoint', stand: '2022-12-31' },
+
+  { objekt: 'l19', feld: 'gemarkung',            text: 'Tuttlingen', quelle: Q.elster_l19, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'l19', feld: 'baujahr',              zahl: 2016,         quelle: 'Owner, Chat 15./16.10.2026 (Neubau Sechsfamilienhaus, vier Sondereigentume; '
+         + 'Planung Saile, Bauleitung Karl). ' + Q.mail_l19 + ' bestaetigt den Mietbeginn der ersten Wohnung zum 01.10.2016.', typ: 'owner', stand: '2016-12-31' },
+  { objekt: 'n24', feld: 'baujahr',              zahl: 2023,         quelle: 'Owner, Chat 15./16.10.2026; Flaechenberechnung Schreiber "IST 2023 nach '
+         + 'Baufertigstellung" vom 04./13.07.2023 (SharePoint 3-La Perla GmbH/N24/Maklerunterlagen)', typ: 'owner', stand: '2023-07-13' },
+
+  // Mietspiegel: gilt fuer alle Tuttlinger Objekte, je Objekt die Baujahrklasse
+  { objekt: 'l19',  feld: 'mietspiegel_stand',   text: '17. Fortschreibung, gueltig 27.07.2026 bis 27.07.2028', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'l19',  feld: 'mietspiegel_klasse',  text: 'Neubau ab 01.01.2011 bis 31.12.2020', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'l19',  feld: 'mietspiegel_wert',    zahl: 9.32,         quelle: Q.ms26 + ', mittlere Wohnlage, ueber 90 qm, mit Bad und Zentralheizung, Mittelwert', typ: 'extern', stand: '2026-07-20',
+    notiz: 'Spanne 8,84 bis 9,76 EUR/qm. Die Wohnlage ist eine Arbeitsannahme — die Wohnlagenkarte wurde nicht ausgewertet.' },
+  { objekt: 'mg24', feld: 'mietspiegel_stand',   text: '17. Fortschreibung, gueltig 27.07.2026 bis 27.07.2028', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'mg24', feld: 'mietspiegel_klasse',  text: 'Altbau 1929, modernisiert 2024 — eingestuft nach dem Zeitpunkt der Modernisierung (Neubau ab 01.01.2021)', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'mg24', feld: 'mietspiegel_wert',    zahl: 10.37,        quelle: Q.ms26 + ', mittlere Wohnlage, ueber 90 qm, Mittelwert', typ: 'extern', stand: '2026-07-20',
+    notiz: 'Spanne 9,83 bis 10,85 EUR/qm' },
+  { objekt: 'n24',  feld: 'mietspiegel_stand',   text: '17. Fortschreibung, gueltig 27.07.2026 bis 27.07.2028', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'n24',  feld: 'mietspiegel_klasse',  text: 'Neubau ab 01.01.2021', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20' },
+  { objekt: 'n24',  feld: 'mietspiegel_wert',    zahl: 10.37,        quelle: Q.ms26 + ', mittlere Wohnlage, ueber 90 qm, Mittelwert', typ: 'extern', stand: '2026-07-20',
+    notiz: 'Spanne 9,83 bis 10,85 EUR/qm' },
+  { objekt: 's28',  feld: 'mietspiegel_stand',   text: '17. Fortschreibung, gueltig 27.07.2026 bis 27.07.2028', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20',
+    notiz: 'Eine Vergleichsmiete laesst sich fuer S28 noch nicht bilden: Das Baujahr ist unbekannt, und davon haengt die Baujahrklasse ab.' },
 ];
 
 const apply = process.argv.includes('--apply');

@@ -179,6 +179,10 @@ INSERT INTO objekt_feld_katalog (feld, reiter, label, einheit, art, pflicht, rei
   ('grundbuchkosten',       'B1', 'Grundbuchkosten',               'EUR', 'geld',     false, 22),
   ('maklerkosten',          'B1', 'Maklerkosten',                  'EUR', 'geld',     false, 23),
   ('herstellungskosten',    'B1', 'Herstellungskosten (Neubau)',   'EUR', 'geld',     false, 24),
+  -- Kaufpreis und Gesamtaufwand sind zweierlei: MG24 wurde fuer 340.000 EUR
+  -- gekauft und danach umgebaut. Beide Zahlen beantworten verschiedene Fragen
+  -- und werden deshalb getrennt gefuehrt (Owner-Vorgabe 16.10.2026).
+  ('gesamtinvestition',     'B1', 'Gesamtinvestition inkl. Umbau', 'EUR', 'geld',     false, 31),
   ('anschaffungskosten',    'B1', 'Anschaffungskosten gesamt',     'EUR', 'geld',     true,  25),
   ('gebaeudeanteil',        'B1', 'Anteil Gebäude',                'EUR', 'geld',     true,  26),
   ('bodenanteil',           'B1', 'Anteil Grund und Boden',        'EUR', 'geld',     true,  27),
@@ -202,6 +206,7 @@ INSERT INTO objekt_feld_katalog (feld, reiter, label, einheit, art, pflicht, rei
   ('energieausweis_wert',   'B5', 'Energieausweis: Kennwert',      'kWh/(m²·a)', 'zahl', true, 63),
   ('energieausweis_klasse', 'B5', 'Energieausweis: Klasse',        NULL,  'text',     true,  64),
   ('energieausweis_bis',    'B5', 'Energieausweis gültig bis',     NULL,  'datum',    true,  65),
+  ('energieausweis_primaer','B5', 'Energieausweis: Primärenergie', 'kWh/(m²·a)', 'zahl', false, 70),
   ('kfw_standard',          'B5', 'KfW-Standard',                  NULL,  'text',     false, 66),
   ('pv_anlage',             'B5', 'PV-Anlage',                     'kWp', 'zahl',     false, 67),
   ('mieterstrom',           'B5', 'Mieterstrom',                   NULL,  'ja_nein',  false, 68),
@@ -217,7 +222,9 @@ INSERT INTO objekt_feld_katalog (feld, reiter, label, einheit, art, pflicht, rei
   ('versicherungssumme',    'B7', 'Versicherungssumme Gebäude',    'EUR', 'geld',     true,  90),
   -- E Zusatzmodule
   ('mietspiegel_wert',      'E',  'Mietspiegel Vergleichsmiete',   'EUR/m²', 'zahl',  false, 95),
-  ('mietspiegel_stand',     'E',  'Mietspiegel: Stand',            NULL,  'text',     false, 96)
+  ('mietspiegel_stand',     'E',  'Mietspiegel: Stand',            NULL,  'text',     false, 96),
+  ('mietspiegel_klasse',    'E',  'Mietspiegel: Baujahrklasse',    NULL,  'text',     false, 97),
+  ('mietspiegel_lage',      'E',  'Mietspiegel: Wohnlage',         NULL,  'text',     false, 98)
 ON CONFLICT (feld) DO NOTHING;
 
 -- Schema-Version fortschreiben.
