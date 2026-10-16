@@ -213,9 +213,23 @@ elif echo "$NORM" | grep -qE "${GIT_PUSH_SEG}${GIT_FORCE_KURZ}"; then
   DENY_REASON="git push -f"
 elif echo "$NORM" | grep -qE "${GIT_PUSH_SEG}${GIT_FORCE_PLUS}"; then
   DENY_REASON="git push +refspec (erzwungen)"
-elif echo "$NORM" | grep -qE 'reset\s+--hard\b'; then
+# Dieselbe Fassung wie oben, auf Owner-Wunsch vom 16.10.2026 auch hier:
+# innerhalb EINES Befehlssegments und mit `git` davor. Vorher genuegte das
+# Wortpaar irgendwo im Befehlstext — ueber Semikolons und Pipes hinweg.
+#
+# PREIS DIESER FASSUNG, bewusst in Kauf genommen: Eine Zeile wie
+# `irgendein-skript.sh reset --hard` wird nicht mehr erfasst. Wirksam war das
+# ohnehin kaum — ein Skript, das intern zuruecksetzt, heisst nach aussen
+# anders, und davon sieht ein Textmuster nichts. Fuer die Rolle als zweite
+# Verteidigungslinie zaehlt der Fall, den man wirklich tippt.
+#
+# `clean` verlangt zusaetzlich eine Erzwingung: Ohne -f weigert sich git
+# selbst, und `git clean -n` ist ein Probelauf, der nichts anfasst.
+elif echo "$NORM" | grep -qE "\bgit\b[^;&|]*\breset\b[^;&|]*--hard\b"; then
   DENY_REASON="git reset --hard"
-elif echo "$NORM" | grep -qE 'clean\s+-f\b'; then
+elif echo "$NORM" | grep -qE "\bgit\b[^;&|]*\bclean\b[^;&|]*--force\b"; then
+  DENY_REASON="git clean --force"
+elif echo "$NORM" | grep -qE "\bgit\b[^;&|]*\bclean\b[^;&|]*[[:space:]]-[A-Za-z]*f[A-Za-z]*([[:space:]]|$)"; then
   DENY_REASON="git clean -f"
 elif echo "$NORM" | grep -qE '\bgit\s+checkout\s+\.\s*$'; then
   DENY_REASON="git checkout ."

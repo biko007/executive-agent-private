@@ -156,16 +156,62 @@ describe('Harmlose Befehle laufen wieder durch', () => {
   });
 });
 
+/* Auf Owner-Wunsch vom 16.10.2026 bekamen auch diese beiden dieselbe
+   Fassung wie die Uebertragung: innerhalb EINES Befehlssegments und mit
+   `git` davor. Vorher genuegte das Wortpaar irgendwo im Befehlstext. */
+const R = 're' + 'set';
+const H = '--' + 'hard';
+const CL = 'cl' + 'ean';
+
+describe('Zurücksetzen und Aufräumen — segmentweise gefasst', () => {
+  const rot: Array<[string, (h: string) => string]> = [
+    ['zurücksetzen, schlicht', () => `git ${R} ${H}`],
+    ['zurücksetzen auf eine Marke', () => `git ${R} ${H} origin/main`],
+    ['zurücksetzen mit -C', (h) => `git -C ${h} ${R} ${H}`],
+    ['zurücksetzen nach &&', () => `npm test && git ${R} ${H}`],
+    ['zurücksetzen nach einem Semikolon', (h) => `cd ${h}; git ${R} ${H}`],
+    ['aufräumen, kurze Form', () => `git ${CL} ${FK}`],
+    ['aufräumen, lange Form', () => `git ${CL} ${FL}`],
+    ['aufräumen mit kombinierten Flags', () => `git ${CL} -fd`],
+    ['aufräumen, f hinten', () => `git ${CL} -df`],
+    ['aufräumen mit -C und drei Flags', (h) => `git -C ${h} ${CL} -fdx`],
+  ];
+  for (const [name, bauen] of rot) {
+    test(name, () => {
+      const b = bauen(heim);
+      expect(blockiert(b), b).toBe(true);
+    });
+  }
+
+  test('auch mit Freigabe gesperrt — es sind harte Regeln', () => {
+    expect(pruefe(`git ${R} ${H}`, true)).toBe(2);
+    expect(pruefe(`git ${CL} -fd`, true)).toBe(2);
+  });
+
+  const gruen: Array<[string, (h: string) => string]> = [
+    ['der Probelauf von aufräumen', () => `git ${CL} -n`],
+    ['Probelauf, lange Form', () => `git ${CL} --dry-run`],
+    ['zurücksetzen ohne die harte Form', () => `git ${R} HEAD~1`],
+    ['sanftes Zurücksetzen', () => `git ${R} --soft HEAD~1`],
+    ['gemischtes Zurücksetzen', () => `git ${R} --mixed HEAD~1`],
+    ['das Wortpaar in einem anderen Segment',
+      () => `git status; echo "${R} ${H} waere schlecht"`],
+    ['ein Pfad, der mit f beginnt', () => `git ${CL} -n -- fixtures/`],
+  ];
+  for (const [name, bauen] of gruen) {
+    test(name, () => {
+      const b = bauen(heim);
+      expect(blockiert(b), b).toBe(false);
+    });
+  }
+});
+
 describe('Die übrigen harten Regeln sind unverändert', () => {
-  test('zurücksetzen bleibt gesperrt', () => {
-    expect(blockiert('git reset --hard origin/main')).toBe(true);
-  });
-
-  test('aufräumen bleibt gesperrt', () => {
-    expect(blockiert('git clean -f -d')).toBe(true);
-  });
-
   test('rekursives Löschen bleibt gesperrt', () => {
     expect(blockiert('r' + 'm -rf /tmp/irgendwas')).toBe(true);
+  });
+
+  test('Auschecken des ganzen Baums bleibt gesperrt', () => {
+    expect(blockiert('git checkout .')).toBe(true);
   });
 });
