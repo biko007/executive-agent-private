@@ -110,7 +110,7 @@ import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.
 import {
   initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId,
 } from './src/modules/cue-delegation/index.js';
-import { createDropboxAdapter } from './src/adapters/dropbox.js';
+import { dropboxZugang } from './src/adapters/dropbox-zugang.js';
 import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
@@ -245,15 +245,13 @@ export default function (api: any) {
   g.__ea_dropboxAdapterInited ??= false;
 
   // ── Dropbox Adapter Init (Report-Upload, one-shot) ─────────────────────────
-  // Aktiviert wenn EA_DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN gesetzt — sonst still inaktiv.
+  // Aktiviert mit DROPBOX_* (neue App) oder EA_DROPBOX_* (alte) — sonst still inaktiv.
   if (!g.__ea_dropboxAdapterInited) {
     g.__ea_dropboxAdapterInited = true;
-    const dboxKey = process.env['EA_DROPBOX_APP_KEY'];
-    const dboxSecret = process.env['EA_DROPBOX_APP_SECRET'];
-    const dboxToken = process.env['EA_DROPBOX_REFRESH_TOKEN'];
-    if (dboxKey && dboxSecret && dboxToken) {
+    const zugang = dropboxZugang((k) => process.env[k]);
+    if (zugang) {
       try {
-        const adapter = createDropboxAdapter({ appKey: dboxKey, appSecret: dboxSecret, refreshToken: dboxToken });
+        const adapter = zugang.adapter;
         g.__ea_dropboxAdapter = adapter;
         // Ordner idempotent beim Boot anlegen (409 wird vom Adapter ignoriert)
         adapter.createFolder('/bikosoc-reports').catch((e: Error) =>
@@ -262,12 +260,14 @@ export default function (api: any) {
         adapter.createFolder('/bikosoc-plans').catch((e: Error) =>
           api.logger.warn(`[dropbox] createFolder /bikosoc-plans fehlgeschlagen: ${e.message}`)
         );
-        api.logger.info('[dropbox] Adapter initialisiert (EA_DROPBOX_*), Zielordner: /bikosoc-reports, /bikosoc-plans');
+        api.logger.info(`[dropbox] Adapter initialisiert (App ${zugang.app}`
+          + `${zugang.basis ? ', Basis ' + zugang.basis : ', App-Ordner'}), `
+          + 'Zielordner: /bikosoc-reports, /bikosoc-plans');
       } catch (e: any) {
         api.logger.warn(`[dropbox] Adapter-Init fehlgeschlagen: ${e.message}`);
       }
     } else {
-      api.logger.info('[dropbox] EA_DROPBOX_* nicht vollstaendig gesetzt — Feature inaktiv');
+      api.logger.info('[dropbox] weder DROPBOX_* noch EA_DROPBOX_* gesetzt — Feature inaktiv');
     }
   }
 

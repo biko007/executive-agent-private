@@ -78,6 +78,21 @@ export interface DropboxAdapter {
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Wo der bisherige App-Ordner im gesamten Dropbox-Konto liegt.
+ *
+ * Die alte App „BikosOpenClaw" war auf ihren App-Ordner beschraenkt; alle
+ * Pfade im Code sind relativ dazu geschrieben („/bikosoc-reports/inbox").
+ * Die neue App „BikosOpenClawFA" sieht das ganze Konto — dieselben Pfade
+ * zeigen dort ins Leere, weil der App-Ordner in Wahrheit unter
+ * /Apps/bikosoc-reports liegt.
+ *
+ * Statt alle Pfade im Code umzuschreiben, setzt der Adapter diese Basis davor
+ * und nimmt sie aus den Antworten wieder heraus. Der uebrige Code arbeitet
+ * weiter im alten Koordinatensystem, und ein Ordner wird nicht verschoben.
+ */
+export const DROPBOX_BASE = "/Apps/bikosoc-reports";
+
 const API_BASE = "https://api.dropboxapi.com";
 const CONTENT_BASE = "https://content.dropboxapi.com";
 const SIMPLE_UPLOAD_LIMIT = 150 * 1024 * 1024; // 150 MB
@@ -95,21 +110,27 @@ interface TokenCache {
 
 export function createDropboxAdapter(params: {
   appKey: string;
-  appSecret: string;
+  /** Entfaellt bei PKCE: Die neue App arbeitet ohne Secret. */
+  appSecret?: string;
   refreshToken: string;
+  /** Praefix fuer alle Pfade, siehe DROPBOX_BASE. Leer = App-Ordner-Betrieb. */
+  basis?: string;
   fetchImpl?: typeof fetch;
 }): DropboxAdapter {
   const { appKey, appSecret, refreshToken } = params;
+  const basis = (params.basis ?? "").replace(/\/$/, "");
   const fetchFn = params.fetchImpl ?? fetch;
   let tokenCache: TokenCache | null = null;
 
   async function refreshAccessToken(): Promise<string> {
+    /* Ein mit PKCE geholter Refresh-Token wird ohne Secret erneuert. Die alte
+       App braucht es weiterhin — deshalb nur anhaengen, wenn gesetzt. */
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: appKey,
-      client_secret: appSecret,
     });
+    if (appSecret) body.set("client_secret", appSecret);
 
     let response: Response;
     try {
@@ -220,7 +241,7 @@ export function createDropboxAdapter(params: {
     return response;
   }
 
-  return {
+  const roh: DropboxAdapter = {
     async uploadFile(uploadParams): Promise<DropboxUploadResult> {
       const apiArg = JSON.stringify({
         path: uploadParams.path,
@@ -487,6 +508,42 @@ export function createDropboxAdapter(params: {
       );
 
       return response.ok;
+    },
+  };
+
+  if (!basis) return roh;
+
+  /* Pfade hinein praefixen, aus den Antworten wieder herausnehmen. Dropbox
+     liefert `path_lower` klein geschrieben — deshalb wird beim Entfernen ohne
+     Ruecksicht auf Gross- und Kleinschreibung verglichen. */
+  const hinein = (p: string): string =>
+    !p ? basis : p.toLowerCase().startsWith(basis.toLowerCase()) ? p : `${basis}${p}`;
+  const heraus = (p: string): string =>
+    p.toLowerCase().startsWith(basis.toLowerCase()) ? p.slice(basis.length) || "/" : p;
+
+  return {
+    async uploadFile(p) {
+      const r = await roh.uploadFile({ ...p, path: hinein(p.path) });
+      return { ...r, pathDisplay: heraus(r.pathDisplay) };
+    },
+    async uploadFileStream(p) {
+      const r = await roh.uploadFileStream({ ...p, path: hinein(p.path) });
+      return { ...r, pathDisplay: heraus(r.pathDisplay) };
+    },
+    createFolder: (p) => roh.createFolder(hinein(p)),
+    async listFolder(p) {
+      const eintraege = await roh.listFolder(hinein(p));
+      return eintraege.map((e) => ({
+        ...e, pathLower: heraus(e.pathLower), pathDisplay: heraus(e.pathDisplay),
+      }));
+    },
+    downloadFile: (p) => roh.downloadFile(hinein(p)),
+    moveFile: (von, nach) => roh.moveFile(hinein(von), hinein(nach)),
+    /* Bewusst nur lesend: Mit Vollzugriff waere eine Testdatei im Wurzel-
+       verzeichnis des Kontos das Letzte, was hier entstehen soll. */
+    async healthCheck() {
+      await roh.listFolder(basis);
+      return true;
     },
   };
 }

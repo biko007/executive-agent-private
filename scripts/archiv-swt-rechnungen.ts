@@ -17,7 +17,7 @@
  *   bun run scripts/archiv-swt-rechnungen.ts --dry-run
  *   bun run scripts/archiv-swt-rechnungen.ts --apply
  */
-import { createDropboxAdapter } from '../src/adapters/dropbox.js';
+import { dropboxZugang } from '../src/adapters/dropbox-zugang.js';
 import { query as dbQuery } from '../src/shared/db/index.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -124,11 +124,9 @@ async function main() {
   // Der gemeinsame Datenbankzugang liest POSTGRES_URL aus der Umgebung; beim
   // Aufruf von Hand steht sie dort nicht.
   if (!process.env.POSTGRES_URL) process.env.POSTGRES_URL = envWert('POSTGRES_URL');
-  const adapter = createDropboxAdapter({
-    appKey: envWert('EA_DROPBOX_APP_KEY'),
-    appSecret: envWert('EA_DROPBOX_APP_SECRET'),
-    refreshToken: envWert('EA_DROPBOX_REFRESH_TOKEN'),
-  });
+  const zugang = dropboxZugang((k) => { try { return envWert(k); } catch { return null; } });
+  if (!zugang) throw new Error('Kein Dropbox-Zugang in ~/.config/openclaw/env');
+  const adapter = zugang.adapter;
 
   // ── Metadaten ──────────────────────────────────────────────────────────────
   const manifestText = (await adapter.downloadFile(`${QUELLE}/manifest.csv`)).toString('utf-8');

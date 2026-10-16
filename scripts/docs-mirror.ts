@@ -9,11 +9,11 @@
  *     (taeglich 04:30 Europe/Berlin)
  *   - von Hand:  bun scripts/docs-mirror.ts [--dry-run] [--json]
  *
- * Fehlt der Dropbox-Zugang (EA_DROPBOX_*), endet das Skript still mit 0 —
+ * Fehlt der Dropbox-Zugang (DROPBOX_* oder EA_DROPBOX_*), endet das Skript still mit 0 —
  * dann ist das Feature einfach nicht eingerichtet.
  */
 import path from 'node:path';
-import { createDropboxAdapter } from '../src/adapters/dropbox.js';
+import { dropboxZugang } from '../src/adapters/dropbox-zugang.js';
 import {
   DEFAULT_INDEX_PATH, defaultDocsMirrorRepos, formatDocsMirrorSummary, mirrorDocsOnce,
 } from '../src/modules/docs-mirror/index.js';
@@ -25,16 +25,13 @@ const home = process.env.HOME || '/home/biko';
 const workspaceRoot = process.env.OPENCLAW_WORKSPACE || path.join(home, '.openclaw/workspace');
 const indexPath = path.join(home, DEFAULT_INDEX_PATH);
 
-const appKey = process.env.EA_DROPBOX_APP_KEY;
-const appSecret = process.env.EA_DROPBOX_APP_SECRET;
-const refreshToken = process.env.EA_DROPBOX_REFRESH_TOKEN;
-
-if (!appKey || !appSecret || !refreshToken) {
+const zugang = dropboxZugang((k) => process.env[k]);
+if (!zugang) {
   if (alsJson) process.stdout.write('{"skipped":"dropbox_not_configured"}\n');
   process.exit(0);
 }
 
-const adapter = createDropboxAdapter({ appKey, appSecret, refreshToken });
+const adapter = zugang.adapter;
 
 try {
   const result = await mirrorDocsOnce({

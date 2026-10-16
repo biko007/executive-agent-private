@@ -5,3 +5,6 @@ dist/
 *.bak
 .env
 owner-facts.md
+
+# Python-Bytecode (scripts/dropbox_auth_pkce.py)
+__pycache__/

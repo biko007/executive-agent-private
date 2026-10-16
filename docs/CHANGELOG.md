@@ -4,6 +4,44 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-16 — Dropbox mit Vollzugriff, neue App ohne Secret
+
+Bisher sah bikosoc nur seinen eigenen App-Ordner. Was dort nicht lag, war nicht
+erreichbar — Unterlagen in der Dropbox mussten erst hineinkopiert werden, und
+beim Suchen fehlte der halbe Bestand. Das Konto dient ausschließlich bikosoc,
+also entschied der Owner am 16.10.2026, den Zugriff auf die ganze Dropbox zu
+öffnen.
+
+**Neue App „BikosOpenClawFA"** (Scoped App, Full Dropbox). Ihr Besonderheit:
+Sie arbeitet **ohne App-Secret**. Der Token kommt über OAuth2 mit PKCE
+(`scripts/dropbox_auth_pkce.py`), der Code-Verifier lebt nur für die Dauer des
+Aufrufs im Arbeitsspeicher. Damit liegt auf dem Rechner kein dauerhaftes
+Geheimnis der App mehr — beim alten Zugang war das Secret eine Zeile in der
+Env-Datei. Der Owner autorisiert selbst im Browser; das Skript zeigt nur
+Kontoname und Anzahl der Einträge, nie den Token.
+
+**Der Stolperstein waren die Pfade.** Im App-Ordner-Betrieb ist `/bikosoc-reports`
+die Wurzel; mit Vollzugriff zeigt derselbe Pfad in das Wurzelverzeichnis des
+Kontos, der bisherige Bestand liegt dagegen unter `/Apps/bikosoc-reports`. Ohne
+Gegenmaßnahme hätte der erste Report eine neue, leere Ordnerstruktur neben der
+alten angelegt. Deshalb setzt der Adapter das Präfix `DROPBOX_BASE` vor jeden
+ausgehenden Pfad und nimmt es aus den Antworten wieder heraus: Der übrige Code
+rechnet weiter mit den gewohnten Pfaden, und **verschoben wird kein Ordner**.
+Acht Tests halten das fest, darunter der Fall des doppelten Präfixes.
+
+**Beide Zugänge parallel.** `dropboxZugang()` wählt: Stehen `DROPBOX_APP_KEY`
+und `DROPBOX_REFRESH_TOKEN` in der Env-Datei, gilt die neue App mit Präfix;
+sonst der alte Weg über `EA_DROPBOX_*` ohne Präfix. Die alten Werte bleiben
+vorerst stehen — erst nach sieben fehlerfreien Tagen fragt der Agent, ob sie weg
+dürfen. Der Rückweg bis dahin ist das Entfernen der zwei neuen Zeilen.
+
+**Unverändert:** Gelöscht wird in der Dropbox weiterhin nur auf das Owner-Wort
+„löschen". Der `healthCheck` legt mit gesetzter Basis keine Testdatei mehr an,
+sondern liest nur — eine Testdatei im Wurzelverzeichnis des Kontos wäre das
+Letzte, was hier entstehen soll.
+
+---
+
 ## Stand 2026-10-15 — Mietforderungen, Zahlungsabgleich und Lämpchen
 
 Bisher zeigte das Dashboard je Einheit nur die Kaltmiete, und ob ein Mieter gezahlt hat,

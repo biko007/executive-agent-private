@@ -165,13 +165,10 @@ async function telegram(text: string): Promise<boolean> {
 }
 
 async function nachDropbox(ordner: string, runId: string): Promise<string | null> {
-  const appKey = envWert(ENV_OPENCLAW, 'EA_DROPBOX_APP_KEY');
-  const appSecret = envWert(ENV_OPENCLAW, 'EA_DROPBOX_APP_SECRET');
-  const refreshToken = envWert(ENV_OPENCLAW, 'EA_DROPBOX_REFRESH_TOKEN');
-  if (!appKey || !appSecret || !refreshToken) return null;
-
-  const { createDropboxAdapter } = await import('../src/adapters/dropbox.js');
-  const adapter = createDropboxAdapter({ appKey, appSecret, refreshToken });
+  const { dropboxZugang } = await import('../src/adapters/dropbox-zugang.js');
+  const zugang = dropboxZugang((k) => envWert(ENV_OPENCLAW, k));
+  if (!zugang) return null;
+  const adapter = zugang.adapter;
   const ziel = `${DROPBOX_BASIS}/${runId}`;
   for (const datei of dateienSammeln(ordner)) {
     const rel = relative(ordner, datei).split('/').join('/');

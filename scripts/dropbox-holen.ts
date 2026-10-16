@@ -15,7 +15,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createDropboxAdapter } from '../src/adapters/dropbox.js';
+import { dropboxZugang } from '../src/adapters/dropbox-zugang.js';
 
 function env(schluessel: string): string {
   const inhalt = readFileSync(`${process.env.HOME}/.config/openclaw/env`, 'utf-8');
@@ -32,11 +32,9 @@ async function main() {
     process.exit(2);
   }
 
-  const dropbox = createDropboxAdapter({
-    appKey: env('EA_DROPBOX_APP_KEY'),
-    appSecret: env('EA_DROPBOX_APP_SECRET'),
-    refreshToken: env('EA_DROPBOX_REFRESH_TOKEN'),
-  });
+  const zugang = dropboxZugang((k) => { try { return env(k); } catch { return null; } });
+  if (!zugang) { console.error('Kein Dropbox-Zugang in ~/.config/openclaw/env'); process.exit(2); }
+  const dropbox = zugang.adapter;
 
   const eintraege = await dropbox.listFolder(ordner);
   const regex = muster ? new RegExp(muster) : null;
