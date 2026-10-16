@@ -107,12 +107,11 @@ describe('statische Guards gegen index.ts', () => {
     expect(treffer).toHaveLength(1);
   });
 
-  test('der command-guard benutzt dieselbe Liste und dieselbe Strenge', () => {
-    /* Er bleibt als zweite Linie stehen: Fällt das Beanspruchen einmal aus,
-       schweigt der Agent wenigstens weiterhin. Seit dem 16.10.2026 prüft er
-       aber nicht mehr lockerer als die erste Linie — das lockere `includes`
-       hatte den Traum-Lauf stillgelegt. */
-    expect(quelle).toContain('enthaeltRueckrufZeile(prompt, CALLBACK_PREFIXES)');
+  test('es gibt nur noch EINE Linie', () => {
+    /* Die zweite — der command-guard — ist am 16.10.2026 entfallen. Sie hat
+       dreimal das Falsche getroffen und nie das Richtige; Begründung im
+       Quelltext an der Stelle, wo sie stand. */
+    expect(quelle).not.toContain('enthaeltRueckrufZeile(prompt');
     expect(quelle).not.toContain("prompt.includes('callback_data: ' + p)");
   });
 
@@ -181,10 +180,21 @@ describe('Der command-guard und der Traum-Lauf', () => {
     }
   });
 
-  test('index.ts benutzt die gemeinsame Funktion, nicht mehr includes', () => {
+  test('index.ts prüft Prompts gar nicht mehr auf Knopfdrücke', () => {
+    /* ENTFERNT AM 16.10.2026, nachdem die strenge Fassung immer noch das
+       Falsche traf: Der zusammengesetzte Gesprächskontext trägt gespeicherte
+       Nachrichten, und eine gespeicherte Zeile `armpush_a1b2` BEGINNT mit dem
+       Präfix. Der Guard kann einen aktuellen Knopfdruck nicht von der
+       Erinnerung an einen früheren unterscheiden.
+
+       Gebraucht wird er nicht mehr: `inbound_claim` beansprucht echte
+       Knopfdrücke, bevor ein Lauf beginnt. Was den Prompt-Aufbau erreicht,
+       ist per Definition kein Knopfdruck. */
     const quelle = fs.readFileSync(
       path.resolve(import.meta.dir, '..', '..', 'index.ts'), 'utf-8');
-    expect(quelle).toContain('enthaeltRueckrufZeile(prompt, CALLBACK_PREFIXES)');
+    expect(quelle).not.toContain('enthaeltRueckrufZeile(prompt');
     expect(quelle).not.toContain("prompt.includes('callback_data: ' + p)");
+    /* Die erste Linie bleibt und ist die einzige. */
+    expect(quelle).toContain('istUnsererRueckruf(inhalt, CALLBACK_PREFIXES)');
   });
 });

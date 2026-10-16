@@ -37,7 +37,7 @@ import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, } from "./src/shared/settings/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
-import { enthaeltRueckrufZeile, istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
+import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
 import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
@@ -823,23 +823,31 @@ export default function (api) {
         const prompt = event?.prompt ?? '';
         // Sender ID from structured ctx (v2026.6.11: plaintext envelope removed from prompt)
         const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
-        /* Zweite Linie fuer Knopfdruecke. Die erste ist `inbound_claim` weiter
-           oben: Seit dem 16.10.2026 wird ein echter Knopfdruck beansprucht, bevor
-           ein Agentenlauf ueberhaupt beginnt. Hier landet also nur noch, was dort
-           durchgerutscht ist.
+        /* ENTFERNT AM 16.10.2026. Hier stand eine zweite Linie gegen
+           Knopfdruecke: Erkannte sie einen, wies sie das Modell an zu schweigen.
     
-           GEAENDERT AM 16.10.2026: Vorher suchte dieser Zweig das Muster
-           IRGENDWO im Prompt. Damit hat er am 15.10. um 03:00 den naechtlichen
-           Traum-Lauf stillgelegt — dessen Prompt zaehlt gespeicherte
-           Nutzernachrichten auf, und darunter waren frueher gedrueckte Knoepfe.
-           Jetzt gilt dieselbe strenge Pruefung wie beim Beanspruchen. */
-        if (enthaeltRueckrufZeile(prompt, CALLBACK_PREFIXES)) {
-            api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
-            return {
-                prependContext: 'SYSTEM: This message is a Telegram inline-button callback, already handled by a plugin hook. ' +
-                    'You MUST NOT generate any response. Reply with exactly: NO_REPLY',
-            };
-        }
+           Sie hat dreimal das Falsche getroffen und nie das Richtige:
+    
+             15.10. 03:00  der naechtliche Traum-Lauf — sein Prompt zaehlt
+                           gespeicherte Nutzernachrichten auf, darunter frueher
+                           gedrueckte Knoepfe
+             16.10. 18:27  eine gewoehnliche Freitext-Frage des Owners — der
+                           zusammengesetzte Gespraechskontext traegt dieselben
+                           alten Zeilen
+    
+           Zeilenweise und streng zu pruefen hat den zweiten Fall nicht
+           verhindert: Eine gespeicherte Zeile `armpush_a1b2` BEGINNT mit dem
+           Praefix. Der Guard kann einen aktuellen Knopfdruck nicht von der
+           Erinnerung an einen frueheren unterscheiden — er sieht beide als Text.
+    
+           Gebraucht wird er ohnehin nicht mehr: Seit dem 16.10.2026 beansprucht
+           `inbound_claim` echte Knopfdruecke, bevor ein Agentenlauf ueberhaupt
+           beginnt (siehe oben). Was hier ankommt, ist per Definition kein
+           Knopfdruck. Eine Linie, die nur noch Falsches trifft, ist keine
+           Sicherheit, sondern ein Fehler.
+    
+           `enthaeltRueckrufZeile` bleibt im Modul: Die Funktion ist richtig, nur
+           dieser Einsatzort war es nicht. */
         // Suppress AI when user is in active craft dialog (any step, TTL-guarded).
         // Step-agnostic because message_received handler mutates step synchronously
         // before before_prompt_build fires (~575ms race window).
