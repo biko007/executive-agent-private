@@ -131,3 +131,50 @@ hilft keine Freigabe. Dann den Push mit absolutem Pfad wiederholen:
   entschieden. **Der Neustart braucht keine Freigabe.**
 - **CLAUDE.md §8** sagte, `/arm push` arme „zusätzlich". Das war missverständlich:
   Es armt identisch und stößt zusätzlich an. Berichtigt.
+
+---
+
+## Drei Fehler, behoben am 16.10.2026
+
+**Die Quittung log nicht mehr nach.** Nach jedem `/arm` stand im Chat
+zusätzlich „No response generated. Please try again." — als wäre etwas
+schiefgegangen. Ursache war nicht die Agentenschicht, sondern der Kern: Ein
+Handler, der selbst sendet und dann eine leere Antwort zurückgibt, bekommt
+einen Ersatztext untergeschoben. Dafür sieht der Kern `suppressReply` vor;
+genau das setzt jetzt `stillBeantwortet()`.
+
+**Eine Erwähnung verbraucht keine Freigabe mehr.** Rote Befehlsmuster greifen
+nur noch an einer Befehlsposition: am Zeilenanfang, nach `;` `&` `|` `(` oder
+`$(`, und nach den üblichen Vorsätzen (`sudo`, `env`, `timeout`, `nohup`,
+`npx`, `bunx`, `bun run`, `node`, `tsx`, `bash -c`, `sh -c`, `VAR=wert`). Ein
+Pfad davor ist erlaubt. Vorher genügte es, ein Muster irgendwo im Befehlstext
+zu nennen — am 16.10.2026 haben so zwei Owner-Freigaben reine Lesebefehle
+bezahlt.
+
+Ein Muster, das **bewusst überall** greifen soll, trägt in `red-zone.conf`
+eine vorangestellte Tilde. Das gilt für die Löschbefehle gegen die
+Produktiv-Datenbank: Sie bleiben rot, auch als Argument, in Anführungszeichen
+oder in einem Hier-Dokument.
+
+**Die Verbrauchsquittung nennt den Befehl.** Früher stand dort eine allgemeine
+Beschreibung — „Datenbank-Migration ausführen", auch wenn nichts migriert
+wurde. Jetzt steht der tatsächlich auslösende Befehl dabei, auf 160 Zeichen
+gekürzt und mit maskierten Geheimnissen.
+
+### Eine Grenze, die bleibt
+
+Ein Muster, das in einer **Markdown-Tabelle** direkt hinter einem `|` steht,
+ist für den Hook von einer Shell-Pipe nicht zu unterscheiden — und `foo | psql
+…` muss rot bleiben. Solche Zeilen lösen weiterhin aus.
+
+Praktisch heißt das: **Reports und Commit-Nachrichten mit dem Schreibwerkzeug
+schreiben, nicht über die Befehlszeile.** Ein Hier-Dokument mit einer
+Mustertabelle blockiert sonst den eigenen Aufruf. Ein Test hält die Grenze
+fest, damit sie nicht als Überraschung wiederkommt.
+
+### Nebenbefund
+
+Zwei der sechs roten Befehlsmuster waren **seit jeher wirkungslos**: Die
+Konfigurationszeilen liefen durch `xargs`, und das entfernt Backslashes — aus
+einem Muster mit `\s` wurde still eines ohne. Nachgewiesen gegen die alte
+Fassung des Hooks. Behoben; das ist eine Verschärfung, keine Lockerung.
