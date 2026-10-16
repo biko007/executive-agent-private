@@ -74,8 +74,19 @@ const Q = {
   ms26: 'Qualifizierter Mietspiegel der Stadt Tuttlingen, 17. Fortschreibung, Geltungsdauer '
        + '27.07.2026 bis 27.07.2028, Mietwerttabelle beschlossen am 27.05.2026, Gemeinderat '
        + '20.07.2026 (tuttlingen.de, Dokument id=34333, geladen am 16.10.2026)',
-  owner_l19: 'Owner-Angabe 16.10.2026; Grundlage Teilungsunterlagen Saile vom 30.11.2015. '
-       + 'Die Unterlagen selbst liegen noch nicht vor (Owner legt sie in Dropbox transfer/L19-Teilung ab).',
+  /* Bis zum 16.10.2026 war dies eine blosse Owner-Angabe; seitdem liegen die
+     Unterlagen vor und die Angaben sind aus dem Original belegt. */
+  teil_l19: 'Dropbox transfer/L19-Teilungserklaerung/2015/2015-11-30_0914_G. Saile_Whs. '
+       + 'Leutenbergstr. 19  Teilungsunterlagen/Bickel Teilung Antrag.pdf und '
+       + 'Bickel Deckblatt Teilung .pdf — Teilung eines Wohngebaeudes in Sondereigentum, '
+       + 'Ing.-Buero G. Saile, Sigmaringen, aufgestellt 26.11.2015, uebersandt 30.11.2015',
+  lage_l19: 'Dropbox transfer/L19-Teilungserklaerung/2015/2015-11-30_0914_G. Saile_Whs. '
+       + 'Leutenbergstr. 19  Teilungsunterlagen/Bickel Teilung Lageplan.pdf — Auszug aus dem '
+       + 'Liegenschaftskataster mit Einzeichnungen nach Paragraf 4 LBOVVO, Massstab 1:500, '
+       + 'Vermessungsbuero H. W. Heizmann, Immendingen-Hattingen, 12.11.2013',
+  wfl_l19: 'Dropbox transfer/L19-Teilungserklaerung/2015/2015-11-30_0914_G. Saile_Whs. '
+       + 'Leutenbergstr. 19  Teilungsunterlagen/Bickel Teilung Wohnflaeche.pdf — '
+       + 'Aufteilungsberechnung nach DIN 283, Ing.-Buero G. Saile, 26.11.2015',
   ea_mg22: 'Paragraf 80 GEG: Ein Energieausweis ist nur fuer beheizte oder klimatisierte Gebaeude '
        + 'auszustellen. MG22 sind drei unbeheizte Garagen (bikosoc-Stammdaten: '
        + 'properties.heating_type = none; Owner-Entscheidung 16.10.2026).',
@@ -163,9 +174,9 @@ const EINTRAEGE: Eintrag[] = [
   { objekt: 'n24', feld: 'mieterstrom',          text: 'ja',         quelle: 'bikosoc: Mieterstromvertraege W1 und W2, 70,00 EUR je Monat (Paragraf 42a EnWG)', typ: 'db', stand: '2026-10-16' },
 
   // ── L19 ─────────────────────────────────────────────────────────────────
-  { objekt: 'l19', feld: 'flurstueck',           text: '8414/2',     quelle: Q.owner_l19, typ: 'owner', stand: '2015-11-30' },
-  { objekt: 'l19', feld: 'grundstuecksflaeche',  zahl: 562,          quelle: Q.owner_l19, typ: 'owner', stand: '2015-11-30' },
-  { objekt: 'l19', feld: 'wohnflaeche',          zahl: 438.99,       quelle: Q.owner_l19, typ: 'owner', stand: '2015-11-30',
+  { objekt: 'l19', feld: 'flurstueck',           text: '8414/2',     quelle: Q.teil_l19, typ: 'owner', stand: '2015-11-30' },
+  { objekt: 'l19', feld: 'grundstuecksflaeche',  zahl: 562,          quelle: Q.teil_l19, typ: 'owner', stand: '2015-11-30' },
+  { objekt: 'l19', feld: 'wohnflaeche',          zahl: 438.99,       quelle: Q.teil_l19, typ: 'owner', stand: '2015-11-30',
     notiz: 'vier Sondereigentume laut Teilung' },
 
   // ── Nachtrag 16.10.2026: Baujahr, Energie, Flurstuecke, Mietspiegel ─────
@@ -195,7 +206,21 @@ const EINTRAEGE: Eintrag[] = [
   { objekt: 'd4',  feld: 'gemarkung',            text: 'Wurmlingen', quelle: Q.elster_d4, typ: 'sharepoint', stand: '2022-12-31' },
   { objekt: 'd4',  feld: 'grundstuecksflaeche',  zahl: 1125,         quelle: Q.elster_d4, typ: 'sharepoint', stand: '2022-12-31' },
 
-  { objekt: 'l19', feld: 'gemarkung',            text: 'Tuttlingen', quelle: Q.elster_l19, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'l19', feld: 'gemarkung',            text: 'Tuttlingen', quelle: Q.elster_l19 + ' sowie ' + Q.teil_l19, typ: 'sharepoint', stand: '2022-12-31' },
+  { objekt: 'l19', feld: 'lageplan',            text: 'Katasterauszug M 1:500, Vermessungsbüro H. W. Heizmann, 12.11.2013 (Teilungsunterlagen Saile)',
+    quelle: Q.lage_l19, typ: 'dropbox', stand: '2013-11-12',
+    notiz: 'Auszug aus dem Liegenschaftskataster mit Einzeichnungen nach Paragraf 4 LBOVVO: '
+         + 'Kreis Tuttlingen, Gemeinde und Gemarkung Tuttlingen, Flurstueck 8414/2. Bestandteil '
+         + 'des Teilungsantrags nach Paragraf 8 LBO und Paragraf 7 WEG.' },
+  { objekt: 'l19', feld: 'aufteilungsplan',     text: 'Teilung in Sondereigentum 1 bis 4, Ing.-Büro G. Saile, 26.11.2015',
+    quelle: Q.teil_l19, typ: 'dropbox', stand: '2015-11-26',
+    notiz: 'Vier Sondereigentumseinheiten mit Grundrissen EG, 1. OG, 2. OG und DG, Schnitt A-A '
+         + 'und Ansichten, jeweils auch als DXF. Miteigentumsanteile laut Berechnungsschluessel: '
+         + 'SE1 284,11 / SE2 284,93 / SE3 155,03 / SE4 276,14 Tausendstel. ACHTUNG: Diese vier '
+         + 'Werte ergeben zusammen 1.000,21 Tausendstel, nicht 1.000 — die Berechnung der Anlage '
+         + 'teilt durch zwei verschiedene Summen (541,89 und 541,74) und nennt als Summe der '
+         + 'Flaechen 308,31 qm statt 541,90 qm. Welche Anteile die notarielle Teilungserklaerung '
+         + 'festschreibt, ist damit NICHT belegt; die Wohnflaechen selbst sind davon unberuehrt.' },
   { objekt: 'l19', feld: 'baujahr',              zahl: 2016,         quelle: 'Owner, Chat 15./16.10.2026 (Neubau Sechsfamilienhaus, vier Sondereigentume; '
          + 'Planung Saile, Bauleitung Karl). ' + Q.mail_l19 + ' bestaetigt den Mietbeginn der ersten Wohnung zum 01.10.2016.', typ: 'owner', stand: '2016-12-31' },
   { objekt: 'n24', feld: 'baujahr',              zahl: 2023,         quelle: 'Owner, Chat 15./16.10.2026; Flaechenberechnung Schreiber "IST 2023 nach '

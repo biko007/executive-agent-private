@@ -11,12 +11,10 @@ nicht wiederholt.
 
 | Was | Wer muss handeln | Womit |
 |---|---|---|
-| **Dropbox-Vollzugriff autorisieren** | Owner | `cd ~/.openclaw/workspace/.openclaw/extensions/executive-agent && python3 scripts/dropbox_auth_pkce.py` — vorher Berechtigung `account_info.read` in der App prüfen |
 | **V043 anwenden + Steckbrief befüllen** | Owner gibt `/arm`, dann cc | siehe Abschnitt 3 |
 | **Dienste neu starten** (für die neue Dropbox-App) | Owner gibt `/arm` | `systemctl --user restart openclaw-gateway.service` |
 | **Mailentwurf an Vohrer prüfen und senden** | Owner | Entwürfe-Ordner, Betreff „Versicherungsscheine Gebäudeversicherung – Bitte um aktuellen Stand für alle Objekte" |
 | **Mailentwurf an Doris wegen Saber 200 €** | Owner | liegt seit 16.10.2026 unversandt im selben Ordner |
-| **Ordner `L19-Teilungserklaerung` nach Dropbox ziehen** | Owner | Ziel `transfer/L19-Teilung`; **am 16.10.2026 11:25 noch nicht dort** |
 | **Rettenbacher 120 € ab 01.03.2025** | Owner prüft | undokumentierte Erhöhung; nichts angefasst |
 | **Gebäude-/Bodenanteil** | Owner entscheidet | Anfrage an den Steuerberater ist auf Owner-Weisung vom 16.10.2026 **unterblieben** |
 | **Alte Dropbox-Zugangsdaten freigeben** | Owner, frühestens 23.10.2026 | nach sieben fehlerfreien Tagen fragt cc nach |
@@ -44,14 +42,14 @@ Push brauchte hier kein `/arm`: Keiner der berührten Pfade ist rote Zone.
 
 ## 3. Die gestagten V043-Werte
 
-**Ort: `scripts/steckbrief-befuellen.ts`**, Feld `EINTRAEGE` — **102 Werte**,
+**Ort: `scripts/steckbrief-befuellen.ts`**, Feld `EINTRAEGE` — **104 Werte**,
 jeder mit Fundstelle, Quellentyp und Stand. Nichts davon ist in der Datenbank.
 
 | Objekt | Werte |
 |---|---:|
 | MG24 | 25 |
 | N24 | 20 |
-| L19 | 19 |
+| L19 | 21 |
 | MG22 | 17 |
 | S28 | 11 |
 | I83 | 5 |
@@ -88,7 +86,11 @@ setzt es nie selbst. Rot sind hier: die Migrationsdatei und jeder Lauf gegen
 
 ## 5. Dropbox-Umstellung — Stand
 
-Code fertig und committet, **Autorisierung steht aus**.
+**Autorisierung am 16.10.2026 erledigt.** Die Env-Datei führt `DROPBOX_APP_KEY` und
+`DROPBOX_REFRESH_TOKEN` (Rechte 600); ein Leseversuch über `dropbox-holen.ts` gegen
+`/bikosoc-reports/transfer/L19-Teilungserklaerung` lief durch — der Adapter setzt das
+Präfix korrekt. **Offen ist nur der Dienstneustart**, der braucht `/arm`; bis dahin
+arbeitet der laufende Gateway noch mit der alten App.
 
 - Neue App „BikosOpenClawFA", App-Key `4fm8hxopf6s4yx3`, Full Dropbox, **ohne
   App-Secret** (PKCE).
@@ -169,8 +171,11 @@ Versicherungssummen liegt der Entwurf an Vohrer bereit; der
 Gebäude-/Bodenanteil ist auf Owner-Weisung ausgesetzt.
 
 **L19:** Vermietet sind 255,70 von 438,99 m². Flurstück 8414/2, 562 m².
-Es fehlen Grundbuchblatt und Lageplan — beide in den Teilungsunterlagen
-Saile vom 30.11.2015, die der Owner noch ablegt. Die Versicherungssumme 1914
+Der Lageplan ist seit dem 16.10.2026 belegt (Katasterauszug Heizmann vom
+12.11.2013 aus den Teilungsunterlagen Saile). **Das Grundbuchblatt fehlt
+weiterhin** — es steht weder in den Teilungsunterlagen noch in SharePoint,
+im Postfach oder in der Dropbox; es gibt für L19 keinen Grundbuchauszug im
+Bestand. Die Versicherungssumme 1914
 beträgt nach dem ausgefüllten Helvetia-Fragebogen 64.092,54 Mark; die
 Bestätigung des Versicherers steht aus, deshalb ist der Wert **nicht**
 gestagt — das Katalogfeld führt Euro, nicht Mark 1914.
