@@ -737,6 +737,51 @@ function checkClaudeHooks() {
   }
 }
 
+// ── 17. ROTE ZONE: aktive Konfiguration ggü. Referenz im Repo ───────────────
+
+/**
+ * Die Rote Zone wird von `~/.config/openclaw/red-zone.conf` gesteuert. Die
+ * Datei liegt AUSSERHALB des Repos und wird von keinem `git revert` erfasst.
+ *
+ * Genau das ist am 16.10.2026 aufgefallen: Die Verankerung der roten Muster
+ * besteht aus zwei Teilen — der Vergleichslogik im Hook (im Repo) und der
+ * Tilde-Zeile in der Konfiguration (ausserhalb). Wer nur den Hook
+ * zuruecknimmt, bekommt eine Konfiguration, die zur Logik nicht mehr passt:
+ * Das Loeschmuster waere dann verankert statt ueberall gueltig — eine stille
+ * Abschwaechung des Schutzes.
+ *
+ * Deshalb liegt eine Referenzkopie im Repo, und diese Pruefung meldet jede
+ * Abweichung. Sie ist bewusst ein Hinweis und kein Fehler: Der Owner darf die
+ * Datei jederzeit anpassen. Sie soll nur nicht unbemerkt auseinanderlaufen.
+ */
+function checkRedZoneConf() {
+  const label = 'Rote Zone red-zone.conf';
+  const aktiv = path.join(HOME, '.config/openclaw/red-zone.conf');
+  const referenz = path.join(path.dirname(new URL(import.meta.url).pathname),
+    '..', 'config', 'red-zone.conf.example');
+
+  if (!fs.existsSync(aktiv)) {
+    fail(label, 'fehlt in ~/.config/openclaw/ — die Rote Zone waere unwirksam');
+    return;
+  }
+  if (!fs.existsSync(referenz)) {
+    fail(label, 'Referenzkopie config/red-zone.conf.example fehlt im Repo');
+    return;
+  }
+  try {
+    const a = execSync(`sha256sum "${aktiv}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+    const r = execSync(`sha256sum "${referenz}"`, { stdio: 'pipe' }).toString().split(' ')[0];
+    if (a === r) {
+      pass(label, `aktiv = Referenz (${a.slice(0, 12)}…)`);
+    } else {
+      fail(label, `Abweichung (aktiv: ${a.slice(0, 12)}… ≠ Referenz: ${r.slice(0, 12)}…) — `
+        + 'absichtlich? dann config/red-zone.conf.example nachziehen');
+    }
+  } catch (e: any) {
+    fail(label, `Vergleich fehlgeschlagen: ${e.message}`);
+  }
+}
+
 // ── 16. BETRIEBSSKRIPTE ops/bin (Drift-Check) ───────────────────────────────
 
 // Gleiche Mechanik wie Check 15, nur fuer ~/bin. Der Anlass ist derselbe: Am
@@ -852,6 +897,7 @@ async function main() {
 
   // 15. Claude Code Hooks (Drift-Check)
   checkClaudeHooks();
+  checkRedZoneConf();
   checkOpsBin();
 
   // ── Report ──────────────────────────────────────────────────────────────

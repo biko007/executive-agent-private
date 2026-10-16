@@ -183,10 +183,36 @@ elif echo "$NORM_LOWER" | grep -qiE '\bdelete\s+from\b' && ! echo "$NORM_LOWER" 
 fi
 
 # --- Git destructive ---
-if echo "$NORM" | grep -qE 'push\s+(--force|-f)\b'; then
+#
+# ERZWUNGENE UEBERTRAGUNG, neu gefasst am 16.10.2026 (Owner-Weisung).
+#
+# Vorher stand hier ein Muster, das ein `push` irgendwo und ein `-f`
+# irgendwo dahinter verlangte — ueber Semikolons und Pipes hinweg. Damit
+# blockierte
+#     … arm-vormerken.ts "…" push …; test -f ~/.armed-bikosoc
+# an einem `test -f`, das mit Git nichts zu tun hat. Die Regel ist hart
+# und NICHT armbar, der Fehlalarm also besonders laestig.
+#
+# Jetzt gilt sie innerhalb EINES Befehlssegments — bis zum naechsten ; & |
+# oder Zeilenende. Zwischen `git` und `push` sind beliebige Optionen erlaubt,
+# denn die gebraeuchlichen Auswege tragen welche:
+#     git -C /abs/pfad push --force      (der Ausweg aus fail-closed)
+#     git -c user.name=x push -f
+#     git --git-dir=/x --work-tree=/y push -fu
+# Erfasst wird die Erzwingung in jeder Schreibweise: --force,
+# --force-with-lease, -f, kombinierte Kurzflags mit f (-fu, -uf)
+# und die Erzwingung ueber eine Refspec mit fuehrendem Plus
+# (git push origin +master).
+GIT_PUSH_SEG='\bgit\b[^;&|]*\bpush\b'
+GIT_FORCE_LANG='[^;&|]*--force(-with-lease)?(=[^[:space:];&|]*)?'
+GIT_FORCE_KURZ='[^;&|]*[[:space:]]-[A-Za-z]*f[A-Za-z]*([[:space:]]|$)'
+GIT_FORCE_PLUS='[^;&|]*[[:space:]]\+[^[:space:];&|]+'
+if echo "$NORM" | grep -qE "${GIT_PUSH_SEG}${GIT_FORCE_LANG}"; then
   DENY_REASON="git push --force"
-elif echo "$NORM" | grep -qE 'push\s+.*-f\b'; then
+elif echo "$NORM" | grep -qE "${GIT_PUSH_SEG}${GIT_FORCE_KURZ}"; then
   DENY_REASON="git push -f"
+elif echo "$NORM" | grep -qE "${GIT_PUSH_SEG}${GIT_FORCE_PLUS}"; then
+  DENY_REASON="git push +refspec (erzwungen)"
 elif echo "$NORM" | grep -qE 'reset\s+--hard\b'; then
   DENY_REASON="git reset --hard"
 elif echo "$NORM" | grep -qE 'clean\s+-f\b'; then

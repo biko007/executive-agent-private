@@ -1,0 +1,80 @@
+# Rote-Zone-Konfiguration
+# Owner-editierbar. Aenderungen wirken sofort (kein Restart noetig).
+# Zeilen mit # = Kommentar, leere Zeilen ignoriert.
+#
+# ZUSCHNITT 2026-10-10 (Owner-Entscheidung): index.ts, dist/** und CLAUDE.md sind
+# KEINE roten Pfade mehr. Begruendung des Owners: fuer Routinepfade war /arm ein
+# Durchwink-Gate ohne Einfluss — es kostete einen Handgriff, ohne eine Entscheidung
+# zu erzwingen. Rot bleibt, was ohne Rueckweg wirkt oder Zugaenge beruehrt.
+
+[red-paths]
+# Glob-Patterns gegen git diff --name-only Output (relativ zum Repo-Root).
+# Treffer bei git push → Block, es sei denn /arm war aktiv.
+# Vergleich im Hook: bash [[ "$f" == $pattern ]] — ** passt beliebig tief.
+
+# Datenbank-Struktur und -Inhalt: wirkt ohne Rueckweg
+# Zwei Muster, weil `*` in der Mustererkennung zwar Schraegstriche ueberspringt,
+# aber mindestens ein Segment VOR dem Schraegstrich verlangt: */migrations/*.sql
+# trifft src/modules/x/migrations/y.sql, nicht aber migrations/y.sql direkt im
+# Repo-Wurzelverzeichnis. Festgestellt am 13.10.2026 (Fall F der Diagnose).
+*/migrations/*.sql
+migrations/*.sql
+scripts/migrate-*.ts
+src/modules/*/migrate-*.ts
+scripts/rollback-*.ts
+
+# Zugangs- und Bindungsschicht: entscheidet, wer als Owner gilt
+src/modules/telegram-binding/**
+
+# Schutzmechanik selbst: Hooks und ihre Konfiguration
+.claude/hooks/**
+hooks/**
+scripts/hooks/**
+.claude/settings.json
+.claude/settings.local.json
+
+# Auslieferung ausserhalb des eigenen Rechners
+.github/workflows/**
+
+# Secret-Dateien. Sie sind ueblicherweise gitignored und erscheinen dann nie in
+# einem Diff — der Eintrag ist die zweite Linie fuer den Fall, dass eine solche
+# Datei doch einmal versioniert wird.
+.env
+.env.*
+**/.env
+**/.env.*
+*secrets*.json
+*credentials*.json
+
+[red-commands]
+# Regex-Patterns gegen den normalisierten Bash-Command.
+# Treffer → Block, es sei denn /arm war aktiv.
+#
+# VERANKERUNG seit 2026-10-16 (Owner-Entscheidung): Ein Muster greift nur an
+# einer BEFEHLSPOSITION — am Zeilenanfang, nach ; & | ( oder $(, und nach den
+# ueblichen Vorsaetzen (sudo, env, timeout, nohup, npx, bunx, bun run, node,
+# tsx, bash -c, sh -c, VAR=wert). Ein Pfad davor ist erlaubt.
+# Grund: Vorher verbrauchte schon die blosse ERWAEHNUNG eine Freigabe — ein
+# grep nach einem Schalter oder ein Report, der ein Muster zitiert.
+#
+# Soll ein Muster BEWUSST ueberall greifen, stelle eine Tilde voran: ~muster
+#
+# KEIN (?i)-Prefix verwenden: der Hook vergleicht mit grep -E (POSIX-ERE), dort
+# ist das kein Schalter, sondern ein Syntaxfehler — das Muster waere unwirksam.
+# Gross-/Kleinschreibung erledigt der Hook seit 2026-10-10 selbst (grep -qiE).
+migrate.*--apply
+psql.*openclaw_core
+npm\s+publish
+docker\s+push
+
+# Loeschoperationen gegen die Produktiv-Datenbank (Ergaenzung 2026-10-10).
+# Die harten Regeln im Hook fangen die bekannten Zerstoerer unabhaengig vom
+# Armed-Flag ab. Diese Muster schliessen die Luecke daneben: eine formal
+# korrekte Loeschung mit WHERE gegen die Produktiv-DB oder ueber den
+# Produktiv-Container wird rot statt unbemerkt.
+# Die Tilde: ueberall greifen, nicht nur an einer Befehlsposition. Eine
+# Loeschung gegen die Produktiv-Datenbank soll auch dann rot sein, wenn sie
+# als Argument, in Anfuehrungszeichen oder in einem Hier-Dokument steckt.
+~(delete|drop|trunc)[a-z]*.*openclaw_core
+psql.*-c.*(delete|drop|trunc)[a-z]*
+docker\s+exec.*psql.*(delete|drop|trunc)[a-z]*

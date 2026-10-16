@@ -160,7 +160,22 @@ export interface Kachel {
   property_id: number; code: string; name: string; strasse: string | null;
   ampel: 'gruen' | 'rot' | 'unbekannt';
   mieter_rot: number; mieter_gesamt: number; saldo: number; unbestaetigt: number;
-  soll_monat: number; soll_jahr: number; ist_jahr: number;
+  soll_monat: number;
+  /**
+   * Summe der bereits GESTELLTEN Monate des laufenden Jahres — im Oktober
+   * also zehn, nicht zwoelf. Taugt fuer „wie viel ist dieses Jahr bisher
+   * faellig geworden", NICHT als Jahresmiete.
+   */
+  soll_jahr: number;
+  /**
+   * Die Jahresmiete: Monatssoll mal zwoelf. Das ist die Bezugsgroesse der
+   * beiden Renditen — und der Grund, warum `soll_jahr` und `bruttomietrendite`
+   * nicht zueinander zu passen scheinen. Der Unterschied betrug am 16.10.2026
+   * genau den Faktor 1,2 (zehn von zwoelf Monaten) und hat einen Bericht in
+   * die Irre gefuehrt, der `soll_jahr` als „Jahresmiete" ueberschrieb.
+   */
+  jahresmiete: number;
+  ist_jahr: number;
   einheiten: { gesamt: number; vermietet: number; eigen: number; leer: number };
   wohnflaeche: number | null;
   baujahr: number | null;
@@ -315,7 +330,7 @@ export async function kacheln(stichtag?: string): Promise<Kachel[]> {
       ampel: am ? am.farbe : 'unbekannt',
       mieter_rot: am?.mieter_rot ?? 0, mieter_gesamt: am?.mieter_gesamt ?? 0,
       saldo: am?.saldo ?? 0, unbestaetigt: am?.unbestaetigt ?? 0,
-      soll_monat: sollMonat, soll_jahr: sollJahr,
+      soll_monat: sollMonat, soll_jahr: sollJahr, jahresmiete: jahresmiete,
       ist_jahr: Math.round((so?.ist_jahr || 0) * 100) / 100,
       einheiten: {
         gesamt: fl?.einheiten ?? 0, vermietet: be?.vermietet ?? 0,
