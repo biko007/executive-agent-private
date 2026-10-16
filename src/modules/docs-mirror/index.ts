@@ -3,7 +3,9 @@
  *
  * Zweck (Owner-Auftrag 08.10.2026): die aktuellen Markdown-Dokumente der drei
  * bikosoc-Repos sollen jederzeit zentral in Dropbox liegen, ohne Handgriff.
- * Ziel ist der App-Ordner des vorhandenen Report-Zugangs (EA_DROPBOX_*):
+ * Ziel ist derselbe Zugang wie beim Report-Watcher, seit 16.10.2026 die
+ * Vollzugriffs-App (siehe `src/adapters/dropbox-zugang.ts`). Die Pfade hier
+ * bleiben unveraendert — der Adapter setzt DROPBOX_BASE davor:
  *
  *   /bikosoc-reports/docs/repo/executive-agent/...
  *   /bikosoc-reports/docs/repo/executive-dashboard/...

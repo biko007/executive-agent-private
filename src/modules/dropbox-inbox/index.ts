@@ -7,8 +7,10 @@
  * Prompt-Inbox-Watcher wie bisher (systemd-user-Timer, 10 s, tmux `bikosoc`,
  * Telegram-Quittung). Dieses Modul holt die Datei ab — es fuehrt nichts aus.
  *
- * Zugang: derselbe Dropbox-App-Ordner-Zugang wie der Report-Watcher
- * (EA_DROPBOX_*). Gelesen und verschoben wird nur innerhalb des App-Ordners.
+ * Zugang: derselbe wie beim Report-Watcher — seit 16.10.2026 die Vollzugriffs-App
+ * (siehe `src/adapters/dropbox-zugang.ts`). Gelesen und verschoben wird
+ * weiterhin nur innerhalb der bisherigen Ordnerstruktur, weil der Adapter
+ * DROPBOX_BASE vor jeden Pfad setzt.
  *
  * Doppelverarbeitung ist ausgeschlossen, weil die Reihenfolge feststeht:
  *
