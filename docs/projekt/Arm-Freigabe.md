@@ -83,17 +83,17 @@ Sie verfällt nach 24 Stunden: Lieber keine Angabe als eine falsche.
 |---|---|---|
 | Push, der einen **roten Pfad** berührt | **ja** | `deny-destructive.sh` prüft, `scripts/hooks/pre-push` verbraucht |
 | **Roter Befehl** (`migrate … --apply`, `psql … openclaw_core`, `npm publish`, `docker push`, Löschungen gegen die Produktiv-DB) | **ja** | `deny-destructive.sh` prüft **und** verbraucht |
-| **Dienst-Neustart** (`systemctl --user restart …`) | **technisch nein** — siehe unten | niemand |
+| **Dienst-Neustart** (`systemctl --user restart …`) | **nein** — nicht rot, siehe unten | Teil der Gate-Kette |
 | Push ohne roten Pfad | nein | — |
 | Harte Verbote (rekursives Löschen, Tabellen verwerfen, `git push --force`) | **nicht armbar** | `deny-destructive.sh`, unabhängig vom Flag |
 | Push, dessen Ziel nicht bestimmbar ist | **nicht armbar** (fail-closed) | `deny-destructive.sh` / `pre-push` |
 
-**Der Neustart ist eine Owner-Regel, keine technische Sperre.** Weder
-`red-zone.conf` noch der Hook kennen `systemctl`. Dass cc vor einem Neustart
-auf `/arm` wartet, ist Disziplin und steht in CLAUDE.md — kein Mechanismus
-hält cc davon ab. Wer das ändern will, müsste `systemctl.*restart` in die roten
-Befehle aufnehmen; das berührt eine Datei der Roten Zone und braucht eine
-eigene Entscheidung.
+**Der Neustart ist nicht rot — entschieden am 16.10.2026.** Weder
+`red-zone.conf` noch der Hook kennen `systemctl`, und das bleibt so: Nach
+Cowork-Platform.md §14 gehört der Dienst-Neustart zur normalen Gate-Kette
+(Build, Tests, Restart, Smoke), die cc nach grünen Gates selbst durchläuft.
+Die zwischenzeitliche Arbeitsnotiz „Neustart nur nach `/arm`" ist damit
+aufgehoben.
 
 ---
 
@@ -126,9 +126,8 @@ hilft keine Freigabe. Dann den Push mit absolutem Pfad wiederholen:
   führte. Die Datei wird vom Claude-Chat gepflegt, nicht von cc; der Text für
   die Berichtigung steht im Report vom 16.10.2026.
 - **§14 schreibt** „cc pusht nach grünen Gates (Build, Tests, **Dienst-Restart**,
-  Smoke) selbst" — dort ist der Neustart also ausdrücklich Teil der normalen
-  Kette. Die Owner-Regel „Neustart nur nach `/arm`" aus den Aufträgen vom
-  16.10.2026 steht dazu im Widerspruch. **Es gilt die Owner-Regel**, aber sie
-  ist nirgends erzwungen.
+  Smoke) selbst". Die zwischenzeitliche Arbeitsnotiz „Neustart nur nach `/arm`"
+  stand dazu im Widerspruch; der Owner hat am 16.10.2026 zugunsten von §14
+  entschieden. **Der Neustart braucht keine Freigabe.**
 - **CLAUDE.md §8** sagte, `/arm push` arme „zusätzlich". Das war missverständlich:
   Es armt identisch und stößt zusätzlich an. Berichtigt.

@@ -12,7 +12,6 @@ nicht wiederholt.
 | Was | Wer muss handeln | Womit |
 |---|---|---|
 | **V043 anwenden + Steckbrief befüllen** | Owner gibt `/arm`, dann cc | siehe Abschnitt 3 |
-| **Dienste neu starten** (für die neue Dropbox-App) | Owner gibt `/arm` | `systemctl --user restart openclaw-gateway.service` |
 | **Mailentwurf an Vohrer prüfen und senden** | Owner | Entwürfe-Ordner, Betreff „Versicherungsscheine Gebäudeversicherung – Bitte um aktuellen Stand für alle Objekte" |
 | **Mailentwurf an Doris wegen Saber 200 €** | Owner | liegt seit 16.10.2026 unversandt im selben Ordner |
 | **Rettenbacher 120 € ab 01.03.2025** | Owner prüft | undokumentierte Erhöhung; nichts angefasst |
@@ -89,8 +88,9 @@ setzt es nie selbst. Rot sind hier: die Migrationsdatei und jeder Lauf gegen
 **Autorisierung am 16.10.2026 erledigt.** Die Env-Datei führt `DROPBOX_APP_KEY` und
 `DROPBOX_REFRESH_TOKEN` (Rechte 600); ein Leseversuch über `dropbox-holen.ts` gegen
 `/bikosoc-reports/transfer/L19-Teilungserklaerung` lief durch — der Adapter setzt das
-Präfix korrekt. **Offen ist nur der Dienstneustart**, der braucht `/arm`; bis dahin
-arbeitet der laufende Gateway noch mit der alten App.
+Präfix korrekt. **Der Neustart ist am 16.10.2026 um 10:18 UTC erfolgt**; die Startzeile nennt
+„App BikosOpenClawFA, Basis /Apps/bikosoc-reports". Der Betrieb läuft auf der
+neuen App, die Ordnerstruktur ist unverändert.
 
 - Neue App „BikosOpenClawFA", App-Key `4fm8hxopf6s4yx3`, Full Dropbox, **ohne
   App-Secret** (PKCE).
@@ -195,4 +195,8 @@ gestagt — das Katalogfeld führt Euro, nicht Mark 1914.
 - Recherche fragt alle vier Quellen ab — Datenbank, SharePoint-Index,
   Postfach, Dropbox — und nennt sie im Kopf, auch die ohne Treffer.
 - Owner-Mailentwürfe werden angelegt, aber nie gesendet.
-- Deployment und Neustart nur nach `/arm`.
+- **Der Dienst-Neustart ist NICHT rot** (Owner-Entscheidung 16.10.2026,
+  Cowork-Platform.md §14): Er gehört zur normalen Gate-Kette, cc führt ihn
+  nach grünen Gates selbst aus. Eine Freigabe braucht er nicht.
+- `/arm` ist seit 16.10.2026 EIN Befehl: freigeben und ausführen; `/arm push`
+  ist ein gleichwertiger Alias. Siehe `docs/projekt/Arm-Freigabe.md`.
