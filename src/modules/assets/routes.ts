@@ -131,7 +131,8 @@ export function registerAssetsHttpRoutes(api: any) {
                        r.kaltmiete_amount::float AS kaltmiete, r.nk_amount::float AS nk,
                        r.heizkosten_amount::float AS heizkosten, r.garage_amount::float AS garage,
                        r.kitchen_amount::float AS kueche, r.anteil::float AS anteil,
-                       r.status, r.erzeugt, r.gilt_als_bezahlt,
+                       r.status, r.erzeugt, r.gilt_als_bezahlt, r.unbestaetigt,
+                       r.vz_entfallen::float AS vz_entfallen,
                        to_char(r.payment_date,'YYYY-MM-DD') AS gezahlt_am, r.notes,
                        coalesce(json_agg(json_build_object(
                          'transaction_id', pl.transaction_id, 'betrag', pl.amount::float,
@@ -389,6 +390,17 @@ export function registerAssetsHttpRoutes(api: any) {
                 if (body.primary_energy_kwh_m2 !== undefined) { sets.push(`primary_energy_kwh_m2 = $${pi++}`); params.push(body.primary_energy_kwh_m2); }
                 if (body.current_market_value !== undefined) { sets.push(`current_market_value = $${pi++}`); params.push(body.current_market_value); }
                 if (body.monthly_rent_override !== undefined) { sets.push(`monthly_rent_override = $${pi++}`); params.push(body.monthly_rent_override); }
+                /* Anschaffung: Datum, Kaufpreis und die Aufteilung Gebaeude/Grund
+                   und Boden. Die Felder gibt es seit der ersten Fassung, aenderbar
+                   waren sie nie. Aufgefallen am 16.10.2026 bei MG22: Kaufvertrag
+                   vom 18.11.2021, Besitzuebergang 01.12.2021, 20.320,00 EUR —
+                   ohne diese Zeilen haette das nur an Route und Audit-Log vorbei
+                   in die Tabelle gekonnt. */
+                if (body.acquisition_date !== undefined) { sets.push(`acquisition_date = $${pi++}`); params.push(body.acquisition_date); }
+                if (body.purchase_price_total !== undefined) { sets.push(`purchase_price_total = $${pi++}`); params.push(body.purchase_price_total); }
+                if (body.building_value !== undefined) { sets.push(`building_value = $${pi++}`); params.push(body.building_value); }
+                if (body.land_value !== undefined) { sets.push(`land_value = $${pi++}`); params.push(body.land_value); }
+                if (body.afa_rate !== undefined) { sets.push(`afa_rate = $${pi++}`); params.push(body.afa_rate); }
                 if (sets.length === 0) { err(res, 400, 'No fields to update'); return; }
 
                 params.push(before[0].id);
@@ -594,6 +606,12 @@ export function registerAssetsHttpRoutes(api: any) {
                    in dieser Liste wäre eine Korrektur nur an der Route vorbei
                    möglich. */
                 'handover_at',
+                /* Garage/Stellplatz und Kueche konnte die POST-Route von
+                   Anfang an setzen, die PATCH-Route nicht. Aufgefallen am
+                   16.10.2026: Der TG-Platz von N24 W6 (75,00 EUR ab
+                   01.12.2025, Owner-Entscheidung) liess sich nicht
+                   nachtragen — die Route meldete 200 und aenderte nichts. */
+                'garage_amount', 'kitchen_amount',
                 'contract_document_path']) {
                 if (body[field] !== undefined) { sets.push(`${field} = $${pi++}`); params.push(body[field]); }
               }

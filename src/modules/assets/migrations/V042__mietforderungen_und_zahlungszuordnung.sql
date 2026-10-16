@@ -46,7 +46,16 @@ ALTER TABLE rent_ledger
   -- Vorauszahlungen anrechnet. Ohne diese Spalte wuerde der Mieter denselben
   -- Betrag zweimal schulden: einmal als Mietrueckstand und einmal als
   -- Nachzahlung in der Abrechnung. 0 = keine Kuerzung.
-  ADD COLUMN IF NOT EXISTS vz_entfallen       numeric(12,2) NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS vz_entfallen       numeric(12,2) NOT NULL DEFAULT 0,
+  -- Der offene Posten steht, ist aber noch nicht durch die Buchhaltung
+  -- bestaetigt. Owner-Entscheidung 16.10.2026: S28 W1 (Mitarbeiter der
+  -- bikolino GmbH) und N24 W6 Juni 2025 (Antwort von Doris steht aus) werden
+  -- ausgewiesen, aber sichtbar als unbestaetigt gekennzeichnet. Solange das
+  -- Merkmal gesetzt ist, geht nichts an den Mieter.
+  ADD COLUMN IF NOT EXISTS unbestaetigt       boolean NOT NULL DEFAULT false;
+
+COMMENT ON COLUMN rent_ledger.unbestaetigt IS
+  'Offener Posten steht, ist aber nicht durch die Buchhaltung bestaetigt. Kein Schreiben an den Mieter.';
 
 COMMENT ON COLUMN rent_ledger.vz_entfallen IS
   'Herausgenommene Nebenkosten-Vorauszahlung (Doppelbelastung vermeiden). expected_amount ist um diesen Betrag gekuerzt.';
