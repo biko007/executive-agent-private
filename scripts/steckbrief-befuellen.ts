@@ -62,6 +62,14 @@ const Q = {
   besch_mg24: 'Bescheinigung der Stadt Tuttlingen gemaess Paragrafen 7h, 10f, 11a EStG vom 01.08.2025 '
        + '(Anlage zur Einkommensteuer 2024, Postfach juergen.bickel@bikolino.com, Mail von Doris '
        + 'Hilsenbeck vom 07.05.2026, Archiv "EST 2024.zip")',
+  hk_l19: 'Baukosten.xlsx, Mail Doris Hilsenbeck vom 20.01.2016 "Gesamtbaukosten Leutenbergstr. '
+       + 'ohne Einrichtung", Blaetter "AK Grundstueck" und "AHK Gebaeude"; dazu LS19 AHK.xlsx, Mail '
+       + 'Doris Hilsenbeck vom 15.12.2015 (Kontoblaetter 85 und 150, Rechnungswesen 238754/20000, '
+       + 'Mandant Juergen Bickel). Quelle ausgewertet aus dem alten S&B-Postfach (PST, iCloud '
+       + 'PST-Auswertung/L19) — Owner-Auswertung 16.10.2026.',
+  karl_l19: 'Mail Anton Karl vom 27.09.2015 "Baukostenaufstellung" (PST, iCloud PST-Auswertung/L19)',
+  kfw_l19: 'Mails Anton Karl vom 18.03.2014 "KfW-Kredit / Foerderung" und vom 27.05.2014 "KFW" '
+       + '(PST, iCloud PST-Auswertung/L19)',
   ms26: 'Qualifizierter Mietspiegel der Stadt Tuttlingen, 17. Fortschreibung, Geltungsdauer '
        + '27.07.2026 bis 27.07.2028, Mietwerttabelle beschlossen am 27.05.2026, Gemeinderat '
        + '20.07.2026 (tuttlingen.de, Dokument id=34333, geladen am 16.10.2026)',
@@ -210,6 +218,35 @@ const EINTRAEGE: Eintrag[] = [
          + '2.532.955,35 EUR beguenstigte Kosten.' },
   { objekt: 'mg24', feld: 'denkmalschutz',       text: 'ja',         quelle: Q.besch_mg24 + '; Foerdergrundsaetze der Stadt Tuttlingen (Foerdersatz 35 Prozent fuer denkmalgeschuetzte Gebaeude)', typ: 'postfach', stand: '2025-08-01' },
   { objekt: 'mg24', feld: 'sanierungsgebiet',    text: 'ja',         quelle: Q.besch_mg24 + ': Sanierungssatzung vom 18.06.2018, oeffentlich bekanntgemacht am 23.06.2018', typ: 'postfach', stand: '2025-08-01' },
+
+  // ── Nachtrag 16.10.2026: L19 aus der PST-Auswertung ────────────────────
+  { objekt: 'l19', feld: 'erwerbsdatum',         datum: '2013-05-24', quelle: Q.hk_l19 + ', Konto 85 (Grundstueck)', typ: 'owner', stand: '2016-01-20' },
+  { objekt: 'l19', feld: 'kaufpreis',            zahl: 160000,       quelle: Q.hk_l19 + ', Konto 85', typ: 'owner', stand: '2013-05-24' },
+  { objekt: 'l19', feld: 'notarkosten',          zahl: 1072.29,      quelle: Q.hk_l19 + ', Konto 85', typ: 'owner', stand: '2013-05-24',
+    notiz: 'Zwei Rechnungen: 775,29 und 297,00 EUR. Dazu 30,00 EUR Negativbescheinigung.' },
+  { objekt: 'l19', feld: 'grunderwerbsteuer',    zahl: 8000,         quelle: Q.hk_l19 + ', Konto 85', typ: 'owner', stand: '2013-05-24',
+    notiz: '5,0 Prozent von 160.000,00 EUR' },
+  { objekt: 'l19', feld: 'bodenanteil',          zahl: 169102.29,    quelle: Q.hk_l19 + ', Konto 85', typ: 'owner', stand: '2016-01-20',
+    notiz: 'Kaufpreis 160.000,00 + Notar 775,29 + 297,00 + Negativbescheinigung 30,00 + '
+         + 'Grunderwerbsteuer 8.000,00 EUR, brutto' },
+  { objekt: 'l19', feld: 'herstellungskosten',   zahl: 1177918.05,   quelle: Q.hk_l19 + ', Konto 150 (Wohnbauten im Bau)', typ: 'owner', stand: '2016-01-20',
+    notiz: 'Brutto, darin 185.977,14 EUR Umsatzsteuer. Buchungen vom 13.11.2013 bis 30.12.2015, '
+         + 'OHNE Einrichtung. Plausibilisierung: Die Kostenschaetzung des Bauleiters Anton Karl vom '
+         + '27.09.2015 nannte rund 884.000 EUR Baukosten und 66.000 EUR Nebenkosten, zusammen rund '
+         + '950.000 EUR — das war der Stand vor den Schlussrechnungen (' + Q.karl_l19 + ').' },
+  { objekt: 'l19', feld: 'gebaeudeanteil',       zahl: 1177918.05,   quelle: Q.hk_l19 + ', Konto 150', typ: 'owner', stand: '2016-01-20' },
+  { objekt: 'l19', feld: 'anschaffungskosten',   zahl: 1347020.34,   quelle: Q.hk_l19, typ: 'owner', stand: '2016-01-20',
+    notiz: 'Grundstueck 169.102,29 + Gebaeude 1.177.918,05 EUR, brutto. STAND 01/2016: Moegliche '
+         + 'Nachrechnungen aus 2016 bis zur Schlussabnahme am 25.11.2016 sind nicht enthalten. '
+         + 'Die Vorsteuer war teilweise abziehbar (Quote 43,2 Prozent laut Aufstellung); im '
+         + 'Steckbrief wird brutto gefuehrt. In properties.purchase_price_total stehen 1.400.000,00 '
+         + 'EUR — 52.979,66 EUR mehr, vermutlich Einrichtung und Nachrechnungen 2016.' },
+  { objekt: 'l19', feld: 'kfw_standard',         text: 'fehlt — Effizienzhaus-Bestätigung 2014 vorhanden, Standard offen',
+    quelle: Q.kfw_l19, typ: 'owner', stand: '2014-05-27',
+    notiz: 'Fuer den L-Bank- beziehungsweise KfW-Kredit (angefragt 50.000 EUR je Wohneinheit) wurde '
+         + 'eine Effizienzhaus-Bestaetigung ausgestellt. Welcher Standard (55, 70 oder anderer) '
+         + 'bestaetigt wurde, steht in den Mails nicht. SharePoint und das heutige Postfach '
+         + 'enthalten weder die Bestaetigung noch einen Energieausweis fuer L19 (geprueft 16.10.2026).' },
 ];
 
 const apply = process.argv.includes('--apply');
