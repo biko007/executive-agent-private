@@ -164,6 +164,7 @@ NORM=$(echo "$NORM" | sed 's/\bbuiltin  *//g')
 NORM_LOWER=$(echo "$NORM" | tr '[:upper:]' '[:lower:]')
 
 DENY_REASON=""
+RED_ZONE_BEFEHL=""
 
 # --- Recursive delete ---
 if echo "$NORM" | grep -qE 'rm\s+-(r|rf|fr)\b'; then
@@ -298,7 +299,12 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
         # Diff erfolgreich und Dateien vorhanden — gegen rote Pfade prüfen
         IN_PATHS=false
         while IFS= read -r cfgline; do
-          cfgline=$(echo "$cfgline" | sed 's/#.*//' | xargs)
+          # Nur Leerraum abschneiden. Frueher stand hier `xargs` — das entfernt
+          # auch Backslashes, und damit wurde aus einem Muster mit \s still eines
+          # ohne: Es traf nie wieder. Zwei der sechs roten Befehle waren dadurch
+          # seit jeher wirkungslos (festgestellt 16.10.2026 durch den
+          # Verankerungstest).
+          cfgline=$(echo "$cfgline" | sed -E 's/#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
           [ -z "$cfgline" ] && continue
           [ "$cfgline" = "[red-paths]" ] && IN_PATHS=true && continue
           [[ "$cfgline" == \[* ]] && IN_PATHS=false && continue
@@ -319,11 +325,31 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
     fi
   fi
 
+# ── Befehlsposition: wo ein rotes Muster ueberhaupt greifen darf ───────────
+#
+# Reihenfolge: Trennzeichen, Leerraum, beliebig viele Vorsaetze, optional ein
+# Pfad. Erst dann darf das Muster aus red-zone.conf beginnen.
+ANKER_TRENNER='(^|[;&|(]|\$\()[[:space:]]*'
+ANKER_VORSATZ='(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|sudo|env|nohup|time|timeout[[:space:]]+[0-9]+[smhd]?|xargs|npx|bunx|bun[[:space:]]+run|bun|node|tsx|ts-node|deno[[:space:]]+run|bash[[:space:]]+-c|sh[[:space:]]+-c)[[:space:]]+["'"'"']?)*'
+ANKER_PFAD='([^[:space:];&|"'"'"']*/)?'
+ANKER="${ANKER_TRENNER}${ANKER_VORSATZ}${ANKER_PFAD}"
+
+# Der ausloesende Befehl fuer die Quittung: eine Zeile, gekuerzt, ohne
+# offensichtliche Geheimnisse. Er geht an den Owner-Chat, deshalb die Filter.
+befehl_kurz() {
+  printf '%s' "$1" \
+    | tr '\n' ' ' \
+    | sed -E 's/(password|passwd|token|secret|key|pin|tan)=[^[:space:]]*/\1=***/gI' \
+    | sed -E 's/(-p|--password)[[:space:]]+[^[:space:]]+/\1 ***/gI' \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | cut -c1-160
+}
+
   # (B) Red direct commands — match normalized command against regex patterns
   if [ -z "$RED_ZONE_HIT" ]; then
     IN_CMDS=false
     while IFS= read -r cfgline; do
-      cfgline=$(echo "$cfgline" | sed 's/#.*//' | xargs)
+      cfgline=$(echo "$cfgline" | sed -E 's/#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
       [ -z "$cfgline" ] && continue
       [ "$cfgline" = "[red-commands]" ] && IN_CMDS=true && continue
       [[ "$cfgline" == \[* ]] && IN_CMDS=false && continue
@@ -331,8 +357,35 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
         # -i seit 2026-10-10: die Muster in red-zone.conf duerfen kein
         # (?i)-Prefix tragen (POSIX-ERE kennt das nicht und das Muster waere
         # unwirksam). Gross-/Kleinschreibung wird deshalb hier erledigt.
-        if echo "$NORM" | grep -qiE "$cfgline"; then
+        #
+        # VERANKERUNG seit 2026-10-16 (Owner-Entscheidung, Variante a). Bis
+        # dahin verglich der Hook das Muster gegen den gesamten Befehlstext.
+        # Damit verbrauchte schon eine ERWAEHNUNG die Freigabe: Ein `grep`,
+        # das in einer Datei nach einem Schalter suchte, und ein Report, der
+        # ein Muster in einer Tabelle zitierte, haben am 16.10.2026 je eine
+        # Owner-Freigabe vernichtet, ohne irgendetwas auszufuehren.
+        #
+        # Jetzt muss der Treffer an einer BEFEHLSPOSITION liegen: am Anfang
+        # einer Zeile, nach ; & | ( oder $( — und nach den ueblichen
+        # Vorsaetzen (sudo, env, timeout, nohup, npx, bunx, bun run, node,
+        # tsx, bash -c, sh -c, VAR=wert). Ein Pfad davor ist erlaubt, sonst
+        # fiele `bun run scripts/migrate-x.ts --apply` durch.
+        #
+        # Ein Muster, das BEWUSST ueberall greifen soll, beginnt in der
+        # Konfiguration mit einer Tilde — etwa die Loeschbefehle gegen die
+        # Produktiv-Datenbank, die in jeder Verpackung rot bleiben sollen.
+        if [ "${cfgline:0:1}" = "~" ]; then
+          EFFEKTIV="${cfgline:1}"
+        else
+          EFFEKTIV="${ANKER}${cfgline}"
+        fi
+        if echo "$NORM" | grep -qiE "$EFFEKTIV"; then
           RED_ZONE_HIT="red command: $cfgline"
+          # Bug 3 (Owner, 16.10.2026): Die Quittung nannte bisher nur eine
+          # allgemeine Beschreibung — und behauptete eine Migration, wo gar
+          # nichts migriert wurde. Jetzt wird der tatsaechlich ausloesende
+          # Befehl mitgefuehrt, gekuerzt und ohne Geheimnisse.
+          RED_ZONE_BEFEHL=$(befehl_kurz "$NORM")
           break
         fi
       fi
@@ -395,14 +448,15 @@ if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
         else
           rm -f "$STRAND_FLAG"
           hook_log ARMED "$STRAND" \
-            "Armed-Flag verbraucht ($STRAND_FLAG, Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT"
+            "Armed-Flag verbraucht ($STRAND_FLAG, Alter ${FLAG_ALTER}s) durch: $RED_ZONE_HIT${RED_ZONE_BEFEHL:+ | Befehl: $RED_ZONE_BEFEHL}"
           # Klartext statt Rohbefund (14.10.2026). Das Gateway setzt Symbol und
           # Fettschrift und uebersetzt den Grund; faellt es aus, greift der
           # alte Textweg ueber hook_notify.
           if [ -x "$HOME/bin/notify-system" ]; then
             ( timeout 8 "$HOME/bin/notify-system" ok "Freigabe genutzt" \
                 --grund "$RED_ZONE_HIT" \
-                --zeile "genutzt nach ${FLAG_ALTER} s" >/dev/null 2>&1 || true ) &
+                --zeile "genutzt nach ${FLAG_ALTER} s" \
+                ${RED_ZONE_BEFEHL:+--zeile "Befehl: $RED_ZONE_BEFEHL"} >/dev/null 2>&1 || true ) &
             hook_log NOTIFY "$STRAND" "-> telegram/operativ (gestaltet): Freigabe genutzt"
           else
             hook_notify "$STRAND" operativ \

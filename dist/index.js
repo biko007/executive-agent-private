@@ -43,7 +43,7 @@ import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.
 import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
 import { dropboxZugang } from './src/adapters/dropbox-zugang.js';
 import { kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, ergebnisKnoepfe, } from './src/modules/report-telegram/index.js';
-import { systemNachricht, uhrzeit as systemUhrzeit, htmlEscape as htmlEscapeSystem, roteZoneKlartext, } from './src/modules/system-telegram/index.js';
+import { systemNachricht, uhrzeit as systemUhrzeit, htmlEscape as htmlEscapeSystem, roteZoneKlartext, stillBeantwortet, } from './src/modules/system-telegram/index.js';
 import { KNOPF_PRAEFIX, ablaufZeitpunkt, knopfMarkup, pruefeKnopf, freigabeGesetztText, startFehlgeschlagenText, knopfErledigtText, NUTZUNG_TEXT, } from './src/modules/arm-freigabe/index.js';
 import { vormerkungLesen, vormerkungLoeschen } from './src/modules/arm-freigabe/vormerkung.js';
 import { wartetMeldung } from './src/modules/system-telegram/index.js';
@@ -1674,7 +1674,7 @@ export default function (api) {
                 const ziel = (await assertBoundOwner(ctx)).chatId;
                 if (ziel) {
                     await sendTelegramHtmlWithMarkup(ziel, text, undefined);
-                    return { text: '' };
+                    return stillBeantwortet();
                 }
                 return { text };
             }
@@ -2168,7 +2168,7 @@ export default function (api) {
                 const chatId = guard.chatId;
                 if (chatId) {
                     await sendTelegramWithKeyboard(chatId, `Fakt #${factId} entfernen?\n\n${factShort}\n\nFolge: status → rejected`, [[{ text: 'Ja, entfernen', callback_data: `memdrop_${factId}` }]]);
-                    return { text: '' }; // Keyboard sent, no additional text needed
+                    return stillBeantwortet(); // Tastatur ist raus — der Kern sendet nichts dazu
                 }
                 return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert fuer Bestaetigung.` };
             }
@@ -2420,7 +2420,7 @@ export default function (api) {
                         api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
                         if (guard.chatId) {
                             await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
-                            return { text: '' };
+                            return stillBeantwortet();
                         }
                         return { text: `Start fehlgeschlagen: ${e.message}` };
                     }
@@ -2437,7 +2437,7 @@ export default function (api) {
                     + `${anstoss ? `, Anstoss "${anstoss}"` : ', ohne Anstoss'}`);
                 if (guard.chatId) {
                     await sendTelegramHtmlWithMarkup(guard.chatId, text, undefined);
-                    return { text: '' };
+                    return stillBeantwortet();
                 }
                 return { text: anstoss ? 'Freigegeben und gestartet.' : 'Freigabe gesetzt.' };
             }

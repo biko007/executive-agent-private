@@ -118,7 +118,7 @@ import {
 } from './src/modules/report-telegram/index.js';
 import {
   systemNachricht, freigabeZeile, uhrzeit as systemUhrzeit,
-  htmlEscape as htmlEscapeSystem, roteZoneKlartext,
+  htmlEscape as htmlEscapeSystem, roteZoneKlartext, stillBeantwortet,
 } from './src/modules/system-telegram/index.js';
 import {
   ARM_TTL_SEK, KNOPF_PRAEFIX, ablaufZeitpunkt, knopfMarkup, pruefeKnopf,
@@ -1888,7 +1888,7 @@ export default function (api: any) {
         const ziel = (await assertBoundOwner(ctx)).chatId;
         if (ziel) {
           await sendTelegramHtmlWithMarkup(ziel, text, undefined);
-          return { text: '' };
+          return stillBeantwortet();
         }
         return { text };
       } catch (e: any) {
@@ -2404,7 +2404,7 @@ export default function (api: any) {
             `Fakt #${factId} entfernen?\n\n${factShort}\n\nFolge: status → rejected`,
             [[{ text: 'Ja, entfernen', callback_data: `memdrop_${factId}` }]],
           );
-          return { text: '' }; // Keyboard sent, no additional text needed
+          return stillBeantwortet(); // Tastatur ist raus — der Kern sendet nichts dazu
         }
         return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert fuer Bestaetigung.` };
       }
@@ -2679,7 +2679,7 @@ export default function (api: any) {
             api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
             if (guard.chatId) {
               await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
-              return { text: '' };
+              return stillBeantwortet();
             }
             return { text: `Start fehlgeschlagen: ${e.message}` };
           }
@@ -2696,7 +2696,7 @@ export default function (api: any) {
           + `${anstoss ? `, Anstoss "${anstoss}"` : ', ohne Anstoss'}`);
         if (guard.chatId) {
           await sendTelegramHtmlWithMarkup(guard.chatId, text, undefined);
-          return { text: '' };
+          return stillBeantwortet();
         }
         return { text: anstoss ? 'Freigegeben und gestartet.' : 'Freigabe gesetzt.' };
       } catch (e: any) {

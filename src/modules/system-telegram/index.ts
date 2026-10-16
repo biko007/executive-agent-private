@@ -201,3 +201,40 @@ export function abgelaufenMeldung(grund: string, alterSekunden: number, grenzeSe
     fuss: ['Bitte erneut freigeben.'],
   });
 }
+
+/* ── Antwort eines Commands, der selbst schon gesendet hat ────────────────── */
+
+/**
+ * Die Rueckgabe fuer einen Handler, der die Nachricht bereits selbst
+ * verschickt hat.
+ *
+ * ANLASS (Owner, 16.10.2026): „Fix den Bug". Nach jedem `/arm` stand im Chat
+ * zusaetzlich „No response generated. Please try again." — als waere etwas
+ * schiefgegangen, obwohl die Freigabe sass.
+ *
+ * URSACHE, belegt im Kern: In
+ * `openclaw/dist/bot-native-command-plugins-*.js` entscheidet
+ *
+ *     const deliverableResult = hasRenderableTelegramNativeReplyPayload(result)
+ *       ? … : { text: EMPTY_RESPONSE_FALLBACK };
+ *
+ * Wer `{ text: '' }` zurueckgibt, hat keinen darstellbaren Inhalt — und
+ * bekommt den Fallbacktext untergeschoben. Wenige Zeilen darueber steht die
+ * vorgesehene Loesung:
+ *
+ *     if (… || result.suppressReply === true) { … return; }
+ *
+ * `suppressReply` sagt dem Kern: Diese Nachricht ist erledigt, sende nichts.
+ * Genau das ist hier gemeint. Ein Handler, der selbst sendet, muss das
+ * Merkmal setzen — sonst redet der Kern dazwischen.
+ */
+export interface CommandAntwort {
+  text: string;
+  /** Vom Kern ausgewertet: nichts mehr senden, der Handler hat es erledigt. */
+  suppressReply: true;
+}
+
+/** Erledigt — der Handler hat selbst gesendet, der Kern sendet nichts dazu. */
+export function stillBeantwortet(): CommandAntwort {
+  return { text: '', suppressReply: true };
+}

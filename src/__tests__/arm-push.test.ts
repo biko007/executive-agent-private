@@ -348,11 +348,16 @@ describe('statische Guards gegen index.ts (Drift-Schutz für die Spiegelung oben
   test('jeder Zweig sendet genau einmal selbst und gibt nichts zurück', () => {
     /* Löst den früheren Guard auf notifyRoleUnlessOrigin ab: Die doppelte
        Quittung vom 10.10.2026 entstand, weil der Handler SENDETE und zugleich
-       Text ZURÜCKGAB. Jetzt tut er nur noch das eine. */
+       Text ZURÜCKGAB. Jetzt tut er nur noch das eine.
+
+       Seit 16.10.2026 heißt die leere Rückgabe `stillBeantwortet()`. Ein
+       blankes `{ text: '' }` liess den Kern „No response generated" nachschieben
+       — siehe src/__tests__/command-leerantwort.test.ts. */
     const gesendet = armBlock.match(/sendTelegramHtmlWithMarkup\(/g) ?? [];
-    const leer = armBlock.match(/return \{ text: '' \};/g) ?? [];
+    const leer = armBlock.match(/return stillBeantwortet\(\);/g) ?? [];
     expect(gesendet.length).toBe(2);
     expect(leer.length).toBe(2);
+    expect(armBlock).not.toContain("return { text: '' }");
     expect(armBlock).not.toContain('notifyRoleUnlessOrigin');
     expect(armBlock).toContain('guard.chatId');
   });
