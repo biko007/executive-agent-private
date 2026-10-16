@@ -21,6 +21,9 @@ import {
   sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
   dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB, vzRegelAnwenden,
 } from './mietforderungen.js';
+import {
+  steckbriefBereit, katalog, felder, setzeFeld, vollstaendigkeit, kacheln,
+} from './steckbrief.js';
 import { listeVorschlaege, erzeugeVorschlaege, bestaetige, verwirf } from './proposals.js';
 import { erzeugeEingabeblatt } from './casameta.js';
 import { abrechnungAnsicht } from './abrechnung-ansicht.js';
@@ -108,6 +111,54 @@ export function registerAssetsHttpRoutes(api: any) {
       /* ── Mietforderungen: Sollstellung, Zuordnung, Laempchen ─────────────
          Owner-Auftrag 15.10.2026. Lesend ohne Genehmigung; die drei Laeufe,
          die Daten schreiben, sind genehmigungspflichtig registriert. */
+      /* ── Objektsteckbrief ────────────────────────────────────────────
+         Kachel, Felder mit Quelle und Stand, Vollstaendigkeit. Die
+         Spezifikation steht in docs/projekt/Objektsteckbrief-Standard.md. */
+      if (resource === 'steckbrief') {
+        const sub = segments[1];
+        await withContext({ requestId, actor, source: 'dashboard' }, async () => {
+          try {
+            if (!(await steckbriefBereit())) {
+              err(res, 503, 'Objektsteckbrief noch nicht eingerichtet: Migration V043 ist nicht angewandt.');
+              return;
+            }
+            if (!sub && req.method === 'GET') {
+              json(res, 200, {
+                stichtag: url.searchParams.get('stichtag') || new Date().toISOString().slice(0, 10),
+                kacheln: await kacheln(url.searchParams.get('stichtag') || undefined),
+              });
+              return;
+            }
+            if (sub === 'katalog' && req.method === 'GET') { json(res, 200, await katalog()); return; }
+            if (sub && segments[2] === 'felder' && req.method === 'GET') {
+              const { rows } = await dbQuery<any>(
+                `SELECT id FROM properties WHERE code = $1`, [sub]);
+              if (!rows.length) { err(res, 404, 'Objekt nicht gefunden'); return; }
+              json(res, 200, {
+                objekt: sub,
+                felder: await felder(rows[0].id),
+                vollstaendigkeit: await vollstaendigkeit(rows[0].id),
+              });
+              return;
+            }
+            if (sub && segments[2] === 'felder' && req.method === 'PUT') {
+              const { rows } = await dbQuery<any>(
+                `SELECT id FROM properties WHERE code = $1`, [sub]);
+              if (!rows.length) { err(res, 404, 'Objekt nicht gefunden'); return; }
+              const body = await parseJsonBody(req);
+              if (!body?.feld) { err(res, 400, 'feld fehlt'); return; }
+              await setzeFeld({ ...body, property_id: rows[0].id });
+              await audit.log({ module: 'assets', action: 'steckbrief.feld',
+                entityType: 'property', entityId: sub, after: body });
+              json(res, 200, { ok: true, feld: body.feld });
+              return;
+            }
+            err(res, 404, 'Unbekannter Pfad unter /api/assets/steckbrief');
+          } catch (e: any) { err(res, 500, e.message); }
+        });
+        return true;
+      }
+
       if (resource === 'mietforderungen') {
         const sub = segments[1];
         await withContext({ requestId, actor, source: 'dashboard' }, async () => {

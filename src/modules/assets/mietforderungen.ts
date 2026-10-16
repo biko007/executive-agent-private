@@ -1168,20 +1168,21 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
 /** Lämpchen je Objekt: grün nur, wenn jedes Mietverhältnis grün ist. */
 export async function ampelJeObjekt(stichtag?: string): Promise<{
   objekt: string; farbe: 'gruen' | 'rot'; mieter_rot: number; mieter_gesamt: number;
-  soll: number; ist: number; saldo: number;
+  soll: number; ist: number; saldo: number; unbestaetigt: number;
 }[]> {
   const je = await ampelJeMieter(stichtag);
-  const map = new Map<string, { rot: number; n: number; soll: number; ist: number }>();
+  const map = new Map<string, { rot: number; n: number; soll: number; ist: number; unb: number }>();
   for (const a of je) {
-    const o = map.get(a.objekt) || { rot: 0, n: 0, soll: 0, ist: 0 };
+    const o = map.get(a.objekt) || { rot: 0, n: 0, soll: 0, ist: 0, unb: 0 };
     o.n++; if (a.farbe === 'rot') o.rot++;
-    o.soll += a.soll; o.ist += a.ist;
+    o.soll += a.soll; o.ist += a.ist; o.unb += a.unbestaetigt || 0;
     map.set(a.objekt, o);
   }
   return [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([objekt, o]) => ({
     objekt, farbe: o.rot ? 'rot' : 'gruen', mieter_rot: o.rot, mieter_gesamt: o.n,
     soll: Math.round(o.soll * 100) / 100, ist: Math.round(o.ist * 100) / 100,
     saldo: Math.round((o.soll - o.ist) * 100) / 100,
+    unbestaetigt: Math.round(o.unb * 100) / 100,
   }));
 }
 
