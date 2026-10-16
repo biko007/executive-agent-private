@@ -840,6 +840,52 @@ function checkCodexAuth() {
   }
 }
 
+// ── 19. AGENTENPFAD: ist das konfigurierte Modell erreichbar? ──────────────
+
+/**
+ * Ein Ablaufdatum allein genuegt nicht.
+ *
+ * ANLASS (16.10.2026): Nach der Anmeldung war der Token gueltig — und der
+ * Agentenpfad trotzdem tot, weil das konfigurierte Modell `openai/gpt-5.5`
+ * beim Anbieter nicht mehr existiert. Pruefung 18 haette das nie bemerkt: Sie
+ * sieht nur den Token.
+ *
+ * Diese Pruefung fragt den Kern, ob das eingestellte Modell eine nutzbare
+ * Route hat. `openclaw models status` meldet solche Faelle unter „Model route
+ * issues" — das ist genau die Stelle, an der ein Modellwechsel beim Anbieter
+ * oder eine fehlende Anmeldung sichtbar wird.
+ *
+ * BEWUSST KEIN echter Modellaufruf: Der kostet Tokens, dauert und wuerde bei
+ * jedem Deploy anfallen. Die Routenpruefung kommt ohne aus.
+ */
+function checkAgentenpfad() {
+  const label = 'Agentenpfad (Modellroute)';
+  try {
+    const aus = execSync('timeout 60 openclaw models status 2>&1', {
+      stdio: 'pipe', encoding: 'utf-8',
+    });
+    const modell = aus.match(/^Default\s*:\s*(.+)$/m)?.[1]?.trim() ?? '(unbekannt)';
+
+    /* Der Abschnitt reicht bis zur naechsten Leerzeile. */
+    const block = aus.split('Model route issues')[1]?.split(/\n\s*\n/)[0] ?? '';
+    const zeilen = block.split('\n').map((z) => z.trim()).filter((z) => z.startsWith('-'));
+
+    if (zeilen.length > 0) {
+      fail(label, `${modell}: ${zeilen[0].replace(/^-\s*/, '').slice(0, 150)}`);
+      return;
+    }
+    if (/status=missing/.test(aus) && /via codex/.test(aus)) {
+      fail(label, `${modell}: die Codex-Anmeldung ist fuer den Kern nicht nutzbar`);
+      return;
+    }
+    pass(label, `${modell} hat eine nutzbare Route`);
+  } catch (e: any) {
+    /* Kein Abbruch des ganzen Smoke-Tests, wenn das Werkzeug fehlt — aber
+       auch kein stilles Gruen. */
+    fail(label, `nicht pruefbar: ${String(e.message).slice(0, 120)}`);
+  }
+}
+
 // ── 16. BETRIEBSSKRIPTE ops/bin (Drift-Check) ───────────────────────────────
 
 // Gleiche Mechanik wie Check 15, nur fuer ~/bin. Der Anlass ist derselbe: Am
@@ -957,6 +1003,7 @@ async function main() {
   checkClaudeHooks();
   checkRedZoneConf();
   checkCodexAuth();
+  checkAgentenpfad();
   checkOpsBin();
 
   // ── Report ──────────────────────────────────────────────────────────────
