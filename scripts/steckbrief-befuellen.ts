@@ -57,6 +57,11 @@ const Q = {
        + 'Irisweg_83 Erklaerung zur Feststellung des Grundsteuerwerts.pdf, Zeile 8',
   mail_l19: 'Postfach juergen.bickel@bikolino.com, Mail von Henry Haslinger vom 11.09.2024, '
        + 'Betreff "L19 Mieterhoehung"',
+  bk_n24: 'SharePoint 3-La Perla GmbH/N24/Kosten/Aufteilung Baukosten-USt/Auft. Baukosten.xlsx, '
+       + 'Blatt Summary; Grundlage ist das DATEV-Kontoblatt 120 "Bauten im Bau" der La Perla GmbH',
+  besch_mg24: 'Bescheinigung der Stadt Tuttlingen gemaess Paragrafen 7h, 10f, 11a EStG vom 01.08.2025 '
+       + '(Anlage zur Einkommensteuer 2024, Postfach juergen.bickel@bikolino.com, Mail von Doris '
+       + 'Hilsenbeck vom 07.05.2026, Archiv "EST 2024.zip")',
   ms26: 'Qualifizierter Mietspiegel der Stadt Tuttlingen, 17. Fortschreibung, Geltungsdauer '
        + '27.07.2026 bis 27.07.2028, Mietwerttabelle beschlossen am 27.05.2026, Gemeinderat '
        + '20.07.2026 (tuttlingen.de, Dokument id=34333, geladen am 16.10.2026)',
@@ -150,9 +155,12 @@ const EINTRAEGE: Eintrag[] = [
     notiz: '220,5 kWh/(m2a) liegt in der Spanne 200 bis 250 und damit in Klasse G' },
   { objekt: 'mg24', feld: 'energieausweis_bis',  datum: '2034-10-28', quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
   { objekt: 'mg24', feld: 'energietraeger',      text: 'Pellets',    quelle: Q.ea_mg24, typ: 'sharepoint', stand: '2024-10-28' },
-  { objekt: 'mg24', feld: 'gesamtinvestition',   zahl: 2500000,      quelle: 'bikosoc properties.purchase_price_total', typ: 'db', stand: '2026-10-16',
-    notiz: 'Gesamtaufwand einschliesslich Umbau. Der Kaufpreis der Urkunde betrug 340.000,00 EUR; '
-         + 'eine Baukostenaufstellung als Beleg fuer die 2.500.000,00 EUR liegt noch nicht vor.' },
+  { objekt: 'mg24', feld: 'gesamtinvestition',   zahl: 3032223.03,   quelle: Q.kv_mg + ' + ' + Q.grest_mg + ' + ' + Q.besch_mg24, typ: 'gerechnet', stand: '2025-08-01',
+    notiz: 'Kaufpreis 340.000,00 + Grunderwerbsteuer 17.000,00 + Notar 2.267,68 + Modernisierung '
+         + '2.672.955,35 = 3.032.223,03 EUR, ohne Grundbuchkosten und vor Abzug der Zuschuesse. '
+         + 'In properties.purchase_price_total standen 2.500.000,00 EUR — das kommt den um beide '
+         + 'Zuschuesse gekuerzten Modernisierungskosten von 2.532.955,35 EUR nahe und war '
+         + 'offenbar ein gerundeter Zwischenstand.' },
 
   { objekt: 'i83', feld: 'baujahr',              zahl: 1965,         quelle: Q.elster_i83, typ: 'sharepoint', stand: '2022-12-31',
     notiz: 'Erklaerung zur Feststellung des Grundsteuerwerts, Bundesmodell NRW: Baujahr des Gebaeudes 1965' },
@@ -184,6 +192,24 @@ const EINTRAEGE: Eintrag[] = [
     notiz: 'Spanne 9,83 bis 10,85 EUR/qm' },
   { objekt: 's28',  feld: 'mietspiegel_stand',   text: '17. Fortschreibung, gueltig 27.07.2026 bis 27.07.2028', quelle: Q.ms26, typ: 'extern', stand: '2026-07-20',
     notiz: 'Eine Vergleichsmiete laesst sich fuer S28 noch nicht bilden: Das Baujahr ist unbekannt, und davon haengt die Baujahrklasse ab.' },
+
+  // ── Nachtrag 16.10.2026: Bau- und Herstellungskosten ───────────────────
+  { objekt: 'n24', feld: 'herstellungskosten',   zahl: 5866953.42,   quelle: Q.bk_n24, typ: 'sharepoint', stand: '2023-08-31',
+    notiz: 'Aufteilung: Gebaeude 5.388.597,86 + Aussenanlage 191.049,08 + Einrichtung 287.117,20 + '
+         + 'PV-Anlage 189,28 EUR. Einschliesslich der nicht abziehbaren Vorsteuer (zwei Drittel; '
+         + 'W3 und W4 werden temporaer vermietet). OHNE Grundstueck.' },
+  { objekt: 'n24', feld: 'gesamtinvestition',    zahl: 6600000,      quelle: 'bikosoc properties.purchase_price_total', typ: 'db', stand: '2026-10-16',
+    notiz: 'Differenz zu den Herstellungskosten: 733.046,58 EUR. Das ist der Grundstuecksteil — '
+         + 'Kaufvertrag Tanneberger 04.05.2015, Uebertragung JB an La Perla 14.12.2020 und zwei '
+         + 'Zukaufsflaechen 2021 (Stadt Tuttlingen 02.08., A. Schmutz 07.10.). Ein Beleg fuer die '
+         + 'runde Zahl 6.600.000,00 EUR liegt nicht vor.' },
+  { objekt: 'mg24', feld: 'herstellungskosten',  zahl: 2672955.35,   quelle: Q.besch_mg24, typ: 'postfach', stand: '2025-08-01',
+    notiz: 'Modernisierung vom 12.04.2023 bis 31.12.2024, einschliesslich Umsatzsteuer, durch '
+         + 'Originalrechnungen nachgewiesen. Abzueglich der Zuschuesse (50.000,00 EUR '
+         + 'Sanierungsgebiet, ausbezahlt 11.12.2024, und weitere 90.000,00 EUR) verbleiben '
+         + '2.532.955,35 EUR beguenstigte Kosten.' },
+  { objekt: 'mg24', feld: 'denkmalschutz',       text: 'ja',         quelle: Q.besch_mg24 + '; Foerdergrundsaetze der Stadt Tuttlingen (Foerdersatz 35 Prozent fuer denkmalgeschuetzte Gebaeude)', typ: 'postfach', stand: '2025-08-01' },
+  { objekt: 'mg24', feld: 'sanierungsgebiet',    text: 'ja',         quelle: Q.besch_mg24 + ': Sanierungssatzung vom 18.06.2018, oeffentlich bekanntgemacht am 23.06.2018', typ: 'postfach', stand: '2025-08-01' },
 ];
 
 const apply = process.argv.includes('--apply');
