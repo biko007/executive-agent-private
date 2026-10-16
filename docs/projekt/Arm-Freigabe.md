@@ -178,3 +178,78 @@ Zwei der sechs roten Befehlsmuster waren **seit jeher wirkungslos**: Die
 Konfigurationszeilen liefen durch `xargs`, und das entfernt Backslashes — aus
 einem Muster mit `\s` wurde still eines ohne. Nachgewiesen gegen die alte
 Fassung des Hooks. Behoben; das ist eine Verschärfung, keine Lockerung.
+
+---
+
+## Ein Hook, zwei Stränge — Sperre gegen das Überschreiben (16.10.2026)
+
+`~/.claude/hooks/` ist für **alle** Stränge dieselbe Stelle. bikosoc und HDCC
+pflegen den Deny-Hook aber in je eigenen Repos und spielen beide dorthin aus.
+Wer zuletzt `install-hooks.sh` ausführte, gewann — und die Arbeit des anderen
+war weg.
+
+Am 16.10.2026 wäre es beinahe passiert: Die HDCC-Sitzung hatte den aktiven
+Hook um 12:25 erweitert (strangabhängige Wahl der Rote-Zone-Konfiguration).
+Ein `install-hooks.sh` aus bikosoc hätte das kommentarlos überschrieben.
+Aufgefallen ist es nur, weil der Smoke-Test Drift meldete und jemand nachsah.
+
+### Wie die Sperre arbeitet
+
+Neben jedem Hook liegt eine Marke:
+
+```
+~/.claude/hooks/.<hookname>.<strang>-stand
+```
+
+Darin steht die Prüfsumme dessen, was **dieser Strang zuletzt selbst
+ausgespielt** hat. Vor jedem Ausspielen vergleicht das Skript:
+
+| Lage | Verhalten |
+|---|---|
+| aktiver Hook = eigene Marke | ausspielen, Marke nachziehen |
+| Marke fehlt, aktiv = Repo | Marke einmalig anlegen, nichts überschreiben |
+| Marke fehlt, aktiv ≠ Repo | **Abbruch** — der Urheber ist unbekannt |
+| aktiv ≠ eigene Marke | **Abbruch** — ein anderer Strang war am Werk |
+
+Der Abbruch nennt alle drei Prüfsummen (aktiv, eigene Marke, Repo) und den
+Weg: **erst übernehmen, dann ausspielen.** Exit-Code 4.
+
+Zwei Eigenschaften, auf die es ankommt:
+
+- **Zwei Durchgänge.** Erst wird jeder Hook geprüft, dann erst kopiert. Bräche
+  das Skript mitten im Kopieren ab, bliebe ein halb ausgespielter
+  Schutzmechanismus zurück — die schlechteste aller Lagen.
+- **Kein `--force` als Normalfall.** Der Ausweg heißt
+  `--fremden-stand-verwerfen` und ist bewusst unbequem benannt. Ein
+  unbekanntes Argument spielt gar nichts aus.
+
+Der Smoke-Test meldet Drift unverändert weiter — die Sperre ersetzt ihn nicht,
+sie fängt den Fall nur früher ab.
+
+### Für HDCC (Paritätsauftrag, nicht von bikosoc umzusetzen)
+
+Dieselbe Sperre gehört in das HDCC-Pendant. Zu ändern ist nur der Strangname;
+die Marke heißt dort `.<hookname>.hdcc-stand`:
+
+```bash
+STRANG="hdcc"
+pruefsumme() { sha256sum "$1" | cut -d' ' -f1; }
+marke_von()  { echo "$LIVE_HOOKS/.$(basename "$1").$STRANG-stand"; }
+
+# Durchgang 1: pruefen, nichts anfassen.
+#   - Hook fehlt            → nichts zu schuetzen
+#   - Marke da, aktiv=Marke → eigener Stand, weiter
+#   - Marke fehlt, aktiv=Repo → weiter (Marke wird unten angelegt)
+#   - sonst                 → in die Abbruchliste
+# Ist die Liste nicht leer und --fremden-stand-verwerfen fehlt:
+#   alle drei Pruefsummen ausgeben, Weg nennen, exit 4.
+#
+# Durchgang 2: kopieren wie bisher, danach IMMER
+#   ( umask 077; pruefsumme "$dest" > "$marke" )
+# auch bei „unchanged" — sonst fehlt die Marke weiterhin.
+```
+
+Die Marken beider Stränge liegen nebeneinander und stören sich nicht: Jeder
+prüft nur gegen seine eigene. Wer übernimmt, holt die fremde Änderung ins
+eigene Repo — genau das ist am 16.10.2026 geschehen und hat zum richtigen
+Ergebnis geführt.
