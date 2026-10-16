@@ -96,7 +96,7 @@ import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
 import {
   graphToken, graphRequest, graphGet, graphPost, graphDelete,
 } from "./src/shared/m365/index.js";
-import { parseCallbackEvent } from './src/shared/telegram-callback/index.js';
+import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import {
   activateTelegramBinding,
   createPendingTelegramBinding,
@@ -892,6 +892,32 @@ export default function (api: any) {
 
   // ── inbound_claim Observer: stash voice transcript for agent_end ──────────
   // Priority 50, returns nothing = no claim. Just observes and stashes transcript.
+  /* Die angemeldeten Knopf-Praefixe. EINE Liste fuer beide Stellen: das
+     Beanspruchen der Nachricht (gleich darunter) und den command-guard. Liefen
+     sie auseinander, wuerde ein Knopf entweder einen Agentenlauf ausloesen
+     oder — schlimmer — eine echte Nachricht verschlucken. */
+  const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_',
+    'meeting_', 'bsync_', 'bweekly_', 'memdrop_', KNOPF_PRAEFIX];
+
+  /**
+   * Knopfdruecke beanspruchen, damit KEIN Agentenlauf stattfindet.
+   *
+   * Der command-guard weiter unten bat das Modell bisher nur zu schweigen.
+   * Das genuegt nicht: Der Lauf findet trotzdem statt, und wenn er scheitert,
+   * bekommt der Owner den allgemeinen Fehlertext des Kerns — am 16.10.2026
+   * genau so geschehen, nachdem das Agenten-Backend ausgefallen war.
+   *
+   * `{ handled: true }` beendet die Zustellung hier. Der eigentliche Knopf
+   * wird weiter unten im Callback-Zweig bearbeitet, der seine Antwort selbst
+   * sendet.
+   */
+  api.on('inbound_claim', (event: any) => {
+    const inhalt = event?.content ?? event?.body ?? '';
+    if (!istUnsererRueckruf(inhalt, CALLBACK_PREFIXES)) return;
+    api.logger.info('[executive-agent] Knopfdruck beansprucht — kein Agentenlauf');
+    return { handled: true };
+  }, { priority: 100 });
+
   api.on('inbound_claim', (event: any, ctx: any) => {
     const t = event?.transcript;
     if (typeof t !== 'string' || !t.trim()) return;
@@ -921,7 +947,6 @@ export default function (api: any) {
     // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
     // Framework wraps prompts in "[Telegram sender timestamp] callback_data: <prefix>_<payload>"
     // envelope. Match both "callback_data: <prefix>" (current format) and "] <prefix>" (legacy).
-    const CALLBACK_PREFIXES = ['icraft_', 'iscan_', 'isub_', 'segdel_', 'booking_', 'meeting_', 'bsync_', 'bweekly_', 'memdrop_', KNOPF_PRAEFIX];
     if (CALLBACK_PREFIXES.some(p => prompt.includes('callback_data: ' + p) || prompt.includes('] ' + p))) {
       api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
       return {

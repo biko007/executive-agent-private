@@ -94,3 +94,40 @@ export function parseCallbackEvent(
 
   return { prefix, payload, args, senderId, chatId, content };
 }
+
+/**
+ * Gehoert dieser Inhalt zu einem unserer Knoepfe?
+ *
+ * ANLASS (Owner, 16.10.2026, 13:45 Berlin): Nach dem Knopf „Freigeben und
+ * übertragen" stand im Chat „Something went wrong while processing your
+ * request." Die Freigabe selbst hatte gewirkt — die Meldung kam von woanders.
+ *
+ * URSACHE, belegt im Journal: Ein Knopfdruck wird vom Kanal als gewoehnliche
+ * Nachricht zugestellt und startet deshalb einen Agentenlauf. Der
+ * command-guard unterdrueckte ihn bisher nur mit einer ANWEISUNG an das Modell
+ * („Reply with exactly: NO_REPLY") — der Lauf fand trotzdem statt. Solange das
+ * Modell antwortet, faellt das nicht auf. Am 16.10.2026 war das
+ * Agenten-Backend gestoert (`openai/gpt-5.5` mit einem Codex-Konto,
+ * `model_not_found`), der Lauf scheiterte, und der Kern schickte seinen
+ * allgemeinen Fehlertext an den Owner.
+ *
+ * Die Lehre: Eine Anweisung an ein Modell ist keine Unterdrueckung. Wer sicher
+ * sein will, dass kein Lauf stattfindet, muss die Nachricht beanspruchen
+ * (`inbound_claim` → `{ handled: true }`). Dann haengt der Knopf nicht mehr
+ * davon ab, dass irgendein Modell erreichbar ist.
+ *
+ * Diese Funktion ist die EINZIGE Stelle, die darueber entscheidet. Sie wird
+ * sowohl beim Beanspruchen als auch im command-guard benutzt, damit beide
+ * nicht auseinanderlaufen koennen.
+ *
+ * @param inhalt   Rohinhalt der eingehenden Nachricht.
+ * @param praefixe Die angemeldeten Praefixe, einschliesslich Unterstrich.
+ */
+export function istUnsererRueckruf(inhalt: unknown, praefixe: readonly string[]): boolean {
+  if (typeof inhalt !== 'string' || !inhalt.trim()) return false;
+  const rein = unwrapCallbackContent(inhalt);
+  /* Streng: nur was MIT einem angemeldeten Praefix BEGINNT. Ein Chatsatz, der
+     das Wort zufaellig enthaelt, darf nicht beansprucht werden — sonst bliebe
+     eine echte Nachricht des Owners unbeantwortet. */
+  return praefixe.some((p) => p && rein.startsWith(p));
+}
