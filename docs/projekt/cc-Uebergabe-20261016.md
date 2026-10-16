@@ -23,23 +23,22 @@ nicht wiederholt.
 
 ---
 
-## 2. Nicht gepushte Commits
+## 2. Stand der Repositories
 
-Alle im Repo `executive-agent` (`origin` = `biko007/executive-agent-private`,
-Branch `master`). **Vier Commits lokal, nichts gepusht:**
+**Alles gepusht** (16.10.2026, 11:40). Nichts wartet lokal.
 
-```
-7d1c7ee  Steckbrief: Renditen richtig rechnen, N24-Grundstück belegt, MG22 ohne Energieausweis
-bce79d4  Dropbox: zwei Modulkommentare auf den neuen Zugang berichtigt
-739026a  Dropbox: Vollzugriff über neue App BikosOpenClawFA, ohne App-Secret
-98c150e  feat(assets): Owner-Angaben vormerken, Vollstaendigkeit richtig rechnen
-```
+| Repo | Branch | Stand |
+|---|---|---|
+| `executive-agent` | `master` | `b2da28c` — Dropbox-Vollzugriff, Steckbrief-Korrekturen, diese Übergabe |
+| `executive-dashboard` | `master` | `4ec73ac` — Mietlämpchen, Guthaben, unbestätigte Posten |
+| `workspace` | `main` | `7bf479a` — beide Submodul-Zeiger nachgezogen |
 
-Im Repo `workspace` stehen die Submodul-Zeiger auf „geändert"; dort liegen
-außerdem fremde unversionierte Dateien (`DREAMS.md`, `memory/.dreams/`), die
-**nicht** von cc stammen und nicht mitcommittet werden dürfen.
+Im Repo `workspace` liegen fremde unversionierte Dateien (`DREAMS.md`,
+`memory/.dreams/`, `memory/dreaming/`, zwei `*.migrated.*`-Zustandsdateien).
+Die stammen **nicht** von cc und dürfen nicht mitcommittet werden — beim
+Committen im Parent deshalb immer die Pfade einzeln angeben, nie `git add -A`.
 
-Push braucht hier kein `/arm`: Keiner der berührten Pfade ist rote Zone.
+Push brauchte hier kein `/arm`: Keiner der berührten Pfade ist rote Zone.
 
 ---
 
