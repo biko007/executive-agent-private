@@ -447,6 +447,16 @@ async function main() {
   }
 
   if (argv.includes('--selbsttest')) {
+    /* Der Selbsttest verwirft die Sitzung und meldet sich neu an — er ist
+       damit ein Anmeldeversuch wie jeder andere und faellt unter dieselbe
+       Sperre. Ohne diese Zeile haette der Rueckbau vom 16.10.2026 ein Loch
+       gehabt: ein Schalter, der den Passwortpfad doch noch oeffnet.
+       Aufgefallen beim Schreiben des Tests, nicht im Betrieb. */
+    if (!argv.includes('--trotzdem')) {
+      console.log('Selbsttest nicht ausgefuehrt: Er meldet sich an, und der '
+        + 'serverseitige Login ist seit dem 16.10.2026 stillgelegt.');
+      process.exit(3);
+    }
     /* Sitzung absichtlich verwerfen und prüfen, ob der Re-Login greift. */
     const { zustand } = kontoPfade(konto);
     if (existsSync(zustand)) {
@@ -472,6 +482,29 @@ async function main() {
   if (!argv.includes('--erzwingen') && await sitzungGueltig(konto)) {
     console.log('Login OK (bestehende Sitzung)');
     process.exit(0);
+  }
+
+  /* STILLGELEGT am 16.10.2026 (Owner-Entscheidung): Casameta wird ueber den
+     Chrome des Owners bedient. Der serverseitige Login ist zweimal gemessen
+     und scheitert an Cloudflare Turnstile — am 13.10. headless, am 14.10. im
+     sichtbaren Browser unter Xvfb, beide Male Fehler 600010. Am 16.10. wurde
+     nachgeprueft, dass das Portal Turnstile unveraendert einsetzt.
+
+     Es waere bequem, den Versuch trotzdem zuzulassen „falls es doch mal
+     klappt". Genau das waere falsch: Jeder Versuch braucht ein hinterlegtes
+     Passwort, und eines soll auf dem Server nicht mehr liegen. Die Abfrage
+     der Kennungen (--konten) und die Sitzungspruefung (--pruefen) bleiben,
+     weil sie ohne Passwort auskommen.
+
+     `--trotzdem` ist bewusst unbequem benannt. Es ist fuer den Tag gedacht,
+     an dem das Portal den Bot-Schutz abschaltet — nicht fuer den Alltag. */
+  if (!argv.includes('--trotzdem')) {
+    console.log('Login nicht ausgefuehrt: Casameta wird seit dem 16.10.2026 ueber '
+      + 'den Chrome des Owners bedient.');
+    console.log('Der serverseitige Login scheitert an Cloudflare Turnstile (600010), '
+      + 'headless wie im sichtbaren Browser.');
+    console.log('Lauf vorbereiten mit:  ~/bin/casameta-run <auftrag.md> --objekt <code>');
+    process.exit(3);
   }
 
   const diagnose = argv.includes('--diagnose');

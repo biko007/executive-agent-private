@@ -258,15 +258,25 @@ elif echo "$NORM" | grep -qF ':(){ :|:& };:'; then
   DENY_REASON="fork bomb"
 fi
 
-# --- Red Zone Guard (2026-07-15, Strang-Fix 2026-07-20, Notify-Fix 2026-09-05) ---
+# --- Red Zone Guard (2026-07-15, Strang-Fix 2026-07-20, Notify-Fix 2026-09-05,
+#                     Config-Split 2026-10-16) ---
 # Blocks git push touching red paths and red direct commands,
 # unless the owner has armed via /arm (one-shot flag).
 # Armed flag is strand-specific:
 #   ~/hdcc                → ~/.armed-hdcc
 #   ~/.openclaw/workspace → ~/.armed-bikosoc
+# Config is strand-specific (2026-10-16, HDCC-Paritaet):
+#   hdcc    → ~/.config/hdcc/red-zone.conf
+#   bikosoc → ~/.config/openclaw/red-zone.conf
 # Fail-closed (Repo-Pfad/Diff nicht auflösbar) blockiert IMMER — auch mit Flag,
 # weil dann gar nicht feststeht, welcher Diff gepusht würde.
-RED_ZONE_CONF="$HOME/.config/openclaw/red-zone.conf"
+_EARLY_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
+_EARLY_STRAND=$(hook_strand "" "" "$_EARLY_CWD" "$PWD")
+case "$_EARLY_STRAND" in
+  hdcc)    RED_ZONE_CONF="$HOME/.config/hdcc/red-zone.conf" ;;
+  bikosoc) RED_ZONE_CONF="$HOME/.config/openclaw/red-zone.conf" ;;
+  *)       RED_ZONE_CONF="$HOME/.config/openclaw/red-zone.conf" ;;
+esac
 
 if [ -z "$DENY_REASON" ] && [ -f "$RED_ZONE_CONF" ]; then
   RED_ZONE_HIT=""

@@ -96,14 +96,66 @@ cp "$AUFTRAG" "$ORDNER/auftrag.md"
 
 echo "Lauf $RUN_ID"
 
-# ── Sitzung sicherstellen ───────────────────────────────────────────────────
+# ── Uebergabe an den Chrome des Owners ──────────────────────────────────────
+#
+# UMGESTELLT am 16.10.2026 (Owner-Entscheidung). Hier stand der serverseitige
+# Login. Er ist zweimal gemessen und scheitert an Cloudflare Turnstile — am
+# 13.10. headless, am 14.10. im sichtbaren Browser unter Xvfb, beide Male
+# Fehler 600010. Am 16.10. wurde nachgeprueft, dass das Portal Turnstile
+# unveraendert einsetzt.
+#
+# Dieses Skript bereitet den Lauf deshalb nur noch VOR: Ordner, Auftragstext,
+# Protokolldatei. Die Arbeit am Portal macht der Owner in seinem eigenen
+# Browser, wo er ohnehin angemeldet ist. Der Lauf steht auf "wartet", bis das
+# Ergebnis zurueckkommt — nicht auf "fehler": Es ist nichts schiefgegangen.
 cd "$AGENT"
-if ! bun run scripts/casameta-login.ts $KONTO_ARG; then
-  echo "Abbruch: keine gültige Sitzung." >&2
-  sed -i 's/"status": "fertig"/"status": "fehler"/' "$ORDNER/lauf.json"
-  bun run scripts/casameta-protokoll.ts "$ORDNER" || true
-  exit 1
-fi
+sed -i 's/"status": "fertig"/"status": "wartet"/' "$ORDNER/lauf.json"
+
+UEBERGABE="$ORDNER/uebergabe.md"
+{
+  echo "# Casameta-Auftrag $RUN_ID"
+  echo
+  echo "Diesen Text in Chrome an Claude uebergeben. Sie sind dort angemeldet;"
+  echo "der Server braucht und bekommt kein Passwort."
+  echo
+  echo "Objekt: ${OBJEKT:-nicht angegeben} · Jahr: ${JAHR:-nicht angegeben} · Modus: $MODUS"
+  echo
+  echo "---"
+  echo
+  cat "$ORDNER/auftrag.md"
+  echo
+  echo "---"
+  echo
+  echo "## Regeln fuer diesen Lauf"
+  echo
+  sed -n '/^## Was du nicht darfst/,/^## /p' "$AGENT/docs/casameta-agent.md" | sed '$d'
+  echo
+  echo "## Ergebnis zurueckgeben"
+  echo
+  echo "Das Ergebnis als Datei nach:"
+  echo "  $ORDNER/ergebnis.md"
+  echo "Danach auf dem Server:"
+  echo "  cd $AGENT && bun run scripts/casameta-protokoll.ts $ORDNER"
+} > "$UEBERGABE"
+
+cat <<ENDE
+Lauf vorbereitet, nichts am Portal getan.
+
+  Auftrag zum Uebergeben:  $UEBERGABE
+  Lauf-Ordner:             $ORDNER
+  Zustand:                 wartet
+
+So geht es weiter:
+  1. $UEBERGABE oeffnen und den Inhalt in Ihrem Chrome an Claude geben.
+  2. Das Ergebnis als $ORDNER/ergebnis.md ablegen.
+  3. cd $AGENT && bun run scripts/casameta-protokoll.ts $ORDNER
+ENDE
+exit 0
+
+# ── Ab hier: der frühere Serverweg, stillgelegt ─────────────────────────────
+# Alles Folgende wird nicht mehr erreicht. Es bleibt stehen, damit ein Revert
+# den alten Zustand vollstaendig herstellt, falls das Portal den Bot-Schutz je
+# abschaltet.
 
 # ── Agentenlauf ─────────────────────────────────────────────────────────────
 # Der Systemprompt liegt versioniert im Repo, nicht hier — so ist jede Änderung
