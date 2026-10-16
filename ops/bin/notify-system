@@ -33,7 +33,13 @@ if [ -z "$LAGE" ] || [ -z "$TITEL" ]; then
 fi
 shift 2
 
-ROLLE="operativ"
+# VORGABE SEIT 16.10.2026 (Owner-Wunsch): dev, nicht operativ.
+# Jeder heutige Aufrufer ist eine Plattformmeldung — Freigabe genutzt,
+# uebertragen, wartet, blockiert. Die gehoeren in die Dev-Gruppe; der
+# Owner-DM bleibt dem Gespraech, dem Briefing und echten Alarmen
+# vorbehalten. Wer den Owner wirklich erreichen muss, uebergibt
+# ausdruecklich --rolle operativ.
+ROLLE="dev"
 GRUND=""
 ZEILEN=(); FUSS=()
 while [ $# -gt 0 ]; do
@@ -41,7 +47,7 @@ while [ $# -gt 0 ]; do
     --grund) GRUND="${2:-}"; shift 2 ;;
     --zeile) ZEILEN+=("${2:-}"); shift 2 ;;
     --fuss)  FUSS+=("${2:-}");   shift 2 ;;
-    --rolle) ROLLE="${2:-operativ}"; shift 2 ;;
+    --rolle) ROLLE="${2:-dev}"; shift 2 ;;
     *) echo "Unbekanntes Argument: $1" >&2; exit 2 ;;
   esac
 done

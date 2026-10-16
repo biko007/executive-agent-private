@@ -610,6 +610,22 @@ export default function (api) {
             return telegramTargetCache.operativ[0];
         return undefined;
     }
+    /**
+     * Wohin Plattformmeldungen gehen.
+     *
+     * ANLASS (Owner, 16.10.2026): „Der Chat fuehlt sich nicht mehr wie ein
+     * Assistent an." In sieben Tagen gingen 30 von 31 Nachrichten in den
+     * Owner-DM — zwanzig davon blosse Freigabequittungen. Dazwischen soll der
+     * Owner seine Termine, Zahlungen und Gespraeche finden.
+     *
+     * Entwicklung und Betrieb gehoeren nach Cowork-Platform.md Paragraf 7 in
+     * die Dev-Gruppe. Fehlt deren Bindung, faellt es auf den DM zurueck — eine
+     * verschluckte Freigabemeldung waere schlimmer als eine an falscher
+     * Stelle.
+     */
+    function plattformZiel() {
+        return getCachedTelegramTarget('dev', { fallbackToOperativ: true });
+    }
     async function sendTelegramToRole(roleTag, text, opts = {}) {
         const targets = await getTelegramTargets(roleTag, opts);
         if (targets.length === 0) {
@@ -2212,6 +2228,18 @@ export default function (api) {
         description: 'Reports abrufen. /report [n] (slim) oder /report full [n] (volltext in Chunks)',
         acceptsArgs: true,
         handler: async (ctx) => {
+            /* ERGAENZT AM 16.10.2026. Beim Kurz-Audit zur Nachrichtentrennung fiel
+               auf, dass dieser Befehl als einziger der fuenf Kontrollbefehle OHNE
+               Owner-Pruefung lief — waehrend er Reports ausliefert, die interne
+               Zahlen, Mieterbezuege und Pfade enthalten. Die uebrigen (/arm,
+               /ccstop, /ccgo, /do) tragen sie seit jeher.
+      
+               Die Bindung deckt beide Chats ab, den Owner-DM und die Dev-Gruppe;
+               fuer den Owner aendert sich nichts. */
+            const guard = await assertBoundOwner(ctx);
+            if (!guard.ok) {
+                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+            }
             const raw = String(ctx?.args || '').trim();
             const fullMode = /^full\b/i.test(raw);
             const numPart = fullMode ? raw.replace(/^full\s*/i, '').trim() : raw;
@@ -2305,7 +2333,7 @@ export default function (api) {
                     }
                 }
                 catch { /* best-effort */ }
-                await notifyRoleUnlessOrigin('operativ', guard.chatId, '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
+                await notifyRoleUnlessOrigin('dev', guard.chatId, '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.');
                 api.logger.info('[ccstop] Kill-Switch ausgefuehrt');
                 return { text: '⛔ cc-stop: Claude Code in tmux bikosoc wurde beendet.' };
             }
@@ -2356,17 +2384,17 @@ export default function (api) {
                 // Also check: is there any plan-approval prompt at all? (numbered "Yes" options)
                 const hasPlanPrompt = lastLines.some(l => /[❯>]?\s*\d+\.\s*Yes/i.test(l));
                 if (!hasPlanPrompt) {
-                    await notifyRoleUnlessOrigin('operativ', guard.chatId, 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
+                    await notifyRoleUnlessOrigin('dev', guard.chatId, 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.');
                     return { text: 'ccgo: kein wartender Plan-Prompt erkannt in tmux bikosoc. Keine Tasten gesendet.' };
                 }
                 if (!bypassOptionNum) {
-                    await notifyRoleUnlessOrigin('operativ', guard.chatId, 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
+                    await notifyRoleUnlessOrigin('dev', guard.chatId, 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.');
                     return { text: 'ccgo: Plan-Prompt erkannt, aber "bypass permissions" Option nicht angeboten. Keine Tasten gesendet.' };
                 }
                 // Send the detected option number + Enter
                 execSync(`tmux send-keys -t bikosoc ${bypassOptionNum} 2>/dev/null`, { timeout: 5000 });
                 execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
-                await notifyRoleUnlessOrigin('operativ', guard.chatId, `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
+                await notifyRoleUnlessOrigin('dev', guard.chatId, `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
                 api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
                 return { text: `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
             }
@@ -2449,8 +2477,9 @@ export default function (api) {
                     }
                     catch (e) {
                         api.logger.error(`[arm] Anstoss fehlgeschlagen: ${e.message}`);
-                        if (guard.chatId) {
-                            await sendTelegramHtmlWithMarkup(guard.chatId, startFehlgeschlagenText(e.message), undefined);
+                        const fehlerZiel = plattformZiel();
+                        if (fehlerZiel) {
+                            await sendTelegramHtmlWithMarkup(fehlerZiel, startFehlgeschlagenText(e.message), undefined);
                             return stillBeantwortet();
                         }
                         return { text: `Start fehlgeschlagen: ${e.message}` };
@@ -2466,8 +2495,12 @@ export default function (api) {
                 api.logger.info(`[arm] Freigabe gesetzt (einmalig, bis ${systemUhrzeit(ablauf)})`
                     + `${vorgemerkt ? `, vorgemerkt: ${vorgemerkt.schritt}` : ''}`
                     + `${anstoss ? `, Anstoss "${anstoss}"` : ', ohne Anstoss'}`);
-                if (guard.chatId) {
-                    await sendTelegramHtmlWithMarkup(guard.chatId, text, undefined);
+                /* Die Quittung geht in die Dev-Gruppe — auch dann, wenn der Befehl im
+                   DM kam. Der Owner bekommt dort nichts; die Arbeit ist getan, und wo
+                   sie quittiert wird, ist eine Frage der Ordnung. */
+                const ziel = plattformZiel();
+                if (ziel) {
+                    await sendTelegramHtmlWithMarkup(ziel, text, undefined);
                     return stillBeantwortet();
                 }
                 return { text: anstoss ? 'Freigegeben und gestartet.' : 'Freigabe gesetzt.' };
@@ -2854,8 +2887,12 @@ export default function (api) {
                 }
                 catch (e) {
                     api.logger.error(`[arm-knopf] Anstoss fehlgeschlagen: ${e.message}`);
-                    if (chatId)
-                        await sendTelegramHtmlWithMarkup(chatId, startFehlgeschlagenText(e.message), undefined);
+                    /* Dorthin, wo der Knopf steht — das ist seit dem 16.10.2026 die
+                       Dev-Gruppe. `chatId` ist der Chat des Druecken­den und waere im
+                       Zweifel wieder der Owner-DM. */
+                    const fz = plattformZiel() ?? chatId;
+                    if (fz)
+                        await sendTelegramHtmlWithMarkup(fz, startFehlgeschlagenText(e.message), undefined);
                     return;
                 }
                 if (knopfVorgemerkt)
@@ -2865,8 +2902,10 @@ export default function (api) {
                 if (armKnopf?.messageId && armKnopf.chatId) {
                     await editiereNachricht(armKnopf.chatId, armKnopf.messageId, knopfErledigtText(ablauf));
                 }
-                else if (chatId) {
-                    await sendTelegramHtmlWithMarkup(chatId, knopfErledigtText(ablauf), undefined);
+                else {
+                    const ez = plattformZiel() ?? chatId;
+                    if (ez)
+                        await sendTelegramHtmlWithMarkup(ez, knopfErledigtText(ablauf), undefined);
                 }
                 return;
             }
@@ -4439,10 +4478,12 @@ export default function (api) {
                 const body = JSON.parse(Buffer.concat(chunks).toString());
                 const grund = String(body.grund || '').slice(0, 500);
                 const zeitpunkt = body.zeitpunkt ? new Date(String(body.zeitpunkt)) : undefined;
-                const chatId = getCachedTelegramTarget('operativ', { fallbackToOperativ: true });
+                /* In die Dev-Gruppe, nicht in den Owner-DM: Das ist eine
+                   Plattformmeldung mit einem Knopf, keine Assistenz. */
+                const chatId = plattformZiel();
                 if (!chatId) {
                     res.writeHead(503, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: 'operativ Telegram binding not configured' }));
+                    res.end(JSON.stringify({ ok: false, error: 'kein Telegram-Ziel konfiguriert' }));
                     return;
                 }
                 /* Neue Lage, neue Kennung: Ein Knopf aus einer frueheren Wartemeldung
@@ -4452,6 +4493,10 @@ export default function (api) {
                 const text = wartetMeldung(grund, zeitpunkt && !isNaN(zeitpunkt.getTime()) ? zeitpunkt : undefined);
                 const erg = await sendTelegramHtmlWithMarkup(chatId, text, knopfMarkup(kennung));
                 armKnopf = { kennung, chatId, messageId: erg.messageId, ablauf, verbraucht: false };
+                /* Zielchat protokollieren. Der direkte Weg zur Bot-API schreibt keine
+                   Zeile mit Chat — bei der Bestandsaufnahme am 16.10.2026 liess sich
+                   deshalb nicht nachvollziehen, wo eine Meldung gelandet ist. */
+                api.logger.info(`[arm-wartet] Wartemeldung an Chat ${chatId} (${erg.sent ? 'zugestellt' : 'fehlgeschlagen'})`);
                 res.writeHead(erg.sent ? 200 : 502, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: erg.sent, knopf: erg.withMarkup }));
             }
@@ -4749,7 +4794,10 @@ export default function (api) {
             const summary = report.checks.map(c => `${c.status}: ${c.name}`).join(', ');
             api.logger.info(`[executive-agent] Startup Self-Test: ${report.status.toUpperCase()} — ${summary}`);
             if (report.status === 'red') {
-                await sendTelegramToRole('operativ', formatHealthReport(report));
+                /* Betrieb, nicht Assistenz: Der Owner repariert keinen Dienst von
+                   Hand. Seit dem 16.10.2026 in die Dev-Gruppe, mit Rueckfall auf den
+                   DM, falls deren Bindung fehlt. */
+                await sendTelegramToRole('dev', formatHealthReport(report), { fallbackToOperativ: true });
             }
         }
         catch (e) {

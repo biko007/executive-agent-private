@@ -359,7 +359,11 @@ describe('statische Guards gegen index.ts (Drift-Schutz für die Spiegelung oben
     expect(leer.length).toBe(2);
     expect(armBlock).not.toContain("return { text: '' }");
     expect(armBlock).not.toContain('notifyRoleUnlessOrigin');
-    expect(armBlock).toContain('guard.chatId');
+    /* GEAENDERT AM 16.10.2026: Die Quittung geht nicht mehr in den Chat des
+       Absenders, sondern an das Plattformziel — die Dev-Gruppe. Der Owner-DM
+       bleibt dem Gespraech vorbehalten; siehe nachrichten-ziel.test.ts. */
+    expect(armBlock).toContain('plattformZiel()');
+    expect(armBlock).not.toContain('sendTelegramHtmlWithMarkup(guard.chatId');
   });
 
   test('der Knopf erledigt denselben Schritt wie /arm', () => {
