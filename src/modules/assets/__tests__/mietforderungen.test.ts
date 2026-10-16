@@ -220,6 +220,15 @@ describe('Hilfsfunktionen', () => {
     expect(zuordnen(umsatz('Stadt Tuttlingen', 'MG 24 SANIERUNG Auszahlung Zuschuss'), zahler))
       .toBeNull();
   });
+  test('Abrechnungsnachzahlung ohne das Wort Abrechnung', () => {
+    /* L19 W2 zahlte 1.638,54 EUR mit „Heiz-/Nebenkosten 2023". Das ist die
+       Nachzahlung aus der Abrechnung, keine Miete. */
+    expect(istKeineMiete('Rettenbacher - Heiz-/Nebenkosten 2023', 1638.54)).toBe(true);
+    expect(istKeineMiete('Nebenkosten 2024', 500)).toBe(true);
+    /* Steht ein Mietwort im Zweck, bleibt es eine Miete. */
+    expect(istKeineMiete('Rettenbacher - Miete und Nebenkosten März', 1700)).toBe(false);
+    expect(istKeineMiete('Miete inkl. Nebenkosten', 1580)).toBe(false);
+  });
   test('Kaution ueber Betrag und Mietbeginn erkennen', () => {
     /* MG24 W3 hat am 30.04.2025 genau die vereinbarte Kaution von 3.580,00 EUR
        ueberwiesen, im Zweck steht nur „Markgasse 24". Der Abgleich hat daraus

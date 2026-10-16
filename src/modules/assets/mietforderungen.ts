@@ -384,6 +384,20 @@ const MIETERSTROM_HOECHSTBETRAG = 200;
 const MIETWORT = ['miete', 'mieten', 'vermietung', 'mietzahlung', 'alquiler', 'rent'];
 
 /**
+ * Abrechnungszahlungen, die das Wort „Abrechnung" nicht benutzen.
+ *
+ * L19 W2 hat am 15.01.2025 genau 1.638,54 € mit dem Zweck „Rettenbacher —
+ * Heiz-/Nebenkosten 2023" überwiesen. Das ist die Nachzahlung aus der
+ * Abrechnung 2023 und keine Miete; der Abgleich hat daraus ein Guthaben von
+ * 1.638,54 € gemacht. Blockiert wird nur, wenn im Zweck KEIN Mietwort steht:
+ * „Miete und Nebenkosten März" bleibt eine Miete.
+ */
+const ABRECHNUNG_OHNE_MIETWORT = [
+  'heiz nebenkosten', 'heiz und nebenkosten', 'heizkosten nebenkosten',
+  'nebenkosten 20', 'betriebskosten 20', 'heizkosten 20',
+];
+
+/**
  * Eine Kaution, die sich nicht „Kaution" nennt.
  *
  * MG24 W3 hat am 30.04.2025 genau 3.580,00 € überwiesen — die vertragliche
@@ -423,9 +437,11 @@ export function istKeineMiete(zweck: string | null | undefined, betrag?: number)
   const z = normal(zweck);
   if (!z) return false;
   if (KEINE_MIETE.some(w => z.includes(w))) return true;
+  const mietwort = MIETWORT.some(w => z.includes(w));
+  if (!mietwort && ABRECHNUNG_OHNE_MIETWORT.some(w => z.includes(w))) return true;
   if (!MIETERSTROM.some(w => z.includes(w))) return false;
   if (betrag !== undefined && betrag > MIETERSTROM_HOECHSTBETRAG) return false;
-  return !MIETWORT.some(w => z.includes(w));
+  return !mietwort;
 }
 
 /**
@@ -813,6 +829,8 @@ export function kontoFuer(objekt: string): number {
 }
 
 export interface ZuordnungErgebnis {
+  /** Summe der Betraege, die ueber das Soll hinaus eingegangen sind. */
+  ueberzahlt?: number;
   geprueft: number;
   zugeordnet: number;
   verrechnet: number;
@@ -866,11 +884,22 @@ export async function zahlungenZuordnen(
                ORDER BY CASE WHEN t.source = 'fints' THEN 0 ELSE 1 END, t.id
              ) AS rang
         FROM banking_transactions t
-       WHERE t.amount > 0 AND t.booking_date >= $1 AND t.duplicate_of IS NULL
+       WHERE t.amount > 0 AND t.booking_date >= ($1::date - interval '2 months')
+         AND t.duplicate_of IS NULL
          AND NOT EXISTS (SELECT 1 FROM rent_payment_links l WHERE l.transaction_id = t.id))
     SELECT * FROM kandidaten WHERE rang = 1 ORDER BY booking_date, id`, [SOLL_AB]);
 
   for (const z of zahlungen as Zahlung[]) {
+    /* Wer am Monatsende fuer den Folgemonat zahlt, hat die Januarmiete im
+       Dezember ueberwiesen — vor dem Rechnungsbeginn. Solche Zahlungen zaehlen
+       mit, aber nur, wenn der Verwendungszweck den Monat ausdruecklich nennt
+       und dieser im Rechnungszeitraum liegt. L19 W2 stand sonst mit einer
+       offenen Januarmiete da, obwohl sie am 30.12.2024 eingegangen war
+       („Rettenbacher - Miete und Nebenskosten - Januar"). */
+    if (z.booking_date < SOLL_AB) {
+      const genannterMonat = monatAusZweck(z.reference, z.booking_date);
+      if (!genannterMonat || genannterMonat < SOLL_AB) continue;
+    }
     erg.geprueft++;
     const ausnahme = ausnahmen[String(z.id)];
     const mietbar = mietanteil(z.amount, ausnahme);
@@ -990,7 +1019,35 @@ export async function zahlungenZuordnen(
       rest = Math.round((rest - betrag) * 100) / 100;
       erg.verrechnet++;
     }
-    if (rest > 0.004) erg.offen_geblieben++;
+    /* Was uebrig bleibt, ist eine UEBERZAHLUNG — und die wird ausgewiesen,
+       nicht verworfen. Sie laeuft auf die Forderung des Monats, zu dem die
+       Zahlung gehoert; `paid_amount` steht dann ueber `expected_amount`, und
+       die Monatsuebersicht zeigt ein Guthaben.
+
+       Vorher fiel der Rest stillschweigend weg: L19 W1 zahlt 1.645,00 EUR
+       gegen ein hinterlegtes Soll von 1.545,00 EUR, und die fehlenden
+       100,00 EUR je Monat waren nirgends zu sehen — weder als Guthaben noch
+       als Hinweis darauf, dass das Soll nicht stimmt. */
+    if (rest > 0.004) {
+      erg.offen_geblieben++;
+      const ziel = alle.find((f: any) => f.monat === bevorzugt)
+        || (await dbQuery<any>(`
+             SELECT id, to_char(period_month,'YYYY-MM-DD') AS monat
+               FROM rent_ledger WHERE lease_id=$1 AND period_month=$2::date`,
+             [treffer.lease_id, bevorzugt])).rows[0];
+      if (ziel) {
+        await dbQuery(
+          `INSERT INTO rent_payment_links (rent_ledger_id, transaction_id, amount, grundlage)
+           VALUES ($1,$2,$3,$4) ON CONFLICT (rent_ledger_id, transaction_id)
+           DO UPDATE SET amount = rent_payment_links.amount + EXCLUDED.amount`,
+          [ziel.id, z.id, rest, treffer.grundlage]);
+        await dbQuery(
+          `UPDATE rent_ledger SET paid_amount = coalesce(paid_amount,0) + $1,
+             payment_date = $2, updated_at = now() WHERE id = $3`,
+          [rest, z.booking_date, ziel.id]);
+        erg.ueberzahlt = Math.round((( erg.ueberzahlt || 0) + rest) * 100) / 100;
+      }
+    }
   }
   return erg;
 }
@@ -1068,13 +1125,23 @@ export interface Ampel {
   konto: number;
   /** Fällige Monate, für die auf dem Konto keine Buchung vorliegt — nicht bewertet. */
   monate_ohne_bankdaten: string[];
-  /** Monatliches Gesamtsoll laut Vertrag — das, was unter „Miete/Mo" stehen soll. */
+  /**
+   * Monatliches Gesamtsoll — das, was unter „Miete/Mo" steht.
+   *
+   * Es kommt aus der Forderung des laufenden Monats, nicht aus den Feldern am
+   * Mietverhältnis: Dort stehen die Ausgangswerte, während Staffeln,
+   * Nachlässe und angepasste Vorauszahlungen als zeitabhängige Positionen
+   * geführt werden. Die Kachel zeigte deshalb für S28 2.090,00 € statt der
+   * seit September 2025 vereinbarten 2.040,00 €.
+   */
   monatssoll: number;
   bestandteile: { kaltmiete: number; nk: number; heizkosten: number; garage: number; kueche: number };
   soll: number;
   ist: number;
   saldo: number;
   offene_monate: string[];
+  /** Was über das Soll hinaus gezahlt wurde — wird nicht stillschweigend gekappt. */
+  guthaben: number;
   /**
    * Offene Posten, die der Owner ausgewiesen, die Buchhaltung aber noch nicht
    * bestaetigt hat. Das Laempchen bleibt rot — Owner-Vorgabe —, der Betrag
@@ -1128,7 +1195,7 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
        beglichen. */
     const konto = kontoFuer(v.objekt);
     const monateMitDaten = deckung.get(konto) || new Set<string>();
-    let soll = 0; let ist = 0; let unbestaetigt = 0;
+    let soll = 0; let ist = 0; let unbestaetigt = 0; let guthaben = 0;
     const offen: string[] = []; const ohneDaten: string[] = [];
     for (const z of f) {
       const eigen = !!v.owner_hauptmieter || !!z.gilt_als_bezahlt;
@@ -1139,13 +1206,24 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
       if (z.soll - gezahlt > 0.005) {
         offen.push(z.monat);
         if (z.unbestaetigt) unbestaetigt += z.soll - gezahlt;
+      } else if (gezahlt - z.soll > 0.005) {
+        /* Mehr gezahlt als geschuldet. Das kann ein echtes Guthaben sein oder
+           ein zu niedrig hinterlegtes Soll — sichtbar muss es in beiden
+           Faellen sein. */
+        guthaben += gezahlt - z.soll;
       }
     }
     /* Das Monatssoll zaehlt nur, solange der Vertrag laeuft — ein beendetes
        Mietverhaeltnis darf die Kachel nicht mehr aufblaehen. */
     const laeuft = !v.end_date || v.end_date >= heute;
-    const monatssoll = laeuft
-      ? Math.round((v.kaltmiete + v.nk + v.heizkosten + v.garage + v.kueche) * 100) / 100 : 0;
+    /* Das Soll des laufenden Monats steht in der Forderung — dort sind die
+       zeitabhaengigen Vertragspositionen bereits verrechnet. Gibt es noch
+       keine Forderung (Sollstellung nicht gelaufen), tragen die Felder am
+       Mietverhaeltnis den Wert. */
+    const laufend = f.find((z: any) => z.monat === heute.slice(0, 7));
+    const monatssoll = !laeuft ? 0
+      : laufend ? Math.round(laufend.soll * 100) / 100
+      : Math.round((v.kaltmiete + v.nk + v.heizkosten + v.garage + v.kueche) * 100) / 100;
     ampeln.push({
       lease_id: v.lease_id, objekt: v.objekt, einheit: v.einheit,
       mieter: v.mieter || '—', tenant_ids: (v.tenant_ids || []).map(Number),
@@ -1157,6 +1235,7 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
       soll: Math.round(soll * 100) / 100, ist: Math.round(ist * 100) / 100,
       saldo: Math.round((soll - ist) * 100) / 100,
       offene_monate: offen,
+      guthaben: Math.round(guthaben * 100) / 100,
       unbestaetigt: Math.round(unbestaetigt * 100) / 100,
       farbe: offen.length ? 'rot' : 'gruen',
       kennzeichen: v.owner_hauptmieter ? 'Hauptmieter Owner – bezahlt' : undefined,
@@ -1168,14 +1247,14 @@ export async function ampelJeMieter(stichtag?: string): Promise<Ampel[]> {
 /** Lämpchen je Objekt: grün nur, wenn jedes Mietverhältnis grün ist. */
 export async function ampelJeObjekt(stichtag?: string): Promise<{
   objekt: string; farbe: 'gruen' | 'rot'; mieter_rot: number; mieter_gesamt: number;
-  soll: number; ist: number; saldo: number; unbestaetigt: number;
+  soll: number; ist: number; saldo: number; unbestaetigt: number; guthaben: number;
 }[]> {
   const je = await ampelJeMieter(stichtag);
-  const map = new Map<string, { rot: number; n: number; soll: number; ist: number; unb: number }>();
+  const map = new Map<string, { rot: number; n: number; soll: number; ist: number; unb: number; gut: number }>();
   for (const a of je) {
-    const o = map.get(a.objekt) || { rot: 0, n: 0, soll: 0, ist: 0, unb: 0 };
+    const o = map.get(a.objekt) || { rot: 0, n: 0, soll: 0, ist: 0, unb: 0, gut: 0 };
     o.n++; if (a.farbe === 'rot') o.rot++;
-    o.soll += a.soll; o.ist += a.ist; o.unb += a.unbestaetigt || 0;
+    o.soll += a.soll; o.ist += a.ist; o.unb += a.unbestaetigt || 0; o.gut += a.guthaben || 0;
     map.set(a.objekt, o);
   }
   return [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([objekt, o]) => ({
@@ -1183,6 +1262,7 @@ export async function ampelJeObjekt(stichtag?: string): Promise<{
     soll: Math.round(o.soll * 100) / 100, ist: Math.round(o.ist * 100) / 100,
     saldo: Math.round((o.soll - o.ist) * 100) / 100,
     unbestaetigt: Math.round(o.unb * 100) / 100,
+    guthaben: Math.round(o.gut * 100) / 100,
   }));
 }
 
