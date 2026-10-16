@@ -58,12 +58,20 @@ function loadReportSentMap(sentPath: string, logger: ReturnType<typeof makeLogge
   }
 }
 
-function saveReportSentMap(sentPath: string, m: SentMap, logger: ReturnType<typeof makeLogger>): void {
-  const tmpPath = `${sentPath}.tmp`;
+function saveReportSentMap(
+  sentPath: string,
+  m: SentMap,
+  logger: ReturnType<typeof makeLogger>,
+  unveraendert?: string,
+  pid: number = process.pid,
+): void {
+  const obj = Object.fromEntries(m);
+  const inhalt = JSON.stringify(obj, null, 2);
+  if (unveraendert !== undefined && inhalt === unveraendert) return;
+  const tmpPath = `${sentPath}.tmp-${pid}`;
   try {
     fs.mkdirSync(path.dirname(sentPath), { recursive: true });
-    const obj = Object.fromEntries(m);
-    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.writeFileSync(tmpPath, inhalt);
     fs.renameSync(tmpPath, sentPath);
   } catch (e: any) {
     try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
@@ -241,7 +249,7 @@ describe('saveReportSentMap — atomarer Austausch', () => {
       const m: SentMap = new Map([['spec:report-a.md', 1_000], ['plan-hash:plan-b.md', 'abc123']]);
       saveReportSentMap(p, m, makeLogger([]));
 
-      expect(fs.existsSync(`${p}.tmp`)).toBe(false);
+      expect(fs.readdirSync(dir).filter(n => n.includes('.tmp'))).toEqual([]);
       expect(JSON.parse(fs.readFileSync(p, 'utf-8'))).toEqual({
         'spec:report-a.md': 1_000,
         'plan-hash:plan-b.md': 'abc123',
@@ -269,7 +277,7 @@ describe('saveReportSentMap — atomarer Austausch', () => {
       const before = fs.readFileSync(p, 'utf-8');
 
       // Schreibvorgang, der nach dem .tmp-Write abbricht (kein renameSync).
-      fs.writeFileSync(`${p}.tmp`, '{ "spec:report-b.md": 2000');
+      fs.writeFileSync(`${p}.tmp-${process.pid}`, '{ "spec:report-b.md": 2000');
 
       // Genau hier las der alte Code eine halbe Datei. Jetzt ist das Ziel unberuehrt.
       expect(fs.readFileSync(p, 'utf-8')).toBe(before);
@@ -278,9 +286,90 @@ describe('saveReportSentMap — atomarer Austausch', () => {
   });
 
   test('.tmp-Pfad faellt nicht in die Scan-Whitelist (report-*.md)', () => {
-    const name = '.report-sent.json.tmp';
+    const name = `.report-sent.json.tmp-${process.pid}`;
     expect(name.startsWith('report-') && name.endsWith('.md')).toBe(false);
     expect(name.startsWith('.')).toBe(true);
+  });
+});
+
+/**
+ * Zweiter Befund, 16.10.2026. Im Journal stand dreimal
+ *
+ *   [report-watcher] save sent-map failed: ENOENT: no such file or directory,
+ *   rename '/home/biko/bikosoc-spec/.report-sent.json.tmp' -> '…/.report-sent.json'
+ *
+ * Zwei Ursachen, beide hier festgehalten:
+ *
+ *   (1) Der Name der Zwischendatei war fuer alle Schreiber derselbe. Legt ein
+ *       zweiter Prozess gleichzeitig los, benennt der erste um und dem zweiten
+ *       fehlt seine Datei.
+ *   (2) Geschrieben wurde nach JEDEM Scan. Die Datei liegt im beobachteten
+ *       Verzeichnis, also loeste jeder Schreibvorgang den eigenen fs.watch aus
+ *       und fuenf Sekunden spaeter den naechsten Scan.
+ */
+describe('saveReportSentMap — zwei Schreiber und leere Laeufe', () => {
+  test('zwei Prozesse gleichzeitig: kein ENOENT, kein Verlust', () => {
+    withTmpDir(dir => {
+      const p = path.join(dir, '.report-sent.json');
+      const logs: Logged[] = [];
+
+      /* Der Ablauf, der im Betrieb fehlschlug: A schreibt seine
+         Zwischendatei, B schreibt seine, A benennt um, B benennt um. Mit
+         EINEM gemeinsamen Namen fand B nach dem Umbenennen von A nichts
+         mehr vor. */
+      const a: SentMap = new Map([['spec:report-a.md', 1_000]]);
+      const b: SentMap = new Map([['spec:report-b.md', 2_000]]);
+      const pfadA = `${p}.tmp-4711`;
+      const pfadB = `${p}.tmp-4712`;
+      fs.writeFileSync(pfadA, JSON.stringify(Object.fromEntries(a), null, 2));
+      fs.writeFileSync(pfadB, JSON.stringify(Object.fromEntries(b), null, 2));
+      expect(pfadA).not.toBe(pfadB);
+      fs.renameSync(pfadA, p);
+      fs.renameSync(pfadB, p);
+
+      expect(logs).toEqual([]);
+      expect(loadReportSentMap(p, makeLogger([])).get('spec:report-b.md')).toBe(2_000);
+      expect(fs.readdirSync(dir).filter(n => n.includes('.tmp'))).toEqual([]);
+    });
+  });
+
+  test('der Name traegt die Prozessnummer, zwei Prozesse kollidieren also nicht', () => {
+    withTmpDir(dir => {
+      const p = path.join(dir, '.report-sent.json');
+      saveReportSentMap(p, new Map([['spec:report-a.md', 1]]), makeLogger([]), undefined, 4711);
+      saveReportSentMap(p, new Map([['spec:report-b.md', 2]]), makeLogger([]), undefined, 4712);
+      expect(fs.readdirSync(dir).filter(n => n.includes('.tmp'))).toEqual([]);
+      expect(loadReportSentMap(p, makeLogger([])).get('spec:report-b.md')).toBe(2);
+    });
+  });
+
+  test('unveraenderter Stand wird NICHT geschrieben — sonst fuettert der Scan sich selbst', () => {
+    withTmpDir(dir => {
+      const p = path.join(dir, '.report-sent.json');
+      const m: SentMap = new Map([['spec:report-a.md', 1_000]]);
+      saveReportSentMap(p, m, makeLogger([]));
+      const stand = fs.readFileSync(p, 'utf-8');
+      const vorher = fs.statSync(p).mtimeMs;
+
+      saveReportSentMap(p, m, makeLogger([]), stand);
+
+      expect(fs.statSync(p).mtimeMs).toBe(vorher);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(stand);
+    });
+  });
+
+  test('ein echter neuer Eintrag wird weiterhin geschrieben', () => {
+    withTmpDir(dir => {
+      const p = path.join(dir, '.report-sent.json');
+      const m: SentMap = new Map([['spec:report-a.md', 1_000]]);
+      saveReportSentMap(p, m, makeLogger([]));
+      const stand = fs.readFileSync(p, 'utf-8');
+
+      m.set('spec:report-neu.md', 2_000);
+      saveReportSentMap(p, m, makeLogger([]), stand);
+
+      expect(loadReportSentMap(p, makeLogger([])).get('spec:report-neu.md')).toBe(2_000);
+    });
   });
 });
 
@@ -289,9 +378,22 @@ describe('statische Guards gegen index.ts (Drift-Schutz fuer die Spiegelung oben
   const source = fs.readFileSync(path.join(ROOT, 'index.ts'), 'utf-8');
 
   test('saveReportSentMap schreibt via .tmp + renameSync', () => {
-    expect(source).toContain('const tmpPath = `${REPORT_SENT_PATH}.tmp`;');
-    expect(source).toContain('fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));');
+    expect(source).toContain('const tmpPath = `${REPORT_SENT_PATH}.tmp-${process.pid}`;');
+    expect(source).toContain('fs.writeFileSync(tmpPath, inhalt);');
     expect(source).toContain('fs.renameSync(tmpPath, REPORT_SENT_PATH);');
+  });
+
+  test('die Zwischendatei traegt die Prozessnummer (kein gemeinsamer Name)', () => {
+    /* 16.10.2026: Der gemeinsame Name war die Ursache des ENOENT beim
+       Umbenennen. */
+    expect(source).not.toContain('`${REPORT_SENT_PATH}.tmp`');
+  });
+
+  test('ein unveraenderter Stand wird nicht geschrieben', () => {
+    expect(source).toContain('if (unveraendert !== undefined && inhalt === unveraendert) return;');
+    /* Der Scan haelt den Stand beim Laden fest und uebergibt ihn am Ende. */
+    expect(source).toContain('const standBeimLaden = JSON.stringify(Object.fromEntries(sentMap), null, 2);');
+    expect(source).toContain('saveReportSentMap(sentMap, standBeimLaden);');
   });
 
   test('saveReportSentMap schreibt nicht mehr direkt auf REPORT_SENT_PATH', () => {

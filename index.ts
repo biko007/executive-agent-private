@@ -3838,12 +3838,32 @@ export default function (api: any) {
     // (atomar innerhalb desselben Dateisystems) macht den Index race-frei.
     // Die .tmp-Datei liegt in REPORT_SPEC_DIR, wird aber vom Scan-Whitelist-Filter
     // (report-*.md) nicht erfasst.
-    function saveReportSentMap(m: Map<string, number | string>): void {
-      const tmpPath = `${REPORT_SENT_PATH}.tmp`;
+    //
+    // ZWEI KORREKTUREN AM 16.10.2026, nachdem im Journal dreimal
+    // `save sent-map failed: ENOENT … rename '.report-sent.json.tmp'` stand:
+    //
+    //   (1) Der Name der Zwischendatei war fuer alle Schreiber derselbe. Legt ein
+    //       zweiter Prozess gleichzeitig los — ein Skript, ein Testlauf, eine
+    //       zweite Instanz —, dann benennt der erste um und dem zweiten fehlt
+    //       seine Datei: ENOENT. Der Name traegt jetzt die Prozessnummer, so wie
+    //       es docs-mirror seit Langem macht.
+    //
+    //   (2) Geschrieben wurde nach JEDEM Scan, auch wenn sich nichts geaendert
+    //       hat. Weil die Datei IM beobachteten Verzeichnis liegt, loeste jeder
+    //       Schreibvorgang den eigenen fs.watch aus und damit fuenf Sekunden
+    //       spaeter den naechsten Scan — eine Schleife, die sich selbst fuettert.
+    //       `unverändert` bricht sie ab: Gleicher Inhalt, kein Schreibvorgang.
+    function saveReportSentMap(
+      m: Map<string, number | string>,
+      unveraendert?: string,
+    ): void {
+      const obj = Object.fromEntries(m);
+      const inhalt = JSON.stringify(obj, null, 2);
+      if (unveraendert !== undefined && inhalt === unveraendert) return;
+      const tmpPath = `${REPORT_SENT_PATH}.tmp-${process.pid}`;
       try {
         fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
-        const obj = Object.fromEntries(m);
-        fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+        fs.writeFileSync(tmpPath, inhalt);
         fs.renameSync(tmpPath, REPORT_SENT_PATH);
       } catch (e: any) {
         try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
@@ -3981,6 +4001,9 @@ export default function (api: any) {
         // Bestand NICHT erneut zugestellt und die Map nicht ueberschrieben wird.
         return;
       }
+      // Stand beim Laden. Aendert der Scan nichts daran, wird am Ende auch nicht
+      // geschrieben — siehe Korrektur (2) bei saveReportSentMap.
+      const standBeimLaden = JSON.stringify(Object.fromEntries(sentMap), null, 2);
       const toSend: { key: string; filePath: string; name: string; mtimeMs: number; note?: string; hashKey?: string; contentHash?: string; strand?: 'bikosoc' | 'hdcc' | 'unclassified' }[] = [];
 
       // Scan ~/bikosoc-spec/ — whitelist: report-*.md
@@ -4196,7 +4219,7 @@ export default function (api: any) {
         }
       }
 
-      saveReportSentMap(sentMap);
+      saveReportSentMap(sentMap, standBeimLaden);
       } finally {
         reportScanInProgress = false;
       }
