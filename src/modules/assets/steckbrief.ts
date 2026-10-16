@@ -167,8 +167,39 @@ export interface Kachel {
   heizart: string | null; energietraeger: string | null;
   energie_kennwert: number | null; energie_klasse: string | null; kfw_standard: string | null;
   anschaffungskosten: number | null; bruttomietrendite: number | null;
+  /** Vermietete Wohnflaeche in qm — Bezugsgroesse der zweiten Rendite. */
+  qm_vermietet: number | null;
+  /** Rendite auf den vermieteten Flaechenanteil der Anschaffungskosten. */
+  bruttomietrendite_vermietet: number | null;
   naechste_frist: { bezeichnung: string; termin: string; tage: number } | null;
   vollstaendigkeit: number;
+}
+
+/**
+ * Rendite auf die vermietete Flaeche.
+ *
+ * Wo der Eigentuemer selbst wohnt, steht der Miete keine Einnahme gegenueber;
+ * die Rendite auf das ganze Haus faellt dort zu niedrig aus. Bezugsgroesse ist
+ * deshalb der Teil der Anschaffungskosten, der auf die VERMIETETE Flaeche
+ * entfaellt.
+ *
+ * Die Richtung ist die ganze Schwierigkeit: Mit dem eigengenutzten Anteil
+ * gerechnet kommt eine zu hohe Zahl heraus (bei L19 7,1 statt 5,1 Prozent).
+ * Genau diese Verwechslung stand am 16.10.2026 in einem Bericht — seitdem
+ * rechnet es der Code, und der Test haelt die Richtung fest.
+ *
+ * `null`, solange eine der Groessen fehlt oder nichts vermietet ist. Eine
+ * Rendite ohne belegte Kosten waere geraten.
+ */
+export function renditeAufVermietet(
+  sollJahr: number, anschaffung: number | null,
+  qmVermietet: number | null, qmGesamt: number | null,
+): number | null {
+  if (!anschaffung || anschaffung <= 0 || sollJahr <= 0) return null;
+  if (qmGesamt === null || qmGesamt <= 0) return null;
+  if (qmVermietet === null || qmVermietet <= 0) return null;
+  const basis = anschaffung * (qmVermietet / qmGesamt);
+  return Math.round((sollJahr / basis) * 10000) / 100;
 }
 
 /**
@@ -192,11 +223,17 @@ export async function kacheln(stichtag?: string): Promise<Kachel[]> {
     SELECT u.property_id, sum(u.living_area_qm)::float AS qm, count(*)::int AS einheiten
       FROM units u WHERE u.active AND u.archived_at IS NULL GROUP BY u.property_id`);
 
+  /* Belegung zweimal: nach Anzahl fuer die Kachel, nach Flaeche fuer die
+     Rendite auf die vermietete Flaeche. Die Anzahl taugt dafuer nicht — bei
+     L19 sind zwei von vier Einheiten eigengenutzt, aber nur 41,75 Prozent
+     der Flaeche. */
   const { rows: belegung } = await dbQuery<any>(`
     SELECT u.property_id,
            count(*) FILTER (WHERE l.id IS NOT NULL AND NOT coalesce(l.owner_hauptmieter,false))::int AS vermietet,
            count(*) FILTER (WHERE l.id IS NOT NULL AND coalesce(l.owner_hauptmieter,false))::int AS eigen,
-           count(*) FILTER (WHERE l.id IS NULL)::int AS leer
+           count(*) FILTER (WHERE l.id IS NULL)::int AS leer,
+           sum(u.living_area_qm) FILTER (WHERE l.id IS NOT NULL
+             AND NOT coalesce(l.owner_hauptmieter,false))::float AS qm_vermietet
       FROM units u
       LEFT JOIN leases l ON l.unit_id = u.id AND l.status = 'active'
        AND (l.end_date IS NULL OR l.end_date >= $1)
@@ -252,10 +289,26 @@ export async function kacheln(stichtag?: string): Promise<Kachel[]> {
     const sollJahr = Math.round((so?.soll_jahr || 0) * 100) / 100;
     const anschaffung = zahl(w.get('anschaffungskosten'))
       ?? zahl(w.get('herstellungskosten')) ?? (o.kaufpreis || null);
-    /* Bruttomietrendite: Jahressoll geteilt durch die Anschaffungskosten. Ohne
-       belegte Anschaffungskosten gibt es keine Rendite — keine Schaetzung. */
-    const rendite = anschaffung && anschaffung > 0 && sollJahr > 0
-      ? Math.round((sollJahr / anschaffung) * 10000) / 100 : null;
+    /* Bruttomietrendite: Jahresmiete geteilt durch die Anschaffungskosten. Ohne
+       belegte Anschaffungskosten gibt es keine Rendite — keine Schaetzung.
+
+       Bezugsgroesse ist das MONATSSOLL mal zwoelf, nicht `soll_jahr`. Letzteres
+       summiert nur die bereits gestellten Monate des laufenden Jahres: Im
+       Oktober waeren das zehn, und die Rendite fiele um ein Sechstel zu
+       niedrig aus — bei L19 2,39 statt 2,87 Prozent. Nur im Dezember haetten
+       beide Wege dasselbe Ergebnis. */
+    const jahresmiete = sollMonat * 12;
+    const rendite = anschaffung && anschaffung > 0 && jahresmiete > 0
+      ? Math.round((jahresmiete / anschaffung) * 10000) / 100 : null;
+
+    /* Zweite Kennzahl, und zwar gerechnet statt von Hand: Wo der Eigentuemer
+       selbst wohnt, steht der Miete keine Einnahme gegenueber. Die Rendite auf
+       das ganze Haus ist dort zu niedrig. Bezugsgroesse ist die VERMIETETE
+       Flaeche — der umgekehrte Anteil war im Bericht vom 16.10.2026 einmal
+       verwechselt worden und ergab bei L19 7,1 statt 5,1 Prozent. Genau
+       deshalb rechnet es jetzt der Code und nicht mehr die Hand. */
+    const qmVermietet = be?.qm_vermietet ?? null;
+    const renditeVermietet = renditeAufVermietet(jahresmiete, anschaffung, qmVermietet, fl?.qm ?? null);
 
     return {
       property_id: o.id, code: o.code, name: o.name, strasse: o.street,
@@ -277,6 +330,8 @@ export async function kacheln(stichtag?: string): Promise<Kachel[]> {
       kfw_standard: w.get('kfw_standard') || null,
       anschaffungskosten: anschaffung,
       bruttomietrendite: rendite,
+      qm_vermietet: qmVermietet === null ? null : Math.round(qmVermietet * 100) / 100,
+      bruttomietrendite_vermietet: renditeVermietet,
       naechste_frist: fristen.get(o.id) || null,
       vollstaendigkeit: vollst.get(o.id) ?? 0,
     };

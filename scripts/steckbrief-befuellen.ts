@@ -76,6 +76,18 @@ const Q = {
        + '20.07.2026 (tuttlingen.de, Dokument id=34333, geladen am 16.10.2026)',
   owner_l19: 'Owner-Angabe 16.10.2026; Grundlage Teilungsunterlagen Saile vom 30.11.2015. '
        + 'Die Unterlagen selbst liegen noch nicht vor (Owner legt sie in Dropbox transfer/L19-Teilung ab).',
+  ea_mg22: 'Paragraf 80 GEG: Ein Energieausweis ist nur fuer beheizte oder klimatisierte Gebaeude '
+       + 'auszustellen. MG22 sind drei unbeheizte Garagen (bikosoc-Stammdaten: '
+       + 'properties.heating_type = none; Owner-Entscheidung 16.10.2026).',
+  kv_n24_jb: 'SharePoint 3-La Perla GmbH/N24/Vetraege/2020-12-14 Kaufvertrag N24 JB-La Perla.pdf, '
+       + 'Paragraf 4: Kaufpreis 185.000,00 EUR, davon Grund und Boden 95.000,00, Abbruchkosten '
+       + '40.000,00 und Bauplanung 50.000,00 EUR (Flst 1125/1 mit 488 qm und 1126/1 mit 160 qm)',
+  kv_n24_stadt: 'SharePoint 3-La Perla GmbH/N24/Vetraege/Kaufvertrag_Zukaufsflaeche Stadt Tuttlingen.pdf, '
+       + 'Paragraf 4; Notarin Harant-Strecker, UR 1491/2021, beurkundet 02.08.2021: Flst 1128/13, '
+       + '4 ar 07 qm zu 135,00 EUR/qm = 54.945,00 EUR',
+  kv_n24_schmutz: 'SharePoint 3-La Perla GmbH/N24/Vetraege/2021-10-07 Kaufvertrag Zusatzflaeche2 N24 '
+       + 'A. Schmutz-La Perla.pdf, Paragraf 3: Flst 1123/1 (1.396 qm) und 1123/10 (303 qm), '
+       + '10.226,25 EUR, beurkundet 07.10.2021',
 };
 
 type Eintrag = {
@@ -119,8 +131,11 @@ const EINTRAEGE: Eintrag[] = [
     notiz: '5,00 Prozent von 340.000,00 EUR; Festsetzung 18.016,00 EUR fuer beide Grundstuecke' },
   { objekt: 'mg24', feld: 'notarkosten',         zahl: 2267.68,      quelle: Q.notar_mg, typ: 'gerechnet', stand: '2021-11-18',
     notiz: 'Anteil 94,3606 Prozent an 2.403,21 EUR' },
-  { objekt: 'mg24', feld: 'anschaffungskosten',  zahl: 359267.68,    quelle: Q.kv_mg + ' + ' + Q.grest_mg, typ: 'gerechnet', stand: '2021-12-01',
-    notiz: 'Kaufpreis + Grunderwerbsteuer + Notar; Grundbuchkosten fehlen noch' },
+  { objekt: 'mg24', feld: 'anschaffungskosten',  zahl: 3032223.03,   quelle: Q.kv_mg + ' + ' + Q.grest_mg + ' + ' + Q.besch_mg24, typ: 'gerechnet', stand: '2025-08-01',
+    notiz: 'Erwerb 359.267,68 (Kaufpreis 340.000,00 + Grunderwerbsteuer 17.000,00 + Notar 2.267,68) '
+         + 'PLUS Modernisierung 2.672.955,35 EUR. Das Feld heisst "Anschaffungskosten gesamt" und ist '
+         + 'die Bezugsgroesse der Rendite — nur der Erwerbsteil allein ergaebe fuer MG24 19,2 Prozent, '
+         + 'weil der gesamte Umbau fehlte. Grundbuchkosten sind noch nicht enthalten.' },
   { objekt: 'mg24', feld: 'belastungen',         text: 'Sanierungsverfahren (Abt. II Nr. 52)', quelle: Q.kv_mg, typ: 'sharepoint', stand: '2021-11-18' },
 
   // ── S28 ─────────────────────────────────────────────────────────────────
@@ -208,10 +223,25 @@ const EINTRAEGE: Eintrag[] = [
          + 'PV-Anlage 189,28 EUR. Einschliesslich der nicht abziehbaren Vorsteuer (zwei Drittel; '
          + 'W3 und W4 werden temporaer vermietet). OHNE Grundstueck.' },
   { objekt: 'n24', feld: 'gesamtinvestition',    zahl: 6600000,      quelle: 'bikosoc properties.purchase_price_total', typ: 'db', stand: '2026-10-16',
-    notiz: 'Differenz zu den Herstellungskosten: 733.046,58 EUR. Das ist der Grundstuecksteil — '
-         + 'Kaufvertrag Tanneberger 04.05.2015, Uebertragung JB an La Perla 14.12.2020 und zwei '
-         + 'Zukaufsflaechen 2021 (Stadt Tuttlingen 02.08., A. Schmutz 07.10.). Ein Beleg fuer die '
-         + 'runde Zahl 6.600.000,00 EUR liegt nicht vor.' },
+    notiz: 'Runde Planzahl ohne Beleg — NICHT die Bezugsgroesse der Rendite, dafuer stehen die '
+         + 'Anschaffungskosten gesamt daneben. Die Differenz zu den belegten 6.027.124,67 EUR '
+         + 'betraegt 572.875,33 EUR und ist nicht aufgeklaert; der Grundstuecksteil erklaert sie '
+         + 'nicht, der ist mit 160.171,25 EUR belegt.' },
+  { objekt: 'n24', feld: 'bodenanteil',         zahl: 160171.25,
+    quelle: Q.kv_n24_jb + ' + ' + Q.kv_n24_stadt + ' + ' + Q.kv_n24_schmutz, typ: 'gerechnet', stand: '2021-10-07',
+    notiz: 'Reine Kaufpreise fuer Grund und Boden: 95.000,00 (Uebertragung JB an La Perla 14.12.2020) '
+         + '+ 54.945,00 (Stadt Tuttlingen 02.08.2021) + 10.226,25 EUR (A. Schmutz 07.10.2021). OHNE '
+         + 'den Grundstuecksanteil der Grunderwerbsteuer und ohne Notarkosten. Das ist NICHT die '
+         + 'steuerliche Aufteilung Gebaeude/Boden — die entscheidet der Owner.' },
+  { objekt: 'n24', feld: 'gebaeudeanteil',      zahl: 5866953.42,   quelle: Q.bk_n24, typ: 'sharepoint', stand: '2023-08-31',
+    notiz: 'Entspricht den Herstellungskosten; das Grundstueck ist dort nicht enthalten.' },
+  { objekt: 'n24', feld: 'anschaffungskosten',  zahl: 6027124.67,
+    quelle: Q.bk_n24 + ' + ' + Q.kv_n24_jb + ' + ' + Q.kv_n24_stadt + ' + ' + Q.kv_n24_schmutz, typ: 'gerechnet', stand: '2023-08-31',
+    notiz: 'Herstellungskosten 5.866.953,42 + Grundstueck 160.171,25 EUR. Die Abbruchkosten (40.000,00) '
+         + 'und die Bauplanung (50.000,00 EUR) aus demselben Kaufvertrag stecken bereits im Konto 120 '
+         + 'und werden hier NICHT noch einmal gezaehlt. Nicht enthalten: der Grundstuecksanteil der '
+         + 'Grunderwerbsteuer und die Notarkosten — die Zahl ist also eine Untergrenze, und die '
+         + 'Rendite darauf eine Obergrenze.' },
   { objekt: 'mg24', feld: 'herstellungskosten',  zahl: 2672955.35,   quelle: Q.besch_mg24, typ: 'postfach', stand: '2025-08-01',
     notiz: 'Modernisierung vom 12.04.2023 bis 31.12.2024, einschliesslich Umsatzsteuer, durch '
          + 'Originalrechnungen nachgewiesen. Abzueglich der Zuschuesse (50.000,00 EUR '
@@ -241,7 +271,11 @@ const EINTRAEGE: Eintrag[] = [
          + 'Nachrechnungen aus 2016 bis zur Schlussabnahme am 25.11.2016 sind nicht enthalten. '
          + 'Die Vorsteuer war teilweise abziehbar (Quote 43,2 Prozent laut Aufstellung); im '
          + 'Steckbrief wird brutto gefuehrt. In properties.purchase_price_total stehen 1.400.000,00 '
-         + 'EUR — 52.979,66 EUR mehr, vermutlich Einrichtung und Nachrechnungen 2016.' },
+         + 'EUR — 52.979,66 EUR mehr, vermutlich Einrichtung und Nachrechnungen 2016. '
+         + 'ZUR RENDITE: W3 und W4+ sind eigengenutzt, vermietet sind 255,70 von 438,99 qm '
+         + '(58,25 Prozent). Auf den vermieteten Anteil der Kosten (784.603,52 EUR) gerechnet, '
+         + 'ergeben 40.140,00 EUR Jahressoll rund 5,1 Prozent; auf das ganze Haus 2,98 Prozent. '
+         + 'Die Kachel rechnet beides selbst (Feld bruttomietrendite_vermietet).' },
   { objekt: 'l19', feld: 'kfw_standard',         text: 'KfW-Effizienzhaus 55',
     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16',
     notiz: 'Beleghinweis: Fuer den L-Bank- beziehungsweise KfW-Kredit (angefragt 50.000 EUR je '
@@ -267,12 +301,44 @@ const EINTRAEGE: Eintrag[] = [
   { objekt: 'mg22', feld: 'energietraeger', text: 'keiner (unbeheizte Garagen)', quelle: 'bikosoc-Stammdaten: properties.heating_type = none; drei Garagen ohne Heizung', typ: 'db', stand: '2026-10-16' },
   { objekt: 'n24',  feld: 'energieausweis_bis', datum: '2033-05-10', quelle: Q.ea_n24 + ', ausgestellt am 10.05.2023, Registriernummer BW-2023-004539611', typ: 'gerechnet', stand: '2023-05-10',
     notiz: 'Zehn Jahre ab Ausstellung nach Paragraf 79 Abs. 4 GEG.' },
+  // ── Nachtrag 16.10.2026, 11:00: Owner-Korrekturen ─────────────────────
+  /* MG22 sind drei unbeheizte Garagen. Fuer ein Gebaeude ohne Heizung und ohne
+     Klimatisierung verlangt Paragraf 80 GEG keinen Energieausweis. Das Feld
+     stand deshalb zu Unrecht als Luecke in der Vollstaendigkeit; es zaehlt ab
+     jetzt als beantwortet — die Antwort lautet nur eben "entfaellt". */
+  { objekt: 'mg22', feld: 'energieausweis_art',    text: 'nicht erforderlich (unbeheizte Garagen)', quelle: Q.ea_mg22, typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'mg22', feld: 'energieausweis_wert',   text: 'nicht erforderlich (unbeheizte Garagen)', quelle: Q.ea_mg22, typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'mg22', feld: 'energieausweis_klasse', text: 'nicht erforderlich (unbeheizte Garagen)', quelle: Q.ea_mg22, typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'mg22', feld: 'energieausweis_bis',    text: 'nicht erforderlich (unbeheizte Garagen)', quelle: Q.ea_mg22, typ: 'gerechnet', stand: '2026-10-16' },
+
   { objekt: 'n24',  feld: 'kfw_standard', text: 'KfW-Effizienzhaus 40 Plus', quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16',
     notiz: 'Owner 16.10.2026: bewusst der hoechstmoegliche Standard. Das erklaert die niedrige '
          + 'Bruttomietrendite von 1,29 Prozent — die Ausfuehrung waere nach Einschaetzung des '
          + 'Owners rund 1,5 Mio. EUR guenstiger moeglich gewesen. Bei der Renditeanzeige fuer N24 '
          + 'als Hinweis zeigen.' },
 ];
+
+/* Pruefung vor dem Schreiben: "Anschaffungskosten gesamt" ist die Bezugsgroesse
+   der Rendite und muss die Herstellungs- beziehungsweise Modernisierungskosten
+   enthalten. Steht dort weniger, ist nur der Erwerbsteil erfasst — genau der
+   Fehler, der fuer MG24 eine Rendite von 19,2 statt 2,27 Prozent ergeben haette.
+   Lieber hier abbrechen als eine falsche Kennzahl auf die Kachel schreiben. */
+{
+  const je = new Map<string, { ak?: number; hk?: number }>();
+  for (const e of EINTRAEGE) {
+    if (e.zahl === undefined) continue;
+    if (e.feld !== 'anschaffungskosten' && e.feld !== 'herstellungskosten') continue;
+    const m = je.get(e.objekt) || {};
+    if (e.feld === 'anschaffungskosten') m.ak = e.zahl; else m.hk = e.zahl;
+    je.set(e.objekt, m);
+  }
+  const krumm = [...je.entries()].filter(([, m]) => m.ak !== undefined && m.hk !== undefined && m.ak < m.hk);
+  if (krumm.length) {
+    console.error('Anschaffungskosten kleiner als Herstellungskosten — das Feld ist "gesamt" gemeint:');
+    for (const [o, m] of krumm) console.error(`  ${o}: ${m.ak} < ${m.hk}`);
+    process.exit(3);
+  }
+}
 
 const apply = process.argv.includes('--apply');
 if (!(await steckbriefBereit())) {
