@@ -62,6 +62,7 @@ const Q = {
   besch_mg24: 'Bescheinigung der Stadt Tuttlingen gemaess Paragrafen 7h, 10f, 11a EStG vom 01.08.2025 '
        + '(Anlage zur Einkommensteuer 2024, Postfach juergen.bickel@bikolino.com, Mail von Doris '
        + 'Hilsenbeck vom 07.05.2026, Archiv "EST 2024.zip")',
+  owner1610: 'Owner-Angabe Herr Bickel vom 16.10.2026',
   hk_l19: 'Baukosten.xlsx, Mail Doris Hilsenbeck vom 20.01.2016 "Gesamtbaukosten Leutenbergstr. '
        + 'ohne Einrichtung", Blaetter "AK Grundstueck" und "AHK Gebaeude"; dazu LS19 AHK.xlsx, Mail '
        + 'Doris Hilsenbeck vom 15.12.2015 (Kontoblaetter 85 und 150, Rechnungswesen 238754/20000, '
@@ -241,12 +242,36 @@ const EINTRAEGE: Eintrag[] = [
          + 'Die Vorsteuer war teilweise abziehbar (Quote 43,2 Prozent laut Aufstellung); im '
          + 'Steckbrief wird brutto gefuehrt. In properties.purchase_price_total stehen 1.400.000,00 '
          + 'EUR — 52.979,66 EUR mehr, vermutlich Einrichtung und Nachrechnungen 2016.' },
-  { objekt: 'l19', feld: 'kfw_standard',         text: 'fehlt — Effizienzhaus-Bestätigung 2014 vorhanden, Standard offen',
-    quelle: Q.kfw_l19, typ: 'owner', stand: '2014-05-27',
-    notiz: 'Fuer den L-Bank- beziehungsweise KfW-Kredit (angefragt 50.000 EUR je Wohneinheit) wurde '
-         + 'eine Effizienzhaus-Bestaetigung ausgestellt. Welcher Standard (55, 70 oder anderer) '
-         + 'bestaetigt wurde, steht in den Mails nicht. SharePoint und das heutige Postfach '
-         + 'enthalten weder die Bestaetigung noch einen Energieausweis fuer L19 (geprueft 16.10.2026).' },
+  { objekt: 'l19', feld: 'kfw_standard',         text: 'KfW-Effizienzhaus 55',
+    quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16',
+    notiz: 'Beleghinweis: Fuer den L-Bank- beziehungsweise KfW-Kredit (angefragt 50.000 EUR je '
+         + 'Wohneinheit) wurde 2014 eine Effizienzhaus-Bestaetigung ausgestellt — Mails Anton Karl '
+         + 'vom 18.03.2014 und 27.05.2014. Die Bestaetigung selbst liegt weder in SharePoint noch '
+         + 'im heutigen Postfach; den Standard 55 hat der Owner am 16.10.2026 bestaetigt.' },
+
+  // ── Nachtrag 16.10.2026, 10:43: Owner-Angaben ──────────────────────────
+  { objekt: 's28',  feld: 'baujahr',    zahl: 1967,                 quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'd4',   feld: 'bauweise',   text: 'Massivbauweise',     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'i83',  feld: 'bauweise',   text: 'Massivbauweise',     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'mg22', feld: 'bauweise',   text: 'Massivbauweise',     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'mg24', feld: 'bauweise',   text: 'Massivbauweise',     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 's28',  feld: 'bauweise',   text: 'Massivbauweise',     quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'l19',  feld: 'bauweise',   text: 'Massivbauweise: Wände aus Porenbeton (Ytong), Außenputz, innen Kalkputz',
+    quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  { objekt: 'n24',  feld: 'bauweise',   text: 'Holzbau',            quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
+  // Energietraeger folgt aus der Heizart — abgeleitet, nicht geraten.
+  { objekt: 'd4',   feld: 'energietraeger', text: 'Gas',   quelle: 'abgeleitet aus der Heizart (bikosoc-Stammdaten: properties.heating_type = gas)', typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'i83',  feld: 'energietraeger', text: 'Gas',   quelle: 'abgeleitet aus der Heizart (bikosoc-Stammdaten: properties.heating_type = gas)', typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 's28',  feld: 'energietraeger', text: 'Heizöl', quelle: 'abgeleitet aus der Heizart (bikosoc-Stammdaten: properties.heating_type = oil)', typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'l19',  feld: 'energietraeger', text: 'Strom',  quelle: 'abgeleitet aus der Heizart (bikosoc-Stammdaten: properties.heating_type = heat_pump)', typ: 'gerechnet', stand: '2026-10-16' },
+  { objekt: 'mg22', feld: 'energietraeger', text: 'keiner (unbeheizte Garagen)', quelle: 'bikosoc-Stammdaten: properties.heating_type = none; drei Garagen ohne Heizung', typ: 'db', stand: '2026-10-16' },
+  { objekt: 'n24',  feld: 'energieausweis_bis', datum: '2033-05-10', quelle: Q.ea_n24 + ', ausgestellt am 10.05.2023, Registriernummer BW-2023-004539611', typ: 'gerechnet', stand: '2023-05-10',
+    notiz: 'Zehn Jahre ab Ausstellung nach Paragraf 79 Abs. 4 GEG.' },
+  { objekt: 'n24',  feld: 'kfw_standard', text: 'KfW-Effizienzhaus 40 Plus', quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16',
+    notiz: 'Owner 16.10.2026: bewusst der hoechstmoegliche Standard. Das erklaert die niedrige '
+         + 'Bruttomietrendite von 1,29 Prozent — die Ausfuehrung waere nach Einschaetzung des '
+         + 'Owners rund 1,5 Mio. EUR guenstiger moeglich gewesen. Bei der Renditeanzeige fuer N24 '
+         + 'als Hinweis zeigen.' },
 ];
 
 const apply = process.argv.includes('--apply');

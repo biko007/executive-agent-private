@@ -44,6 +44,25 @@ export interface Feldwert {
   notes: string | null;
 }
 
+/**
+ * Felder, die ihren Platz schon in den Stammdaten haben.
+ *
+ * Diese Angaben werden NICHT doppelt gepflegt: Steht nichts in `objekt_felder`,
+ * zählt der Wert aus `properties` beziehungsweise `units`. Sonst stünde die
+ * Datenvollständigkeit zu niedrig — die Wohnfläche etwa ist seit jeher an den
+ * Einheiten gepflegt und wäre im Steckbrief als Lücke erschienen.
+ */
+const AUS_STAMMDATEN: Record<string, { quelle: string }> = {
+  baujahr: { quelle: 'bikosoc-Stammdaten: properties.construction_year' },
+  heizart: { quelle: 'bikosoc-Stammdaten: properties.heating_type' },
+  wohnflaeche: { quelle: 'bikosoc-Stammdaten: Summe units.living_area_qm' },
+  kaufpreis: { quelle: 'bikosoc-Stammdaten: properties.purchase_price_total' },
+  erwerbsdatum: { quelle: 'bikosoc-Stammdaten: properties.acquisition_date beziehungsweise ownership_start' },
+  gebaeudeanteil: { quelle: 'bikosoc-Stammdaten: properties.building_value' },
+  bodenanteil: { quelle: 'bikosoc-Stammdaten: properties.land_value' },
+  afa_satz: { quelle: 'bikosoc-Stammdaten: properties.afa_rate' },
+};
+
 /** Katalog und erfasste Werte zusammengeführt — auch das, was fehlt. */
 export async function felder(propertyId: number): Promise<Feldwert[]> {
   const { rows } = await dbQuery<any>(`
@@ -54,12 +73,42 @@ export async function felder(propertyId: number): Promise<Feldwert[]> {
       FROM objekt_feld_katalog k
       LEFT JOIN objekt_felder f ON f.feld = k.feld AND f.property_id = $1
      WHERE k.aktiv ORDER BY k.reiter, k.reihenfolge`, [propertyId]);
-  return rows.map((r: any) => ({
-    feld: r.feld, reiter: r.reiter, label: r.label, einheit: r.einheit, art: r.art,
-    pflicht: r.pflicht,
-    wert: r.wert_text ?? r.wert_datum ?? (r.wert_zahl === null ? null : r.wert_zahl),
-    quelle: r.quelle, quelle_typ: r.quelle_typ, stand: r.stand, notes: r.notes,
-  }));
+  /* Ersatzwerte aus den Stammdaten — nur fuer Felder ohne eigenen Eintrag. */
+  const { rows: stamm } = await dbQuery<any>(`
+    SELECT p.construction_year, p.heating_type, p.purchase_price_total::float AS kaufpreis,
+           to_char(coalesce(p.acquisition_date, p.ownership_start),'YYYY-MM-DD') AS erwerb,
+           p.building_value::float AS gebaeude, p.land_value::float AS boden,
+           p.afa_rate::float AS afa,
+           (SELECT sum(u.living_area_qm)::float FROM units u
+             WHERE u.property_id = p.id AND u.active AND u.archived_at IS NULL) AS wohnflaeche
+      FROM properties p WHERE p.id = $1`, [propertyId]);
+  const st = stamm[0] || {};
+  const ersatz: Record<string, any> = {
+    baujahr: st.construction_year, heizart: st.heating_type, wohnflaeche: st.wohnflaeche,
+    kaufpreis: st.kaufpreis, erwerbsdatum: st.erwerb, gebaeudeanteil: st.gebaeude,
+    bodenanteil: st.boden, afa_satz: st.afa,
+  };
+
+  return rows.map((r: any) => {
+    const eigen = r.wert_text ?? r.wert_datum ?? (r.wert_zahl === null ? null : r.wert_zahl);
+    if (eigen !== null && eigen !== undefined) {
+      return {
+        feld: r.feld, reiter: r.reiter, label: r.label, einheit: r.einheit, art: r.art,
+        pflicht: r.pflicht, wert: eigen,
+        quelle: r.quelle, quelle_typ: r.quelle_typ, stand: r.stand, notes: r.notes,
+      };
+    }
+    const aus = AUS_STAMMDATEN[r.feld];
+    const v = aus ? ersatz[r.feld] : null;
+    return {
+      feld: r.feld, reiter: r.reiter, label: r.label, einheit: r.einheit, art: r.art,
+      pflicht: r.pflicht,
+      wert: v === null || v === undefined ? null : v,
+      quelle: v === null || v === undefined ? null : aus!.quelle,
+      quelle_typ: v === null || v === undefined ? null : 'db',
+      stand: null, notes: null,
+    };
+  });
 }
 
 export interface FeldEingabe {
