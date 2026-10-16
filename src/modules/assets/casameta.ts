@@ -26,6 +26,44 @@ import {
   stuetzpunkteVon, anteilAusStuetzpunkten, nutzungsAbschnitt, findeEinzugsstand,
 } from '../nk/nutzerzeit.js';
 
+/** Eine Kostenzeile, soweit sie fuer die Belegspalte zaehlt. */
+export interface Bestandskandidat {
+  invoice_number?: string | null;
+  amount_gross: unknown;
+}
+
+/** Die beiden Bestandswerte eines Jahres aus `system_settings.brennstoffbestand`. */
+export interface Bestandssatz {
+  anfangsbestand?: { wert?: unknown } | null;
+  endbestand?: { wert?: unknown } | null;
+}
+
+/**
+ * Ist diese Kostenzeile eine Bestandsbuchung?
+ *
+ * WARUM ES DAS GIBT. Anfangs- und Endbestand des Brennstofflagers tragen
+ * keine Belegnummer, weil es dazu keinen Beleg eines Dritten gibt — die Werte
+ * stammen aus der Lagerrechnung nach § 7 Abs. 2 HeizkostenV. In der
+ * Belegspalte stand deshalb `FEHLT`, und das las sich wie eine Luecke, die im
+ * Portal zu schliessen waere. Sie ist keine (Owner-Hinweis 16.10.2026).
+ *
+ * Erkannt wird eine solche Buchung daran, dass sie keine Belegnummer traegt
+ * UND ihr Betrag einem der beiden Bestandswerte des Jahres entspricht. Das
+ * ist enger als eine Pruefung auf den Leistungszeitraum: Eine Rechnung, bei
+ * der nur die Nummer fehlt, bleibt `FEHLT` — und soll es bleiben.
+ */
+export function istBestandsbuchung(k: Bestandskandidat, bestand: Bestandssatz | null): boolean {
+  if (k.invoice_number) return false;
+  if (!bestand) return false;
+  const betrag = Math.abs(Number(k.amount_gross));
+  if (!Number.isFinite(betrag) || betrag === 0) return false;
+  const gleich = (a: unknown) => {
+    const b = Math.abs(Number(a));
+    return Number.isFinite(b) && b !== 0 && Math.abs(betrag - b) < 0.005;
+  };
+  return gleich(bestand.anfangsbestand?.wert) || gleich(bestand.endbestand?.wert);
+}
+
 const ZIEL_DIR = join(homedir(), 'bikosoc-spec', 'casameta');
 
 const FEHLT = 'FEHLT';
@@ -163,6 +201,10 @@ export async function erzeugeEingabeblatt(
       .filter(Boolean).join(' / ');
   }
 
+  function belegspalte(k: Bestandskandidat): string {
+    return istBestandsbuchung(k, bestand) ? 'Bestandsbuchung' : wert(k.invoice_number);
+  }
+
   const luecken: string[] = [];
   function merkeLuecke(text: string) { if (!luecken.includes(text)) luecken.push(text); }
 
@@ -188,6 +230,8 @@ export async function erzeugeEingabeblatt(
   z.push('(Owner-Entscheidung 11.10.2026).');
   z.push('');
   z.push('Felder mit `FEHLT` sind in bikosoc nicht vorhanden und im Portal bewusst zu setzen.');
+  z.push('In der Belegspalte steht `Bestandsbuchung`, wo es bauartbedingt keinen Beleg eines');
+  z.push('Dritten gibt: Anfangs- und Endbestand des Brennstofflagers.');
   z.push('');
   z.push('---');
   z.push('');
@@ -499,7 +543,7 @@ export async function erzeugeEingabeblatt(
     summeUmlagefaehig += Number(k.amount_gross);
     z.push(`| ${wert(zu?.gruppe)} | ${wert(zu?.casameta)} | ${wert(zu?.schluessel)} | `
       + `${geld(k.amount_gross)} | ${tag(k.service_period_start)} – ${tag(k.service_period_end)} | `
-      + `${wert(k.invoice_number)} |`);
+      + `${belegspalte(k)} |`);
     csvZeile('kosten', `${zu?.casameta || k.kostenart} ${isoTag(k.service_period_start)}`,
       geld(k.amount_gross), zu?.schluessel || '');
     if (!zu) merkeLuecke(`Kostenart ${k.kostenart} ist in der Casameta-Zuordnung nicht hinterlegt.`);
