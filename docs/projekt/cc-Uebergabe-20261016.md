@@ -200,3 +200,30 @@ gestagt — das Katalogfeld führt Euro, nicht Mark 1914.
   nach grünen Gates selbst aus. Eine Freigabe braucht er nicht.
 - `/arm` ist seit 16.10.2026 EIN Befehl: freigeben und ausführen; `/arm push`
   ist ein gleichwertiger Alias. Siehe `docs/projekt/Arm-Freigabe.md`.
+
+---
+
+## 9. Agenten-Backend (Stand 16.10.2026, 19:40)
+
+**Die Modellangabe `openai/gpt-5.2` in älteren Dokumenten ist überholt.**
+Tatsächlich steht in `~/.openclaw/openclaw.json:32` seit dem OpenClaw-Umstieg
+am 04.09.2026:
+
+```
+"primary": "openai/gpt-5.5"
+```
+
+**Die Anmeldung ist erneuert** (16.10.2026 17:24 UTC durch den Owner), gültig
+bis **26.10.2026 17:24 UTC** — zehn Tage. Kein 401 mehr.
+
+**Der Agentenpfad trägt trotzdem nicht.** Jedes geprüfte Modell wird mit
+derselben Meldung abgelehnt („not supported when using Codex with a ChatGPT
+account") — dreizehn Namen, einschließlich der Vorgabe des Werkzeugs selbst.
+Das ist kein Namensproblem: `codex-cli` steht auf 0.138.0 vom 08.06.2026,
+0.163.0 ist verfügbar. Der naheliegende nächste Schritt ist das Update; es
+war ausdrücklich nicht Teil des Auftrags vom 16.10.
+
+**Frühwarnung eingebaut:** Der Smoke-Test prüft seit dem 16.10.2026 das
+Ablaufdatum der Anmeldung und schlägt an, wenn weniger als drei Tage bleiben.
+Er liest nur das Datum, nie den Token. Dass die Anmeldung vier Monate lang
+unbemerkt tot war, soll sich nicht wiederholen.

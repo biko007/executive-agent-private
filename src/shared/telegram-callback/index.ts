@@ -131,3 +131,33 @@ export function istUnsererRueckruf(inhalt: unknown, praefixe: readonly string[])
      eine echte Nachricht des Owners unbeantwortet. */
   return praefixe.some((p) => p && rein.startsWith(p));
 }
+
+/**
+ * Steckt in diesem Prompt ein Knopfdruck — als eigene Nachricht?
+ *
+ * ANLASS (Owner, 16.10.2026). Der command-guard suchte das Muster IRGENDWO im
+ * Prompt. Am 15.10. um 03:00 hat er damit den naechtlichen Traum-Lauf
+ * stillgelegt: Dessen Prompt zaehlt gespeicherte Nutzernachrichten auf, und
+ * darunter waren frueher gedrueckte Knoepfe —
+ *
+ *     Write a dream diary entry from these memory fragments:
+ *     - User: callback_data: bweekly_start
+ *
+ * Der Guard hielt das fuer einen Knopfdruck und wies das Modell an zu
+ * schweigen. Der Traum-Lauf lieferte nichts, und niemand sah warum.
+ *
+ * Jetzt wird ZEILENWEISE geprueft, und jede Zeile muss NACH dem Abschaelen
+ * der Transporthuelle MIT einem angemeldeten Praefix BEGINNEN. Eine
+ * Gedaechtniszeile beginnt mit „- User: " und faellt damit heraus; der
+ * Huellensatz des Kanals beginnt nach dem Abschaelen mit dem Praefix.
+ *
+ * Strenger zu werden ist hier gefahrlos: Seit dem 16.10.2026 beansprucht
+ * `inbound_claim` echte Knopfdruecke, bevor ueberhaupt ein Agentenlauf
+ * beginnt. Dieser Guard ist nur noch die zweite Linie — ein verpasster
+ * Treffer kostet hoechstens eine ueberfluessige Modellantwort, ein falscher
+ * Treffer dagegen legt einen ganzen Lauf still.
+ */
+export function enthaeltRueckrufZeile(prompt: unknown, praefixe: readonly string[]): boolean {
+  if (typeof prompt !== 'string' || !prompt.trim()) return false;
+  return prompt.split('\n').some((zeile) => istUnsererRueckruf(zeile, praefixe));
+}

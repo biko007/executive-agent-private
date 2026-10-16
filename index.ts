@@ -96,7 +96,7 @@ import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
 import {
   graphToken, graphRequest, graphGet, graphPost, graphDelete,
 } from "./src/shared/m365/index.js";
-import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
+import { enthaeltRueckrufZeile, istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import {
   activateTelegramBinding,
   createPendingTelegramBinding,
@@ -944,10 +944,17 @@ export default function (api: any) {
     // Sender ID from structured ctx (v2026.6.11: plaintext envelope removed from prompt)
     const ctxSenderId = String(ctx?.senderId || ctx?.channelId || '').trim();
 
-    // Suppress AI for callback-button content (Framework v2026.2 delivers callbacks as text).
-    // Framework wraps prompts in "[Telegram sender timestamp] callback_data: <prefix>_<payload>"
-    // envelope. Match both "callback_data: <prefix>" (current format) and "] <prefix>" (legacy).
-    if (CALLBACK_PREFIXES.some(p => prompt.includes('callback_data: ' + p) || prompt.includes('] ' + p))) {
+    /* Zweite Linie fuer Knopfdruecke. Die erste ist `inbound_claim` weiter
+       oben: Seit dem 16.10.2026 wird ein echter Knopfdruck beansprucht, bevor
+       ein Agentenlauf ueberhaupt beginnt. Hier landet also nur noch, was dort
+       durchgerutscht ist.
+
+       GEAENDERT AM 16.10.2026: Vorher suchte dieser Zweig das Muster
+       IRGENDWO im Prompt. Damit hat er am 15.10. um 03:00 den naechtlichen
+       Traum-Lauf stillgelegt — dessen Prompt zaehlt gespeicherte
+       Nutzernachrichten auf, und darunter waren frueher gedrueckte Knoepfe.
+       Jetzt gilt dieselbe strenge Pruefung wie beim Beanspruchen. */
+    if (enthaeltRueckrufZeile(prompt, CALLBACK_PREFIXES)) {
       api.logger.info(`[executive-agent] command-guard: Callback erkannt — AI agent wird unterdrückt (prompt: ${prompt.slice(0, 80)})`);
       return {
         prependContext:

@@ -782,6 +782,64 @@ function checkRedZoneConf() {
   }
 }
 
+// ── 18. CODEX-ANMELDUNG: läuft sie bald ab? ────────────────────────────────
+
+/**
+ * Die Anmeldung des Agenten-Backends ist ein Verfallsdatum, das niemand sieht.
+ *
+ * ANLASS (16.10.2026): Das Zugangstoken war am 19.06.2026 abgelaufen und die
+ * Erneuerung schlug fehl. Gemerkt hat es **vier Monate lang niemand** — der
+ * Agentenpfad wurde schlicht nicht benutzt. Aufgefallen ist es erst, als am
+ * 15.10. ein nächtlicher Lauf ihn zum ersten Mal brauchte.
+ *
+ * Diese Prüfung liest NUR das Ablaufdatum aus dem Token, nie den Token selbst.
+ * Sie schlägt an, bevor der Schaden entsteht:
+ *
+ *   abgelaufen        → Fehler
+ *   weniger als 3 Tage → Fehler (Zeit zum Handeln bleibt)
+ *   sonst             → ok, mit Datum
+ *
+ * Bewusst eine Smoke-Prüfung und kein neuer Dienst: Der Smoke-Test läuft
+ * ohnehin vor jedem Deploy und nach jedem Neustart.
+ */
+function checkCodexAuth() {
+  const label = 'Codex-Anmeldung';
+  const datei = path.join(HOME, '.codex/auth.json');
+
+  if (!fs.existsSync(datei)) {
+    fail(label, 'auth.json fehlt — der Agentenpfad hat keine Anmeldung (codex login)');
+    return;
+  }
+  try {
+    const roh = JSON.parse(fs.readFileSync(datei, 'utf-8'));
+    const token: string = roh?.tokens?.access_token ?? '';
+    if (token.split('.').length !== 3) {
+      fail(label, 'Token hat keine lesbare Form — Ablauf nicht prüfbar');
+      return;
+    }
+    /* Nur der mittlere Teil, und davon nur das Feld `exp`. Der Token selbst
+       wird weder ausgegeben noch protokolliert. */
+    const teil = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const nutz = JSON.parse(Buffer.from(teil, 'base64').toString('utf-8'));
+    const exp = Number(nutz?.exp);
+    if (!Number.isFinite(exp)) {
+      fail(label, 'Token nennt kein Ablaufdatum');
+      return;
+    }
+    const tage = (exp * 1000 - Date.now()) / 86_400_000;
+    const datum = new Date(exp * 1000).toISOString().slice(0, 16).replace('T', ' ');
+    if (tage < 0) {
+      fail(label, `abgelaufen am ${datum} UTC — codex login ausfuehren`);
+    } else if (tage < 3) {
+      fail(label, `laeuft am ${datum} UTC ab (in ${tage.toFixed(1)} Tagen) — codex login einplanen`);
+    } else {
+      pass(label, `gueltig bis ${datum} UTC (${tage.toFixed(1)} Tage)`);
+    }
+  } catch (e: any) {
+    fail(label, `auth.json nicht lesbar: ${e.message}`);
+  }
+}
+
 // ── 16. BETRIEBSSKRIPTE ops/bin (Drift-Check) ───────────────────────────────
 
 // Gleiche Mechanik wie Check 15, nur fuer ~/bin. Der Anlass ist derselbe: Am
@@ -898,6 +956,7 @@ async function main() {
   // 15. Claude Code Hooks (Drift-Check)
   checkClaudeHooks();
   checkRedZoneConf();
+  checkCodexAuth();
   checkOpsBin();
 
   // ── Report ──────────────────────────────────────────────────────────────
