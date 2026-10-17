@@ -66,12 +66,12 @@ export function registerSharePointCommands(api: any): void {
           const sites = await listSitesFromDb();
           if (!sites.length) return { text: '\ud83d\udcc2 Keine SharePoint-Sites im Index.' };
           const lines = sites.map((s, i: number) => `${i + 1}. **${s.site_name}** (${s.file_count} Dateien)\n   ID: \`${s.site_id}\``);
-          return { text: `\ud83d\udcc2 **SharePoint-Sites** (${sites.length}):\n\n${lines.join('\n\n')}` };
+          return { text: `\ud83d\udcc2 <b>SharePoint-Sites</b> (${sites.length}):\n\n${lines.join('\n\n')}` };
         } else {
           const drives = await listDrivesFromDb(arg);
           if (!drives.length) return { text: `\ud83d\udcc2 Keine Drives f\u00fcr diese Site im Index.` };
           const lines = drives.map((d, i: number) => `${i + 1}. **${d.drive_name}** (${d.file_count} Dateien)\n   ID: \`${d.drive_id}\``);
-          return { text: `\ud83d\udcc2 **Drives** (${drives.length}):\n\n${lines.join('\n\n')}` };
+          return { text: `\ud83d\udcc2 <b>Drives</b> (${drives.length}):\n\n${lines.join('\n\n')}` };
         }
       } catch (e: any) {
         return { text: `\u274c /sharepoint Fehler: ${e.message}` };
@@ -96,7 +96,7 @@ export function registerSharePointCommands(api: any): void {
           const date = h.last_modified_at ? ` \u00b7 ${h.last_modified_at.slice(0, 10)}` : '';
           return `${i + 1}. **${h.name}**${size}${date}\n   ${h.site_name} \u203a ${h.path}\n   ${h.web_url}`;
         });
-        return { text: `\ud83d\udd0d **Ergebnisse f\u00fcr \u201e${q}\u201c** (${hits.length}):\n\n${lines.join('\n\n')}` };
+        return { text: `\ud83d\udd0d Ergebnisse f\u00fcr \u201e${q}\u201c (${hits.length}):\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `\u274c /spdocs Fehler: ${e.message}` };
       }
@@ -117,7 +117,7 @@ export function registerSharePointCommands(api: any): void {
           const size = f.size ? ` \u00b7 ${(f.size / 1024).toFixed(0)} KB` : '';
           return `${i + 1}. **${f.name}**${size}\n   ${date}\n   ${f.web_url}`;
         });
-        return { text: `\ud83d\udcc2 **K\u00fcrzlich ge\u00e4ndert** (max 15):\n\n${lines.join('\n\n')}` };
+        return { text: `\ud83d\udcc2 <b>K\u00fcrzlich ge\u00e4ndert</b> (max 15):\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `\u274c /sprecent Fehler: ${e.message}` };
       }

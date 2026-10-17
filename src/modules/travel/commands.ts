@@ -244,7 +244,7 @@ export function registerTravelCommands(api: any): void {
       const activitiesRaw = rest[2] || "leisure";
       const activities = activitiesRaw.split(",").map((a: string) => a.trim()) as any[];
       const trip = createTrip(name, start_date, end_date, destination, climate as any, activities);
-      return { text: `✅ Reise *${trip.name}* angelegt!\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 Klima: ${trip.climate}\n🎯 Aktivitäten: ${trip.activities.join(", ")}\n🔑 ID: ${trip.id}` };
+      return { text: `✅ Reise ${trip.name} angelegt!\n📅 ${trip.start_date} → ${trip.end_date}\n📍 ${trip.destination || "–"}\n🌡 Klima: ${trip.climate}\n🎯 Aktivitäten: ${trip.activities.join(", ")}\n🔑 ID: ${trip.id}` };
     },
   });
 
@@ -349,7 +349,7 @@ export function registerTravelCommands(api: any): void {
     description: "Segment hinzufügen: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]",
     handler: async (ctx: any) => {
       const parts = (ctx.args || "").trim().split(/\s+/);
-      if (parts.length < 5) return { text: "❌ Verwendung: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]\nBeispiel: /tripadd tokyo-2026-03 flight 2026-03-10T10:30 Europe/Berlin LH716-FRA-NRT ABC123" };
+      if (parts.length < 5) return { text: "❌ Verwendung: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestätigung]\nBeispiel: /tripadd tokyo-2026-03 flight 2026-03-10T10:30 Europe/Berlin LH716-FRA-NRT ABC123" };
       const [tripId, type, datetime_local, timezone, ...rest] = parts;
       const confirmation = rest.length > 1 ? rest[rest.length - 1] : undefined;
       const title = confirmation ? rest.slice(0, -1).join(" ") : rest.join(" ");
@@ -363,7 +363,7 @@ export function registerTravelCommands(api: any): void {
         const cal = await createSegmentCalendarEvent(tripId, newSeg.id);
         if (cal) calInfo = `\n  📅 Kalendereintrag erstellt`;
       }
-      return { text: `✅ Segment hinzugefügt zu *${trip.name}*:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestaetigung: " + confirmation : ""}${calInfo}` };
+      return { text: `✅ Segment hinzugefügt zu ${trip.name}:\n• [${type}] ${title}\n  📅 ${datetime_local} (${timezone})${confirmation ? "\n  ✔ Bestätigung: " + confirmation : ""}${calInfo}` };
     },
   });
 
@@ -401,7 +401,7 @@ export function registerTravelCommands(api: any): void {
           return { text: '' };
         }
       }
-      return { text: `✅ Segment entfernt aus *${trip.name}*:\n${emoji} ${removed.title}` };
+      return { text: `✅ Segment entfernt aus ${trip.name}:\n${emoji} ${removed.title}` };
     },
   });
 
@@ -420,7 +420,7 @@ export function registerTravelCommands(api: any): void {
         const cal = await createSegmentCalendarEvent(tripId, seg.id);
         if (cal) { created++; } else { failed++; }
       }
-      return { text: `📅 Kalender-Sync für *${trip.name}*:\n✅ ${created} erstellt, ⏭ ${skipped} vorhanden, ❌ ${failed} fehlgeschlagen` };
+      return { text: `📅 Kalender-Sync für ${trip.name}:\n✅ ${created} erstellt, ⏭ ${skipped} vorhanden, ❌ ${failed} fehlgeschlagen` };
     },
   });
 

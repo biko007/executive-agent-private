@@ -165,7 +165,7 @@ export function registerCueCommands(api: any): void {
     handler: async (ctx: any) => {
       const guard = await deps.assertOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       const text = stripCommandPrefix(String(ctx?.args || ''));
@@ -201,7 +201,7 @@ export function registerCueCommands(api: any): void {
     handler: async (ctx: any) => {
       const guard = await deps.assertOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       const teile = stripCommandPrefix(String(ctx?.args || '')).split(/\s+/).filter(Boolean);

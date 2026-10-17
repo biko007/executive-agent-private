@@ -411,7 +411,7 @@ export function registerInstagramCommands(api: any): void {
         const daysLeft = tokenDaysRemaining();
         const tokenWarn = daysLeft < 7 ? `\n⚠️ Token läuft in ${daysLeft} Tagen ab!` : '';
         return {
-          text: `📸 *Instagram @jurgen_bickel*\n\n` +
+          text: `📸 <b>Instagram @jurgen_bickel</b>\n\n` +
             `👥 Follower: ${insights.followers_count.toLocaleString('de')}\n` +
             `📝 Beiträge: ${insights.media_count}\n` +
             `📊 Engagement-Rate: ${insights.engagement_rate}%\n` +
@@ -443,7 +443,7 @@ export function registerInstagramCommands(api: any): void {
           const preview = m.caption.length > 60 ? m.caption.slice(0, 60) + '…' : m.caption;
           return `${i + 1}. ❤️${m.like_count} 💬${m.comments_count} | ${m.media_type}\n   "${preview}"\n   ${m.permalink}`;
         });
-        return { text: `📸 *Top ${sorted.length} Posts*\n\n${lines.join('\n\n')}` };
+        return { text: `📸 Top ${sorted.length} Posts\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `❌ /instatop Fehler: ${e.message}` };
       }
@@ -493,7 +493,7 @@ export function registerInstagramCommands(api: any): void {
         }
         const data: any = await res.json();
         const analysis = data.content?.[0]?.text || 'Keine Antwort erhalten.';
-        return { text: `📊 *Instagram Trend-Analyse*\n\n${analysis}` };
+        return { text: `📊 <b>Instagram Trend-Analyse</b>\n\n${analysis}` };
       } catch (e: any) {
         return { text: `❌ /instatrend Fehler: ${e.message}` };
       }
@@ -555,7 +555,7 @@ export function registerInstagramCommands(api: any): void {
           `${e.nr}. 📅 ${e.date} | ${e.format}\n   ${e.topic}\n   💡 "${e.caption_idea.slice(0, 60)}…"`
         );
         return {
-          text: `📅 *Content-Kalender* (${entries.length} Einträge)\n\n${lines.join('\n\n')}\n\n` +
+          text: `📅 <b>Content-Kalender</b> (${entries.length} Einträge)\n\n${lines.join('\n\n')}\n\n` +
             `Einen Draft erstellen:\n\`/instadraft <nr>\``,
         };
       } catch (e: any) {
@@ -635,7 +635,7 @@ export function registerInstagramCommands(api: any): void {
           audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, planNr: entry.nr, source: 'calendar' } }).catch(() => {});
 
           return {
-            text: `✅ *Draft erstellt*\n\n` +
+            text: `✅ <b>Draft erstellt</b>\n\n` +
               `🆔 ${draft.id}\n📅 Geplant: ${entry.date}\n📝 Format: ${entry.format}\n\n` +
               `Caption:\n${caption.slice(0, 300)}${caption.length > 300 ? '…' : ''}\n\n` +
               `#️⃣ ${entry.hashtags.map((h: string) => '#' + h).join(' ')}\n\n` +
@@ -646,7 +646,7 @@ export function registerInstagramCommands(api: any): void {
           const draft = await createInstaDraft({ caption: input });
           audit.log({ module: 'instagram', action: 'instagram.draft_created', entityType: 'draft', entityId: draft.id, after: { status: draft.status, source: 'freetext' } }).catch(() => {});
           return {
-            text: `✅ *Draft erstellt*\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
+            text: `✅ <b>Draft erstellt</b>\n\n🆔 ${draft.id}\n📝 "${input.slice(0, 100)}${input.length > 100 ? '…' : ''}"\n\n` +
               `Bearbeiten: \`/instaedit ${draft.id}\``,
           };
         }
@@ -671,7 +671,7 @@ export function registerInstagramCommands(api: any): void {
           const sched = d.scheduledFor ? ` | 📅 ${d.scheduledFor}` : '';
           return `${icon} ${d.id}\n   "${preview}"${sched}`;
         });
-        return { text: `📸 *Instagram Drafts* (${drafts.length})\n\n${lines.join('\n\n')}` };
+        return { text: `📸 <b>Instagram Drafts</b> (${drafts.length})\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `❌ /instadrafts Fehler: ${e.message}` };
       }
@@ -785,7 +785,7 @@ export function registerInstagramCommands(api: any): void {
         // Ohne weitere Parameter: Draft anzeigen
         if (parts.length === 1) {
           return {
-            text: `📸 *Draft: ${draft.id}*\n\n` +
+            text: `📸 Draft: ${draft.id}\n\n` +
               `Status: ${draft.status}\n` +
               `Erstellt: ${draft.createdAt.slice(0, 16).replace('T', ' ')}\n` +
               `Aktualisiert: ${draft.updatedAt.slice(0, 16).replace('T', ' ')}\n` +
@@ -844,7 +844,7 @@ export function registerInstagramCommands(api: any): void {
         await fetchMedia(tokens.access_token, tokens.ig_business_id, true);
         const daysLeft = tokenDaysRemaining();
         return {
-          text: `🔄 *Instagram Sync abgeschlossen*\n\n` +
+          text: `🔄 <b>Instagram Sync abgeschlossen</b>\n\n` +
             `🔑 Token: ${daysLeft} Tage verbleibend\n` +
             `👥 Follower: ${insights.followers_count.toLocaleString('de')}\n` +
             `📝 Beiträge: ${insights.media_count}\n` +
@@ -1044,7 +1044,7 @@ export function registerInstagramCommands(api: any): void {
 
           const format = mediaFiles.length > 1 ? 'Karussell' : mediaFiles[0].type === 'video' ? 'Reel' : 'Einzelbild';
           return {
-            text: `✅ *Gepostet!*\n\n` +
+            text: `✅ <b>Gepostet!</b>\n\n` +
               `🆔 ${draft.id}\n` +
               `📸 ${result.permalink}\n` +
               `📋 Format: ${format} (${mediaFiles.length} Datei${mediaFiles.length > 1 ? 'en' : ''})\n\n` +
@@ -1086,7 +1086,7 @@ export function registerInstagramCommands(api: any): void {
           const link = d.instagram_url || '(kein Link)';
           return `📸 ${date} | ${d.id}\n   ${link}\n   "${preview}"`;
         });
-        return { text: `📸 *Veröffentlichte Posts* (${drafts.length})\n\n${lines.join('\n\n')}` };
+        return { text: `📸 <b>Veröffentlichte Posts</b> (${drafts.length})\n\n${lines.join('\n\n')}` };
       } catch (e: any) {
         return { text: `❌ /instaposts Fehler: ${e.message}` };
       }
@@ -1129,7 +1129,7 @@ export function registerInstagramCommands(api: any): void {
 
         // Generate variants (Pass 2 + Pass 3)
         if (chatId) {
-          sendTelegram(chatId, `⏳ Generiere Varianten fuer ${id}...`).catch((err) => {
+          sendTelegram(chatId, `⏳ Generiere Varianten für ${id}...`).catch((err) => {
             api.logger.error(`[executive-agent] /instavariants: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
           });
         }
@@ -1185,7 +1185,7 @@ export function registerInstagramCommands(api: any): void {
 
         const idx = variantNr - 1;
         if (idx < 0 || idx >= submission.variants.length) {
-          return { text: `❌ Variante ${variantNr} ungueltig. Verfuegbar: 1-${submission.variants.length}` };
+          return { text: `❌ Variante ${variantNr} ungültig. Verfügbar: 1-${submission.variants.length}` };
         }
 
         const chosen = submission.variants[idx];
@@ -1223,7 +1223,7 @@ export function registerInstagramCommands(api: any): void {
   // Helper: Format variants for Telegram output
   function formatVariantsOutput(submissionId: string, variants: ContentVariant[]): string {
     const lines: string[] = [];
-    lines.push(`✅ ${variants.length} Varianten fuer ${submissionId}`);
+    lines.push(`✅ ${variants.length} Varianten für ${submissionId}`);
     lines.push('');
 
     const typeLabels: Record<string, string> = { story: 'Story', insight: 'Insight', hook: 'Hook' };
@@ -1321,7 +1321,7 @@ export function registerInstagramCommands(api: any): void {
         if (arg === 'export') {
           const chatId = String(ctx.chatId || ctx.chat?.id || ctx.threadId || ctx.conversationId || ctx.senderId || '');
           if (!chatId || !telegramBotToken) {
-            return { text: 'Export nur via Telegram moeglich (Chat-ID oder Bot-Token fehlt).' };
+            return { text: 'Export nur via Telegram möglich (Chat-ID oder Bot-Token fehlt).' };
           }
           const profilePath = path.join(
             process.env.HOME || '/root',
@@ -1730,7 +1730,7 @@ export function registerInstagramCommands(api: any): void {
             const isCarousel = /karussell|carousel/i.test(note);
             if (isCarousel && sessionMediaFiles.length > 1) {
               api.logger.info(`[executive-agent] /instasubmit: Karussell-Modus — ${sessionMediaFiles.length} Dateien`);
-              sendTelegram(chatId, `🎠 Karussell-Modus: ${sessionMediaFiles.length} Dateien aus Session ${refSessionId}. Analyse laeuft...`).catch(() => {});
+              sendTelegram(chatId, `🎠 Karussell-Modus: ${sessionMediaFiles.length} Dateien aus Session ${refSessionId}. Analyse läuft...`).catch(() => {});
 
               (async () => {
                 try {
@@ -1751,7 +1751,7 @@ export function registerInstagramCommands(api: any): void {
               sendTelegram(chatId, `⚠️ Karussell braucht mindestens 2 Dateien — fahre mit Einzel-Analyse fort.`).catch(() => {});
             }
 
-            sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse laeuft...`).catch(() => {});
+            sendTelegram(chatId, `📥 Session ${refSessionId}: ${sessionMediaFiles.length} Datei(en) gefunden. Analyse läuft...`).catch(() => {});
 
             // Generate unique submission IDs per file — prevent overwrites
             const baseSubId = generateSubmissionId(refSessionId);
@@ -1804,7 +1804,7 @@ export function registerInstagramCommands(api: any): void {
       if (media) {
         // Photo/video was sent WITH the /instasubmit caption — process immediately
         api.logger.info(`[executive-agent] /instasubmit: Media gefunden, starte Pipeline async`);
-        sendTelegram(chatId, '📥 Empfangen. Analyse laeuft...').catch((err) => {
+        sendTelegram(chatId, '📥 Empfangen. Analyse läuft...').catch((err) => {
           api.logger.error(`[executive-agent] /instasubmit: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
         });
         // Run pipeline async — MUST have .catch() to prevent unhandled rejection
@@ -2283,7 +2283,7 @@ export function registerInstagramCommands(api: any): void {
       instaSubmitLastActivatedAt = Date.now();
 
       const chatId = senderId;
-      sendTelegram(chatId, '📥 Empfangen. Analyse laeuft...').catch((err) => {
+      sendTelegram(chatId, '📥 Empfangen. Analyse läuft...').catch((err) => {
         api.logger.error(`[executive-agent] instasubmit Hook: Telegram-Bestätigung fehlgeschlagen: ${err?.message}`);
       });
 
@@ -2629,7 +2629,7 @@ Antworte NUR mit dem JSON-Array, kein Markdown, kein Text drumherum.`;
     instaSubmitActive.add(senderId);
     instaSubmitLastActivatedAt = Date.now();
 
-    await sendTelegram(chatId, `📥 Session ${sessionId}: ${mediaFiles.length} Datei(en) — Analyse laeuft...`);
+    await sendTelegram(chatId, `📥 Session ${sessionId}: ${mediaFiles.length} Datei(en) — Analyse läuft...`);
 
     const baseSubId = generateSubmissionId(sessionId);
     let ok = 0;

@@ -2379,7 +2379,7 @@ export default function (api: any) {
 
       if (parts[0]?.toLowerCase() === 'create') {
         const guard = await assertBoundOwner(ctx);
-        if (!guard.ok) return { text: 'Dieser Befehl ist nur fuer gebundene Owner verfuegbar.' };
+        if (!guard.ok) return { text: 'Dieser Befehl ist nur für gebundene Owner verfügbar.' };
         const role = parts[1] as TelegramBindingRole | undefined;
         if (role !== 'operativ' && role !== 'dev') {
           return { text: 'Nutzung: /bind create <operativ|dev>' };
@@ -2407,7 +2407,7 @@ export default function (api: any) {
         await refreshTelegramTargetCache().catch(() => {});
         return { text: `Binding aktiv: ${binding.roleTag} (${binding.chatType}).` };
       } catch (e: any) {
-        if (e?.code === 'NONCE_MISMATCH') return { text: 'Binding fehlgeschlagen: Nonce ungueltig oder abgelaufen.' };
+        if (e?.code === 'NONCE_MISMATCH') return { text: 'Binding fehlgeschlagen: Nonce ungültig oder abgelaufen.' };
         if (e?.code === 'BINDING_CONFLICT') return { text: 'Binding fehlgeschlagen: Dieser Chat ist bereits gebunden.' };
         api.logger.warn(`[telegram-binding] /bind failed: ${e.message}`);
         return { text: 'Binding fehlgeschlagen.' };
@@ -2423,7 +2423,7 @@ export default function (api: any) {
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       const parts = String(ctx?.args || '').trim().split(/\s+/);
@@ -2462,10 +2462,10 @@ export default function (api: any) {
           );
           return stillBeantwortet(); // Tastatur ist raus — der Kern sendet nichts dazu
         }
-        return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert fuer Bestaetigung.` };
+        return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert für Bestätigung.` };
       }
 
-      return { text: 'Verfuegbar: /memory list | /memory drop <id>' };
+      return { text: 'Verfügbar: /memory list | /memory drop <id>' };
     },
   });
 
@@ -2485,7 +2485,7 @@ export default function (api: any) {
          fuer den Owner aendert sich nichts. */
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       const raw = String(ctx?.args || '').trim();
@@ -2529,7 +2529,7 @@ export default function (api: any) {
         return { text: 'Kein Report vorhanden.' };
       }
       if (n > reportFiles.length) {
-        return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfuegbar).` };
+        return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfügbar).` };
       }
 
       const target = reportFiles[n - 1];
@@ -2572,7 +2572,7 @@ export default function (api: any) {
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       try {
@@ -2608,7 +2608,7 @@ export default function (api: any) {
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       try {
@@ -2659,7 +2659,7 @@ export default function (api: any) {
         await notifyRoleUnlessOrigin('dev', guard.chatId,
           `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
         api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
-        return { text: `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
+        return { text: `ccgo: Plan-Prompt bestätigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
       } catch (e: any) {
         api.logger.error(`[ccgo] Fehler: ${e.message}`);
         return { text: `ccgo Fehler: ${e.message}` };
@@ -2675,7 +2675,7 @@ export default function (api: any) {
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       const prompt = String(ctx?.args || '').trim();
@@ -2706,7 +2706,7 @@ export default function (api: any) {
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
       if (!guard.ok) {
-        return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+        return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
       }
 
       /* Seit 16.10.2026 sind `/arm` und `/arm push` gleichwertig: Beide setzen
@@ -3237,7 +3237,7 @@ export default function (api: any) {
         }
         const guard = await assertBoundOwner({ chatId, senderId });
         if (!guard.ok) {
-          await sendTelegram(chatId, 'Dieser Befehl ist nur fuer den Owner verfuegbar.');
+          await sendTelegram(chatId, 'Dieser Befehl ist nur für den Owner verfügbar.');
           return;
         }
         const factId = parseInt(memdropCb.payload, 10);

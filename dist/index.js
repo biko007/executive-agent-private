@@ -2148,7 +2148,7 @@ export default function (api) {
             if (parts[0]?.toLowerCase() === 'create') {
                 const guard = await assertBoundOwner(ctx);
                 if (!guard.ok)
-                    return { text: 'Dieser Befehl ist nur fuer gebundene Owner verfuegbar.' };
+                    return { text: 'Dieser Befehl ist nur für gebundene Owner verfügbar.' };
                 const role = parts[1];
                 if (role !== 'operativ' && role !== 'dev') {
                     return { text: 'Nutzung: /bind create <operativ|dev>' };
@@ -2177,7 +2177,7 @@ export default function (api) {
             }
             catch (e) {
                 if (e?.code === 'NONCE_MISMATCH')
-                    return { text: 'Binding fehlgeschlagen: Nonce ungueltig oder abgelaufen.' };
+                    return { text: 'Binding fehlgeschlagen: Nonce ungültig oder abgelaufen.' };
                 if (e?.code === 'BINDING_CONFLICT')
                     return { text: 'Binding fehlgeschlagen: Dieser Chat ist bereits gebunden.' };
                 api.logger.warn(`[telegram-binding] /bind failed: ${e.message}`);
@@ -2193,7 +2193,7 @@ export default function (api) {
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             const parts = String(ctx?.args || '').trim().split(/\s+/);
             const sub = parts[0]?.toLowerCase() || 'list';
@@ -2225,9 +2225,9 @@ export default function (api) {
                     await sendTelegramWithKeyboard(chatId, `Fakt #${factId} entfernen?\n\n${factShort}\n\nFolge: status → rejected`, [[{ text: 'Ja, entfernen', callback_data: `memdrop_${factId}` }]]);
                     return stillBeantwortet(); // Tastatur ist raus — der Kern sendet nichts dazu
                 }
-                return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert fuer Bestaetigung.` };
+                return { text: `Fakt #${factId}: ${factShort}\n\nKein Telegram-Chat konfiguriert für Bestätigung.` };
             }
-            return { text: 'Verfuegbar: /memory list | /memory drop <id>' };
+            return { text: 'Verfügbar: /memory list | /memory drop <id>' };
         },
     });
     // ── /report Command: Abruf neuester Reports via Telegram ────────────────────
@@ -2246,7 +2246,7 @@ export default function (api) {
                fuer den Owner aendert sich nichts. */
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             const raw = String(ctx?.args || '').trim();
             const fullMode = /^full\b/i.test(raw);
@@ -2290,7 +2290,7 @@ export default function (api) {
                 return { text: 'Kein Report vorhanden.' };
             }
             if (n > reportFiles.length) {
-                return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfuegbar).` };
+                return { text: `Report #${n} nicht vorhanden (${reportFiles.length} verfügbar).` };
             }
             const target = reportFiles[n - 1];
             // Send as document
@@ -2326,7 +2326,7 @@ export default function (api) {
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             try {
                 // Send SIGINT to the foreground process in tmux bikosoc, then kill remaining claude/cc
@@ -2359,7 +2359,7 @@ export default function (api) {
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             try {
                 // Capture tmux pane content to detect a waiting plan-approval prompt
@@ -2404,7 +2404,7 @@ export default function (api) {
                 execSync('sleep 0.3 && tmux send-keys -t bikosoc Enter 2>/dev/null', { timeout: 5000 });
                 await notifyRoleUnlessOrigin('dev', guard.chatId, `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).`);
                 api.logger.info(`[ccgo] Plan-Approval gesendet (Option ${bypassOptionNum})`);
-                return { text: `ccgo: Plan-Prompt bestaetigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
+                return { text: `ccgo: Plan-Prompt bestätigt (Option ${bypassOptionNum}: Yes, and bypass permissions).` };
             }
             catch (e) {
                 api.logger.error(`[ccgo] Fehler: ${e.message}`);
@@ -2420,7 +2420,7 @@ export default function (api) {
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             const prompt = String(ctx?.args || '').trim();
             if (!prompt) {
@@ -2449,7 +2449,7 @@ export default function (api) {
         handler: async (ctx) => {
             const guard = await assertBoundOwner(ctx);
             if (!guard.ok) {
-                return { text: 'Dieser Befehl ist nur fuer den Owner verfuegbar.' };
+                return { text: 'Dieser Befehl ist nur für den Owner verfügbar.' };
             }
             /* Seit 16.10.2026 sind `/arm` und `/arm push` gleichwertig: Beide setzen
                dieselbe Freigabe und stossen denselben wartenden Schritt an. `push`
@@ -2929,7 +2929,7 @@ export default function (api) {
                 }
                 const guard = await assertBoundOwner({ chatId, senderId });
                 if (!guard.ok) {
-                    await sendTelegram(chatId, 'Dieser Befehl ist nur fuer den Owner verfuegbar.');
+                    await sendTelegram(chatId, 'Dieser Befehl ist nur für den Owner verfügbar.');
                     return;
                 }
                 const factId = parseInt(memdropCb.payload, 10);

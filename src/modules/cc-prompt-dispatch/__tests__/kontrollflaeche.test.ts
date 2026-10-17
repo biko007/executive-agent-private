@@ -99,8 +99,10 @@ describe('statische Guards: Owner-Gate und Helfernutzung in index.ts', () => {
 
   test('/do bricht bei fremdem Sender ab, ohne zu übergeben', () => {
     expect(doBlock).toContain('if (!guard.ok)');
-    expect(doBlock).toContain('Dieser Befehl ist nur fuer den Owner verfuegbar.');
-    const abbruch = doBlock.indexOf('nur fuer den Owner');
+    /* Wortlaut seit 17.10.2026 mit echten Umlauten (Gestaltungsauftrag
+       14.10.2026). Geprueft wird die Absage selbst, nicht ihre Schreibweise. */
+    expect(doBlock).toContain('Dieser Befehl ist nur für den Owner verfügbar.');
+    const abbruch = doBlock.indexOf('nur für den Owner');
     expect(abbruch).toBeLessThan(doBlock.indexOf('sendPromptToBikosocTmux'));
   });
 

@@ -131,7 +131,7 @@ export async function handleFleetDel(argsStr: string): Promise<{ text: string }>
   const v = await getVehicleByCode(code);
   if (!v) return { text: `❌ Fahrzeug nicht gefunden: ${code}` };
   await archiveVehicle(code, 'Deleted via Telegram', 'telegram');
-  return { text: `🗑 Fahrzeug **${v.name}** (${v.vehicleCode}) archiviert.` };
+  return { text: `🗑 Fahrzeug ${v.name} (${v.vehicleCode}) archiviert.` };
 }
 
 export async function handleFleetService(argsStr: string): Promise<{ text: string }> {
@@ -214,9 +214,9 @@ export async function handleFleetDocs(argsStr: string): Promise<{ text: string }
   if (!code) return { text: '❌ Verwendung: /fleetdocs <id>' };
   const v = await getVehicleByCode(code);
   if (!v) return { text: `❌ Fahrzeug nicht gefunden: ${code}` };
-  if (!v.documents.length) return { text: `📎 Keine Dokumente für **${v.name}**.` };
+  if (!v.documents.length) return { text: `📎 Keine Dokumente für ${v.name}.` };
   const lines = v.documents.map(d => `   • ${d.title} (${d.docType})${d.createdAt ? ` — ${d.createdAt.slice(0, 10)}` : ''}`);
-  return { text: `📎 Dokumente für **${v.name}** (${v.documents.length}):\n\n${lines.join('\n')}` };
+  return { text: `📎 Dokumente für ${v.name} (${v.documents.length}):\n\n${lines.join('\n')}` };
 }
 
 export async function handleFleetLink(argsStr: string): Promise<{ text: string }> {
