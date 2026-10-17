@@ -113,3 +113,46 @@ describe('zusammenfassung', () => {
     expect(md).toContain('übersprungen, keine Zugangsdaten hinterlegt');
   });
 });
+
+/* GESTALTUNG DER LAUF-MELDUNG (Owner-Auftrag 14.10.2026, nachgezogen am
+   17.10.2026). Die Casameta-Meldung fehlte in der Inventur und ging weiter im
+   alten Format hinaus. Hier stehen statische Waechter gegen das Skript — ein
+   Lauf laesst sich im Test nicht nachstellen, die Form des Aufrufs schon. */
+describe('Telegram-Meldung des Laufs', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const skript = fs.readFileSync(
+    path.resolve(import.meta.dir, '..', '..', '..', '..', 'scripts', 'casameta-protokoll.ts'),
+    'utf-8');
+
+  it('liefert Lage, Titel und Zeilen an die Notify-Route', () => {
+    expect(skript).toContain('lage: meldung.lage');
+    expect(skript).toContain('titel: meldung.titel');
+    expect(skript).toContain('zeilen: meldung.zeilen');
+  });
+
+  it('traegt kein eigenes Symbol im Text', () => {
+    /* Das Symbol setzt systemNachricht() aus der Lage. Ein zweites im Text
+       stand beim Owner doppelt da. */
+    const block = skript.slice(skript.indexOf('async function telegram'));
+    expect(block).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+  });
+
+  it('schreit nicht in Grossbuchstaben', () => {
+    /* Nur der Code zaehlt — im Kommentar steht die alte Form als Begruendung. */
+    const code = skript.split('\n')
+      .filter((z: string) => !z.trimStart().startsWith('*') && !z.trimStart().startsWith('/*'))
+      .join('\n');
+    expect(code).not.toContain('NICHT BESTÄTIGT');
+    expect(code).toContain('nicht bestätigt:');
+  });
+
+  it('ein gestoppter oder unbestaetigter Lauf ist ein Hinweis, kein Haken', () => {
+    expect(skript).toContain("unbestaetigt > 0 || stopps.length > 0 ? 'hinweis' : 'ok'");
+  });
+
+  it('der Abbruch meldet sich als Fehler', () => {
+    expect(skript).toContain("lage: 'fehler'");
+    expect(skript).toContain("titel: 'Casameta abgebrochen'");
+  });
+});

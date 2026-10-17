@@ -152,13 +152,37 @@ function zusammenfassung(kopf: LaufKopf, aktionen: any[], scan: ReturnType<typeo
   return z.join('\n');
 }
 
-async function telegram(text: string): Promise<boolean> {
-  /* Der interne Endpunkt kennt die Chat-Bindung und braucht kein Token im
-     Skript. Er hört nur auf localhost. */
+/**
+ * Eine Lauf-Meldung zustellen.
+ *
+ * GESTALTUNG (Owner-Auftrag 14.10.2026, nachgezogen am 17.10.2026): Diese
+ * Meldung fehlte in der Inventur und ging deshalb weiter im alten Format
+ * hinaus — mehrere Zeilen blanker Text, ein rotes Symbol im Text und ein
+ * „NICHT BESTÄTIGT" in Grossbuchstaben. Jetzt liefert das Skript Lage, Titel
+ * und Fakten; formatiert wird an der einen geprueften Stelle in der
+ * Notify-Route.
+ *
+ * Der interne Endpunkt kennt die Chat-Bindung und braucht kein Token im
+ * Skript. Er hört nur auf localhost.
+ */
+async function telegram(meldung: {
+  lage: 'ok' | 'hinweis' | 'fehler';
+  titel: string;
+  zeilen: string[];
+  fuss?: string[];
+}): Promise<boolean> {
+  const schwere = meldung.lage === 'fehler' ? 'error'
+    : meldung.lage === 'hinweis' ? 'warn' : 'info';
   try {
     const r = await fetch('http://127.0.0.1:18789/api/internal/notify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, severity: 'info', role: 'operativ' }),
+      body: JSON.stringify({
+        /* Rueckfall, falls die Route die Gestaltung einmal nicht anwendet. */
+        message: [meldung.titel, ...meldung.zeilen].join(' · '),
+        severity: schwere, role: 'operativ',
+        lage: meldung.lage, titel: meldung.titel,
+        zeilen: meldung.zeilen, fuss: meldung.fuss ?? [],
+      }),
     });
     return r.ok;
   } catch { return false; }
@@ -197,8 +221,15 @@ async function main() {
     console.error('ABBRUCH: Der Lauf-Ordner enthält den Passwortwert.');
     for (const t of scan.treffer) console.error(`  betroffen: ${t}`);
     console.error('Es wurde nichts hochgeladen und nichts gemeldet.');
-    await telegram(`🔴 Casameta-Lauf ${kopf.runId}: ABBRUCH — Zugangsdaten in den `
-      + `Lauf-Artefakten gefunden (${scan.treffer.length} Datei(en)). Kein Upload erfolgt.`);
+    await telegram({
+      lage: 'fehler',
+      titel: 'Casameta abgebrochen',
+      zeilen: [
+        `Lauf ${kopf.runId}`,
+        `Zugangsdaten in ${scan.treffer.length} Lauf-Datei(en) gefunden`,
+        'kein Upload erfolgt',
+      ],
+    });
     process.exit(1);
   }
 
@@ -228,16 +259,26 @@ async function main() {
   const geschrieben = aktionen.filter(a => a.actionType === 'schreiben');
   const unbestaetigt = geschrieben.filter(a => a.verified === false).length;
   const stopps = aktionen.filter(a => a.actionType === 'stopp');
+  /* Ein Lauf, bei dem etwas nicht bestaetigt werden konnte oder der gestoppt
+     hat, ist kein Fehler — aber auch nicht einfach „erledigt". */
+  const lage = unbestaetigt > 0 || stopps.length > 0 ? 'hinweis' : 'ok';
   const zeilen = [
-    `Casameta-Lauf ${kopf.runId}`,
-    `Objekt ${kopf.propertyCode ?? '—'} ${kopf.periodYear ?? ''} · Modus ${kopf.mode} · Status ${kopf.status ?? 'fertig'}`,
-    `gelesen ${aktionen.length - geschrieben.length - stopps.length} · geschrieben ${geschrieben.length}`
-      + (unbestaetigt > 0 ? ` · NICHT BESTÄTIGT ${unbestaetigt}` : ''),
+    `Objekt ${kopf.propertyCode ?? '—'} ${kopf.periodYear ?? ''}`.trim(),
+    `Modus ${kopf.mode}`,
+    `Status ${kopf.status ?? 'fertig'}`,
+    `gelesen ${aktionen.length - geschrieben.length - stopps.length}`,
+    `geschrieben ${geschrieben.length}`,
   ];
-  if (stopps.length > 0) zeilen.push(`Stopps: ${stopps.map(s => s.note ?? '—').join('; ')}`);
-  zeilen.push(scan.geprueft ? 'Secret-Scan sauber' : 'Secret-Scan übersprungen (keine Zugangsdaten)');
-  if (dropboxPfad) zeilen.push(`Ablage: ${dropboxPfad}/zusammenfassung.md`);
-  const gemeldet = await telegram(zeilen.join('\n'));
+  if (unbestaetigt > 0) zeilen.push(`nicht bestätigt: ${unbestaetigt}`);
+
+  const fuss: string[] = [];
+  if (stopps.length > 0) fuss.push(`Stopps: ${stopps.map(s => s.note ?? '—').join('; ')}`);
+  fuss.push(scan.geprueft ? 'Secret-Scan sauber' : 'Secret-Scan übersprungen (keine Zugangsdaten)');
+  if (dropboxPfad) fuss.push(`Ablage: ${dropboxPfad}/zusammenfassung.md`);
+
+  const gemeldet = await telegram({
+    lage, titel: `Casameta-Lauf ${kopf.runId}`, zeilen, fuss,
+  });
 
   console.log(`${neu} neue Aktion(en) übernommen, ${aktionen.length} insgesamt.`);
   console.log(`Secret-Scan: ${scan.geprueft ? 'sauber' : 'übersprungen (keine Zugangsdaten hinterlegt)'}`);
