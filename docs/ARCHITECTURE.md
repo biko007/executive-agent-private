@@ -317,9 +317,15 @@ die Funktionen rein und pruefbar bleiben.
   weitere) aus der Datei heraus.
 - **Betrieb:** `scripts/yahoo-inventar.ts` — Umschlaege in Bloecken von 5.000,
   danach Anhangsnamen nur fuer Registertreffer und Mailtexte nur fuer die
-  Rechnungsmails. Yahoo gibt je Ordner nur die juengsten 10.000 Nachrichten
-  heraus (Serverkennung `MESSAGELIMIT`); die Luecke weist das Skript je Ordner
-  aus.
+  Rechnungsmails.
+- **Die 10.000er-Schwelle:** Yahoo gibt je Ordner nur die juengsten 10.000
+  Nachrichten heraus (Serverkennung `MESSAGELIMIT`). Der Ordner "Ablage" hielt
+  54.691; 44.691 davon waren nicht erreichbar. Am 18.10.2026 wurde er mit
+  Owner-Freigabe in Jahresordner `Ablage/2012` … `Ablage/2026` aufgeteilt —
+  damit liegt jeder Ordner unter der Schwelle und das Inventar ist vollstaendig.
+  `scripts/yahoo-ablage-aufteilen.ts` verschiebt per MOVE und bricht bei einer
+  Zaehlabweichung ab; `scripts/yahoo-ablage-pruefen.ts` ist die
+  Message-ID-Gegenprobe. Beide loeschen nichts und markieren nichts.
 
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
