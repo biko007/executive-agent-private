@@ -18,6 +18,13 @@ export { scanMailsForBookings, mailBookingScanEnabled } from './commands.js';
 // State (for booking + meeting callback handlers in index.ts)
 export { pendingBookings, pendingTripSelections, pendingMeetings } from './commands.js';
 
+// Inventar (Kopfdaten einsammeln und einordnen — rein lesend)
+export type { Register, Ausschluss, KopfDaten, SwtRechnung } from './inventar.js';
+export {
+  kategorisiere, ausschluss, nummerGekuerzt, swtRechnungenAusText,
+  betragLesen, zaehlernummer, anhangsnamen,
+} from './inventar.js';
+
 // Commands (Telegram registration)
 export { registerMailCommands, initMailCommands } from './commands.js';
 export type { MailDeps } from './commands.js';
