@@ -16,7 +16,7 @@ import {
   handleNkPreview, handleNkFinalize, handleNkStatementRead, handleNkStatementPdf,
   handleNkRerender, handleNkServe, handleNkRunList, handleNkRunDetail,
 } from '../nk/routes.js';
-import { handleObligationsAlert } from '../nk/alerts.js';
+import { handleObligationsAlert, handleFristenAlert } from '../nk/alerts.js';
 import {
   sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
   dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB, vzRegelAnwenden,
@@ -1160,8 +1160,20 @@ export function registerAssetsHttpRoutes(api: any) {
         const internalSegments = internalRest.split('/').filter(Boolean);
         if (internalSegments[0] === 'obligations-alert' && req.method === 'POST') {
           try {
-            const result = await handleObligationsAlert();
-            json(res, 200, { ok: true, ...result });
+            /* Zwei Meldewege im selben Tageslauf (Owner-Auftrag 17.10.2026):
+               die Abrechnungspflichten je Mieter aus nk_period_obligations und
+               die Objektfristen aus objekt_fristen. Ein zweiter Zeitgeber waere
+               eine zweite Stelle, an der etwas ausfallen kann. */
+            const nk = await handleObligationsAlert();
+            const fristen = await handleFristenAlert();
+            json(res, 200, {
+              ok: true,
+              checked: nk.checked + fristen.checked,
+              alerts_sent: nk.alerts_sent + fristen.alerts_sent,
+              errors: [...nk.errors, ...fristen.errors],
+              nk_pflichten: nk,
+              objektfristen: fristen,
+            });
           } catch (e: any) { err(res, 500, e.message); }
           return true;
         }

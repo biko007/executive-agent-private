@@ -137,3 +137,157 @@ async function sendNotification(message: string, severity: string): Promise<void
     throw new Error(`Notify HTTP ${resp.status}: ${text}`);
   }
 }
+
+
+/* ════════════════════════════════════════════════════════════════════════
+   Objektfristen — der zweite Meldeweg (Owner-Auftrag 17.10.2026)
+
+   WARUM ES DAS GIBT. `objekt_fristen` wurde bis heute von genau einer Stelle
+   gelesen: der Objektkachel des Steckbriefs. Ein Termin stand dort, meldete
+   sich aber nie von selbst. Nachgewiesen am 17.10.2026 — der Tageslauf
+   zaehlte 0 Verpflichtungen, obwohl zwei Fristen eingetragen waren.
+
+   WARUM NICHT UEBER nk_period_obligations. Jene Tabelle verlangt unit_id,
+   lease_id und tenant_id als Pflichtfelder; sie bildet die Abrechnungspflicht
+   je MIETER ab. Eine Frist je OBJEKT passt dort nicht hinein, ohne einen
+   Mieter zu erfinden.
+
+   DEDUPE OHNE NEUE TABELLE. `nk_alert_log` hat einen Fremdschluessel auf
+   nk_period_obligations und eine CHECK-Liste der NK-Phasen; es kann diese
+   Meldungen nicht aufnehmen. Eine eigene Tabelle waere eine Migration und
+   damit ein roter Pfad — fuer eine Handvoll Fristen unverhaeltnismaessig.
+   Das Protokoll steht deshalb als Datensatz in
+   `system_settings.fristen_alarm_log`:
+
+     { "<frist_id>": { "vorlauf": "2026-11-16", "termin": "...", ... } }
+
+   Je Frist und Phase steht dort das Datum der letzten Meldung. Daraus folgt
+   die Regel „hoechstens eine Meldung je Frist und Tag" ohne weitere Logik.
+   ════════════════════════════════════════════════════════════════════════ */
+
+interface FristMatch {
+  frist_id: number;
+  property_code: string;
+  art: string;
+  bezeichnung: string;
+  termin: string;
+  vorlauf_tage: number;
+  tage_bis: number;
+  verantwortlich: string | null;
+}
+
+/** Welche Meldung ist heute faellig — oder keine. */
+export function fristPhase(
+  tageBis: number, vorlaufTage: number,
+): 'vorlauf' | 'termin' | 'ueberfaellig' | null {
+  if (tageBis < 0) return 'ueberfaellig';
+  if (tageBis === 0) return 'termin';
+  /* Der Vorlauf meldet GENAU am Stichtag, nicht jeden Tag danach — sonst
+     stuende dieselbe Frist 45 Tage lang jeden Morgen im Chat. */
+  if (vorlaufTage > 0 && tageBis === vorlaufTage) return 'vorlauf';
+  return null;
+}
+
+/** Text der Meldung. Kurz: Sie steht auf einem Telefon. */
+export function fristMeldung(f: FristMatch, phase: string): string {
+  const termin = f.termin.split('-').reverse().join('.');
+  if (phase === 'ueberfaellig') {
+    return `⚠️ Frist ÜBERFÄLLIG: ${f.property_code} — ${f.bezeichnung}\n`
+      + `Termin war ${termin}, seit ${Math.abs(f.tage_bis)} Tag${Math.abs(f.tage_bis) !== 1 ? 'en' : ''}.\n`
+      + 'Die Meldung kommt täglich, bis die Frist als erledigt eingetragen ist.';
+  }
+  if (phase === 'termin') {
+    return `📅 Frist HEUTE: ${f.property_code} — ${f.bezeichnung}\nTermin: ${termin}`;
+  }
+  return `📋 Frist in ${f.tage_bis} Tagen: ${f.property_code} — ${f.bezeichnung}\nTermin: ${termin}`;
+}
+
+/**
+ * Offene Objektfristen pruefen und melden.
+ *
+ * Meldet am Vorlauftag, am Termin und danach taeglich, bis `erledigt_am`
+ * gesetzt ist. Zustellung wie bei den NK-Fristen in den Owner-DM: Eine Frist,
+ * die der Owner persoenlich einhalten muss, ist ein operativer Alarm und
+ * gehoert nicht in die Dev-Gruppe.
+ */
+export async function handleFristenAlert(): Promise<{
+  checked: number;
+  alerts_sent: number;
+  errors: string[];
+}> {
+  const errors: string[] = [];
+  let alertsSent = 0;
+
+  const { rows: fristen } = await dbQuery<FristMatch>(
+    `SELECT f.id AS frist_id, p.code AS property_code, f.art, f.bezeichnung,
+            to_char(f.termin,'YYYY-MM-DD') AS termin, f.vorlauf_tage,
+            (f.termin - CURRENT_DATE)::int AS tage_bis, f.verantwortlich
+       FROM objekt_fristen f
+       JOIN properties p ON p.id = f.property_id
+      WHERE f.erledigt_am IS NULL
+      ORDER BY f.termin`,
+  );
+
+  const { rows: logRows } = await dbQuery<{ value: any }>(
+    `SELECT value FROM system_settings WHERE key = 'fristen_alarm_log'`);
+  const log: Record<string, Record<string, string>> = logRows[0]?.value || {};
+  const heute = new Date().toISOString().slice(0, 10);
+  let veraendert = false;
+
+  for (const f of fristen) {
+    const phase = fristPhase(f.tage_bis, f.vorlauf_tage);
+    if (!phase) continue;
+    const bisher = log[String(f.frist_id)]?.[phase];
+    if (bisher === heute) continue;              // heute schon gemeldet
+    try {
+      const lage = phase === 'ueberfaellig' ? 'fehler' : phase === 'termin' ? 'hinweis' : 'ok';
+      await sendeFristmeldung(fristMeldung(f, phase), lage,
+        `Frist ${f.frist_id} ${f.property_code} ${phase}`);
+      log[String(f.frist_id)] = { ...(log[String(f.frist_id)] || {}), [phase]: heute };
+      veraendert = true;
+      alertsSent++;
+    } catch (e: any) {
+      errors.push(`Frist ${f.frist_id} (${f.property_code}): ${e.message}`);
+    }
+  }
+
+  if (veraendert) {
+    await dbQuery(
+      `INSERT INTO system_settings (key, value) VALUES ('fristen_alarm_log', $1::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
+      [JSON.stringify(log)],
+    ).catch(e => errors.push(`Protokoll nicht gespeichert: ${e.message}`));
+  }
+
+  return { checked: fristen.length, alerts_sent: alertsSent, errors };
+}
+
+/**
+ * Eine Fristmeldung zustellen — und die Zustellung protokollieren.
+ *
+ * Die Notify-Route schreibt nur im Fehlerfall ins Protokoll. Beim Selbsttest
+ * am 17.10.2026 liess sich deshalb nicht belegen, dass eine Meldung wirklich
+ * ankam: kein Fehler, aber auch keine Zeile. Diese Funktion schreibt die
+ * Nachrichtennummer mit, die Telegram zurueckgibt. Ohne sie ist jede spaetere
+ * Frage „kam die Erinnerung an?" nur mit einem Blick ins Telefon zu
+ * beantworten.
+ */
+async function sendeFristmeldung(text: string, lage: string, kennung: string): Promise<void> {
+  const resp = await fetch('http://127.0.0.1:18789/api/internal/notify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: text,
+      severity: lage === 'fehler' ? 'error' : lage === 'hinweis' ? 'warn' : 'info',
+      lage, titel: 'Objektfrist',
+      zeilen: text.split('\n').map(z => z.trim()).filter(Boolean),
+    }),
+  });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => '');
+    throw new Error(`Notify HTTP ${resp.status}: ${t}`);
+  }
+  const d: any = await resp.json().catch(() => ({}));
+  console.log(`[fristen-alarm] zugestellt: ${kennung}`
+    + (d?.message_id ? ` (Nachricht ${d.message_id})` : ' (ohne Nachrichtennummer)'));
+}
