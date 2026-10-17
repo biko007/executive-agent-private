@@ -293,6 +293,34 @@ außer Sleep (upsert). `health_logs.external_id` (vormals `withings_id`) ist pro
 
 ---
 
+## 9a. Postfach-Inventar (mail/inventar)
+
+**Status:** ✅ live seit 2026-10-17
+
+`src/modules/mail/inventar.ts` ordnet **Kopfdaten** eines Postfachs ein —
+Betreff, Absenderadresse, Absendername. Kein Mailtext, keine Anhaenge, damit
+die Funktionen rein und pruefbar bleiben.
+
+- **Neun Register:** Rechnungen, Vertraege, Abos, Behoerden, Mahnungen,
+  Versicherungen, Anlagen, Stadtwerke, Banken/Vorsorge. Eine Nachricht darf in
+  mehreren stehen — eine Mahnung zu einer Rechnung ist beides.
+- **Ausschluss:** Gesundheitspost und Rundschreiben fallen aus allen Registern
+  heraus und werden nur gezaehlt. Netzwerk- und Vereinspost, die ein Institut
+  oder Amt nur *nennt*, kommt nicht ins Banken- oder Behoerdenregister.
+- **Stadtwerke:** `swtRechnungenAusText()` liest die Rechnungszeilen
+  (Kundennummer, Rechnungseinheit, ARV-Nummer, Datum, Betrag) aus dem
+  Mailtext — im Betreff stehen sie nicht.
+- **Geheimhaltung:** `nummerGekuerzt()` laesst von Vertrags-, Schein- und
+  Kontonummern nur die letzten vier Ziffern stehen.
+- **Rein lesend:** Ein statischer Waechter im Test haelt veraendernde
+  IMAP-Operationen (`messageFlagsAdd`, `messageMove`, `messageDelete` und
+  weitere) aus der Datei heraus.
+- **Betrieb:** `scripts/yahoo-inventar.ts` — Umschlaege in Bloecken von 5.000,
+  danach Anhangsnamen nur fuer Registertreffer und Mailtexte nur fuer die
+  Rechnungsmails. Yahoo gibt je Ordner nur die juengsten 10.000 Nachrichten
+  heraus (Serverkennung `MESSAGELIMIT`); die Luecke weist das Skript je Ordner
+  aus.
+
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
 **Status:** ✅ live seit 2026-07-10 (Evidence Bundle `docs/workpackages/2026-07-10-meeting-detection.md`)
