@@ -14,7 +14,7 @@
  * stünde dieselbe Frist 45 Morgen lang im Chat, und niemand liest sie mehr.
  */
 import { describe, test, expect } from 'bun:test';
-import { fristPhase, fristMeldung } from '../alerts.js';
+import { fristPhase, fristMeldung, fristLage } from '../alerts.js';
 
 describe('Welche Phase heute gilt', () => {
   test('am Vorlauftag — und nur dort', () => {
@@ -57,26 +57,57 @@ describe('Der Meldetext', () => {
   };
 
   test('nennt Objekt, Sache und Termin im deutschen Format', () => {
-    const t = fristMeldung({ ...frist, tage_bis: 45 }, 'vorlauf');
-    expect(t).toContain('N24');
-    expect(t).toContain('energiekonzept');
-    expect(t).toContain('22.10.2026');
-    expect(t).toContain('45 Tagen');
+    const m = fristMeldung({ ...frist, tage_bis: 45 }, 'vorlauf');
+    expect(m.titel).toBe('Frist in 45 Tagen');
+    const text = m.zeilen.join(' · ');
+    expect(text).toContain('N24');
+    expect(text).toContain('energiekonzept');
+    expect(text).toContain('22.10.2026');
   });
 
-  test('am Termin steht HEUTE', () => {
-    expect(fristMeldung({ ...frist, tage_bis: 0 }, 'termin')).toContain('HEUTE');
+  test('am Termin sagt der Titel heute', () => {
+    expect(fristMeldung({ ...frist, tage_bis: 0 }, 'termin').titel).toBe('Frist heute');
   });
 
   test('überfällig nennt die Zahl der Tage und wie es aufhört', () => {
-    const t = fristMeldung({ ...frist, tage_bis: -3 }, 'ueberfaellig');
-    expect(t).toContain('ÜBERFÄLLIG');
-    expect(t).toContain('3 Tagen');
-    expect(t).toContain('erledigt');
+    const m = fristMeldung({ ...frist, tage_bis: -3 }, 'ueberfaellig');
+    expect(m.titel).toBe('Frist überfällig');
+    const text = m.zeilen.join(' · ');
+    expect(text).toContain('seit 3 Tagen');
+    expect(text).toContain('erledigt');
   });
 
   test('ein Tag steht im Singular', () => {
-    expect(fristMeldung({ ...frist, tage_bis: -1 }, 'ueberfaellig')).toContain('seit 1 Tag.');
+    const m = fristMeldung({ ...frist, tage_bis: -1 }, 'ueberfaellig');
+    const text = m.zeilen.join(' · ');
+    expect(text).toContain('seit 1 Tag');
+    expect(text).not.toContain('seit 1 Tagen');
+  });
+
+  /* GESTALTUNG (Owner-Auftrag 14.10.2026): Das Symbol setzt systemNachricht()
+     aus der Lage. Traegt der Text selbst eines, steht es doppelt da — genau
+     der Befund, der am 17.10.2026 aufgefallen ist. */
+  test('der Text traegt kein eigenes Symbol und kein HTML', () => {
+    for (const phase of ['vorlauf', 'termin', 'ueberfaellig']) {
+      const m = fristMeldung({ ...frist, tage_bis: phase === 'ueberfaellig' ? -2 : 0 }, phase);
+      const alles = [m.titel, ...m.zeilen].join(' ');
+      expect(alles, phase).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+      expect(alles, phase).not.toContain('<');
+      expect(alles, phase).not.toContain('\n');
+    }
+  });
+
+  test('keine Zeile schreit in Grossbuchstaben', () => {
+    /* „Frist UEBERFAELLIG" war eine Eigenart dieser Meldung; die uebrigen
+       Systemmeldungen schreiben normal. */
+    const m = fristMeldung({ ...frist, tage_bis: -3 }, 'ueberfaellig');
+    expect(m.titel).toBe('Frist überfällig');
+  });
+
+  test('die Lage passt zur Phase', () => {
+    expect(fristLage('vorlauf')).toBe('hinweis');
+    expect(fristLage('termin')).toBe('aktion');
+    expect(fristLage('ueberfaellig')).toBe('fehler');
   });
 });
 

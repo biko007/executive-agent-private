@@ -188,18 +188,51 @@ export function fristPhase(
   return null;
 }
 
-/** Text der Meldung. Kurz: Sie steht auf einem Telefon. */
-export function fristMeldung(f: FristMatch, phase: string): string {
+/** Welche Lage die Phase in der Systemsymbolik hat. */
+export function fristLage(phase: string): 'hinweis' | 'aktion' | 'fehler' {
+  if (phase === 'ueberfaellig') return 'fehler';
+  if (phase === 'termin') return 'aktion';
+  return 'hinweis';
+}
+
+/**
+ * Titel und Zeilen der Meldung — ohne eigene Symbole und ohne HTML.
+ *
+ * KORREKTUR 17.10.2026. Hier stand eine fertige Textnachricht mit eigenen
+ * Symbolen (📋 📅 ⚠️) und Zeilenumbruechen. Die Notify-Route reicht `lage` und
+ * `titel` aber an systemNachricht() weiter, und die setzt bereits das Symbol
+ * der Lage in die erste Zeile. Beim Owner kam deshalb zweierlei an: oben
+ * „❌ Objektfrist", darunter noch einmal „⚠️ Frist ÜBERFAELLIG". Genau die
+ * Dopplung, die der Gestaltungsauftrag vom 14.10.2026 beseitigen sollte.
+ *
+ * Seitdem liefert diese Stelle nur noch Titel und Zeilen; das Symbol kommt
+ * aus der Lage, das Format aus der einen geprueften Stelle. Der Titel sagt
+ * die Phase, die erste Zeile das Objekt und die Sache.
+ */
+export function fristMeldung(
+  f: FristMatch, phase: string,
+): { titel: string; zeilen: string[] } {
   const termin = f.termin.split('-').reverse().join('.');
+  const sache = `${f.property_code} — ${f.bezeichnung}`;
+
   if (phase === 'ueberfaellig') {
-    return `⚠️ Frist ÜBERFÄLLIG: ${f.property_code} — ${f.bezeichnung}\n`
-      + `Termin war ${termin}, seit ${Math.abs(f.tage_bis)} Tag${Math.abs(f.tage_bis) !== 1 ? 'en' : ''}.\n`
-      + 'Die Meldung kommt täglich, bis die Frist als erledigt eingetragen ist.';
+    const tage = Math.abs(f.tage_bis);
+    return {
+      titel: 'Frist überfällig',
+      zeilen: [
+        sache,
+        `Termin war ${termin}, seit ${tage} Tag${tage !== 1 ? 'en' : ''}`,
+        'Meldung kommt täglich, bis die Frist als erledigt eingetragen ist',
+      ],
+    };
   }
   if (phase === 'termin') {
-    return `📅 Frist HEUTE: ${f.property_code} — ${f.bezeichnung}\nTermin: ${termin}`;
+    return { titel: 'Frist heute', zeilen: [sache, `Termin: ${termin}`] };
   }
-  return `📋 Frist in ${f.tage_bis} Tagen: ${f.property_code} — ${f.bezeichnung}\nTermin: ${termin}`;
+  return {
+    titel: `Frist in ${f.tage_bis} Tagen`,
+    zeilen: [sache, `Termin: ${termin}`],
+  };
 }
 
 /**
@@ -240,8 +273,7 @@ export async function handleFristenAlert(): Promise<{
     const bisher = log[String(f.frist_id)]?.[phase];
     if (bisher === heute) continue;              // heute schon gemeldet
     try {
-      const lage = phase === 'ueberfaellig' ? 'fehler' : phase === 'termin' ? 'hinweis' : 'ok';
-      await sendeFristmeldung(fristMeldung(f, phase), lage,
+      await sendeFristmeldung(fristMeldung(f, phase), fristLage(phase),
         `Frist ${f.frist_id} ${f.property_code} ${phase}`);
       log[String(f.frist_id)] = { ...(log[String(f.frist_id)] || {}), [phase]: heute };
       veraendert = true;
@@ -272,15 +304,18 @@ export async function handleFristenAlert(): Promise<{
  * Frage „kam die Erinnerung an?" nur mit einem Blick ins Telefon zu
  * beantworten.
  */
-async function sendeFristmeldung(text: string, lage: string, kennung: string): Promise<void> {
+async function sendeFristmeldung(
+  meldung: { titel: string; zeilen: string[] }, lage: string, kennung: string,
+): Promise<void> {
   const resp = await fetch('http://127.0.0.1:18789/api/internal/notify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      message: text,
+      /* `message` ist der Rueckfall, falls die Route die Gestaltung einmal
+         nicht anwendet — dann steht dort wenigstens derselbe Inhalt. */
+      message: [meldung.titel, ...meldung.zeilen].join(' · '),
       severity: lage === 'fehler' ? 'error' : lage === 'hinweis' ? 'warn' : 'info',
-      lage, titel: 'Objektfrist',
-      zeilen: text.split('\n').map(z => z.trim()).filter(Boolean),
+      lage, titel: meldung.titel, zeilen: meldung.zeilen,
     }),
   });
   if (!resp.ok) {
