@@ -5,7 +5,7 @@ import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, for
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
 import { readEntries, lastEntry, getWeightTrend, getSleepTrend, getHeartrateTrend, getHrvTrend, checkHealthAlerts, registerHealthCommands, initHealthCommands, syncWithingsForBriefing, syncOuraForBriefing, triggerWithingsSync, triggerOuraSync, getSyncStatus, getOuraSyncStatus, } from "./src/modules/health/index.js";
-import { listVehicles, checkDeadlines, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
+import { listVehicles, checkDeadlines, vehicleIcon, pruefungLabel, registerFleetCommands, initFleetCommands, registerFleetHttpRoutes, } from "./src/modules/fleet/index.js";
 import { registerBankingHttpRoutes, initBankingCommands, registerBankingCommands, initTanBridge, initSyncEngine, cleanupExpiredChallenges, runWeeklySyncWithReport as runWeeklyBankSync, } from "./src/modules/banking/index.js";
 import { registerLinksHttpRoutes } from "./src/modules/links/routes.js";
 import { registerSharePointHttpRoutes } from "./src/modules/sharepoint/routes.js";
@@ -1675,8 +1675,11 @@ export default function (api) {
                 parts.push('');
                 parts.push(`${RUBRIK}🚗 Fuhrpark — Fristen`);
                 for (const w of deadlines) {
-                    const icon = w.vehicleType === 'car' ? '🚗' : '🏍';
-                    const label = w.field === 'tuev' ? 'TÜV' : 'Versicherung';
+                    /* Symbol und Beschriftung kommen seit dem 17.10.2026 aus dem
+                       Fuhrpark-Modul. Vorher stand hier fest „TÜV" und ein Motorrad fuer
+                       alles, was kein Auto ist — fuer das Boot war beides falsch. */
+                    const icon = vehicleIcon(w.vehicleType);
+                    const label = w.field === 'tuev' ? pruefungLabel(w.vehicleType) : 'Versicherung';
                     if (w.severity === 'overdue') {
                         parts.push(`• ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
                     }

@@ -23,6 +23,7 @@ export {
   addTuevRecord, updateTuevRecord, deleteTuevRecord,
   addDocument, deleteDocument,
   checkDeadlines, formatVehicleList, formatVehicleDetail,
+  vehicleIcon, pruefungLabel,
 } from './store.js';
 
 // HTTP routes

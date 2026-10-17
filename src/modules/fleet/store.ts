@@ -964,8 +964,19 @@ export async function checkDeadlines(): Promise<DeadlineWarning[]> {
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
-function vehicleIcon(type: VehicleType): string {
+export function vehicleIcon(type: VehicleType): string {
   return type === 'car' ? '🚗' : type === 'boat' ? '🚤' : '🚲';
+}
+
+/**
+ * Wie die Pruefung je Fahrzeugart heisst.
+ *
+ * Bis zum 17.10.2026 stand im Morgen-Digest fest „TÜV" — richtig fuer Autos,
+ * falsch fuer das Boot: Dort nennt die Zulassungsurkunde eine Nachuntersuchung,
+ * und die Zulassung erlischt zu einem Stichtag. Ein Boot hat keinen TÜV.
+ */
+export function pruefungLabel(type: VehicleType): string {
+  return type === 'boat' ? 'Untersuchung/Zulassung' : 'TÜV';
 }
 
 function formatDE(isoDate: string): string {

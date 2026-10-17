@@ -21,7 +21,7 @@ import {
 } from "./src/modules/health/index.js";
 import type { HealthAlert } from "./src/modules/health/index.js";
 import {
-  listVehicles, checkDeadlines,
+  listVehicles, checkDeadlines, vehicleIcon, pruefungLabel,
   registerFleetCommands, initFleetCommands,
   registerFleetHttpRoutes,
 } from "./src/modules/fleet/index.js";
@@ -1888,8 +1888,11 @@ export default function (api: any) {
         parts.push('');
         parts.push(`${RUBRIK}🚗 Fuhrpark — Fristen`);
         for (const w of deadlines) {
-          const icon = w.vehicleType === 'car' ? '🚗' : '🏍';
-          const label = w.field === 'tuev' ? 'TÜV' : 'Versicherung';
+          /* Symbol und Beschriftung kommen seit dem 17.10.2026 aus dem
+             Fuhrpark-Modul. Vorher stand hier fest „TÜV" und ein Motorrad fuer
+             alles, was kein Auto ist — fuer das Boot war beides falsch. */
+          const icon = vehicleIcon(w.vehicleType);
+          const label = w.field === 'tuev' ? pruefungLabel(w.vehicleType) : 'Versicherung';
           if (w.severity === 'overdue') {
             parts.push(`• ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
           } else {
