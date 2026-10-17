@@ -213,6 +213,20 @@ describe('Knoepfe unter der Ergebnisnachricht', () => {
     expect(n).not.toContain('<a ');   // ein Anker loest dieselbe Rueckfrage aus
   });
 
+  /* Der Nachtrag vom 14.10.2026 verlangte den Link ausdruecklich "fuer alle
+     Status". Er haengt am Nachrichtenaufbau und nicht am Status, aber genau das
+     soll gepruefte Zusage sein und nicht Annahme: Wer spaeter einen Status
+     gesondert behandelt, faellt hier auf. */
+  test('der Link steht in allen fuenf Statusfaellen', () => {
+    for (const status of ['ok', 'aktion', 'hinweis', 'fehler', 'wartet'] as const) {
+      const n = ergebnisNachricht({ ...kopfblockLesen(KOPF)!, status }, 'report-x.md');
+      const z = n.split('\n');
+      expect(z[z.length - 2], status).toBe(CLAUDE_URL);
+      expect(z[z.length - 1], status).toBe('\u2800');
+      expect(z[0], status).toStartWith(statusSymbol(status));
+    }
+  });
+
   test('der Link bleibt auch bei langem Text erhalten', () => {
     const lang = { ...kopfblockLesen(KOPF)!, aufgabe: 'x'.repeat(3000) };
     const n = ergebnisNachricht(lang, 'report-x.md');
