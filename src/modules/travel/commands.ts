@@ -346,7 +346,7 @@ export function registerTravelCommands(api: any): void {
   api.registerCommand({
     name: "tripadd",
     acceptsArgs: true,
-    description: "Segment hinzufügen: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestaetigung]",
+    description: "Segment hinzufügen: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestätigung]",
     handler: async (ctx: any) => {
       const parts = (ctx.args || "").trim().split(/\s+/);
       if (parts.length < 5) return { text: "❌ Verwendung: /tripadd <trip-id> <type> <YYYY-MM-DDTHH:MM> <Timezone> <Titel> [Bestätigung]\nBeispiel: /tripadd tokyo-2026-03 flight 2026-03-10T10:30 Europe/Berlin LH716-FRA-NRT ABC123" };

@@ -2670,7 +2670,7 @@ export default function (api: any) {
   // ── /do Command: Prompt direkt an laufenden cc in tmux bikosoc uebergeben ──
   api.registerCommand({
     name: 'do',
-    description: 'Prompt an Claude Code in tmux bikosoc uebergeben. /do <text>',
+    description: 'Prompt an Claude Code in tmux bikosoc übergeben. /do <text>',
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);
@@ -2701,7 +2701,7 @@ export default function (api: any) {
   // nicht unbemerkt scharfstellen.
   api.registerCommand({
     name: 'arm',
-    description: 'Rote Zone: den naechsten roten Schritt einmalig freigeben und ausfuehren. /arm [push] — beide gleichbedeutend',
+    description: 'Rote Zone: den nächsten roten Schritt einmalig freigeben und ausführen. /arm [push] — beide gleichbedeutend',
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const guard = await assertBoundOwner(ctx);

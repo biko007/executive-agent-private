@@ -44,7 +44,9 @@ function antwortzeilen(inhalt: string): { nr: number; text: string }[] {
     const roh = z.trim();
     if (roh.startsWith('*') || roh.startsWith('//') || roh.startsWith('/*')) return;
     if (z.includes('logger.') || z.includes('console.')) return;
-    if (!/text:\s*[`'"]|sendTelegram\(|message:\s*[`'"]|lines\.push\(|z\.push\(/.test(z)) return;
+    /* `description` steht in der Befehlsliste des Chats und ist damit ebenso
+       owner-sichtbar wie eine Antwort. */
+    if (!/text:\s*[`'"]|sendTelegram\(|message:\s*[`'"]|lines\.push\(|z\.push\(|description:\s*[`'"]/.test(z)) return;
     treffer.push({ nr: i + 1, text: z });
   });
   return treffer;
