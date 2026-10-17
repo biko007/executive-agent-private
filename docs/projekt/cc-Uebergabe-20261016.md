@@ -1,4 +1,4 @@
-# cc-Übergabe — Stand 16.10.2026, 11:30
+# cc-Übergabe — Stand 16.10.2026, 11:30 (Nachtrag 17.10.2026: Abschnitt 5)
 
 Diese Datei ist für die nächste cc-Sitzung nach einem `/clear` gedacht. Sie
 beschreibt, was offen ist, was auf eine Freigabe wartet und wo die Fallen
@@ -107,6 +107,30 @@ neuen App, die Ordnerstruktur ist unverändert.
   das Owner-Wort „löschen".
 - Rückweg: die zwei neuen Zeilen aus `~/.config/openclaw/env` entfernen und
   den Gateway neu starten.
+
+### Dateiaustausch mit dem Owner — Stand 17.10.2026
+
+**Stehende Owner-Info vom 17.10.2026:** Für den Dateiaustausch mit dem Owner
+gilt künftig der Ordner **`/Austausch`** in der Dropbox-Wurzel, **nicht mehr
+`transfer/` im App-Ordner**. cc hat Vollzugriff auf die ganze Dropbox, kommt
+also dorthin.
+
+**Die eine Ausnahme:** Dateien mit **Mieternamen** bleiben nach der
+Owner-Entscheidung vom 11.10.2026 im App-Ordner unter
+`/Apps/bikosoc-reports/bikosoc-reports/transfer/casameta/`, bis der Owner
+anders entscheidet. Betroffen ist vor allem das Casameta-Eingabeblatt.
+
+**Technisch:** Der Adapter aus `dropbox-zugang.ts` setzt das Präfix
+`/Apps/bikosoc-reports` vor jeden Pfad und erreicht `/Austausch` deshalb
+NICHT. Für die Kontowurzel braucht es einen Adapter ohne Präfix:
+
+```ts
+createDropboxAdapter({ appKey, refreshToken, basis: '' })  // Kontowurzel
+```
+
+Erstmals so verwendet am 17.10.2026 für die drei Objektfotos
+(`/Austausch/casameta-fotos/`). Reports gehen weiter über den Report-Watcher
+in den App-Ordner; daran ändert sich nichts.
 
 ---
 
