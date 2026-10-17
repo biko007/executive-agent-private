@@ -429,25 +429,54 @@ export function createDropboxAdapter(params: {
       throw mapError(response.status, errorBody);
     },
 
+    /**
+     * Inhalt eines Ordners — VOLLSTAENDIG, ueber alle Seiten.
+     *
+     * ANLASS (17.10.2026): Hier stand nur der erste Aufruf mit `limit: 200`.
+     * Dropbox antwortet dann mit 200 Eintraegen, einem Cursor und
+     * `has_more: true`; beides wurde weggeworfen. Der Reportordner enthaelt
+     * laengst mehr als 200 Dateien — eine Suche nach den Reports der letzten
+     * Tage lief deshalb ins Leere, und zwar ohne Fehlermeldung. Genau der
+     * Fall, vor dem die Suchregel warnt: Eine leere Trefferliste belegt
+     * nicht, dass nichts da ist.
+     *
+     * Jetzt wird geblaettert, bis `has_more` falsch ist. Die Obergrenze von
+     * 50 Seiten (10.000 Eintraege) ist eine Reissleine gegen eine
+     * Endlosschleife, falls der Cursor nicht vorankommt.
+     */
     async listFolder(folderPath): Promise<DropboxEntry[]> {
-      const response = await apiCallWithRefresh(
-        `${API_BASE}/2/files/list_folder`,
-        {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: folderPath, recursive: false, limit: 200 }),
-        },
-      );
+      const roh: Record<string, unknown>[] = [];
+      let cursor: string | null = null;
+      let seiten = 0;
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        // Ein noch nicht angelegter Ordner ist kein Fehler fuer den Aufrufer.
-        if (response.status === 409 && errorBody.includes("not_found")) return [];
-        throw mapError(response.status, errorBody);
+      for (;;) {
+        const response: Response = cursor
+          ? await apiCallWithRefresh(`${API_BASE}/2/files/list_folder/continue`, {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cursor }),
+          })
+          : await apiCallWithRefresh(`${API_BASE}/2/files/list_folder`, {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: folderPath, recursive: false, limit: 200 }),
+          });
+
+        if (!response.ok) {
+          const errorBody = await response.text();
+          // Ein noch nicht angelegter Ordner ist kein Fehler fuer den Aufrufer.
+          if (response.status === 409 && errorBody.includes("not_found")) return [];
+          throw mapError(response.status, errorBody);
+        }
+
+        const data = (await response.json()) as Record<string, unknown>;
+        roh.push(...((data["entries"] as Record<string, unknown>[]) ?? []));
+
+        const weiter = data["has_more"] === true;
+        const naechster = (data["cursor"] as string) || "";
+        if (!weiter || !naechster || ++seiten >= 50) break;
+        cursor = naechster;
       }
 
-      const data = (await response.json()) as Record<string, unknown>;
-      const entries = (data["entries"] as Record<string, unknown>[]) ?? [];
-      return entries.map((e) => ({
+      return roh.map((e) => ({
         tag: (e[".tag"] as DropboxEntry["tag"]) ?? "file",
         pathLower: (e["path_lower"] as string) ?? "",
         pathDisplay: (e["path_display"] as string) ?? "",

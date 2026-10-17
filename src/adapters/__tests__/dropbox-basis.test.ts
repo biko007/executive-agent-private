@@ -125,3 +125,88 @@ describe('Zugangswahl', () => {
     expect(dropboxZugang((k) => ({ DROPBOX_APP_KEY: '  ', DROPBOX_REFRESH_TOKEN: '  ' })[k])).toBeNull();
   });
 });
+
+/* ── Blaettern ────────────────────────────────────────────────────────────
+   ANLASS (17.10.2026): `listFolder` fragte nur die erste Seite ab und warf
+   Cursor und `has_more` weg. Der Reportordner hat laengst mehr als 200
+   Dateien; eine Suche nach den Reports der letzten Tage lief deshalb ins
+   Leere — ohne Fehler, ohne Hinweis. Genau davor warnt die Suchregel: Eine
+   leere Trefferliste belegt nicht, dass nichts da ist. */
+describe('listFolder blaettert', () => {
+  /** Antwortet mit `seiten` Seiten zu je 200 Eintraegen. */
+  function fetchSeiten(seiten: number, aufrufe: string[]) {
+    let gegeben = 0;
+    return (async (url: any, init: any) => {
+      const u = String(url);
+      if (u.endsWith('/oauth2/token')) {
+        return new Response(JSON.stringify({ access_token: 't', expires_in: 14400 }), { status: 200 });
+      }
+      if (u.includes('/files/list_folder')) {
+        aufrufe.push(u.includes('/continue') ? 'continue' : 'start');
+        gegeben += 1;
+        const eintraege = Array.from({ length: 200 }, (_, i) => ({
+          '.tag': 'file', name: `s${gegeben}-${i}.md`,
+          path_lower: `/bikosoc-reports/s${gegeben}-${i}.md`,
+          path_display: `/bikosoc-reports/s${gegeben}-${i}.md`, size: 1,
+        }));
+        return new Response(JSON.stringify({
+          entries: eintraege,
+          has_more: gegeben < seiten,
+          cursor: `c${gegeben}`,
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+  }
+
+  test('holt alle Seiten, nicht nur die erste', async () => {
+    const aufrufe: string[] = [];
+    const a = createDropboxAdapter({
+      appKey: 'k', refreshToken: 'r', fetchImpl: fetchSeiten(3, aufrufe),
+    });
+    const liste = await a.listFolder('/bikosoc-reports');
+    expect(liste).toHaveLength(600);
+    expect(aufrufe).toEqual(['start', 'continue', 'continue']);
+    /* Der letzte Eintrag der dritten Seite muss ankommen — er waere vorher
+       unsichtbar gewesen. */
+    expect(liste[liste.length - 1].name).toBe('s3-199.md');
+  });
+
+  test('eine einzelne Seite loest keinen zweiten Aufruf aus', async () => {
+    const aufrufe: string[] = [];
+    const a = createDropboxAdapter({
+      appKey: 'k', refreshToken: 'r', fetchImpl: fetchSeiten(1, aufrufe),
+    });
+    expect(await a.listFolder('/x')).toHaveLength(200);
+    expect(aufrufe).toEqual(['start']);
+  });
+
+  test('ohne Cursor wird nicht weitergeblaettert', async () => {
+    /* Schutz gegen eine Endlosschleife, wenn der Dienst `has_more` meldet,
+       aber keinen Cursor mitgibt. */
+    const aufrufe: string[] = [];
+    const fetchOhneCursor = (async (url: any) => {
+      const u = String(url);
+      if (u.endsWith('/oauth2/token')) {
+        return new Response(JSON.stringify({ access_token: 't', expires_in: 14400 }), { status: 200 });
+      }
+      aufrufe.push(u);
+      return new Response(JSON.stringify({ entries: [], has_more: true, cursor: '' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const a = createDropboxAdapter({ appKey: 'k', refreshToken: 'r', fetchImpl: fetchOhneCursor });
+    expect(await a.listFolder('/x')).toEqual([]);
+    expect(aufrufe).toHaveLength(1);
+  });
+
+  test('ein fehlender Ordner bleibt eine leere Liste', async () => {
+    const fetchFehlt = (async (url: any) => {
+      const u = String(url);
+      if (u.endsWith('/oauth2/token')) {
+        return new Response(JSON.stringify({ access_token: 't', expires_in: 14400 }), { status: 200 });
+      }
+      return new Response('{"error_summary":"path/not_found/"}', { status: 409 });
+    }) as unknown as typeof fetch;
+    const a = createDropboxAdapter({ appKey: 'k', refreshToken: 'r', fetchImpl: fetchFehlt });
+    expect(await a.listFolder('/gibtsnicht')).toEqual([]);
+  });
+});
