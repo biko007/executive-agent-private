@@ -327,6 +327,48 @@ die Funktionen rein und pruefbar bleiben.
   Zaehlabweichung ab; `scripts/yahoo-ablage-pruefen.ts` ist die
   Message-ID-Gegenprobe. Beide loeschen nichts und markieren nichts.
 
+## 9b. Mail-Eingangskanal (mail-eingang)
+
+**Status:** ✅ live seit 2026-10-18
+
+Der Owner-Eingang per E-Mail. Owner-Entscheidung vom 18.10.2026, 15:47: Was an
+**`juergen.bickel+bikosoc@bikolino.com`** geht, ist Eingang fuer bikosoc. Es
+gibt genau **zwei Zustaende** und keine weiteren Kategorien:
+
+| Betreff | Folge |
+|---|---|
+| ohne Kennzeichnung | **Ablage** — Datei, Protokollzeile, Report-Abschnitt. Keine Deutung. |
+| beginnt mit `Auftrag:` | zusaetzlich **Auftragsdatei** in `~/inbox/`; ab dort die bestehende Prompt-Inbox-Logik, gleiche Gates, gleiche Report-Pflicht |
+
+- **Aufbau:** `src/modules/mail-eingang/` — `types.ts` (Begriffe), `index.ts`
+  (Entscheidungen, ohne Netz pruefbar), `graph.ts` (Postfachseite ueber
+  Microsoft Graph). `scripts/mail-eingang-poll.ts` ist der Lauf,
+  `mail-eingang.timer` der Takt (alle 5 Minuten).
+- **Erkennung:** Plus-Adresse in To **oder** Cc, Vergleich auf die ganze
+  Adresse. `juergen.bickel@bikolino.com` und `…+hdcc@…` sind nicht der Kanal.
+- **Fremde Absender** werden abgelegt, aber **nie ausgefuehrt** — auch dann
+  nicht, wenn der Betreff „Auftrag:" sagt. Die Absenderliste ist Konfiguration
+  (`~/.config/openclaw/mail-eingang.json`); ein Eintrag mit fuehrendem `@` gilt
+  fuer die ganze Domain (Apple-Relay wechselt die lokale Kennung).
+- **Ablage:** `transfer/mail-inbox/JJJJ-MM-TT_HHMM_<betreff-slug>/` mit
+  `mail.eml`, `body.md` und den Anhaengen. Zwei Mails derselben Minute mit
+  demselben Slug bekaemen denselben Ordner — deshalb vermerkt der Lauf die
+  Vergabe je Message-ID und haengt sonst `-2` an.
+- **Idempotenz zweifach:** Message-ID im Vermerk
+  (`artifacts/mail-eingang/verarbeitet.json`) **und** Namensprobe gegen
+  `~/inbox/` samt `done/`. Der Vermerk beschleunigt, die Namensprobe sichert.
+- **Reihenfolge:** Ablage → Auftragsdatei → Vermerk → Verschieben im Postfach.
+  Bricht es vorher ab, wiederholt der naechste Lauf die Ablage auf denselben
+  Pfad; ein zweites Ausfuehren verhindert die Namensprobe.
+- **Postfachordnung:** verarbeitete Mails wandern nach `Posteingang/bikosoc`
+  (Graph `Mail.ReadWrite`, am 18.10.2026 vorhanden). Fehlt das Recht, wird das
+  berichtet und **nicht nachbeantragt**.
+- **Grenzen:** Dieses Modul **versendet keine Mail** und loescht nichts; ein
+  Test haelt `sendMail`, `createReply`, `createForward` und `graphDelete` aus
+  den Quellen heraus. Mails ueber 50 MB werden gemeldet, nicht abgelegt.
+- **Rueckmeldung:** je Mail eine Kurzmeldung nach `bikosoc-dev` ueber
+  `POST /api/internal/notify` mit `role: "dev"` — kein Bot-Token im Skript.
+
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
 **Status:** ✅ live seit 2026-07-10 (Evidence Bundle `docs/workpackages/2026-07-10-meeting-detection.md`)

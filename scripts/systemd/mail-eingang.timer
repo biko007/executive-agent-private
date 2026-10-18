@@ -1,0 +1,10 @@
+[Unit]
+Description=bikosoc Mail-Eingangskanal Poll Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

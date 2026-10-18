@@ -1,0 +1,9 @@
+[Unit]
+Description=bikosoc Mail-Eingangskanal Poll
+Documentation=file:///home/biko/bikosoc-spec/report-mail-eingangskanal-bikosoc-20261018.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.openclaw/workspace/.openclaw/extensions/executive-agent
+ExecStart=/home/biko/.bun/bin/bun scripts/mail-eingang-poll.ts
+EnvironmentFile=-%h/.config/openclaw/env
