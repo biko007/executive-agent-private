@@ -304,6 +304,21 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
 | **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. **Seit 16.10.2026 sind `/arm` und `/arm push` gleichbedeutend** — beide geben frei UND stoßen den wartenden Schritt an. Angestoßen wird nur, was angemeldet ist: cc-Vormerkung (`scripts/arm-vormerken.ts`) oder sichtbar wartende Übertragung. Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
+| **Mail-Eingangskanal** | Mails an `juergen.bickel+bikosoc@bikolino.com`; ohne Kennzeichnung Ablage nach `transfer/mail-inbox/`, Betreff ab `Auftrag:` zusätzlich Auftragsdatei in `~/inbox/`. Timer `mail-eingang.timer`, 5 min. Fremde Absender werden abgelegt, nie ausgeführt |
+| **Sammelstelle data@** | `data@bikolino.com` ist die **einzige** Sammelstelle für Weiterleitungen aus Fremdpostfächern (ab 18.10.2026). Proton leitet dorthin weiter; Register + Ordner `Proton`, Timer `mail-register.timer`, 5 min |
+
+**Die vier Postwege (Owner-Entscheidung 18.10.2026):**
+
+| Quelle | Weg | Modul |
+|---|---|---|
+| Proton `jbickel2@protonmail.com` | serverseitige Weiterleitung → `data@bikolino.com` | `mail-register` |
+| Yahoo `jbickel2@yahoo.de` | IMAP, keine Weiterleitung | `mail/inventar` |
+| Owner-Eingang/Aufträge | `juergen.bickel+bikosoc@bikolino.com` | `mail-eingang` |
+| Geschäftspost | `juergen.bickel@bikolino.com` | Register vom 17.10.2026 |
+
+`juergen.bickel+proton@bikolino.com` **entfällt** — Weiterleitung gelöscht,
+Ordner `Posteingang/Proton` am 18.10.2026 leer entfernt, die geplante
+Outlook-Regel auf `+proton` ist hinfällig. Details: `docs/ARCHITECTURE.md` 9b und 9c.
 
 **Meldungsdisziplin (2026-09-18) — Env-Flags in `~/.config/openclaw/env`:**
 

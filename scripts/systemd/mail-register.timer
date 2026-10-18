@@ -1,0 +1,10 @@
+[Unit]
+Description=bikosoc Mail-Register Poll Timer
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

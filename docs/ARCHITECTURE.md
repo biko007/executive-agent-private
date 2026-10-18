@@ -377,6 +377,62 @@ gibt genau **zwei Zustaende** und keine weiteren Kategorien:
   zugestellt und ausgefuehrt, beide nach `Posteingang/bikosoc` verschoben.
   Damit ist auch belegt, dass die Plus-Adressierung im Tenant aktiv ist.
 
+## 9c. Sammelstelle data@bikolino.com (mail-register)
+
+**Status:** ✅ live seit 2026-10-18
+
+Owner-Entscheidung 18.10.2026, 17:15: **`data@bikolino.com`** (Shared Mailbox
+im Mandanten bikolino) ist die **einzige** Sammelstelle fuer Weiterleitungen
+aus Fremdpostfaechern. Keine neue Google- oder web.de-Inbox.
+
+**Die vier Wege der Post — wer wohin gehoert**
+
+| Quelle | Weg | Ablage |
+|---|---|---|
+| Proton `jbickel2@protonmail.com` | serverseitige Weiterleitung → `data@` (eingerichtet 18.10.2026, 17:12) | Register, Ordner `Proton` in data@ |
+| Yahoo `jbickel2@yahoo.de` | **IMAP**, keine Weiterleitung | `mail/inventar`, Jahresordner im Postfach |
+| Owner-Eingang | `juergen.bickel+bikosoc@bikolino.com` | `mail-eingang`, siehe 9b |
+| Geschaeftspost | `juergen.bickel@bikolino.com` | Register vom 17.10.2026 |
+
+**`+proton` entfaellt.** Die alte Weiterleitung an
+`juergen.bickel+proton@bikolino.com` ist geloescht, der Ordner
+`Posteingang/Proton` im Geschaeftspostfach am 18.10.2026 leer entfernt, die
+geplante Outlook-Regel auf `+proton` hinfaellig. Der Eingangskanal `+bikosoc`
+bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
+
+- **Berechtigung:** Die App-Registrierung arbeitet mit
+  **Anwendungsberechtigungen** (`client_credentials`, `idtyp: app`) und traegt
+  `Mail.Read` und `Mail.ReadWrite`. Damit ist jedes Postfach des Mandanten
+  lesbar, auch eine Shared Mailbox ohne eigene Anmeldung.
+  **`User.Read.All` fehlt** — die Verzeichnisabfrage `/users/data@bikolino.com`
+  (Profil) antwortet mit 403. Fuer das Register ist sie nicht noetig; alle
+  Postfachpfade `/users/<upn>/mailFolders…` arbeiten ohne sie.
+- **Einordnung:** dieselbe wie beim Geschaeftspostfach — `kategorisiere()` und
+  `ausschluss()` aus `mail/inventar`. Eine zweite Regelsammlung waere ein
+  zweiter Ort, der auseinanderlaeuft.
+- **Herkunft mit Beleg:** `X-Pm-Forwarded-From` oder ein `Return-Path` ueber
+  `forward.protonmail.ch` machen eine Nachricht zu `herkunft: proton`. Ein
+  Absender *bei* Proton genuegt nicht — der Owner schreibt auch unmittelbar an
+  data@. Systempost von Proton selbst wird als `protonBezug` vermerkt.
+- **Original erhalten:** Absender aus `From`, Datum aus der Kopfzeile `Date` —
+  nicht das Eintreffdatum bei M365. Bei einer Weiterleitung liegen beide
+  auseinander.
+- **Ablage:** Proton-Post wandert in den Ordner `Proton` der Sammelstelle.
+  Erst Registereintrag, dann verschieben: Bricht es dazwischen ab, steht die
+  Nachricht im Register und liegt noch im Posteingang — der naechste Lauf
+  kennt sie und ruehrt sie nicht an.
+- **Register:** `artifacts/personal/mail-register/data.jsonl` (eine Zeile je
+  Nachricht, Merkmal ist die Message-ID), Ausgabe als CSV nach
+  `transfer/postfach/data/data-register.csv` und `…/data-belege.csv`. Die
+  Belegliste sind die drei Kostenregister: Rechnungen, Vertraege,
+  Versicherungen.
+- **Takt:** `mail-register.timer`, alle 5 Minuten, derselbe Rhythmus wie der
+  Eingangskanal. CSV wird nur geschrieben, wenn ein Eintrag hinzukam.
+- **Grenzen:** kein Mailversand, kein Loeschen von Nachrichten; ein Test haelt
+  `sendMail`, `createReply`, `createForward` und `graphDelete` aus den Quellen
+  heraus. Geloeschte Elemente, Junk, Entwuerfe und Postausgang bleiben aus dem
+  Register — mit Zaehlerstand im Report, damit die Luecke benannt ist.
+
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
 **Status:** ✅ live seit 2026-07-10 (Evidence Bundle `docs/workpackages/2026-07-10-meeting-detection.md`)
