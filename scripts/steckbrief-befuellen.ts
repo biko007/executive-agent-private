@@ -346,10 +346,14 @@ const EINTRAEGE: Eintrag[] = [
   { objekt: 'mg22', feld: 'energieausweis_bis',    text: 'nicht erforderlich (unbeheizte Garagen)', quelle: Q.ea_mg22, typ: 'gerechnet', stand: '2026-10-16' },
 
   { objekt: 'n24',  feld: 'kfw_standard', text: 'KfW-Effizienzhaus 40 Plus', quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16',
+    /* Dieser Satz erscheint als `renditehinweis` auf der Kachel. Er nennt
+       bewusst KEINE Prozentzahl mehr: Am 16.10.2026 stand hier 1,29 Prozent,
+       am 18.10.2026 rechnete die Kachel 1,42 — eine eingefrorene Zahl in
+       einem Erklaertext veraltet still. Die Rendite steht daneben und wird
+       gerechnet. */
     notiz: 'Owner 16.10.2026: bewusst der hoechstmoegliche Standard. Das erklaert die niedrige '
-         + 'Bruttomietrendite von 1,29 Prozent — die Ausfuehrung waere nach Einschaetzung des '
-         + 'Owners rund 1,5 Mio. EUR guenstiger moeglich gewesen. Bei der Renditeanzeige fuer N24 '
-         + 'als Hinweis zeigen.' },
+         + 'Bruttomietrendite — die Ausfuehrung waere nach Einschaetzung des Owners rund '
+         + '1,5 Mio. EUR guenstiger moeglich gewesen.' },
 ];
 
 /* Pruefung vor dem Schreiben: "Anschaffungskosten gesamt" ist die Bezugsgroesse
