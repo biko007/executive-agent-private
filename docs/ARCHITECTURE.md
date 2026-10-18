@@ -368,6 +368,14 @@ gibt genau **zwei Zustaende** und keine weiteren Kategorien:
   den Quellen heraus. Mails ueber 50 MB werden gemeldet, nicht abgelegt.
 - **Rueckmeldung:** je Mail eine Kurzmeldung nach `bikosoc-dev` ueber
   `POST /api/internal/notify` mit `role: "dev"` — kein Bot-Token im Skript.
+- **Auftragskennung:** `auftragsKennung()` in `prompt-inbox/bereitschaft.ts`
+  streicht den Vorsatz `auftrag-mail-JJJJMMTT-HHMM-` — aus der Mail
+  „Auftrag: Testlauf" wird die Kennung `testlauf`, der Report heisst also
+  `report-testlauf-<datum>.md` und nicht `report-auftrag-mail-…`.
+- **Erster echter Lauf:** 18.10.2026, 16:42 — zwei Mails an die Plus-Adresse
+  (eine mit PDF-Anhang, eine mit „Auftrag:"), beide abgelegt, der Auftrag
+  zugestellt und ausgefuehrt, beide nach `Posteingang/bikosoc` verschoben.
+  Damit ist auch belegt, dass die Plus-Adressierung im Tenant aktiv ist.
 
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 

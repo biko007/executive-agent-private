@@ -258,6 +258,14 @@ describe('auftragsKennung', () => {
       .toBe('paket3c-casameta-hybrid');
   });
 
+  it('schält die Kennung aus einem Mail-Auftrag', async () => {
+    expect(auftragsKennung(
+      '2026-10-18T14-43-20-928Z-auftrag-mail-20261018-1640-testlauf-nur-bestaetigen.txt'))
+      .toBe('testlauf-nur-bestaetigen');
+    expect(auftragsKennung('auftrag-mail-20261018-1640-testlauf-nur-bestaetigen.txt'))
+      .toBe('testlauf-nur-bestaetigen');
+  });
+
   it('kommt mit einem von Hand abgelegten Namen zurecht', async () => {
     expect(auftragsKennung('meine-aufgabe.txt')).toBe('meine-aufgabe');
   });

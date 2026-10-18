@@ -133,6 +133,10 @@ export function auftragsKennung(dateiname: string): string | null {
   // Herkunftsvorsatz der Dropbox-Inbox samt eigenem Zeitstempel.
   name = name.replace(/^dropbox-\d{8}-\d{6}-/, '');
   name = name.replace(/^dropbox-/, '');
+  /* Herkunftsvorsatz des Mail-Eingangskanals (18.10.2026). Ohne diese Zeile
+     hiesse die Kennung „auftrag-mail-20261018-1640-testlauf" und der Report
+     muesste denselben Vorsatz tragen, damit der Waechter ihn findet. */
+  name = name.replace(/^auftrag-mail-\d{8}-\d{4}-/, '');
   // Angehängtes Datum.
   name = name.replace(/-\d{8}$/, '');
   name = name.replace(/-\d{4}$/, '');
