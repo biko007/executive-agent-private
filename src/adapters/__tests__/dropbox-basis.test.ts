@@ -9,7 +9,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { createDropboxAdapter, DROPBOX_BASE } from '../dropbox.js';
-import { dropboxZugang } from '../dropbox-zugang.js';
+import { dropboxZugang, dropboxVollzugang } from '../dropbox-zugang.js';
 
 /** Fängt die Anfragen ab und gibt verwertbare Antworten zurück. */
 function fetchAttrappe(aufrufe: { url: string; arg: any; body?: any }[]) {
@@ -208,5 +208,43 @@ describe('listFolder blaettert', () => {
     }) as unknown as typeof fetch;
     const a = createDropboxAdapter({ appKey: 'k', refreshToken: 'r', fetchImpl: fetchFehlt });
     expect(await a.listFolder('/gibtsnicht')).toEqual([]);
+  });
+});
+
+/* Der Vollzugriff ist der Weg nach `/Austausch` — dort arbeiten Owner und
+   Reiseassistent. Er unterscheidet sich vom Normalfall nur durch die fehlende
+   Basis; der Token ist derselbe. */
+describe('dropboxVollzugang', () => {
+  test('mit den Werten der neuen App gibt es ihn', () => {
+    const v = dropboxVollzugang((k) => ({
+      DROPBOX_APP_KEY: 'k', DROPBOX_REFRESH_TOKEN: 'r',
+    } as Record<string, string>)[k]);
+    expect(v?.app).toBe('BikosOpenClawFA');
+  });
+
+  test('die Pfade bleiben unveraendert — keine Basis davor', async () => {
+    const aufrufe: { url: string; arg: any; body?: any }[] = [];
+    const v = dropboxVollzugang((k) => ({
+      DROPBOX_APP_KEY: 'k', DROPBOX_REFRESH_TOKEN: 'r',
+    } as Record<string, string>)[k]);
+    /* Eigener Adapter mit derselben Basis, aber abgefangenem fetch. */
+    const a = createDropboxAdapter({
+      appKey: 'k', refreshToken: 'r', basis: '', fetchImpl: fetchAttrappe(aufrufe),
+    });
+    expect(v).not.toBeNull();
+    await a.listFolder('/Austausch/reisen');
+    const liste = aufrufe.find((x) => x.url.includes('/files/list_folder'));
+    expect(liste?.body?.path).toBe('/Austausch/reisen');
+  });
+
+  test('mit der alten App gibt es keinen Vollzugriff', () => {
+    const v = dropboxVollzugang((k) => ({
+      EA_DROPBOX_APP_KEY: 'k', EA_DROPBOX_APP_SECRET: 's', EA_DROPBOX_REFRESH_TOKEN: 'r',
+    } as Record<string, string>)[k]);
+    expect(v).toBeNull();
+  });
+
+  test('ohne Werte gibt es keinen Vollzugriff', () => {
+    expect(dropboxVollzugang(() => null)).toBeNull();
   });
 });

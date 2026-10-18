@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   SCHEMA, verboteneFelder, pruefeReise, flugAlsSegment, nachTrip, sortiereFristen,
   ersetzen, dokumentZiel, dokumenteMitDatei, dokumenteMitPfad, ergebnisText,
+  DROPBOX_AUSTAUSCH, DROPBOX_AUSTAUSCH_DOKUMENTE, DROPBOX_AUSTAUSCH_DONE,
   DROPBOX_REISEN, DROPBOX_REISEN_DOKUMENTE, DROPBOX_REISEN_DONE, DOKUMENTE_KATEGORIE,
   type ReiseDatei, type ImportErgebnis,
 } from '../index.js';
@@ -281,7 +282,13 @@ describe('dokumentZiel', () => {
 // ── Pfade und Protokoll ────────────────────────────────────────────────────
 
 describe('Pfade und Protokoll', () => {
-  test('die Dropbox-Pfade liegen im App-Ordner', () => {
+  test('der Austauschordner ist der Hauptweg, ab Kontowurzel', () => {
+    expect(DROPBOX_AUSTAUSCH).toBe('/Austausch/reisen');
+    expect(DROPBOX_AUSTAUSCH_DOKUMENTE).toBe('/Austausch/reisen/dokumente');
+    expect(DROPBOX_AUSTAUSCH_DONE).toBe('/Austausch/reisen/done');
+  });
+
+  test('der alte Weg im App-Ordner bleibt bestehen', () => {
     expect(DROPBOX_REISEN).toBe('/bikosoc-reports/transfer/reisen');
     expect(DROPBOX_REISEN_DOKUMENTE).toBe('/bikosoc-reports/transfer/reisen/dokumente');
     expect(DROPBOX_REISEN_DONE).toBe('/bikosoc-reports/transfer/reisen/done');
@@ -298,12 +305,22 @@ describe('Pfade und Protokoll', () => {
       'x.json: 261107-trip-winnipeg übernommen (neue Reise), 1 Dokument(e)');
   });
 
-  test('fehlende Dokumente stehen in der Meldung', () => {
+  test('ein fehlendes PDF wird beim Namen genannt', () => {
     const e: ImportErgebnis = {
       datei: 'x.json', id: '261107-trip-winnipeg', uebernommen: true, grund: 'neue Reise',
       fehler: [], warnungen: [], dokumente: [], fehlendeDokumente: ['esta.pdf'],
     };
-    expect(ergebnisText(e)).toContain('fehlend: esta.pdf');
+    expect(ergebnisText(e)).toContain('PDF fehlt: esta.pdf');
+  });
+
+  test('mehrere fehlende PDFs werden einzeln genannt', () => {
+    const e: ImportErgebnis = {
+      datei: 'x.json', id: '261107-trip-winnipeg', uebernommen: true, grund: 'neue Reise',
+      fehler: [], warnungen: [], dokumente: [],
+      fehlendeDokumente: ['esta.pdf', 'eta.pdf'],
+    };
+    expect(ergebnisText(e)).toContain('PDF fehlt: esta.pdf');
+    expect(ergebnisText(e)).toContain('PDF fehlt: eta.pdf');
   });
 
   test('Misserfolg nennt Grund und Fehler', () => {

@@ -27,6 +27,19 @@ export interface DropboxZugang {
   basis: string;
 }
 
+/**
+ * Ein Zugang auf die **Kontowurzel**, ohne Praefix. Damit sind Ordner
+ * ausserhalb des App-Ordners erreichbar, etwa `/Austausch` — der Ordner, in
+ * dem der Owner und der Chat arbeiten.
+ *
+ * Nur die neue App kann das. Die alte sieht ausschliesslich ihren App-Ordner;
+ * dort gibt es keinen Vollzugriff und die Funktion liefert `null`.
+ */
+export interface DropboxVollzugang {
+  adapter: DropboxAdapter;
+  app: 'BikosOpenClawFA';
+}
+
 /** Ein Leser, der einen Umgebungswert liefert — oder nichts. */
 export type Umgebung = (schluessel: string) => string | null | undefined;
 
@@ -61,4 +74,22 @@ export function dropboxZugang(hole: Umgebung): DropboxZugang | null {
   }
 
   return null;
+}
+
+/**
+ * Den Vollzugriff bauen — gleicher Token, aber ohne Praefix, also auf die
+ * Kontowurzel. `null`, wenn nur die alte App-Ordner-Anbindung da ist.
+ *
+ * Bewusst eine eigene Funktion und nicht ein Schalter an `dropboxZugang`:
+ * Wer die Kontowurzel will, soll das in seinem Aufruf sichtbar machen. Der
+ * Normalfall bleibt der App-Ordner.
+ */
+export function dropboxVollzugang(hole: Umgebung): DropboxVollzugang | null {
+  const key = (hole('DROPBOX_APP_KEY') || '').trim();
+  const token = (hole('DROPBOX_REFRESH_TOKEN') || '').trim();
+  if (!key || !token) return null;
+  return {
+    app: 'BikosOpenClawFA',
+    adapter: createDropboxAdapter({ appKey: key, refreshToken: token, basis: '' }),
+  };
 }

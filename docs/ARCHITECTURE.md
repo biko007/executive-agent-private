@@ -468,15 +468,24 @@ liest.
 - **Modul:** `src/modules/reise-import/` (`types.ts` = Schema
   `bikosoc.reise/1`, `index.ts` = Pruefung und Abbildung),
   Skript `scripts/reise-import.ts`, Timer `reise-import.timer` (10 Minuten).
-- **Weg:** `transfer/reisen/<kennung>.json` im **App-Ordner**, PDFs nach
-  `transfer/reisen/dokumente/`, verarbeitete Dateien nach
-  `transfer/reisen/done/<zeitstempel>-<name>.json`.
-- **Warum der App-Ordner und nicht `/Austausch`:** Der Dropbox-Zugang des
-  Servers ist ein App-Ordner-Zugang (Namensraum 14689389123). `/Austausch`
-  liegt im Namensraum 1156296481 und ist vom Server aus technisch nicht
-  lesbar — der Owner-Chat kommt dort hin, der Server nicht. `/Austausch`
-  bleibt der Owner-Ordner (lebendes Reisedokument, Original-PDFs, Anleitung
-  `README-dashboard-import.md`), der App-Ordner ist der Maschinenweg.
+- **Weg (seit 18.10.2026, 21:30):** `/Austausch/reisen/<kennung>.json`, PDFs
+  in `/Austausch/reisen/dokumente/`, verarbeitete Dateien nach
+  `/Austausch/reisen/done/<zeitstempel>-<name>.json`. Dort liegen auch das
+  lebende Reisedokument, die Anleitung `README-dashboard-import.md`, die
+  Vorlage in `vorlage/` und die Bildschirmfotos in `belege/`. **Ein Ort fuer
+  Owner, Chat und Assistent.**
+- **Wie der Server dorthin kommt:** ueber `dropboxVollzugang` — derselbe
+  Refresh-Token der App „BikosOpenClawFA", aber mit leerer Basis, also auf die
+  Kontowurzel statt auf `/Apps/bikosoc-reports`. Der App-Ordner-Token sieht
+  `/Austausch` nicht; daraus entstand am 18.10.2026 der falsche Schluss, der
+  Server koenne den Ordner ueberhaupt nicht lesen. Er kann es, seit der
+  Vollzugriff am 17.10.2026 in Betrieb ging.
+- **Warum dort und nicht im App-Ordner:** Binaerdateien kann nur der Owner
+  ablegen, und er legt sie nach `/Austausch/reisen/dokumente/`. Laege der
+  Import woanders, muesste jedes PDF von Hand kopiert werden.
+- **Alter Weg:** `transfer/reisen/` im App-Ordner wird weiter gelesen, damit
+  dort abgelegte Dateien nicht liegenbleiben. Liegt dieselbe Datei in beiden
+  Ordnern, gewinnt `/Austausch/reisen/`.
 - **Ziel:** `artifacts/personal/travel/<kennung>.json`. Reisen sind
   dateibasiert, es gibt keine Tabelle und damit **keine Migration**. Die
   bekannten Felder (`id`, `name`, `segments`, `calendar_event_ids` …) bleiben
@@ -487,6 +496,9 @@ liest.
   `kategorie: 'reise'` und `tripId` eingetragen. Nur ein tatsaechlich
   uebernommenes PDF bekommt im Reiseblock das Feld `pfad` — das Dashboard
   zeigt den Knopf „PDF oeffnen" genau dann, wenn dieses Feld gesetzt ist.
+  Fehlt ein PDF, wird die Reise trotzdem uebernommen und die Meldung nennt
+  `PDF fehlt: <name>`; ein Dokument darf also in der Reisedatei stehen, bevor
+  das PDF da ist.
 - **Pflicht ist wenig:** `schema`, `id` (Form `JJMMTT-trip-<ort>`), `titel`,
   `von`, `bis`. Alles andere darf fehlen und wird dann nicht angezeigt — eine
   Reise in der Planungsphase kommt mit fuenf Zeilen durch.

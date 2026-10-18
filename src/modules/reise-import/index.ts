@@ -6,12 +6,16 @@
  * eine JSON-Datei in Dropbox ab; dieses Modul prueft sie und formt daraus die
  * Reisedatei, die das Dashboard liest.
  *
- * **Warum der App-Ordner und nicht `/Austausch`:** Der Dropbox-Zugang des
- * Servers ist ein App-Ordner-Zugang (`/Apps/bikosoc-reports`). `/Austausch`
- * liegt in einem anderen Namensraum und ist von hier aus technisch nicht
- * lesbar — der Owner-Chat kommt dort hin, der Server nicht. Deshalb ist der
- * Einspielweg `transfer/reisen/`. Das lebende Reisedokument (.md) und die
- * PDFs fuer den Owner bleiben, wo sie sind.
+ * **Ein Ort fuer Owner und Assistent: `/Austausch/reisen/`.** Dort liegen
+ * ohnehin das lebende Reisedokument und die Original-PDFs, und nur der Owner
+ * kann Binaerdateien ablegen. Erreichbar ist der Ordner ueber den
+ * Vollzugriff-Adapter (`dropboxVollzugang`, App „BikosOpenClawFA", Basis
+ * leer, also Kontowurzel). Der App-Ordner-Token sieht `/Austausch` nicht —
+ * daher der frueher angenommene, falsche Schluss, der Server koenne den
+ * Ordner ueberhaupt nicht lesen (Korrektur 18.10.2026).
+ *
+ * `transfer/reisen/` im App-Ordner bleibt als **alter** zweiter Weg lesbar,
+ * damit bereits abgelegte Dateien nicht liegenbleiben.
  *
  * Grundsaetze:
  *
@@ -32,7 +36,15 @@ import type {
 
 export * from './types.js';
 
-/** Ordner im Dropbox-App-Ordner, aus dem der Import liest. */
+/**
+ * Der Ordner, in dem Owner und Reiseassistent arbeiten. Pfad ab der
+ * Kontowurzel — nur ueber den Vollzugriff-Adapter erreichbar.
+ */
+export const DROPBOX_AUSTAUSCH = '/Austausch/reisen';
+export const DROPBOX_AUSTAUSCH_DOKUMENTE = `${DROPBOX_AUSTAUSCH}/dokumente`;
+export const DROPBOX_AUSTAUSCH_DONE = `${DROPBOX_AUSTAUSCH}/done`;
+
+/** Alter Weg im Dropbox-App-Ordner. Wird weiter gelesen, aber nicht beworben. */
 export const DROPBOX_REISEN = '/bikosoc-reports/transfer/reisen';
 export const DROPBOX_REISEN_DOKUMENTE = `${DROPBOX_REISEN}/dokumente`;
 export const DROPBOX_REISEN_DONE = `${DROPBOX_REISEN}/done`;
@@ -276,6 +288,8 @@ export function dokumenteMitDatei(r: ReiseDatei): Dokument[] {
 /** Kurzfassung eines Laufs fuer Protokoll und Report. */
 export interface ImportErgebnis {
   datei: string;
+  /** Aus welchem Ordner die Datei kam — fuer Protokoll und Report. */
+  quelle?: string;
   id?: string;
   uebernommen: boolean;
   grund: string;
@@ -292,5 +306,5 @@ export function ergebnisText(e: ImportErgebnis): string {
   }
   return `${e.datei}: ${e.id} übernommen (${e.grund})`
     + `, ${e.dokumente.length} Dokument(e)`
-    + (e.fehlendeDokumente.length ? `, fehlend: ${e.fehlendeDokumente.join(', ')}` : '');
+    + e.fehlendeDokumente.map((d) => `, PDF fehlt: ${d}`).join('');
 }
