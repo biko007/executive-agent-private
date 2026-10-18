@@ -25,17 +25,23 @@ Aktuelle offene Punkte und Folgeaufträge. Erledigte Todos: docs/CHANGELOG.md.
         verwendet (nur `src/modules/fleet/migrate-v025.ts` liest sie, und nur beim Migrieren).
         Anomalien sind seit 15.05.2026 keine aufgetreten. Loeschen ist eine Datenloeschung und
         bleibt deshalb Owner-Sache.
-- **Dropbox-Vollzugriff des Servers (geparkt, Owner-Entscheidung 10.10.2026):**
-  Der Auftrag `dropbox-vollzugriff-20261010.txt` ist vom Owner am 10.10.2026 zurueckgezogen
-  worden — keine Diagnose, kein Plan, keine Umsetzung. Sachstand: Das Server-Token ist auf
-  einen App-Ordner beschraenkt (`/Apps/bikosoc-reports`), Dateien ausserhalb davon sind fuer
-  den Agenten nicht erreichbar. Statt den Zugang zu erweitern, verschiebt der Owner seinen
-  Austauschordner selbst in den App-Bereich; Zielpfad aus Agentensicht:
-  `/bikosoc-reports/transfer/` (Unterordner `SWT-Rechnungen`, `Screenshots`, Umsatz-PDFs,
-  weitere folgen). Damit ist der Vollzugriff fuer den laufenden Betrieb nicht erforderlich.
-  Kein Codebezug: kein Transfer-Pfad ist im Repo verdrahtet (geprueft 10.10.2026).
-  Wieder aufgreifen nur, wenn der Owner Dateien ausserhalb des App-Ordners freigeben will;
-  dann erneut als REVIEW-Auftrag (Rote Zone: Token/env).
+- **Alte Dropbox-App abschalten — faellig ab 23.10.2026:**
+  Der Vollzugriff ueber die App `BikosOpenClawFA` laeuft seit dem 16.10.2026, 18:49 Uhr
+  (erster erfolgreicher Upload). Der Owner hat im Auftrag vom 16.10.2026 bestimmt, die
+  Werte der alten App erst **nach sieben Tagen fehlerfreiem Betrieb** zum Entfernen
+  vorzuschlagen. Stichtag ist damit der **23.10.2026**.
+  Zu entfernen waeren dann die drei Zeilen `EA_DROPBOX_APP_KEY`,
+  `EA_DROPBOX_APP_SECRET` und `EA_DROPBOX_REFRESH_TOKEN` in
+  `~/.config/openclaw/env` — und, sobald sie weg sind, der Rueckfallzweig in
+  `src/adapters/dropbox-zugang.ts`. Beides erst nach ausdruecklicher Owner-Freigabe
+  (env-Datei = Rote Zone).
+  Betriebsbilanz am 18.10.2026 (Tag 3 von 7): 123 Report-Uploads erfolgreich, 0
+  fehlgeschlagen; `dropbox-inbox.service` ein einziger Fehler (17.10., HTTP 500,
+  voruebergehend). Stand und Nachweise: `report-auftrag-dropbox-vollzugriff-app-bikosopenclawfa-20261018.md`.
+
+  *Der frueher hier geparkte Punkt „Dropbox-Vollzugriff des Servers (Owner-Entscheidung
+  10.10.2026)" ist damit erledigt: Der Owner hat am 16.10.2026 anders entschieden und den
+  Vollzugriff eingerichtet. `/Austausch` ist seither vom Server lesbar.*
 - **cc-pre-backup.sh in AUTO-Konvention:** Skript vorhanden (`scripts/cc-pre-backup.sh`),
   Konvention dokumentiert, aber noch nicht in allen AUTO-Lauf-Checklisten als Pflicht-Erstschritt.
 
