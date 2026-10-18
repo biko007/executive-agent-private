@@ -306,7 +306,16 @@ const EINTRAEGE: Eintrag[] = [
     notiz: 'Beleghinweis: Fuer den L-Bank- beziehungsweise KfW-Kredit (angefragt 50.000 EUR je '
          + 'Wohneinheit) wurde 2014 eine Effizienzhaus-Bestaetigung ausgestellt — Mails Anton Karl '
          + 'vom 18.03.2014 und 27.05.2014. Die Bestaetigung selbst liegt weder in SharePoint noch '
-         + 'im heutigen Postfach; den Standard 55 hat der Owner am 16.10.2026 bestaetigt.' },
+         + 'im heutigen Postfach; den Standard 55 hat der Owner am 16.10.2026 bestaetigt. '
+         + 'NACHGESUCHT AM 18.10.2026, erfolglos, und zwar in: SharePoint-Index (12.266 Dateien), '
+         + 'Postfach info@l19.de, Postfach doris.hilsenbeck@bikolino.com und im Yahoo-Archiv der '
+         + 'Jahre 2013 bis 2017 (Begriffe Effizienzhaus, Energieausweis, KfW, L-Bank, Anton Karl, '
+         + 'Leutenbergstr). GRUND, warum weiteres Suchen dort nichts bringt: Zu L19 gibt es in '
+         + 'SharePoint ueberhaupt keine Gebaeudeakte. Gebaeudeakten existieren nur fuer MG24 '
+         + '(2.885 Dateien) und N24 (1.660); die aeltesten L19-Dateien stammen von 2017. Die '
+         + 'Bauunterlagen 2013 bis 2016 sind nie digitalisiert worden. Zu suchen waere noch: '
+         + 'S&B-PST (dort fand der Owner die Karl-Mails), Papierakte, L-Bank als '
+         + 'Kreditgeber, oder der Sachverstaendige, der die Bestaetigung unterschrieben hat.' },
 
   // ── Nachtrag 16.10.2026, 10:43: Owner-Angaben ──────────────────────────
   { objekt: 's28',  feld: 'baujahr',    zahl: 1967,                 quelle: Q.owner1610, typ: 'owner', stand: '2026-10-16' },
