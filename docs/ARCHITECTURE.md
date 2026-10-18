@@ -355,7 +355,7 @@ gibt genau **zwei Zustaende** und keine weiteren Kategorien:
   demselben Slug bekaemen denselben Ordner — deshalb vermerkt der Lauf die
   Vergabe je Message-ID und haengt sonst `-2` an.
 - **Idempotenz zweifach:** Message-ID im Vermerk
-  (`artifacts/mail-eingang/verarbeitet.json`) **und** Namensprobe gegen
+  (`artifacts/personal/mail-eingang/verarbeitet.json`) **und** Namensprobe gegen
   `~/inbox/` samt `done/`. Der Vermerk beschleunigt, die Namensprobe sichert.
 - **Reihenfolge:** Ablage → Auftragsdatei → Vermerk → Verschieben im Postfach.
   Bricht es vorher ab, wiederholt der naechste Lauf die Ablage auf denselben

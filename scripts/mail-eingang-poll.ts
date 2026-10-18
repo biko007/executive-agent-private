@@ -30,10 +30,12 @@ import {
 
 const HOME = process.env.HOME || homedir();
 const KONFIG = path.join(HOME, '.config', 'openclaw', 'mail-eingang.json');
-const VERMERK = path.join(HOME, '.openclaw', 'workspace', 'artifacts',
-  'mail-eingang', 'verarbeitet.json');
-const PROTOKOLL = path.join(HOME, '.openclaw', 'workspace', 'artifacts',
-  'mail-eingang', 'protokoll.jsonl');
+/* Laufzeitdaten unter artifacts/personal/ — der Ordner ist im Workspace-Repo
+   gitignored, so wie schon beim Mail-Scanner (artifacts/personal/mail-parsing). */
+const ZUSTAND = path.join(HOME, '.openclaw', 'workspace', 'artifacts', 'personal',
+  'mail-eingang');
+const VERMERK = path.join(ZUSTAND, 'verarbeitet.json');
+const PROTOKOLL = path.join(ZUSTAND, 'protokoll.jsonl');
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
