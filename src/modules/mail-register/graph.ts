@@ -13,6 +13,7 @@
  */
 
 import { graphGet, graphPost } from '../../shared/m365/index.js';
+import { textAusKoerper } from '../mail-eingang/index.js';
 import type { MailboxZugang, RohMail } from './types.js';
 
 export interface MailboxZugangsdaten {
@@ -107,6 +108,33 @@ export function erstelleMailboxZugang(z: MailboxZugangsdaten): MailboxZugang {
     async anhangsnamen(id: string) {
       const daten = await hole(`/messages/${encodeURIComponent(id)}/attachments?$select=name,size`);
       return (daten?.value ?? []).map((a: any) => String(a.name ?? 'anhang'));
+    },
+
+    async mime(id: string) {
+      const roh = await hole(`/messages/${encodeURIComponent(id)}/$value`);
+      return typeof roh === 'string' ? roh : JSON.stringify(roh ?? '');
+    },
+
+    async text(id: string) {
+      const d = await hole(`/messages/${encodeURIComponent(id)}?$select=body`);
+      return textAusKoerper(d?.body?.content ?? '', d?.body?.contentType ?? 'html');
+    },
+
+    async anhaenge(id: string) {
+      const daten = await hole(`/messages/${encodeURIComponent(id)}/attachments`);
+      const raus: Array<{ name: string; bytes: Buffer; contentType?: string }> = [];
+      for (const a of daten?.value ?? []) {
+        /* Nur echte Dateianhaenge. Eingebettete Nachrichten liefern keine
+           contentBytes; sie bleiben in der mail.eml erhalten. */
+        if (String(a?.['@odata.type'] ?? '') !== '#microsoft.graph.fileAttachment') continue;
+        if (!a?.contentBytes) continue;
+        raus.push({
+          name: String(a.name ?? 'anhang'),
+          bytes: Buffer.from(String(a.contentBytes), 'base64'),
+          contentType: a.contentType ? String(a.contentType) : undefined,
+        });
+      }
+      return raus;
     },
 
     async verschiebe(id: string, ordnerName: string) {

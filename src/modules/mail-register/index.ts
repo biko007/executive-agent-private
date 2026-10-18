@@ -29,11 +29,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { kategorisiere, ausschluss } from '../mail/index.js';
+import {
+  DROPBOX_MAIL_INBOX, ablageOrdner, anhangName, bodyMarkdown, istAuftrag,
+  istOwnerAbsender, auftragsDateiname, auftragsInhalt, auftragSchonZugestellt,
+  adresseNormal, type Konfiguration, type EingangsMail,
+} from '../mail-eingang/index.js';
 import type {
-  Herkunft, RegisterEintrag, RegisterStand, MailboxZugang, RohMail,
+  Herkunft, RegisterEintrag, RegisterStand, MailboxZugang, RohMail, Ablagestand,
 } from './types.js';
+import type { DropboxAdapter } from '../../adapters/dropbox.js';
 
-export type { Herkunft, RegisterEintrag, RegisterStand, MailboxZugang, RohMail } from './types.js';
+export type {
+  Herkunft, RegisterEintrag, RegisterStand, MailboxZugang, RohMail, Ablagestand,
+} from './types.js';
 export { erstelleMailboxZugang } from './graph.js';
 export type { MailboxZugangsdaten } from './graph.js';
 
@@ -216,6 +224,181 @@ export function belegCsv(eintraege: RegisterEintrag[]): string {
   return registerCsv(belegEintraege(eintraege));
 }
 
+// ── Ablage in Dropbox (Owner-Regel 18.10.2026, 20:20) ─────────────────────
+//
+// Was der Owner weiterleitet, soll der Chat lesen koennen. Deshalb bekommt
+// jede Nachricht, die NICHT ueber die Proton-Weiterleitung kam, dieselbe
+// Ablage wie der Eingangskanal `+bikosoc`:
+//
+//   transfer/mail-inbox/JJJJ-MM-TT_HHMM_<betreff>/{mail.eml, body.md, Anhaenge}
+//
+// Proton-Post bleibt draussen. Sie kommt in Masse und wuerde den
+// Austauschordner fluten; fuer sie genuegt das Register.
+
+/** Die Kopfzeile, die Outlook und Apple Mail in einen weitergeleiteten Text setzen. */
+const WEITERGELEITET_VON = /^\s*(?:Von|From)\s*:\s*(.+)$/im;
+
+/**
+ * Urspruenglicher Absender einer weitergeleiteten Nachricht.
+ *
+ * Bei einer Proton-Weiterleitung steht er in der Kopfzeile und bleibt im
+ * Feld `From`. Leitet der Owner dagegen aus seinem Postfach weiter, ist er
+ * selbst der Absender, und das Original steht nur im Text — dort sucht diese
+ * Funktion die erste „Von:"-Zeile. Findet sie keine, liefert sie null; dann
+ * steht in body.md „nicht erkennbar" und nichts Erfundenes.
+ */
+export function originalAbsenderAusText(text: string): string | null {
+  const treffer = WEITERGELEITET_VON.exec(String(text ?? ''));
+  if (!treffer) return null;
+  const zeile = treffer[1].trim();
+  const adresse = zeile.match(/<([^>]+@[^>]+)>/) ?? zeile.match(/([^\s<>,;]+@[^\s<>,;]+)/);
+  if (adresse) return adresseNormal(adresse[1]);
+  return zeile.length >= 3 ? zeile.slice(0, 120) : null;
+}
+
+export function ladeAblagestand(pfad: string): Ablagestand {
+  try {
+    const roh = JSON.parse(fs.readFileSync(pfad, 'utf-8'));
+    if (roh && typeof roh.ordner === 'object') return { version: 1, ordner: { ...roh.ordner } };
+  } catch { /* erster Lauf */ }
+  return { version: 1, ordner: {} };
+}
+
+export function speichereAblagestand(pfad: string, stand: Ablagestand): void {
+  fs.mkdirSync(path.dirname(pfad), { recursive: true });
+  fs.writeFileSync(pfad, JSON.stringify(stand, null, 2), 'utf-8');
+}
+
+/**
+ * Gehoert die Nachricht in die Dropbox-Ablage?
+ *
+ * Nein bei Proton-Weiterleitungen (Abschnitt 2 des Auftrags) und nein, wenn
+ * dieselbe Message-ID schon abgelegt ist.
+ */
+export function ablageNoetig(eintrag: RegisterEintrag, stand: Ablagestand): boolean {
+  if (eintrag.herkunft === 'proton') return false;
+  return !stand.ordner[eintrag.messageId];
+}
+
+export interface AblageDeps {
+  postfach: MailboxZugang;
+  dropbox: DropboxAdapter;
+  homeDir: string;
+  konfiguration: Konfiguration;
+  ablageStandPfad: string;
+  inboxDir?: string;
+  /**
+   * Schon registrierte Nachrichten ab diesem Zeitpunkt nachtragen. Gedacht
+   * fuer den Umstieg: Was vor dieser Erweiterung nur im Register stand, soll
+   * einmal auch in die Ablage.
+   */
+  nachtragenSeitIso?: string;
+}
+
+export interface AblageErgebnis {
+  messageId: string;
+  betreff: string;
+  ablagePfad: string;
+  dateien: string[];
+  originalAbsender: string | null;
+  auftragsDatei?: string;
+  hinweis?: string;
+}
+
+/**
+ * Einen freien Ablageordner vergeben. Zwei Nachrichten derselben Minute mit
+ * demselben Betreff bekaemen denselben Ordner und wuerden sich ueberschreiben;
+ * die Vergabe wird deshalb je Message-ID festgehalten.
+ */
+export function vergebeAblageordner(
+  gewuenscht: string, messageId: string, stand: Ablagestand,
+): string {
+  const schon = stand.ordner[messageId];
+  if (schon) return schon;
+  const belegt = (n: string) => Object.entries(stand.ordner)
+    .some(([id, o]) => o === n && id !== messageId);
+  let name = gewuenscht;
+  for (let i = 2; belegt(name) && i < 100; i++) name = `${gewuenscht}-${i}`;
+  return name;
+}
+
+/** Eine Nachricht ablegen: Anhaenge, mail.eml, body.md — und ggf. Auftragsdatei. */
+export async function legeAb(
+  mail: RohMail, eintrag: RegisterEintrag, deps: AblageDeps, stand: Ablagestand,
+): Promise<AblageErgebnis> {
+  /* Ordnername aus dem Eintreffzeitpunkt — wie beim Eingangskanal `+bikosoc`.
+     Bei einer Weiterleitung liegt das Datum des Originals Tage zurueck; die
+     Ablage soll aber zeigen, wann die Nachricht hier ankam. Das Original steht
+     im Text und sein Absender als Kopfpunkt in body.md. */
+  const ordnerName = vergebeAblageordner(
+    ablageOrdner(new Date(mail.empfangenIso), eintrag.betreff), eintrag.messageId, stand);
+  const ziel = `${DROPBOX_MAIL_INBOX}/${ordnerName}`;
+
+  const text = await deps.postfach.text(mail.id).catch(() => '');
+  const roh = await deps.postfach.mime(mail.id);
+  const anhaenge = mail.hatAnhaenge ? await deps.postfach.anhaenge(mail.id) : [];
+
+  const namen: string[] = [];
+  for (const [i, a] of anhaenge.entries()) {
+    const name = anhangName(a.name, i + 1);
+    await deps.dropbox.uploadFile({
+      path: `${ziel}/${name}`, body: a.bytes,
+      contentType: a.contentType || 'application/octet-stream',
+    });
+    namen.push(name);
+  }
+
+  /* Bei einer Weiterleitung des Owners ist er selbst der Absender; das
+     Original steht nur im Text. Die Kopfzeile der Proton-Weiterleitung hat
+     Vorrang, falls sie doch einmal vorliegt. */
+  const originalAbsender = eintrag.weitergeleitetVon
+    ?? originalAbsenderAusText(text);
+
+  const eingang: EingangsMail = {
+    id: mail.id, messageId: mail.messageId, empfangenIso: mail.empfangenIso,
+    absender: mail.absender, to: [SAMMELSTELLE], cc: [], betreff: mail.betreff,
+    text, hatAnhaenge: mail.hatAnhaenge,
+  };
+  const zusatz = [`**Ursprünglicher Absender:** ${originalAbsender ?? 'nicht erkennbar'}`];
+
+  await deps.dropbox.uploadFile({
+    path: `${ziel}/mail.eml`, body: Buffer.from(roh, 'utf-8'), contentType: 'message/rfc822',
+  });
+  await deps.dropbox.uploadFile({
+    path: `${ziel}/body.md`,
+    body: Buffer.from(bodyMarkdown(eingang, namen, zusatz), 'utf-8'),
+    contentType: 'text/markdown; charset=utf-8',
+  });
+
+  const ergebnis: AblageErgebnis = {
+    messageId: eintrag.messageId, betreff: eintrag.betreff, ablagePfad: ziel,
+    dateien: [...namen, 'mail.eml', 'body.md'], originalAbsender,
+  };
+
+  /* Auftrag nur vom Owner. Ein fremder Absender wird abgelegt und
+     registriert, aber nie ausgefuehrt. */
+  if (istAuftrag(eintrag.betreff)) {
+    if (!istOwnerAbsender(eintrag.absender, deps.konfiguration.ownerAbsender)) {
+      ergebnis.hinweis = 'Betreff „Auftrag:", aber fremder Absender — nur abgelegt';
+    } else {
+      const inboxDir = deps.inboxDir ?? path.join(deps.homeDir, 'inbox');
+      const dateiname = auftragsDateiname(new Date(mail.empfangenIso), eintrag.betreff);
+      if (auftragSchonZugestellt(inboxDir, dateiname)) {
+        ergebnis.hinweis = 'Auftragsdatei lag bereits in ~/inbox — nicht erneut zugestellt';
+      } else {
+        fs.mkdirSync(inboxDir, { recursive: true });
+        const part = path.join(inboxDir, `.${dateiname}.part`);
+        fs.writeFileSync(part, auftragsInhalt(eingang, ziel, namen), 'utf-8');
+        fs.renameSync(part, path.join(inboxDir, dateiname));
+        ergebnis.auftragsDatei = path.join(inboxDir, dateiname);
+      }
+    }
+  }
+
+  stand.ordner[eintrag.messageId] = ordnerName;
+  return ergebnis;
+}
+
 // ── Ein Durchlauf ──────────────────────────────────────────────────────────
 
 export interface RegisterLauf {
@@ -227,6 +410,10 @@ export interface RegisterLauf {
   nichtVerschoben: number;
   /** Ordner, die uebergangen wurden, mit Zaehlerstand. */
   uebergangen: Array<{ name: string; anzahl: number }>;
+  /** Nach Dropbox abgelegte Nachrichten (alles ausser Proton). */
+  abgelegt: AblageErgebnis[];
+  /** Nachtraeglich abgelegte, schon vorher registrierte Nachrichten. */
+  nachgetragen: AblageErgebnis[];
 }
 
 export interface RegisterDeps {
@@ -235,6 +422,11 @@ export interface RegisterDeps {
   quelle?: string;
   /** Proton-Post in den Ordner verschieben. Vorgabe: ja. */
   verschieben?: boolean;
+  /**
+   * Zusaetzliche Ablage in Dropbox fuer alles, was nicht per Proton kam
+   * (Owner-Regel 18.10.2026). Fehlt sie, laeuft nur das Register wie bisher.
+   */
+  ablage?: Omit<AblageDeps, 'postfach'>;
   now?: Date;
   logger?: { info: (m: string) => void; warn: (m: string) => void };
 }
@@ -248,8 +440,38 @@ export async function verarbeiteRegisterEinmal(deps: RegisterDeps): Promise<Regi
 
   const lauf: RegisterLauf = {
     ordnerGesehen: 0, mailsGesehen: 0, neu: [], bekannt: 0,
-    verschoben: 0, nichtVerschoben: 0, uebergangen: [],
+    verschoben: 0, nichtVerschoben: 0, uebergangen: [], abgelegt: [], nachgetragen: [],
   };
+
+  const ablageDeps = deps.ablage
+    ? { ...deps.ablage, postfach: deps.postfach } as AblageDeps : null;
+  const ablagestand = ablageDeps ? ladeAblagestand(ablageDeps.ablageStandPfad) : null;
+
+  /* Nachtragen: Was vor dieser Erweiterung nur im Register stand, einmal auch
+     ablegen. Die Ordnernamen sind deterministisch, ein Upload ueberschreibt —
+     ein zweiter Lauf schadet deshalb nicht. */
+  if (ablageDeps?.nachtragenSeitIso && ablagestand) {
+    const grenze = ablageDeps.nachtragenSeitIso;
+    for (const alt of stand.eintraege) {
+      if (alt.herkunft === 'proton') continue;
+      if (alt.originalIso < grenze && alt.empfangenIso < grenze) continue;
+      if (!ablageNoetig(alt, ablagestand)) continue;
+      const ersatz: RohMail = {
+        id: alt.graphId, messageId: alt.messageId, empfangenIso: alt.empfangenIso,
+        absender: alt.absender, absenderName: alt.absenderName, betreff: alt.betreff,
+        hatAnhaenge: alt.anhaenge.length > 0, kopf: {},
+      };
+      try {
+        const erg = await legeAb(ersatz, alt, ablageDeps, ablagestand);
+        lauf.nachgetragen.push(erg);
+        log?.info(`[mail-register] nachgetragen: ${alt.betreff.slice(0, 50)} → ${erg.ablagePfad}`);
+      } catch (e: any) {
+        log?.warn(`[mail-register] Nachtrag fehlgeschlagen (${alt.betreff.slice(0, 40)}): `
+          + `${e?.message ?? e}`);
+      }
+    }
+    speichereAblagestand(ablageDeps.ablageStandPfad, ablagestand);
+  }
 
   for (const o of await deps.postfach.ordner()) {
     if (ordnerUebergehen(o.name)) {
@@ -268,6 +490,21 @@ export async function verarbeiteRegisterEinmal(deps: RegisterDeps): Promise<Regi
       const eintrag = eintragAus(mail, o.name, anhaenge, jetzt, quelle);
       lauf.neu.push(eintrag);
       bekannt.add(mail.messageId);
+
+      /* Ablage vor dem Verschieben und nach dem Registereintrag. Proton
+         bleibt draussen — dafuer sorgt ablageNoetig(). */
+      if (ablageDeps && ablagestand && ablageNoetig(eintrag, ablagestand)) {
+        try {
+          const erg = await legeAb(mail, eintrag, ablageDeps, ablagestand);
+          lauf.abgelegt.push(erg);
+          speichereAblagestand(ablageDeps.ablageStandPfad, ablagestand);
+          log?.info(`[mail-register] abgelegt: ${erg.ablagePfad}`
+            + `${erg.auftragsDatei ? ' + Auftrag ' + path.basename(erg.auftragsDatei) : ''}`);
+        } catch (e: any) {
+          log?.warn(`[mail-register] Ablage fehlgeschlagen (${eintrag.betreff.slice(0, 40)}): `
+            + `${e?.message ?? e}`);
+        }
+      }
 
       /* Verschieben erst nach dem Eintrag: Bricht es danach ab, steht die
          Nachricht im Register und liegt noch im alten Ordner — der naechste
@@ -302,6 +539,17 @@ export function reportAbschnitt(lauf: RegisterLauf, gesamt: number): string {
       z.push(`| ${e.originalIso.slice(0, 16).replace('T', ' ')} | ${e.herkunft}`
         + `${e.protonBezug && e.herkunft === 'direkt' ? ' (Proton-Bezug)' : ''} `
         + `| ${e.absender} | ${e.betreff} | ${e.register.join(', ') || '–'} |`);
+    }
+    z.push('');
+  }
+  const abgelegt = [...(lauf.abgelegt ?? []), ...(lauf.nachgetragen ?? [])];
+  if (abgelegt.length) {
+    z.push('**In Dropbox abgelegt** (alles ausser Proton):');
+    z.push('');
+    for (const a of abgelegt) {
+      z.push(`- \`${a.ablagePfad}\` — ${a.dateien.length} Datei(en)`
+        + `${a.auftragsDatei ? `, Auftrag \`${path.basename(a.auftragsDatei)}\`` : ''}`
+        + `${a.hinweis ? ` (${a.hinweis})` : ''}`);
     }
     z.push('');
   }

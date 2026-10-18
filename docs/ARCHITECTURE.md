@@ -329,7 +329,10 @@ die Funktionen rein und pruefbar bleiben.
 
 ## 9b. Mail-Eingangskanal (mail-eingang)
 
-**Status:** ✅ live seit 2026-10-18
+**Status:** ✅ live seit 2026-10-18 · **alt — `data@bikolino.com` ist seit dem
+18.10.2026, 20:20 der bevorzugte Weg (siehe 9c).** Der Kanal bleibt
+funktionsfaehig, weil die Adresse eingeuebt ist; neue Weiterleitungen gehen an
+data@.
 
 Der Owner-Eingang per E-Mail. Owner-Entscheidung vom 18.10.2026, 15:47: Was an
 **`juergen.bickel+bikosoc@bikolino.com`** geht, ist Eingang fuer bikosoc. Es
@@ -426,6 +429,28 @@ bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
   `transfer/postfach/data/data-register.csv` und `…/data-belege.csv`. Die
   Belegliste sind die drei Kostenregister: Rechnungen, Vertraege,
   Versicherungen.
+- **Ablage in Dropbox (Owner-Regel 18.10.2026, 20:20):** Jede Nachricht, die
+  **nicht** ueber die Proton-Weiterleitung kam — also vom Owner weitergeleitet
+  oder unmittelbar an data@ adressiert — bekommt zusaetzlich dieselbe Ablage
+  wie der Eingangskanal: `transfer/mail-inbox/JJJJ-MM-TT_HHMM_<betreff>/` mit
+  `mail.eml`, `body.md` und den Dateianhaengen. Der Ordnername folgt dem
+  **Eintreffzeitpunkt**, nicht dem Datum des weitergeleiteten Originals.
+  `body.md` nennt als zusaetzlichen Kopfpunkt den **urspruenglichen Absender**;
+  bei einer Weiterleitung des Owners liest ihn `originalAbsenderAusText()` aus
+  der ersten `Von:`-Zeile des Textes, und wenn dort keine steht, heisst es
+  „nicht erkennbar" statt einer Vermutung.
+  Beginnt der Betreff mit `Auftrag:` **und** ist der Absender eine
+  Owner-Adresse, entsteht zusaetzlich die Auftragsdatei in `~/inbox/` — gleiche
+  Mechanik, gleiche Namensprobe gegen `~/inbox/done/` wie in 9b. Ein fremder
+  Absender wird abgelegt und registriert, aber **nie ausgefuehrt**.
+  Vermerk der Ablage: `artifacts/personal/mail-register/ablage.json`
+  (Message-ID → Ordner). `--nachtragen <ISO>` legt schon registrierte
+  Nachrichten ab diesem Zeitpunkt nachtraeglich ab; die Pfade sind
+  deterministisch, ein zweiter Lauf ueberschreibt nur.
+- **Warum Proton draussen bleibt:** Die Weiterleitung bringt die ganze
+  Proton-Post mit; Text und Anhaenge aller dieser Nachrichten im
+  Austauschordner waeren eine Datenmenge ohne Nutzen. Fuer sie genuegt das
+  Register, und sie liegt im Postfachordner `Proton`.
 - **Takt:** `mail-register.timer`, alle 5 Minuten, derselbe Rhythmus wie der
   Eingangskanal. CSV wird nur geschrieben, wenn ein Eintrag hinzukam.
 - **Grenzen:** kein Mailversand, kein Loeschen von Nachrichten; ein Test haelt

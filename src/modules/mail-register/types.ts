@@ -55,6 +55,13 @@ export interface RegisterStand {
   eintraege: RegisterEintrag[];
 }
 
+/** Ablage einer Nachricht in Dropbox: Message-ID → Ordnername. */
+export interface Ablagestand {
+  version: 1;
+  /** Message-ID → Ordnername unter transfer/mail-inbox/. */
+  ordner: Record<string, string>;
+}
+
 /** Was ein Postfach fuer das Register koennen muss. */
 export interface MailboxZugang {
   /** Alle Ordner mit Zaehlerstand. */
@@ -66,6 +73,12 @@ export interface MailboxZugang {
   mails(ordnerId: string, seitIso?: string): Promise<RohMail[]>;
   /** Anhangsnamen einer Nachricht. */
   anhangsnamen(id: string): Promise<string[]>;
+  /** Rohnachricht als MIME (.eml) — nur fuer die Dropbox-Ablage. */
+  mime(id: string): Promise<string>;
+  /** Textkoerper der Nachricht — fuer body.md und den Auftragstext. */
+  text(id: string): Promise<string>;
+  /** Dateianhaenge mit Inhalt — nur fuer die Dropbox-Ablage. */
+  anhaenge(id: string): Promise<Array<{ name: string; bytes: Buffer; contentType?: string }>>;
   /** In einen Unterordner des Postfachs verschieben; legt ihn bei Bedarf an. */
   verschiebe(id: string, ordnerName: string): Promise<'verschoben' | 'nicht_moeglich'>;
 }

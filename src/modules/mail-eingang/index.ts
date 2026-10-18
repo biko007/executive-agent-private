@@ -194,8 +194,16 @@ export function datumDeutsch(datum: Date): string {
   return `${t.tag}.${t.monat}.${t.jahr}, ${t.stunde}:${t.minute}`;
 }
 
-/** `body.md` — Kopfdaten und Text, nichts gedeutet. */
-export function bodyMarkdown(mail: EingangsMail, anhaenge: string[]): string {
+/**
+ * `body.md` — Kopfdaten und Text, nichts gedeutet.
+ *
+ * `zusatzZeilen` haengt weitere Kopfpunkte an. Die Sammelstelle `data@` nutzt
+ * das fuer den urspruenglichen Absender einer weitergeleiteten Nachricht, ohne
+ * dass zwei Fassungen von body.md entstehen.
+ */
+export function bodyMarkdown(
+  mail: EingangsMail, anhaenge: string[], zusatzZeilen: string[] = [],
+): string {
   const datum = new Date(mail.empfangenIso);
   const z: string[] = [];
   z.push(`# ${mail.betreff || '(ohne Betreff)'}`);
@@ -206,6 +214,7 @@ export function bodyMarkdown(mail: EingangsMail, anhaenge: string[]): string {
   if (mail.cc.length) z.push(`- **Cc:** ${mail.cc.map(adresseNormal).join(', ')}`);
   z.push(`- **Message-ID:** ${mail.messageId}`);
   z.push(`- **Anhänge:** ${anhaenge.length ? anhaenge.join(', ') : 'keine'}`);
+  for (const zeile of zusatzZeilen) z.push(`- ${zeile}`);
   z.push('');
   z.push('---');
   z.push('');

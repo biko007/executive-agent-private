@@ -14,6 +14,9 @@
  *   bun run scripts/mail-register-poll.ts --probe       (zeigen, nichts tun)
  *   bun run scripts/mail-register-poll.ts --ohne-verschieben
  *   bun run scripts/mail-register-poll.ts --csv         (CSV nach Dropbox)
+ *   bun run scripts/mail-register-poll.ts --nachtragen 2026-10-18T18:00:00Z
+ *       (schon registrierte Nachrichten ab diesem Zeitpunkt zusaetzlich ablegen)
+ *   bun run scripts/mail-register-poll.ts --ohne-ablage  (nur Register, wie vorher)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,14 +27,24 @@ import {
   registerCsv, belegCsv, belegEintraege, herkunftAusKopf,
   SAMMELSTELLE, DROPBOX_REGISTER, PROTON_ORDNER, ordnerUebergehen,
 } from '../src/modules/mail-register/index.js';
+import { ladeKonfiguration } from '../src/modules/mail-eingang/index.js';
 
 const HOME = process.env.HOME || homedir();
-const REGISTER = path.join(HOME, '.openclaw', 'workspace', 'artifacts', 'personal',
-  'mail-register', 'data.jsonl');
+const ZUSTAND = path.join(HOME, '.openclaw', 'workspace', 'artifacts', 'personal',
+  'mail-register');
+const REGISTER = path.join(ZUSTAND, 'data.jsonl');
+const ABLAGESTAND = path.join(ZUSTAND, 'ablage.json');
+const MAIL_KONFIG = path.join(HOME, '.config', 'openclaw', 'mail-eingang.json');
 
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
 const probe = process.argv.includes('--probe');
 const csvExport = process.argv.includes('--csv');
 const ohneVerschieben = process.argv.includes('--ohne-verschieben');
+const ohneAblage = process.argv.includes('--ohne-ablage');
+const nachtragenSeitIso = arg('--nachtragen');
 
 function env(k: string): string { return (process.env[k] ?? '').trim(); }
 
@@ -67,10 +80,27 @@ try {
     process.exit(0);
   }
 
+  /* Dropbox-Ablage fuer alles, was nicht per Proton kam (Owner-Regel
+     18.10.2026, 20:20). Fehlt der Dropbox-Zugang, laeuft nur das Register. */
+  const dropbox = dropboxZugang((k) => process.env[k]);
+  const ablage = !ohneAblage && dropbox
+    ? {
+      dropbox: dropbox.adapter,
+      homeDir: HOME,
+      konfiguration: ladeKonfiguration(MAIL_KONFIG),
+      ablageStandPfad: ABLAGESTAND,
+      nachtragenSeitIso,
+    }
+    : undefined;
+  if (!ohneAblage && !dropbox) {
+    process.stderr.write('mail-register: kein Dropbox-Zugang — Ablage übersprungen.\n');
+  }
+
   const lauf = await verarbeiteRegisterEinmal({
     postfach,
     registerPfad: REGISTER,
     verschieben: !ohneVerschieben,
+    ablage,
     logger: {
       info: (m: string) => process.stdout.write(m + '\n'),
       warn: (m: string) => process.stderr.write(m + '\n'),
@@ -78,7 +108,7 @@ try {
   });
 
   const stand = ladeRegister(REGISTER);
-  if (lauf.neu.length) {
+  if (lauf.neu.length || lauf.nachgetragen.length) {
     process.stdout.write('\n' + reportAbschnitt(lauf, stand.eintraege.length) + '\n');
     if (lauf.verschoben) {
       process.stdout.write(`${lauf.verschoben} Nachricht(en) nach ${PROTON_ORDNER} verschoben.\n`);
@@ -110,7 +140,7 @@ try {
   /* CSV nur schreiben, wenn sich etwas geaendert hat — oder auf Verlangen.
      Ein Timer alle fuenf Minuten soll nicht unveraenderte Dateien hochladen. */
   if (csvExport || lauf.neu.length) {
-    const zugang = dropboxZugang((k) => process.env[k]);
+    const zugang = dropbox;
     if (!zugang) {
       process.stderr.write('CSV-Export übersprungen: kein Dropbox-Zugang.\n');
     } else {
@@ -126,8 +156,8 @@ try {
         });
         process.stdout.write(`${DROPBOX_REGISTER}/${name} (${Buffer.byteLength(inhalt)} B)\n`);
       }
-      const ablage = path.join(path.dirname(REGISTER), 'data-register.csv');
-      fs.writeFileSync(ablage, registerCsv(stand.eintraege), 'utf-8');
+      const csvLokal = path.join(path.dirname(REGISTER), 'data-register.csv');
+      fs.writeFileSync(csvLokal, registerCsv(stand.eintraege), 'utf-8');
     }
   }
 } catch (e: any) {

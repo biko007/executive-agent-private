@@ -304,8 +304,8 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
 | **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. **Seit 16.10.2026 sind `/arm` und `/arm push` gleichbedeutend** — beide geben frei UND stoßen den wartenden Schritt an. Angestoßen wird nur, was angemeldet ist: cc-Vormerkung (`scripts/arm-vormerken.ts`) oder sichtbar wartende Übertragung. Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
-| **Mail-Eingangskanal** | Mails an `juergen.bickel+bikosoc@bikolino.com`; ohne Kennzeichnung Ablage nach `transfer/mail-inbox/`, Betreff ab `Auftrag:` zusätzlich Auftragsdatei in `~/inbox/`. Timer `mail-eingang.timer`, 5 min. Fremde Absender werden abgelegt, nie ausgeführt |
-| **Sammelstelle data@** | `data@bikolino.com` ist die **einzige** Sammelstelle für Weiterleitungen aus Fremdpostfächern (ab 18.10.2026). Proton leitet dorthin weiter; Register + Ordner `Proton`, Timer `mail-register.timer`, 5 min |
+| **Mail-Eingangskanal** (alt) | Mails an `juergen.bickel+bikosoc@bikolino.com`; ohne Kennzeichnung Ablage nach `transfer/mail-inbox/`, Betreff ab `Auftrag:` zusätzlich Auftragsdatei in `~/inbox/`. Timer `mail-eingang.timer`, 5 min. **Bleibt funktionsfähig, data@ ist bevorzugt** |
+| **Sammelstelle data@** | `data@bikolino.com` ist die **einzige** Owner-Adresse für Weiterleitungen (ab 18.10.2026). Alles ausser Proton wird zusätzlich wie beim Eingangskanal abgelegt (`transfer/mail-inbox/<datum>_<betreff>/` mit `mail.eml`, `body.md`, Anhängen) und bei Betreff ab `Auftrag:` als Auftragsdatei zugestellt. Proton-Weiterleitungen nur ins Register und in den Ordner `Proton`. Timer `mail-register.timer`, 5 min |
 
 **Die vier Postwege (Owner-Entscheidung 18.10.2026):**
 
@@ -313,7 +313,7 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 |---|---|---|
 | Proton `jbickel2@protonmail.com` | serverseitige Weiterleitung → `data@bikolino.com` | `mail-register` |
 | Yahoo `jbickel2@yahoo.de` | IMAP, keine Weiterleitung | `mail/inventar` |
-| Owner-Eingang/Aufträge | `juergen.bickel+bikosoc@bikolino.com` | `mail-eingang` |
+| Owner-Eingang/Aufträge | **`data@bikolino.com`** (bevorzugt) oder `juergen.bickel+bikosoc@bikolino.com` (alt) | `mail-register` bzw. `mail-eingang` |
 | Geschäftspost | `juergen.bickel@bikolino.com` | Register vom 17.10.2026 |
 
 `juergen.bickel+proton@bikolino.com` **entfällt** — Weiterleitung gelöscht,

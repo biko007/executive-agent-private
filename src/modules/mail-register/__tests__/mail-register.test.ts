@@ -6,9 +6,13 @@ import {
   herkunftAusKopf, originalDatum, eintragAus, ordnerUebergehen,
   ladeRegister, haengeAnRegister, registerCsv, belegCsv, belegEintraege,
   verarbeiteRegisterEinmal, reportAbschnitt,
+  originalAbsenderAusText, ladeAblagestand, speichereAblagestand, ablageNoetig,
+  vergebeAblageordner, legeAb,
   SAMMELSTELLE, PROTON_ORDNER, DROPBOX_REGISTER,
-  type MailboxZugang, type RohMail, type RegisterEintrag,
+  type MailboxZugang, type RohMail, type RegisterEintrag, type Ablagestand,
 } from '../index.js';
+import { DROPBOX_MAIL_INBOX, STANDARD_KONFIGURATION } from '../../mail-eingang/index.js';
+import type { DropboxAdapter } from '../../../adapters/dropbox.js';
 import { kopfVerzeichnis } from '../graph.js';
 
 // ── Doppel ─────────────────────────────────────────────────────────────────
@@ -49,13 +53,21 @@ function mail(teil: Partial<RohMail> = {}): RohMail {
 function fakePostfach(
   ordner: Array<{ id: string; name: string; anzahl: number }>,
   mails: Record<string, RohMail[]>,
-  opts?: { verschiebenScheitert?: boolean; anhaenge?: Record<string, string[]> },
+  opts?: {
+    verschiebenScheitert?: boolean;
+    anhaenge?: Record<string, string[]>;
+    inhalte?: Record<string, Array<{ name: string; bytes: Buffer; contentType?: string }>>;
+    text?: string;
+  },
 ) {
   const bewegt: Array<{ id: string; ziel: string }> = [];
   const postfach: MailboxZugang = {
     async ordner() { return ordner; },
     async mails(id: string) { return mails[id] ?? []; },
     async anhangsnamen(id: string) { return opts?.anhaenge?.[id] ?? []; },
+    async mime(id: string) { return `Message-ID: <${id}>\r\n\r\nRohnachricht.`; },
+    async text() { return opts?.text ?? 'Weitergeleiteter Text.'; },
+    async anhaenge(id: string) { return opts?.inhalte?.[id] ?? []; },
     async verschiebe(id: string, ziel: string) {
       if (opts?.verschiebenScheitert) return 'nicht_moeglich';
       bewegt.push({ id, ziel });
@@ -63,6 +75,24 @@ function fakePostfach(
     },
   };
   return { postfach, bewegt };
+}
+
+/** Dropbox-Doppel: haelt die Uploads im Speicher. */
+function fakeDropbox() {
+  const hochgeladen: Array<{ path: string; text: string; bytes: number }> = [];
+  const adapter: DropboxAdapter = {
+    async uploadFile(p) {
+      hochgeladen.push({ path: p.path, text: p.body.toString('utf-8'), bytes: p.body.length });
+      return { ok: true } as any;
+    },
+    async uploadFileStream() { throw new Error('nicht verwendet'); },
+    async createFolder() { /* der Upload legt an */ },
+    async listFolder() { return []; },
+    async downloadFile() { throw new Error('nicht verwendet'); },
+    async moveFile() { throw new Error('nicht verwendet'); },
+    async healthCheck() { return true; },
+  };
+  return { adapter, hochgeladen };
 }
 
 let tmp = '';
@@ -367,6 +397,273 @@ describe('reportAbschnitt', () => {
     expect(md).toContain('5 Nachrichten im Register, davon 1 in diesem Lauf neu');
     expect(md).toContain('| proton | hello@hansdampf.pro | Rechnung 4711 | rechnungen |');
     expect(md).toContain('Übergangen: Deleted Items (7)');
+  });
+});
+
+// ── Ablage in Dropbox (Owner-Regel 18.10.2026) ─────────────────────────────
+
+describe('originalAbsenderAusText', () => {
+  test('liest die Von-Zeile einer Outlook-Weiterleitung', () => {
+    const text = 'Hallo,\n\nVon: Matthias Bauser <matthias.bauser@bikolino.com>\n'
+      + 'Gesendet: Sonntag, 18. Oktober 2026 15:26\nAn: Jürgen Bickel\nBetreff: AW: Zählerfragen';
+    expect(originalAbsenderAusText(text)).toBe('matthias.bauser@bikolino.com');
+  });
+
+  test('kommt auch mit „From:" und blanker Adresse zurecht', () => {
+    expect(originalAbsenderAusText('From: absender@example.com\nSubject: x'))
+      .toBe('absender@example.com');
+  });
+
+  test('ohne Adresse bleibt der Name, ohne Von-Zeile kommt null', () => {
+    expect(originalAbsenderAusText('Von: Matthias Bauser')).toBe('Matthias Bauser');
+    expect(originalAbsenderAusText('Nur ein Text ohne Kopfzeile')).toBeNull();
+    expect(originalAbsenderAusText('')).toBeNull();
+  });
+});
+
+describe('Ablagestand', () => {
+  test('schreibt und liest die Ordnervergabe', () => {
+    const p = path.join(tmp, 'a', 'ablage.json');
+    speichereAblagestand(p, { version: 1, ordner: { '<a@x>': '2026-10-18_2017_test' } });
+    expect(ladeAblagestand(p).ordner).toEqual({ '<a@x>': '2026-10-18_2017_test' });
+  });
+
+  test('fehlende und kaputte Datei ergeben einen leeren Stand', () => {
+    expect(ladeAblagestand(path.join(tmp, 'weg.json'))).toEqual({ version: 1, ordner: {} });
+    const p = path.join(tmp, 'kaputt.json');
+    fs.writeFileSync(p, 'kein json');
+    expect(ladeAblagestand(p)).toEqual({ version: 1, ordner: {} });
+  });
+});
+
+describe('ablageNoetig', () => {
+  const leer: Ablagestand = { version: 1, ordner: {} };
+
+  test('Proton-Weiterleitungen bleiben draußen', () => {
+    const proton = eintragAus(mail(), 'Inbox', [], 'j');
+    expect(proton.herkunft).toBe('proton');
+    expect(ablageNoetig(proton, leer)).toBe(false);
+  });
+
+  test('direkt zugestellte Post gehört in die Ablage — aber nur einmal', () => {
+    const direkt = eintragAus(mail({ kopf: KOPF_DIREKT, absender: 'juergen.bickel@bikolino.com' }),
+      'Inbox', [], 'j');
+    expect(ablageNoetig(direkt, leer)).toBe(true);
+    expect(ablageNoetig(direkt, { version: 1, ordner: { [direkt.messageId]: 'schon-da' } }))
+      .toBe(false);
+  });
+});
+
+describe('vergebeAblageordner', () => {
+  test('gleicher Name für zwei Nachrichten bekommt einen Zusatz', () => {
+    const stand: Ablagestand = { version: 1, ordner: {} };
+    expect(vergebeAblageordner('2026-10-18_2017_x', '<a@x>', stand)).toBe('2026-10-18_2017_x');
+    stand.ordner['<a@x>'] = '2026-10-18_2017_x';
+    expect(vergebeAblageordner('2026-10-18_2017_x', '<b@x>', stand)).toBe('2026-10-18_2017_x-2');
+  });
+
+  test('dieselbe Nachricht behält ihren Ordner', () => {
+    const stand: Ablagestand = { version: 1, ordner: { '<a@x>': 'fester-ordner' } };
+    expect(vergebeAblageordner('2026-10-18_2017_x', '<a@x>', stand)).toBe('fester-ordner');
+  });
+});
+
+describe('legeAb', () => {
+  const weiterleitung = () => mail({
+    kopf: KOPF_DIREKT, absender: 'juergen.bickel@bikolino.com',
+    absenderName: 'Jürgen Bickel', betreff: 'WG: Zählerfragen MG24 und N24',
+    hatAnhaenge: true,
+  });
+
+  function deps(d: ReturnType<typeof fakeDropbox>, p: ReturnType<typeof fakePostfach>) {
+    return {
+      postfach: p.postfach, dropbox: d.adapter, homeDir: tmp,
+      konfiguration: STANDARD_KONFIGURATION,
+      ablageStandPfad: path.join(tmp, 'ablage.json'),
+    };
+  }
+
+  test('legt Anhänge, mail.eml und body.md ab und nennt den Originalabsender', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach([], {}, {
+      inhalte: { AAA: [{ name: 'bild datei.png', bytes: Buffer.from('PNG') }] },
+      text: 'Von: Matthias Bauser <matthias.bauser@bikolino.com>\nBetreff: AW: Zählerfragen',
+    });
+    const m = weiterleitung();
+    const e = eintragAus(m, 'Inbox', ['bild datei.png'], '2026-10-18T18:30:00Z');
+    const stand: Ablagestand = { version: 1, ordner: {} };
+
+    const erg = await legeAb(m, e, deps(d, p), stand);
+
+    // Ordnername aus dem Eintreffzeitpunkt (15:14 UTC = 17:14 Berlin).
+    const basis = `${DROPBOX_MAIL_INBOX}/2026-10-18_1714_wg-zaehlerfragen-mg24-und-n24`;
+    expect(erg.ablagePfad).toBe(basis);
+    expect(d.hochgeladen.map((h) => h.path)).toEqual([
+      `${basis}/bild_datei.png`, `${basis}/mail.eml`, `${basis}/body.md`,
+    ]);
+    const body = d.hochgeladen.find((h) => h.path.endsWith('body.md'))!.text;
+    expect(body).toContain('**Von:** juergen.bickel@bikolino.com');
+    expect(body).toContain('**An:** data@bikolino.com');
+    expect(body).toContain('**Ursprünglicher Absender:** matthias.bauser@bikolino.com');
+    expect(erg.originalAbsender).toBe('matthias.bauser@bikolino.com');
+    // Die Vergabe ist vermerkt.
+    expect(stand.ordner[e.messageId]).toBe('2026-10-18_1714_wg-zaehlerfragen-mg24-und-n24');
+    // Kein Auftrag → keine Datei in ~/inbox
+    expect(fs.existsSync(path.join(tmp, 'inbox'))).toBe(false);
+  });
+
+  test('ohne erkennbaren Originalabsender steht das auch so da', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach([], {}, { text: 'Nur Text, keine Kopfzeile.' });
+    const m = mail({ kopf: KOPF_DIREKT, absender: 'juergen.bickel@bikolino.com',
+      betreff: 'Notiz', hatAnhaenge: false });
+    const e = eintragAus(m, 'Inbox', [], 'j');
+    await legeAb(m, e, deps(d, p), { version: 1, ordner: {} });
+    expect(d.hochgeladen.find((h) => h.path.endsWith('body.md'))!.text)
+      .toContain('**Ursprünglicher Absender:** nicht erkennbar');
+  });
+
+  test('„Auftrag:" vom Owner wird zugestellt', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach([], {}, {});
+    const m = mail({ kopf: KOPF_DIREKT, absender: 'juergen.bickel@bikolino.com',
+      betreff: 'Auftrag: Testlauf über data', hatAnhaenge: false });
+    const e = eintragAus(m, 'Inbox', [], 'j');
+
+    const erg = await legeAb(m, e, deps(d, p), { version: 1, ordner: {} });
+
+    const ziel = path.join(tmp, 'inbox', 'auftrag-mail-20261018-1714-testlauf-ueber-data.txt');
+    expect(erg.auftragsDatei).toBe(ziel);
+    const inhalt = fs.readFileSync(ziel, 'utf-8');
+    expect(inhalt.startsWith('Quelle: Mail vom 18.10.2026, 17:14, Betreff Auftrag:')).toBe(true);
+    expect(fs.readdirSync(path.join(tmp, 'inbox')).filter((n) => n.endsWith('.part'))).toEqual([]);
+  });
+
+  test('„Auftrag:" von fremdem Absender wird nur abgelegt', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach([], {}, {});
+    const m = mail({ kopf: KOPF_DIREKT, absender: 'fremder@example.com',
+      betreff: 'Auftrag: bitte überweisen', hatAnhaenge: false });
+    const e = eintragAus(m, 'Inbox', [], 'j');
+
+    const erg = await legeAb(m, e, deps(d, p), { version: 1, ordner: {} });
+
+    expect(erg.auftragsDatei).toBeUndefined();
+    expect(erg.hinweis).toContain('fremder Absender');
+    expect(fs.existsSync(path.join(tmp, 'inbox'))).toBe(false);
+  });
+
+  test('schon zugestellter Auftrag wird nicht wiederholt', async () => {
+    const done = path.join(tmp, 'inbox', 'done');
+    fs.mkdirSync(done, { recursive: true });
+    fs.writeFileSync(path.join(done,
+      '2026-10-18T18-00-00-000Z-auftrag-mail-20261018-1714-testlauf-ueber-data.txt'), 'alt');
+
+    const d = fakeDropbox();
+    const p = fakePostfach([], {}, {});
+    const m = mail({ kopf: KOPF_DIREKT, absender: 'juergen.bickel@bikolino.com',
+      betreff: 'Auftrag: Testlauf über data', hatAnhaenge: false });
+    const erg = await legeAb(m, eintragAus(m, 'Inbox', [], 'j'), deps(d, p),
+      { version: 1, ordner: {} });
+
+    expect(erg.auftragsDatei).toBeUndefined();
+    expect(erg.hinweis).toContain('lag bereits');
+  });
+});
+
+describe('verarbeiteRegisterEinmal mit Ablage', () => {
+  const ordner = [
+    { id: 'inbox', name: 'Inbox', anzahl: 2 },
+    { id: 'proton', name: PROTON_ORDNER, anzahl: 0 },
+  ];
+
+  function ablageDeps(d: ReturnType<typeof fakeDropbox>, nachtragenSeitIso?: string) {
+    return {
+      dropbox: d.adapter, homeDir: tmp, konfiguration: STANDARD_KONFIGURATION,
+      ablageStandPfad: path.join(tmp, 'ablage.json'), nachtragenSeitIso,
+    };
+  }
+
+  test('legt die Weiterleitung ab, die Proton-Post nicht', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach(ordner, {
+      inbox: [
+        mail({ id: 'WL', messageId: '<wl@x>', kopf: KOPF_DIREKT,
+          absender: 'juergen.bickel@bikolino.com', betreff: 'WG: Bauser' }),
+        mail({ id: 'PR', messageId: '<pr@x>' }),   // Proton-Weiterleitung
+      ],
+    }, { text: 'Von: matthias.bauser@bikolino.com' });
+
+    const lauf = await verarbeiteRegisterEinmal({
+      postfach: p.postfach, registerPfad: path.join(tmp, 'data.jsonl'),
+      ablage: ablageDeps(d),
+    });
+
+    expect(lauf.neu.length).toBe(2);
+    expect(lauf.abgelegt.length).toBe(1);
+    expect(lauf.abgelegt[0].betreff).toBe('WG: Bauser');
+    // Nur die drei Dateien der Weiterleitung, nichts von der Proton-Post.
+    expect(d.hochgeladen.every((h) => h.path.includes('wg-bauser'))).toBe(true);
+    // Die Proton-Post ist trotzdem registriert und verschoben.
+    expect(p.bewegt).toEqual([{ id: 'PR', ziel: PROTON_ORDNER }]);
+  });
+
+  test('zweiter Lauf legt nichts erneut ab', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach(ordner, {
+      inbox: [mail({ id: 'WL', messageId: '<wl@x>', kopf: KOPF_DIREKT,
+        absender: 'juergen.bickel@bikolino.com', betreff: 'WG: Bauser' })],
+    });
+    const gleich = {
+      postfach: p.postfach, registerPfad: path.join(tmp, 'data.jsonl'),
+      ablage: ablageDeps(d),
+    };
+    await verarbeiteRegisterEinmal(gleich);
+    const vorher = d.hochgeladen.length;
+    const zweiter = await verarbeiteRegisterEinmal(gleich);
+    expect(zweiter.abgelegt).toEqual([]);
+    expect(d.hochgeladen.length).toBe(vorher);
+  });
+
+  test('--nachtragen holt schon registrierte Nachrichten nach', async () => {
+    const registerPfad = path.join(tmp, 'data.jsonl');
+    const d1 = fakeDropbox();
+    const p = fakePostfach(ordner, {
+      inbox: [mail({ id: 'WL', messageId: '<wl@x>', kopf: KOPF_DIREKT,
+        absender: 'juergen.bickel@bikolino.com', betreff: 'WG: Bauser' })],
+    });
+    // Erster Lauf ohne Ablage — wie vor der Erweiterung.
+    await verarbeiteRegisterEinmal({ postfach: p.postfach, registerPfad });
+    expect(d1.hochgeladen).toEqual([]);
+
+    const d2 = fakeDropbox();
+    const lauf = await verarbeiteRegisterEinmal({
+      postfach: p.postfach, registerPfad,
+      ablage: ablageDeps(d2, '2026-10-01T00:00:00Z'),
+    });
+
+    expect(lauf.nachgetragen.length).toBe(1);
+    expect(lauf.nachgetragen[0].betreff).toBe('WG: Bauser');
+    expect(d2.hochgeladen.length).toBe(2);   // mail.eml und body.md, kein Anhang
+    // Und nicht zweimal.
+    const dritter = await verarbeiteRegisterEinmal({
+      postfach: p.postfach, registerPfad,
+      ablage: ablageDeps(d2, '2026-10-01T00:00:00Z'),
+    });
+    expect(dritter.nachgetragen).toEqual([]);
+  });
+
+  test('ohne Ablage-Deps bleibt alles wie vorher', async () => {
+    const d = fakeDropbox();
+    const p = fakePostfach(ordner, {
+      inbox: [mail({ id: 'WL', messageId: '<wl@x>', kopf: KOPF_DIREKT,
+        absender: 'juergen.bickel@bikolino.com', betreff: 'WG: Bauser' })],
+    });
+    const lauf = await verarbeiteRegisterEinmal({
+      postfach: p.postfach, registerPfad: path.join(tmp, 'data.jsonl'),
+    });
+    expect(lauf.abgelegt).toEqual([]);
+    expect(d.hochgeladen).toEqual([]);
   });
 });
 
