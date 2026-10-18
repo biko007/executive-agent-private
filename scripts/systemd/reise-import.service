@@ -1,6 +1,6 @@
 [Unit]
-Description=bikosoc Reise-Import aus Dropbox transfer/reisen
-Documentation=file:///home/biko/bikosoc-spec/report-dashboard-reisen-tab-20261018.md
+Description=bikosoc Reise-Import aus Dropbox /Austausch/reisen
+Documentation=file:///home/biko/bikosoc-spec/report-reise-import-austausch-20261018.md
 
 [Service]
 Type=oneshot
