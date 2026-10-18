@@ -327,6 +327,26 @@ die Funktionen rein und pruefbar bleiben.
   Zaehlabweichung ab; `scripts/yahoo-ablage-pruefen.ts` ist die
   Message-ID-Gegenprobe. Beide loeschen nichts und markieren nichts.
 
+### Welche Postfaecher Graph erreicht
+
+Die Anwendungsberechtigung gilt fuer den ganzen Mandanten — „das Postfach
+durchsucht" ist deshalb keine vollstaendige Angabe. Nachgewiesen erreichbar
+(Stand 18.10.2026) und fuer Recherchen einschlaegig:
+
+| Postfach | Inhalt |
+|---|---|
+| `juergen.bickel@bikolino.com` | Geschaeftspost des Owners |
+| `info@l19.de` | **Mieterverkehr L19** — Deiss, Rettenbacher, Handwerker |
+| `doris.hilsenbeck@bikolino.com` | **Buchhaltung** — Abrechnungen, Vorauszahlungs- und Mahnschreiben an Mieter, in „Gesendete Elemente" |
+| `data@bikolino.com` | Sammelstelle fuer Weiterleitungen (9c) |
+
+Beispiel fuer die Folgen: Die Erhoehung der Nebenkosten-Vorauszahlung L19 W2
+zum 01.03.2025 war im Owner-Postfach nicht zu finden und galt deshalb am
+16.10.2026 als unbelegt. Sie stand in `doris.hilsenbeck@bikolino.com` unter
+„Gesendete Elemente" und in `info@l19.de` (gefunden 18.10.2026). Wer eine
+Mieter- oder Buchhaltungsfrage klaert, fragt diese drei Postfaecher ab und
+schreibt in den Report, welche.
+
 ## 9b. Mail-Eingangskanal (mail-eingang)
 
 **Status:** ✅ live seit 2026-10-18 · **alt — `data@bikolino.com` ist seit dem
