@@ -458,6 +458,51 @@ bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
   heraus. Geloeschte Elemente, Junk, Entwuerfe und Postausgang bleiben aus dem
   Register — mit Zaehlerstand im Report, damit die Luecke benannt ist.
 
+## 9d. Reise-Import (reise-import)
+
+Owner-Auftrag 18.10.2026. Der Reiseassistent — ein Claude-Projekt mit
+Dropbox-Connector, ohne VPS-Zugriff — legt je Reise eine JSON-Datei ab; der
+Server uebernimmt sie in die Reisedatei, die der Reisen-Tab des Dashboards
+liest.
+
+- **Modul:** `src/modules/reise-import/` (`types.ts` = Schema
+  `bikosoc.reise/1`, `index.ts` = Pruefung und Abbildung),
+  Skript `scripts/reise-import.ts`, Timer `reise-import.timer` (10 Minuten).
+- **Weg:** `transfer/reisen/<kennung>.json` im **App-Ordner**, PDFs nach
+  `transfer/reisen/dokumente/`, verarbeitete Dateien nach
+  `transfer/reisen/done/<zeitstempel>-<name>.json`.
+- **Warum der App-Ordner und nicht `/Austausch`:** Der Dropbox-Zugang des
+  Servers ist ein App-Ordner-Zugang (Namensraum 14689389123). `/Austausch`
+  liegt im Namensraum 1156296481 und ist vom Server aus technisch nicht
+  lesbar — der Owner-Chat kommt dort hin, der Server nicht. `/Austausch`
+  bleibt der Owner-Ordner (lebendes Reisedokument, Original-PDFs, Anleitung
+  `README-dashboard-import.md`), der App-Ordner ist der Maschinenweg.
+- **Ziel:** `artifacts/personal/travel/<kennung>.json`. Reisen sind
+  dateibasiert, es gibt keine Tabelle und damit **keine Migration**. Die
+  bekannten Felder (`id`, `name`, `segments`, `calendar_event_ids` …) bleiben
+  unveraendert, alles Neue liegt im Unterobjekt `reise`. Der Kalenderabgleich
+  und der Bearbeiten-Dialog des Dashboards arbeiten dadurch weiter wie bisher.
+- **Dokumente:** PDFs wandern nach `artifacts/personal/documents/reise/` mit
+  dem Namen `<kennung>__<datei>` und werden in `metadata.json` mit
+  `kategorie: 'reise'` und `tripId` eingetragen. Nur ein tatsaechlich
+  uebernommenes PDF bekommt im Reiseblock das Feld `pfad` — das Dashboard
+  zeigt den Knopf „PDF oeffnen" genau dann, wenn dieses Feld gesetzt ist.
+- **Pflicht ist wenig:** `schema`, `id` (Form `JJMMTT-trip-<ort>`), `titel`,
+  `von`, `bis`. Alles andere darf fehlen und wird dann nicht angezeigt — eine
+  Reise in der Planungsphase kommt mit fuenf Zeilen durch.
+- **Keine Ausweis- und Kartendaten:** Das Schema sieht kein Feld dafuer vor,
+  und `verboteneFelder` weist eine Datei ab, in der ein Feldname
+  `passnummer`, `ausweisnummer`, `kartennummer`, `card_number`, `iban`, `cvv`
+  oder `pin` enthaelt — rekursiv, auch tief verschachtelt. Von der
+  Vielfliegerkarte nur `karte_letzte4`. In den PDFs duerfen solche Nummern
+  stehen; sie werden nur auf Klick geoeffnet.
+- **Versionsregel:** Ersetzt wird nur bei hoeherer `version`. Dieselbe Datei
+  zweimal abzulegen schadet nicht. Beim Ersetzen bleiben `created_at` und die
+  Kalenderkennungen der Segmente erhalten, soweit Titel und Abflugzeit gleich
+  bleiben — sonst entstuenden beim naechsten Abgleich Doppeleintraege.
+- **Grenzen:** loescht keine Reise, verschickt nichts, legt keine
+  Kalendereintraege an.
+
 ## 10. Mail-Scanner Meeting-Detection + Calendar-Path
 
 **Status:** ✅ live seit 2026-07-10 (Evidence Bundle `docs/workpackages/2026-07-10-meeting-detection.md`)

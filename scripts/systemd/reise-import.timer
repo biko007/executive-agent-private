@@ -1,0 +1,10 @@
+[Unit]
+Description=bikosoc Reise-Import Timer
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
