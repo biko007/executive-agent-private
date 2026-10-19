@@ -4,6 +4,24 @@
 
 ---
 
+## §0 Erster Schritt nach `/clear` (Stand 19.10.2026)
+
+**Vor jeder Arbeit zuerst `docs/projekt/cc-Uebergabe-20261019.md` lesen.**
+
+Dort steht, was auf den Owner wartet, welche Dienste laufen, welche
+technischen Punkte offen sind, welche Daten seit dem 16.10.2026 verändert
+wurden und welche Fallen in den letzten Sitzungen Zeit gekostet haben. Die
+Datei ist der Nachfolger von `cc-Uebergabe-20261016.md`; beide zusammen lesen,
+wenn es um V043, den Dropbox-Umstieg oder das Agenten-Backend geht.
+
+**Beim Schreiben einer neuen Übergabe wird der Dateiname in diesem Abschnitt
+mitgezogen** — sonst zeigt der Boot-Hinweis auf einen alten Stand.
+
+Dieser Abschnitt ordnet nichts an, was §1 bis §9 widerspricht; er legt nur die
+Lesereihenfolge fest. Die Vorrangregel aus §1 bleibt unberührt.
+
+---
+
 ## §1 Präzedenzblock
 
 Bei Widerspruch gilt: **Manifest/Hard Rules > Auftrags-Klassen > stehende Regeln > Status-Sektionen.**
