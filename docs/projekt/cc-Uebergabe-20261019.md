@@ -164,15 +164,26 @@ Tests liegt in `src/__tests__/report-sent-map.test.ts`.
 ### 4.3 Codex/OAuth — Ablauf 26.10.2026 17:24 UTC
 
 Die Anmeldung des Agenten-Backends ist am 16.10.2026 17:24 UTC erneuert worden
-und gilt **zehn Tage, also bis 26.10.2026 17:24 UTC**. Der Smoke-Test schlägt
-an, sobald **weniger als drei Tage** bleiben — das ist der **23.10.2026**. Er
-liest nur das Ablaufdatum, nie den Token.
+und gilt **zehn Tage, also bis 26.10.2026 17:24 UTC** (`~/.codex/auth.json`,
+Feld `exp` des Zugangstokens). Der Smoke-Test (Abschnitt 18) schlägt an,
+sobald **weniger als drei Tage** bleiben — das ist der **23.10.2026, 17:24
+UTC**. Er liest nur das Ablaufdatum, nie den Token.
 
-**Unverändert offen:** Der Agentenpfad trägt trotz gültiger Anmeldung nicht —
-jedes geprüfte Modell wird mit „not supported when using Codex with a ChatGPT
-account" abgelehnt. `codex-cli` steht auf 0.138.0 (08.06.2026), verfügbar ist
-0.163.0. **Das Update ist der naheliegende nächste Schritt und war bisher
-ausdrücklich nicht beauftragt.** Details: Abschnitt 9 der Vorgänger-Übergabe.
+**Agentenpfad läuft** (Korrektur 19.10.2026, 12:00 — die erste Fassung dieses
+Abschnitts hatte den Stand vor dem 16.10. 18:00 übernommen):
+
+- `codex-cli` **0.163.0** (`codex --version`), gehoben am 16.10.2026
+  (`report-codex-cli-update-20261016.md`); OpenClaw unverändert **2026.9.1**.
+- `openclaw models status`: Standardmodell `openai/gpt-5.6-sol`, Route
+  „openai via codex … status=usable", **keine „Model route issues"**.
+- Probelauf 18.10.2026 23:39/23:40 UTC: `result: success`,
+  `authMode: auth-profile` — über die OAuth-Anmeldung, ohne API-Schlüssel
+  (`report-auftrag-codex-cli-update-20261019.md`).
+- Smoke: **ALL PASS 37/37** im Lauf vom 19.10. (gleicher Report); die
+  Abschnitte 18 und 19 am 19.10. 12:00 erneut nur lesend nachvollzogen: beide grün.
+
+**Einzig offen:** die erneute Anmeldung (`codex login`) vor dem 26.10.2026 —
+der Smoke meldet sich ab dem 23.10.
 
 ### 4.4 Alte Dropbox-App — Stichtag 23.10.2026
 
