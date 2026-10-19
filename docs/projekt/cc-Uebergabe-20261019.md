@@ -190,9 +190,14 @@ einziger Fehler im `dropbox-inbox.service` am 17.10. (HTTP 500, vorübergehend).
 
 ## 5. Datenänderungen seit dem 16.10.2026
 
-**Keine Datenbankänderung.** Die Aufträge vom 17. bis 19.10. waren Recherche,
-Prüfung und Dokumentenbeschaffung; die Reports der Backlog-Durchsicht weisen
-durchgehend „Datenänderungen: keine" aus.
+**Eine Datenbankänderung** (Korrektur 19.10.2026, Nachprüfung
+privatausgaben-bericht): Am **18.10.2026 um 15:06** wurden die beiden
+Kreditkarten importiert — `banking_accounts` id **108/109**, **317 Zeilen**
+in `banking_transactions` mit `source = 'kk_pdf_import'`, Audit **2712**
+(Auftrag privatausgaben-runde2). Rückweg:
+`delete from banking_transactions where source = 'kk_pdf_import';` dann
+`delete from banking_accounts where id in (108, 109);`. Sonst waren die
+Aufträge vom 17. bis 19.10. Recherche, Prüfung und Dokumentenbeschaffung.
 
 | Wann | Was | Umkehrbar durch |
 |---|---|---|
@@ -386,8 +391,15 @@ zugeflossen und mindert die Vorsorgeaufwendungen 2025.
 `report-steuer-2025-fehlende-belege-20261019.md` und
 `report-steuer-2025-anforderungsmails-20261019.md`.
 
-**Ein offener Befund aus der Ausgabenanalyse, der niemandem zugeordnet ist:**
-Kartenausgaben von **96.405,04 €** stehen **14.691 €** VISA-Abrechnungen
-gegenüber — Faktor 7 —, und LinkedIn sowie FOCUS tauchen in keinem Konto auf.
-**Es gibt also mindestens einen unbekannten Zahlungskanal.** Das ist nicht
-geklärt und sollte nicht aus dem Blick geraten.
+**Kreditkarten — geklärt bis auf eine Karte** (Korrektur 19.10.2026; die
+frühere Fassung „Faktor 7, unbekannter Zahlungskanal" beruhte auf zwei
+Rechenfehlern). Die Karten **…6047 und …7303** kosten netto **81.081,02 €**
+(96.405,04 € Belastungen minus 15.324,02 € Gutschriften) und werden laut
+Mandatsreferenz von einem **nicht angebundenen Konto** eingezogen — sie sind
+also zusätzliche Ausgaben und im Burn der Runde 2 (887.481 €) bereits
+enthalten. Die „VISA Abrechnung" im Giro 107 sind **16 Belastungen über
+27.901,63 €** (nicht 14.691 €) und gehören zu einer **dritten Karte …6411**,
+von der keine Abrechnungen vorliegen. LinkedIn und FOCUS stehen in keinem
+Konto — vermutlich über …6411 bezahlt (Schluss, nicht belegt); beide sind
+inzwischen gekündigt (29.08. bzw. 08.10.2026).
+`~/bikosoc-spec/report-auftrag-privatausgaben-bericht-20261019.md`.
