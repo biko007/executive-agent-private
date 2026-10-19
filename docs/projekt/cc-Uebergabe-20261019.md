@@ -275,6 +275,13 @@ Das hat in dieser Sitzung Zeit gekostet — jede Zeile ist belegt:
 - Die automatische Doku-Spiegelung legt nach
   **`/bikosoc-reports/docs/repo/<repo>/…`** ab (post-commit-Hook plus
   `docs-mirror.timer`).
+- **Die Spiegelung ist nicht rekursiv.** `src/modules/docs-mirror/index.ts`
+  nimmt `CLAUDE.md`, `README.md` und alle `*.md` **direkt** in `docs/` und
+  `governance/` — **Unterordner nicht**. Diese Übergabe liegt in
+  `docs/projekt/` und wird daher **nicht automatisch gespiegelt**; sie muss
+  von Hand nach Dropbox geladen werden. Geprüft am 19.10.2026: im
+  Spiegelpfad liegt kein `docs/projekt` — auch der Vorgänger vom 16.10. war
+  dort nie angekommen.
 
 **NK-Engine (unverändert gültig)**
 
@@ -310,7 +317,8 @@ Das hat in dieser Sitzung Zeit gekostet — jede Zeile ist belegt:
 | Dropbox `/Austausch/steuer-2025/` | EEG-Vorjahresabrechnung mit den Anlagendaten, Jahresmeldung SV 2025 |
 | Dropbox `transfer/volksbank/2025/` | 12 Kontoauszüge mit den Originalnamen der Bank |
 | Dropbox `transfer/postfach/` | die beiden Postfach-Vollinventare und alle Register |
-| Dropbox `/bikosoc-reports/docs/repo/` | automatische Spiegelung der Repo-Dokumentation |
+| Dropbox `/bikosoc-reports/docs/repo/` | automatische Spiegelung der Repo-Dokumentation — **ohne Unterordner**, also ohne diese Übergabe |
+| Dropbox `/Austausch/docs/projekt/` | **die Übergaben**, von Hand gespiegelt (19.10. und 16.10.) |
 | SharePoint `8_Jürgen Bickel privat/2-Finanzen/Steuerdokumente/<Jahr>/` | Steuerordner — **nur lesen, Ablage erst nach Owner-Freigabe** |
 
 ---
