@@ -8,6 +8,9 @@
  *   --laeufe      verwaiste Laufzeilen 4, 6, 8, 9 auf ABORTED setzen
  *   --neuabruf    alle aktiven FinTS-Konten maximal zurück neu abrufen und mit
  *                 dem neuen Schlüssel übernehmen; Saldenprobe je Konto
+ *   --ab <datum>  Startdatum des Neuabrufs (Vorgabe 2015-01-01). Ohne TAN gibt
+ *                 die Sparkasse nur etwa 90 Tage heraus; ein früheres Datum
+ *                 löst die Freigabeanforderung aus und der Abruf bricht ab.
  *
  * Jeder Schritt sichert die betroffenen Zeilen vorher nach
  * ~/backups/banking-fixes-20261020/ und schreibt einen Audit-Eintrag.
@@ -36,6 +39,8 @@ const sichere = (name: string, daten: unknown) =>
   writeFileSync(path.join(SICHERUNG, `${name}-${stempel}.json`), JSON.stringify(daten, null, 1));
 const kurz = (iban: string) => '…' + String(iban).slice(-4);
 const aktor = 'cc-bikosoc';
+const abIndex = process.argv.indexOf('--ab');
+const AB = abIndex > 0 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[abIndex + 1] || '') ? process.argv[abIndex + 1] : '2015-01-01';
 
 async function sitzungen() {
   const vorher = (await query(
@@ -94,7 +99,7 @@ async function neuabruf() {
           session_id: Number(session.id), blz: inst.blz, fints_url: inst.fints_url,
           user_id: zugang.userId, pin: zugang.pin,
           product_id: produkt === 'env-default' ? undefined : produkt,
-          client_data: clientData, account_iban: konto.iban, from_date: '2015-01-01',
+          client_data: clientData, account_iban: konto.iban, from_date: AB,
         });
         if (antwort?.needs_tan || antwort?.re_auth_required) {
           ergebnis.push({ konto: kurz(konto.iban), abbruch: 'Bank verlangt TAN — Neuabruf gestoppt, nichts angefordert' });
