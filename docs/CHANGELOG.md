@@ -4,6 +4,29 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-20 — Umsatzabruf im Verbindungsdialog
+
+Die Volksbank lehnt jeden neuen Abrufdialog ab (9050/9340), den Dialog nach
+der SecureGo-Freigabe beim „Bank verbinden“ nimmt sie an. Deshalb hält der
+Sidecar diesen Dialog nach erfolgreichem Verbinden bis zu 120 s offen
+(`_offene_dialoge`, Aufräumer alle 30 s im Lifespan). Das Gateway ruft darin
+sofort Salden und Umsätze aller aktiven Konten ab
+(`banking/abruf-nach-verbinden.ts`, Endpunkt `POST /fints/abruf-im-dialog`).
+Ausgeblendete Konten (Dritte) werden nicht angefragt.
+
+**Zeitraum:** Die volle Historie ab 2015 wird nur verlangt, wenn der Dialog
+selbst mit einer Freigabe (3955) eröffnet wurde, sonst höchstens 89 Tage.
+Verlangt die Bank eine weitere Freigabe, wird einmal mit 89 Tagen
+wiederholt, danach werden die übrigen Konten nicht mehr angefragt. Es wird
+nie eine TAN angefordert oder gesendet (C3). Die Übernahme läuft wie im
+Wochenabgleich (v2-Schlüssel, PDF-Verknüpfung, jetzt auch für
+`kk_pdf_import`). Je Konto gibt es eine Abrufprobe (Lieferung lückenlos?) und
+eine Saldenprobe (Bestand), dazu eine Telegram-Meldung nur mit Endziffern.
+Die Abgleich-Sperre 43 wird gehalten; ist sie belegt, wird der Dialog sofort
+geschlossen.
+
+---
+
 ## Stand 2026-10-16 — Dropbox mit Vollzugriff, neue App ohne Secret
 
 Bisher sah bikosoc nur seinen eigenen App-Ordner. Was dort nicht lag, war nicht

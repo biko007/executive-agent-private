@@ -39,6 +39,7 @@ async function sidecarFetch(
   path: string,
   init?: RequestInit,
   maxRetries?: number,
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<Response> {
   const url = `${getBaseUrl()}${path}`;
   const token = getToken();
@@ -55,7 +56,7 @@ async function sidecarFetch(
       const res = await fetchWithTimeout(url, {
         ...init,
         headers: { ...headers, ...(init?.headers as Record<string, string> || {}) },
-      }, TIMEOUT_MS);
+      }, timeoutMs);
 
       // No retry on 4xx
       if (res.status >= 400 && res.status < 500) {
@@ -100,6 +101,8 @@ export async function health(): Promise<{ status: string }> {
 
 export interface ConnectResponse {
   needs_tan?: boolean;
+  /** Dialog nach erfolgreichem Verbinden offen gehalten — Umsatzabruf folgt (20.10.2026) */
+  dialog_offen?: boolean;
   tan_type?: string;
   tan_message?: string;
   tan_decoupled?: boolean;
@@ -183,6 +186,36 @@ export async function completeTan(params: {
     body: JSON.stringify(params),
   }, 0);
   return res.json();
+}
+
+/**
+ * Umsatzabruf im offen gehaltenen Verbindungsdialog — POST /fints/abruf-im-dialog
+ * (20.10.2026). Langes Zeitlimit: der Abruf der vollen Historie mehrerer
+ * Konten dauert. Keine Wiederholung — der Dialog ist danach geschlossen.
+ */
+export interface AbrufKonto {
+  iban: string;
+  status: 'ok' | 'tan_noetig' | 'fehler' | 'uebersprungen';
+  ab?: string | null;
+  fehler?: string;
+  transactions: any[];
+  balance: number | null;
+  statement_opening: { datum: string; betrag: number } | null;
+  statement_closing: { datum: string; betrag: number } | null;
+}
+
+export async function abrufImDialog(params: {
+  session_id: number;
+  ausschliessen_ibans: string[];
+  from_date?: string;
+}): Promise<{ konten: AbrufKonto[]; client_data?: string }> {
+  const res = await sidecarFetch('/fints/abruf-im-dialog', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  // Volle Historie ab 2015 für bis zu zehn Konten: 15 Minuten, ohne Wiederholung
+  // (eine Wiederholung fände den Dialog ohnehin geschlossen).
+  }, 0, 900_000);
+  return res.json() as Promise<{ konten: AbrufKonto[]; client_data?: string }>;
 }
 
 /**

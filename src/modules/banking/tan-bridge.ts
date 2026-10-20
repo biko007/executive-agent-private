@@ -26,6 +26,9 @@ import * as sidecar from './sidecar-client.js';
 import { tanVerfahrenFuerSidecar } from './banken.js';
 import { SidecarError } from './sidecar-client.js';
 
+import type { InstitutionRow, EncryptedPayload } from './types.js';
+import { rufeUmsaetzeNachVerbindenAb, abrufMeldung, maskiereFehlertext } from './abruf-nach-verbinden.js';
+
 /**
  * Fehlertext für das Formular. Der Sidecar antwortet bei Fachfehlern mit
  * HTTP 4xx und {error, detail}; sidecarFetch wirft dann eine SidecarError mit
@@ -41,7 +44,6 @@ export function fehlertextFuerFormular(e: any): string {
   }
   return String(e?.message || e);
 }
-import type { InstitutionRow, EncryptedPayload } from './types.js';
 
 // ── Dependencies injected from index.ts ────────────────────────────────────
 
@@ -57,6 +59,28 @@ export function initTanBridge(deps: TanBridgeDeps): void {
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
+
+/** Fire-and-forget: Fehler landen im Log und in Telegram, nie beim Formular. */
+function starteAbrufNachVerbinden(sessionId: number, institutionId: number, institutName: string): void {
+  // Der ganze Rumpf steht im try: ein Fehler hier darf nie als unbehandelte
+  // Ablehnung den Gateway-Prozess erreichen.
+  setImmediate(async () => {
+    try {
+      let text: string;
+      try {
+        text = abrufMeldung(institutName, await rufeUmsaetzeNachVerbindenAb(sessionId, institutionId));
+      } catch (e: any) {
+        const grund = maskiereFehlertext(fehlertextFuerFormular(e));
+        console.error('[banking] Abruf nach Verbinden fehlgeschlagen:', grund);
+        text = `⚠️ ${institutName}: Umsatzabruf nach dem Verbinden fehlgeschlagen — ${grund}`;
+      }
+      const chatId = _deps?.telegramChatId();
+      if (chatId) await _deps!.sendTelegram(chatId, text);
+    } catch (e: any) {
+      console.error('[banking] Meldung zum Abruf nach Verbinden fehlgeschlagen:', String(e?.message || e).slice(0, 200));
+    }
+  });
+}
 
 async function getInstitutionById(id: number): Promise<InstitutionRow | null> {
   const { rows } = await dbQuery<InstitutionRow>(
@@ -172,6 +196,11 @@ export async function initiateConnect(
           });
         }
         accountCount++;
+      }
+      // Dialog offen gehalten → Salden und Umsätze darin abrufen, NACH der
+      // Antwort an das Formular (20.10.2026, abruf-nach-verbinden.ts).
+      if ((response as any)?.dialog_offen) {
+        starteAbrufNachVerbinden(sessionId, Number(sessionRows[0].institution_id), institution.name);
       }
       // Erfolgreich verbunden: ältere Sitzungen desselben Instituts ablösen,
       // damit nur diese eine abgleicht (20.10.2026, drei parallele KSK-Sitzungen).
@@ -320,6 +349,11 @@ export async function completeTan(
           });
         }
         accountCount++;
+      }
+      // Dialog offen gehalten → Salden und Umsätze darin abrufen, NACH der
+      // Antwort an das Formular (20.10.2026, abruf-nach-verbinden.ts).
+      if ((response as any)?.dialog_offen) {
+        starteAbrufNachVerbinden(sessionId, Number(sessionRows[0].institution_id), institution.name);
       }
       // Erfolgreich verbunden: ältere Sitzungen desselben Instituts ablösen,
       // damit nur diese eine abgleicht (20.10.2026, drei parallele KSK-Sitzungen).

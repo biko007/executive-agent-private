@@ -687,15 +687,17 @@ export async function uebernimmSynchronisiertenUmsatz(
     }
     const neueId = num(eingefuegt.rows[0].id);
 
-    /* PDF-Kandidaten: gleiche Quelle wie die bestehende Bereinigung in
-       mietforderungen.ts ('pdf_import'), passende Gegenpartei vor Datumsabstand. */
+    /* PDF-Kandidaten: Kontoauszüge ('pdf_import', wie die Bereinigung in
+       mietforderungen.ts) und Kreditkartenabrechnungen ('kk_pdf_import', seit
+       der Zusammenführung der Kartenkonten 20.10.2026); passende Gegenpartei
+       vor Datumsabstand. */
     const gegenpartei = ohneLeer(txData.counterparty_name).toLowerCase().slice(0, 10);
     const kandidaten = await client.query<{ id: string; passt: boolean; abstand: number }>(
       `SELECT id,
               (length($5) >= 3 AND lower(left(${OHNE_LEER('counterparty_name')}, 10)) = $5) AS passt,
               abs(booking_date - $4::date) AS abstand
          FROM banking_transactions
-        WHERE account_id = $1 AND source = 'pdf_import' AND duplicate_of IS NULL
+        WHERE account_id = $1 AND source IN ('pdf_import', 'kk_pdf_import') AND duplicate_of IS NULL
           AND amount = $3 AND abs(booking_date - $4::date) <= 3 AND id <> $2
         ORDER BY passt DESC, abstand, id
         LIMIT 2`,
