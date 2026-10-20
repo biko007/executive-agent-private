@@ -114,6 +114,18 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
     `CREATE INDEX IF NOT EXISTS idx_banking_transactions_source
        ON banking_transactions(source) WHERE source <> 'fints'`);
 
+  // V042 (Assets-Modul) — nur die zwei Banking-Spalten, aus demselben Grund
+  // wie bei V040: Der Rest der Migration hängt an Assets-Tabellen. Die
+  // Übernahme im Abgleich (uebernimmSynchronisiertenUmsatz, 20.10.2026)
+  // verknüpft PDF-Dubletten über duplicate_of und setzt updated_at; in der
+  // Produktion stehen beide Spalten seit V042.
+  await testPool.query(
+    `ALTER TABLE banking_transactions
+       ADD COLUMN IF NOT EXISTS duplicate_of bigint REFERENCES banking_transactions(id) ON DELETE SET NULL`);
+  await testPool.query(
+    `ALTER TABLE banking_transactions
+       ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
   // approval_tokens table (needed by approval workflow tests)
   await testPool.query(`
     CREATE TABLE IF NOT EXISTS approval_tokens (

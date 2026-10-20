@@ -20,6 +20,7 @@ import {
   expireOldPendingChallenges,
   upsertAccount,
   updateSessionState,
+  loeseAndereSitzungenAb,
 } from './store.js';
 import * as sidecar from './sidecar-client.js';
 import type { InstitutionRow, EncryptedPayload } from './types.js';
@@ -151,6 +152,19 @@ export async function initiateConnect(
           });
         }
         accountCount++;
+      }
+      // Erfolgreich verbunden: ältere Sitzungen desselben Instituts ablösen,
+      // damit nur diese eine abgleicht (20.10.2026, drei parallele KSK-Sitzungen).
+      // Scheitert das, ist die Verbindung trotzdem gelungen — nur protokollieren.
+      try {
+        await loeseAndereSitzungenAb(Number(sessionRows[0].institution_id), sessionId);
+      } catch (e: any) {
+        console.error('[banking] Ablösen älterer Sitzungen fehlgeschlagen:', e.message);
+        await audit.log({
+          module: 'banking', action: 'session.deactivate_failed',
+          entityType: 'banking_session', entityId: String(sessionId),
+          after: { institution_id: sessionRows[0].institution_id, fehler: String(e.message).slice(0, 200) },
+        }).catch(() => {});
       }
       return { status: 'connected', accountCount };
     }
@@ -285,6 +299,19 @@ export async function completeTan(
           });
         }
         accountCount++;
+      }
+      // Erfolgreich verbunden: ältere Sitzungen desselben Instituts ablösen,
+      // damit nur diese eine abgleicht (20.10.2026, drei parallele KSK-Sitzungen).
+      // Scheitert das, ist die Verbindung trotzdem gelungen — nur protokollieren.
+      try {
+        await loeseAndereSitzungenAb(Number(sessionRows[0].institution_id), sessionId);
+      } catch (e: any) {
+        console.error('[banking] Ablösen älterer Sitzungen fehlgeschlagen:', e.message);
+        await audit.log({
+          module: 'banking', action: 'session.deactivate_failed',
+          entityType: 'banking_session', entityId: String(sessionId),
+          after: { institution_id: sessionRows[0].institution_id, fehler: String(e.message).slice(0, 200) },
+        }).catch(() => {});
       }
       return { status: 'connected', accountCount };
     }

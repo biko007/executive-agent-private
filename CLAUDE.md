@@ -370,7 +370,7 @@ Bei neuem Prefix: CALLBACK_PREFIXES (index.ts) + diese Tabelle aktualisieren.
 **Advisory-Lock-Registry (kanonisch, EINE Fassung, verifiziert 2026-07-20):**
 ```
 42  Withings-Sync         health/withings.ts
-43  Banking-Test          test-only (nicht Produktion)
+43  Banking-Abgleich      banking/sync-engine.ts (eigene Verbindung, seit 20.10.2026)
 44  SharePoint-Sync       sharepoint/store.ts
 46  Banking-Session       banking/store.ts (per userId+institutionId)
 47  Oura-Sync             health/oura.ts

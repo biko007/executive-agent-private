@@ -4,14 +4,15 @@
  *
  * Etappe f: Decrypts session credentials, passes to sidecar with state blobs.
  */
-import { query as dbQuery } from '../../shared/db/index.js';
+import { query as dbQuery, getClient } from '../../shared/db/index.js';
+import type pg from 'pg';
 import * as audit from '../../shared/audit/index.js';
 import * as sidecar from './sidecar-client.js';
 import { SidecarError } from './sidecar-client.js';
 import {
   listActiveSessions,
   listAccounts,
-  insertTransaction,
+  uebernimmUmsaetze,
   updateAccountBalance,
   hasReminderBeenSent,
   markReminderSent,
@@ -26,6 +27,47 @@ import {
   getSyncRunById,
 } from './store.js';
 import type { Session, InstitutionRow } from './types.js';
+
+// ── Abgleich-Sperre (Advisory Lock 43) ───────────────────────────────────────
+//
+// ANLASS (20.10.2026): Die Sperre wurde über den Verbindungspool genommen und
+// freigegeben. Ein Advisory Lock gehört aber der Datenbankverbindung, und er
+// ist für dieselbe Verbindung wiedereintretbar: Bekam ein zweiter Aufruf
+// zufällig dieselbe Poolverbindung, „erhielt" er die Sperre ebenfalls und lief
+// parallel — so entstanden drei Läufe binnen 13 Sekunden. Und die Freigabe
+// über eine andere Verbindung liess die Sperre bis zum Schliessen der ersten
+// hängen (Meldung „SKIPPED_ALREADY_RUNNING" beim nächsten Klick).
+// Jetzt: eine eigene Verbindung für die ganze Laufzeit, Freigabe auf derselben.
+
+/** Nimmt die Abgleich-Sperre. Gibt die haltende Verbindung zurück, oder null, wenn schon ein Lauf aktiv ist. */
+export async function nimmAbgleichSperre(): Promise<pg.PoolClient | null> {
+  const client = await getClient();
+  /* Eine ausgeliehene Verbindung, die die Datenbank abbricht, würfe sonst einen
+     unbehandelten Fehler. Die Sperre endet mit der Verbindung ohnehin. */
+  client.on('error', (e) => console.error('[banking] Verbindung der Abgleich-Sperre abgebrochen:', e.message));
+  try {
+    const { rows } = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock(43) AS ok');
+    if (rows[0]?.ok) return client;
+    client.release();
+    return null;
+  } catch (e) {
+    client.release();
+    throw e;
+  }
+}
+
+/** Gibt die Abgleich-Sperre auf derselben Verbindung frei und gibt diese an den Pool zurück. */
+export async function gibAbgleichSperreFrei(client: pg.PoolClient): Promise<void> {
+  try {
+    await client.query('SELECT pg_advisory_unlock(43)');
+  } catch {
+    // Scheitert die Freigabe, wird die Verbindung verworfen statt zurückgegeben —
+    // mit ihr endet die Sitzung und damit die Sperre.
+    client.release(true);
+    return;
+  }
+  client.release();
+}
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -162,11 +204,9 @@ export async function startWeeklySync(options?: {
   let scaRequired = false;
   let anyPaused = false;
 
-  // Advisory lock (non-blocking)
-  const { rows: lockRows } = await dbQuery<{ pg_try_advisory_lock: boolean }>(
-    'SELECT pg_try_advisory_lock(43)',
-  );
-  if (!lockRows[0].pg_try_advisory_lock) {
+  // Advisory lock (non-blocking) — auf einer eigenen Verbindung, siehe nimmAbgleichSperre
+  const sperre = await nimmAbgleichSperre();
+  if (!sperre) {
     return {
       run_id: runId,
       status: 'SKIPPED_ALREADY_RUNNING',
@@ -356,21 +396,22 @@ export async function startWeeklySync(options?: {
           let txInserted = 0;
           if (result?.transactions && Array.isArray(result.transactions)) {
             txSeen = result.transactions.length;
-            for (const tx of result.transactions) {
-              const inserted = await insertTransaction(account.id, {
-                bank_transaction_id: tx.bank_transaction_id,
-                booking_date: tx.booking_date,
-                value_date: tx.value_date,
-                amount: tx.amount,
-                currency: tx.currency || account.currency,
-                counterparty_name: tx.counterparty_name,
-                counterparty_iban: tx.counterparty_iban,
-                reference: tx.reference,
-                transaction_code: tx.transaction_code,
-                raw_payload: tx,
-              });
-              if (inserted) txInserted++;
-            }
+            /* Übernahme mit Schlüsselübergang in zwei Durchgängen (20.10.2026),
+               siehe uebernimmUmsaetze in store.ts. */
+            const befunde = await uebernimmUmsaetze(account.id, result.transactions.map((tx: any) => ({
+              bank_transaction_id: tx.bank_transaction_id,
+              legacy_transaction_id: tx.legacy_transaction_id,
+              booking_date: tx.booking_date,
+              value_date: tx.value_date,
+              amount: tx.amount,
+              currency: tx.currency || account.currency,
+              counterparty_name: tx.counterparty_name,
+              counterparty_iban: tx.counterparty_iban,
+              reference: tx.reference,
+              transaction_code: tx.transaction_code,
+              raw_payload: tx,
+            })));
+            txInserted += befunde.filter(b => b.ergebnis === 'neu').length;
           }
 
           // Update account balance
@@ -533,7 +574,7 @@ export async function startWeeklySync(options?: {
       accounts: accountResults,
     };
   } finally {
-    await dbQuery('SELECT pg_advisory_unlock(43)').catch(() => {});
+    await gibAbgleichSperreFrei(sperre);
   }
 }
 
@@ -673,10 +714,8 @@ export async function eventResync(
   let scaRequired = false;
 
   // Same advisory lock (43) — collision → SKIPPED_ALREADY_RUNNING
-  const { rows: lockRows } = await dbQuery<{ pg_try_advisory_lock: boolean }>(
-    'SELECT pg_try_advisory_lock(43)',
-  );
-  if (!lockRows[0].pg_try_advisory_lock) {
+  const sperre = await nimmAbgleichSperre();
+  if (!sperre) {
     return {
       run_id: runId,
       status: 'SKIPPED_ALREADY_RUNNING',
@@ -822,21 +861,22 @@ export async function eventResync(
         let txInserted = 0;
         if (result?.transactions && Array.isArray(result.transactions)) {
           txSeen = result.transactions.length;
-          for (const tx of result.transactions) {
-            const inserted = await insertTransaction(account.id, {
-              bank_transaction_id: tx.bank_transaction_id,
-              booking_date: tx.booking_date,
-              value_date: tx.value_date,
-              amount: tx.amount,
-              currency: tx.currency || account.currency,
-              counterparty_name: tx.counterparty_name,
-              counterparty_iban: tx.counterparty_iban,
-              reference: tx.reference,
-              transaction_code: tx.transaction_code,
-              raw_payload: tx,
-            });
-            if (inserted) txInserted++;
-          }
+          /* Übernahme mit Schlüsselübergang in zwei Durchgängen (20.10.2026),
+             siehe uebernimmUmsaetze in store.ts. */
+          const befunde = await uebernimmUmsaetze(account.id, result.transactions.map((tx: any) => ({
+            bank_transaction_id: tx.bank_transaction_id,
+            legacy_transaction_id: tx.legacy_transaction_id,
+            booking_date: tx.booking_date,
+            value_date: tx.value_date,
+            amount: tx.amount,
+            currency: tx.currency || account.currency,
+            counterparty_name: tx.counterparty_name,
+            counterparty_iban: tx.counterparty_iban,
+            reference: tx.reference,
+            transaction_code: tx.transaction_code,
+            raw_payload: tx,
+          })));
+          txInserted += befunde.filter(b => b.ergebnis === 'neu').length;
         }
 
         if (result?.balance !== undefined) {
@@ -983,7 +1023,7 @@ export async function eventResync(
       accounts: accountResults,
     };
   } finally {
-    await dbQuery('SELECT pg_advisory_unlock(43)').catch(() => {});
+    await gibAbgleichSperreFrei(sperre);
   }
 }
 

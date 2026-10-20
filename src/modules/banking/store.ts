@@ -553,6 +553,195 @@ export async function insertTransaction(
 }
 
 /**
+ * Ergebnis der Übernahme eines Umsatzes aus dem FinTS-Abgleich.
+ *  - `neu`:             eingefügt
+ *  - `umgeschluesselt`: vorhandene Buchung mit altem Schlüssel erkannt und auf
+ *                       den neuen umgestellt (Übergang 20.10.2026)
+ *  - `vorhanden`:       schon mit neuem Schlüssel gespeichert
+ *  - `offen`:           nur im ersten Durchgang — noch nichts entschieden
+ */
+export type UebernahmeErgebnis = 'neu' | 'umgeschluesselt' | 'vorhanden' | 'offen';
+
+export interface SyncUmsatz {
+  bank_transaction_id: string;
+  legacy_transaction_id?: string;
+  booking_date: string;
+  value_date?: string;
+  amount: number;
+  currency: string;
+  counterparty_name?: string;
+  counterparty_iban?: string;
+  reference?: string;
+  transaction_code?: string;
+  raw_payload: Record<string, unknown>;
+}
+
+export interface UebernahmeBefund {
+  ergebnis: UebernahmeErgebnis;
+  id: number | null;
+  /** id der PDF-Zeile, die als Dublette dieser FinTS-Zeile markiert wurde */
+  pdfVerknuepft: number | null;
+  /** mehrere gleichwertige PDF-Kandidaten — nicht verknüpft, zur Prüfung gemeldet */
+  pdfMehrdeutig: boolean;
+}
+
+/* Texte für den Vergleich ohne Leerzeichen: Der Kontoauszug trennt Wörter an
+   Zeilenenden unterschiedlich („Ihr E inkauf"). */
+const OHNE_LEER = (spalte: string) => `regexp_replace(coalesce(${spalte}, ''), '\\s+', '', 'g')`;
+const ohneLeer = (t: string | undefined) => String(t ?? '').replace(/\s+/g, '');
+
+/**
+ * Übernimmt einen Umsatz aus dem FinTS-Abgleich — Nachfolger von
+ * `insertTransaction` für den Sync. Aufrufer verwenden `uebernimmUmsaetze`,
+ * das die zwei Durchgänge steuert.
+ *
+ * ANLASS (20.10.2026): Der alte Schlüssel des Sidecars (Datum + Betrag +
+ * Buchungsart) war nicht eindeutig; zwei gleiche Gutschriften am selben Tag
+ * wurden zu einer. Der Sidecar liefert jetzt einen eindeutigen Schlüssel (`v2_…`)
+ * UND den alten (`legacy_transaction_id`). In einer Transaktion gilt:
+ *
+ *  1. Neuer Schlüssel schon da → `vorhanden`.
+ *  2. FinTS-Zeile mit ALTEM Schlüssel da → auf den neuen umschlüsseln und die
+ *     Texte aus dem frischen Abruf übernehmen → `umgeschluesselt`. Im ersten
+ *     Durchgang (`nurTextgleich`) nur, wenn Verwendungszweck und Gegenpartei
+ *     übereinstimmen — sonst könnte die Zeile von Buchung B (an der schon
+ *     Zahlungszuordnungen hängen) auf Buchung A umgestellt werden.
+ *  3. Sonst einfügen → `neu`. Steht dieselbe Buchung schon aus einem
+ *     PDF-Import da (gleicher Betrag, höchstens drei Tage Abstand, noch nicht
+ *     verknüpft; passende Gegenpartei bevorzugt), wird die PDF-Zeile als
+ *     Dublette markiert. Gibt es mehrere gleichwertige Kandidaten, wird NICHT
+ *     verknüpft, sondern `pdfMehrdeutig` gemeldet.
+ */
+export async function uebernimmSynchronisiertenUmsatz(
+  accountId: number,
+  txData: SyncUmsatz,
+  modus: 'nurTextgleich' | 'voll' = 'voll',
+): Promise<UebernahmeBefund> {
+  const client = await getClient();
+  let freigegeben = false;
+  try {
+    await client.query('BEGIN');
+
+    const vorhanden = await client.query<{ id: string }>(
+      'SELECT id FROM banking_transactions WHERE account_id = $1 AND bank_transaction_id = $2',
+      [accountId, txData.bank_transaction_id],
+    );
+    if (vorhanden.rows.length > 0) {
+      await client.query('COMMIT');
+      return { ergebnis: 'vorhanden', id: num(vorhanden.rows[0].id), pdfVerknuepft: null, pdfMehrdeutig: false };
+    }
+
+    if (txData.legacy_transaction_id && txData.legacy_transaction_id !== txData.bank_transaction_id) {
+      const textBedingung = modus === 'nurTextgleich'
+        ? `AND ${OHNE_LEER('reference')} = $10 AND ${OHNE_LEER('counterparty_name')} = $11`
+        : '';
+      const umgestellt = await client.query<{ id: string }>(
+        `UPDATE banking_transactions
+            SET bank_transaction_id = $3, value_date = $4, counterparty_name = $5,
+                counterparty_iban = $6, reference = $7, transaction_code = $8,
+                raw_payload = $9, updated_at = NOW()
+          WHERE id = (SELECT id FROM banking_transactions
+                       WHERE account_id = $1 AND bank_transaction_id = $2 AND source = 'fints'
+                       ${textBedingung}
+                       ORDER BY id LIMIT 1)
+          RETURNING id`,
+        [
+          accountId, txData.legacy_transaction_id, txData.bank_transaction_id,
+          txData.value_date || null, txData.counterparty_name || null,
+          txData.counterparty_iban || null, txData.reference || null,
+          txData.transaction_code || null, JSON.stringify(txData.raw_payload),
+          ...(modus === 'nurTextgleich' ? [ohneLeer(txData.reference), ohneLeer(txData.counterparty_name)] : []),
+        ],
+      );
+      if (umgestellt.rows.length > 0) {
+        await client.query('COMMIT');
+        return { ergebnis: 'umgeschluesselt', id: num(umgestellt.rows[0].id), pdfVerknuepft: null, pdfMehrdeutig: false };
+      }
+    }
+
+    if (modus === 'nurTextgleich') {
+      await client.query('COMMIT');
+      return { ergebnis: 'offen', id: null, pdfVerknuepft: null, pdfMehrdeutig: false };
+    }
+
+    const eingefuegt = await client.query<{ id: string }>(
+      `INSERT INTO banking_transactions
+         (account_id, bank_transaction_id, booking_date, value_date,
+          amount, currency, counterparty_name, counterparty_iban,
+          reference, transaction_code, raw_payload, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'fints')
+       ON CONFLICT (account_id, bank_transaction_id) DO NOTHING
+       RETURNING id`,
+      [
+        accountId, txData.bank_transaction_id, txData.booking_date, txData.value_date || null,
+        txData.amount, txData.currency, txData.counterparty_name || null,
+        txData.counterparty_iban || null, txData.reference || null,
+        txData.transaction_code || null, JSON.stringify(txData.raw_payload),
+      ],
+    );
+    if (eingefuegt.rows.length === 0) {
+      await client.query('COMMIT');
+      return { ergebnis: 'vorhanden', id: null, pdfVerknuepft: null, pdfMehrdeutig: false };
+    }
+    const neueId = num(eingefuegt.rows[0].id);
+
+    /* PDF-Kandidaten: gleiche Quelle wie die bestehende Bereinigung in
+       mietforderungen.ts ('pdf_import'), passende Gegenpartei vor Datumsabstand. */
+    const gegenpartei = ohneLeer(txData.counterparty_name).toLowerCase().slice(0, 10);
+    const kandidaten = await client.query<{ id: string; passt: boolean; abstand: number }>(
+      `SELECT id,
+              (length($5) >= 3 AND lower(left(${OHNE_LEER('counterparty_name')}, 10)) = $5) AS passt,
+              abs(booking_date - $4::date) AS abstand
+         FROM banking_transactions
+        WHERE account_id = $1 AND source = 'pdf_import' AND duplicate_of IS NULL
+          AND amount = $3 AND abs(booking_date - $4::date) <= 3 AND id <> $2
+        ORDER BY passt DESC, abstand, id
+        LIMIT 2`,
+      [accountId, neueId, txData.amount, txData.booking_date, gegenpartei],
+    );
+    let pdfVerknuepft: number | null = null;
+    let pdfMehrdeutig = false;
+    const [erster, zweiter] = kandidaten.rows;
+    if (erster) {
+      if (zweiter && zweiter.passt === erster.passt && Number(zweiter.abstand) === Number(erster.abstand)) {
+        pdfMehrdeutig = true;
+      } else {
+        await client.query(
+          'UPDATE banking_transactions SET duplicate_of = $2, updated_at = NOW() WHERE id = $1',
+          [erster.id, neueId],
+        );
+        pdfVerknuepft = num(erster.id);
+      }
+    }
+
+    await client.query('COMMIT');
+    return { ergebnis: 'neu', id: neueId, pdfVerknuepft, pdfMehrdeutig };
+  } catch (e: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    // Verbindung mit Fehler verwerfen statt in den Pool zurückgeben
+    client.release(e);
+    freigegeben = true;
+    throw e;
+  } finally {
+    if (!freigegeben) client.release();
+  }
+}
+
+/**
+ * Übernimmt alle Umsätze eines Abrufs in zwei Durchgängen (siehe oben):
+ * erst die textgleichen Umschlüsselungen, dann der Rest. Liefert die Befunde
+ * in der Reihenfolge der Eingabe.
+ */
+export async function uebernimmUmsaetze(accountId: number, umsaetze: SyncUmsatz[]): Promise<UebernahmeBefund[]> {
+  const befunde: UebernahmeBefund[] = [];
+  for (const tx of umsaetze) befunde.push(await uebernimmSynchronisiertenUmsatz(accountId, tx, 'nurTextgleich'));
+  for (let i = 0; i < umsaetze.length; i++) {
+    if (befunde[i].ergebnis === 'offen') befunde[i] = await uebernimmSynchronisiertenUmsatz(accountId, umsaetze[i], 'voll');
+  }
+  return befunde;
+}
+
+/**
  * List transactions for an account with optional date range and limit.
  */
 export async function listTransactions(
@@ -976,6 +1165,35 @@ export async function findReusableSession(
   }
 
   return null;
+}
+
+/**
+ * Löst alle anderen Sitzungen eines Instituts ab, nachdem eine Sitzung
+ * erfolgreich verbunden wurde.
+ *
+ * ANLASS (20.10.2026): Jedes „Bank verbinden" legte eine neue Sitzung an und
+ * liess die alten aktiv stehen — für die KSK waren es drei. Abgelöst wird wie
+ * bei der manuellen Stilllegung vom 22.06.2026 (Audit 721): `institution_id`
+ * auf NULL; `listActiveSessions()` sieht die Sitzung dann nicht mehr. Die Zeile
+ * bleibt erhalten, damit Audit und Erinnerungen nachvollziehbar bleiben.
+ */
+export async function loeseAndereSitzungenAb(institutionId: number, behalteSessionId: number): Promise<number[]> {
+  const { rows } = await dbQuery<{ id: string }>(
+    `UPDATE banking_sessions SET institution_id = NULL, updated_at = NOW()
+      WHERE institution_id = $1 AND id <> $2
+      RETURNING id`,
+    [institutionId, behalteSessionId],
+  );
+  const ids = rows.map(r => num(r.id));
+  if (ids.length > 0) {
+    await audit.log({
+      module: 'banking', action: 'session.deactivate',
+      entityType: 'banking_session', entityId: ids.join(','),
+      before: { session_ids: ids, institution_id: institutionId },
+      after: { institution_id: null, abgeloest_durch: behalteSessionId, grund: 'neue Sitzung erfolgreich verbunden' },
+    });
+  }
+  return ids;
 }
 
 /**
