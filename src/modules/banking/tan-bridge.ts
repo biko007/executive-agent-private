@@ -23,6 +23,24 @@ import {
   loeseAndereSitzungenAb,
 } from './store.js';
 import * as sidecar from './sidecar-client.js';
+import { tanVerfahrenFuerSidecar } from './banken.js';
+import { SidecarError } from './sidecar-client.js';
+
+/**
+ * Fehlertext für das Formular. Der Sidecar antwortet bei Fachfehlern mit
+ * HTTP 4xx und {error, detail}; sidecarFetch wirft dann eine SidecarError mit
+ * dem rohen JSON. Gezeigt wird der Klartext aus `detail` (20.10.2026).
+ */
+export function fehlertextFuerFormular(e: any): string {
+  if (e instanceof SidecarError && e.responseBody) {
+    try {
+      const inhalt = JSON.parse(e.responseBody);
+      if (inhalt?.detail) return String(inhalt.detail);
+      if (inhalt?.error) return String(inhalt.error);
+    } catch { /* kein JSON — unten weiter */ }
+  }
+  return String(e?.message || e);
+}
 import type { InstitutionRow, EncryptedPayload } from './types.js';
 
 // ── Dependencies injected from index.ts ────────────────────────────────────
@@ -64,8 +82,8 @@ export async function initiateConnect(
   }
 
   // Look up institution for BLZ and FinTS URL
-  const { rows: sessionRows } = await dbQuery<{ institution_id: number; product_id: string }>(
-    'SELECT institution_id, product_id FROM banking_sessions WHERE id = $1',
+  const { rows: sessionRows } = await dbQuery<{ institution_id: number; product_id: string; tan_medium_name: string | null }>(
+    'SELECT institution_id, product_id, tan_medium_name FROM banking_sessions WHERE id = $1',
     [sessionId],
   );
   if (sessionRows.length === 0) {
@@ -93,6 +111,8 @@ export async function initiateConnect(
       // 'env-default' is a DB sentinel → map to undefined so sidecar's env fallback triggers
       product_id: sessionRows[0].product_id === 'env-default' ? undefined : sessionRows[0].product_id,
       client_data_b64: clientDataB64 ?? undefined,
+      // nur bei SecureGo plus gesetzt; S-pushTAN bleibt bei der Automatik
+      tan_verfahren: tanVerfahrenFuerSidecar(sessionRows[0].tan_medium_name),
     });
 
     // Sidecar returned needs_tan
@@ -171,12 +191,13 @@ export async function initiateConnect(
 
     // Sidecar returned error
     if (response?.error) {
-      return { status: 'error', error: response.error };
+      // Klartext (detail) bevorzugen: Das Formular zeigt ihn dem Owner an.
+      return { status: 'error', error: (response as any).detail || response.error };
     }
 
     return { status: 'connected', accountCount: 0 };
   } catch (e: any) {
-    return { status: 'error', error: e.message };
+    return { status: 'error', error: fehlertextFuerFormular(e) };
   }
 }
 
@@ -318,12 +339,13 @@ export async function completeTan(
 
     // Error from sidecar
     if (response?.error) {
-      return { status: 'error', error: response.error };
+      // Klartext (detail) bevorzugen: Das Formular zeigt ihn dem Owner an.
+      return { status: 'error', error: (response as any).detail || response.error };
     }
 
     return { status: 'connected', accountCount: 0 };
   } catch (e: any) {
-    return { status: 'error', error: e.message };
+    return { status: 'error', error: fehlertextFuerFormular(e) };
   }
 }
 

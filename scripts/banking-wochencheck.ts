@@ -114,7 +114,9 @@ async function main() {
 
   // ── 1. Abgleich je Institut ────────────────────────────────────────────
   const institute = (await query(
-    `SELECT i.id, i.name, i.fints_url, i.sync_paused_status, i.sync_paused_since
+    `SELECT i.id, i.name, i.fints_url, i.sync_paused_status, i.sync_paused_since,
+            (SELECT count(*)::int FROM banking_sessions s
+              WHERE s.institution_id = i.id AND s.pending_challenge_type IS NULL) AS sitzungen
        FROM banking_institutions i
       WHERE EXISTS (SELECT 1 FROM banking_accounts a WHERE a.institution_id = i.id AND a.status = 'active')
       ORDER BY i.id`)).rows;
@@ -130,9 +132,12 @@ async function main() {
     `SELECT institution_id, count(*)::int AS n FROM banking_sync_runs
       WHERE status = 'RUNNING' AND started_at < now() - interval '1 hour' GROUP BY 1`)).rows;
 
-  type Abgleich = { name: string; urteil: 'ok' | 'fehlgeschlagen' | 'TAN-Pause' | 'läuft noch' | 'kein Lauf' | 'nur PDF'; text: string };
+  type Abgleich = { name: string; urteil: 'ok' | 'fehlgeschlagen' | 'TAN-Pause' | 'läuft noch' | 'kein Lauf' | 'nur PDF' | 'nicht verbunden'; text: string };
   const abgleich: Abgleich[] = institute.map((i: any) => {
     if (!/^https?:\/\//.test(i.fints_url || '')) return { name: i.name, urteil: 'nur PDF', text: 'kein FinTS-Zugang, Umsätze nur per PDF-Import' };
+    /* Adresse hinterlegt, aber (noch) keine gültige Sitzung — etwa nach einem
+       gescheiterten ersten Verbinden. Kein ausgefallener Abgleich. */
+    if (Number(i.sitzungen) === 0) return { name: i.name, urteil: 'nicht verbunden', text: 'FinTS hinterlegt, aber keine aktive Sitzung — Umsätze bisher per PDF-Import' };
     if (i.sync_paused_status) return { name: i.name, urteil: 'TAN-Pause', text: `pausiert seit ${berlinZeit(i.sync_paused_since)} (${i.sync_paused_status})` };
     const l = laeufe.find((r: any) => Number(r.institution_id) === Number(i.id));
     if (!l) return { name: i.name, urteil: 'kein Lauf', text: 'heute kein Abgleich protokolliert' };
@@ -283,7 +288,7 @@ async function main() {
     : gescheitert.length > 0 ? `Im Dashboard für ${gescheitert.map(g => g.name).join(', ')} „Abgleich jetzt" drücken` : 'keine';
   const ms = mieterstrom.find(m => m.objekt === 'MG24');
   const ergebnis = [
-    `Abgleich: ${abgleich.filter(a => a.urteil !== 'nur PDF').map(a => `${a.name.split(' ')[0]} ${a.urteil}`).join(', ') || 'kein FinTS-Institut'}; ${neuGesamt} neue Umsätze`,
+    `Abgleich: ${abgleich.filter(a => a.urteil !== 'nur PDF' && a.urteil !== 'nicht verbunden').map(a => `${a.name.split(' ')[0]} ${a.urteil}`).join(', ') || 'kein FinTS-Institut'}; ${neuGesamt} neue Umsätze`,
     `Saldenprobe ${saldoAuffaellig.length === 0 ? 'ohne Abweichung' : saldoAuffaellig.length + '× auffällig'}; ${unklar.length} neue unklare Buchungen ab 25 €; ${fehlend.length} erwartete Zahlungen ausgeblieben`,
     ms?.angebunden ? `Mieterstrom MG24: ${euro(ms.offen)} offen, davon Allgemeinstrom 390-001 ${ms.fehlt390001} Abschläge` : 'Mieterstrom MG24: Stromkonto nicht aktiv',
   ];

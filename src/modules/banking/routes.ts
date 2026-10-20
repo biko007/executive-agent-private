@@ -3,6 +3,7 @@
  * Sprint 7b Etappe c: Follows fleet/routes.ts pattern exactly.
  * Auth: Bearer CORE_SERVICE_TOKEN. Actor from X-Actor header.
  */
+import { unterstuetzteBank } from './banken.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseJsonBody } from '../../util/body-parser.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
@@ -335,12 +336,20 @@ export function registerBankingHttpRoutes(api: any) {
               if (body.session_id) {
                 connectSessionId = Number(body.session_id);
               } else if (body.blz && body.user_id && body.pin) {
-                // Dashboard credential flow: upsert institution + decideReuse (find-or-create)
+                // Dashboard credential flow: upsert institution + decideReuse (find-or-create).
+                // Name und FinTS-Adresse kommen aus der festen Bankliste, nicht aus der
+                // Anfrage (20.10.2026) — eine bekannte BLZ trifft so immer ihren
+                // vorhandenen Institutseintrag, es entsteht kein zweiter.
+                const bank = unterstuetzteBank(body.blz);
+                if (!bank) {
+                  err(res, 400, `Bank ${String(body.blz).slice(0, 8)} wird nicht unterstuetzt`);
+                  return;
+                }
                 const inst = await upsertInstitution(
-                  body.blz,
-                  body.bank_name || `Bank ${body.blz}`,
+                  bank.blz,
+                  bank.name,
                   null,
-                  body.fints_url || '',
+                  bank.fintsUrl,
                   actor,
                 );
                 const ctx = await decideReuse(
@@ -348,7 +357,10 @@ export function registerBankingHttpRoutes(api: any) {
                   body.user_id,
                   body.pin,
                   body.product_id || 'env-default',
-                  body.tan_medium || undefined,
+                  // TAN-Verfahren: bei Banken mit festem Verfahren (Volksbank → SecureGo
+                  // plus) aus der Bankliste; sonst wie bisher aus dem Formular, aber
+                  // nie „SecureGo" für eine Bank, die es nicht vorsieht.
+                  bank.tanVerfahren ?? (body.tan_medium === 'SecureGo' ? undefined : (body.tan_medium || undefined)),
                   actor,
                 );
                 connectSessionId = ctx.sessionId;

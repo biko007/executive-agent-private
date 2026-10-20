@@ -122,7 +122,9 @@ export async function upsertInstitution(
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (blz) DO UPDATE SET
        name = EXCLUDED.name,
-       bic = EXCLUDED.bic,
+       -- vorhandene BIC behalten, wenn keine neue mitkommt (20.10.2026: das
+       -- Formular sendet keine, die Volksbank-BIC wäre sonst verloren)
+       bic = COALESCE(EXCLUDED.bic, banking_institutions.bic),
        fints_url = EXCLUDED.fints_url
      RETURNING *`,
     [blz, name, bic, fintsUrl],
