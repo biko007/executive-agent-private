@@ -174,8 +174,10 @@ export function anfangswert(banksaldo: number, summeUmsaetze: number): number {
 }
 
 export function saldenUrteil(jetzt: number, vorher: number | undefined, erwartet?: number): string {
-  if (erwartet !== undefined && Math.abs(jetzt - erwartet) >= 0.01) {
-    return `weicht um ${euro(jetzt - erwartet)} vom bekannten Anfangsstand ab`;
+  /* Bei bekanntem Anfangsstand (Stromkonto MG24: 0,00 €) zählt nur dieser —
+     der gespeicherte Bezug kann selbst schon eine Lücke enthalten. */
+  if (erwartet !== undefined) {
+    return Math.abs(jetzt - erwartet) < 0.01 ? 'stimmt' : `weicht um ${euro(jetzt - erwartet)} vom bekannten Anfangsstand ab`;
   }
   if (vorher === undefined) return 'erste Messung';
   if (Math.abs(jetzt - vorher) < 0.01) return 'stimmt';

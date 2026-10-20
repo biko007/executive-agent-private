@@ -135,6 +135,12 @@ describe('Saldenprobe', () => {
     expect(saldenUrteil(a, undefined, 0)).toContain('71,00');
   });
 
+  test('bekannter Anfangsstand geht vor dem gespeicherten Bezug', () => {
+    // Bezug 71 (mit Lücke gemessen), nach dem Nachtrag stimmt das Konto: keine Fehlmeldung
+    expect(saldenUrteil(0, 71, 0)).toBe('stimmt');
+    expect(saldenUrteil(71, 71, 0)).toContain('71,00');
+  });
+
   test('gleicher Anfangswert wie letzte Woche → stimmt', () => {
     expect(saldenUrteil(19708.32, 19708.32)).toBe('stimmt');
     expect(saldenUrteil(19708.32, undefined)).toBe('erste Messung');
