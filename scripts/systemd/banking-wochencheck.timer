@@ -1,0 +1,15 @@
+[Unit]
+Description=bikosoc Banking-Wochencheck jeden Montag 13:45 Berliner Zeit
+
+[Timer]
+# Der Montagsabgleich startet um 13:00 Berliner Zeit im Gateway und braucht
+# wenige Sekunden; 45 Minuten Abstand lassen auch einem Lauf mit pushTAN-
+# Rückfrage Zeit. Der Server läuft auf UTC, die Zeitzone steht deshalb
+# ausdrücklich im Ausdruck — so gilt 13:45 im Sommer wie im Winter.
+OnCalendar=Mon *-*-* 13:45:00 Europe/Berlin
+AccuracySec=1min
+# Server zur Zeit aus → beim nächsten Start einmal nachholen.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
