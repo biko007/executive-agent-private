@@ -40,6 +40,13 @@ const sichere = (name: string, daten: unknown) =>
 const kurz = (iban: string) => '…' + String(iban).slice(-4);
 const aktor = 'cc-bikosoc';
 const abIndex = process.argv.indexOf('--ab');
+/* --institut <id> und --ohne <id,id,…>: Neuabruf auf ein Institut bzw. ohne
+   bestimmte Konten (Volksbank 20.10.2026: Kreditkartenkonten ausgenommen, weil
+   ihre Umsätze schon aus den PDF-Abrechnungen stehen). */
+const instIndex = process.argv.indexOf('--institut');
+const NUR_INSTITUT = instIndex > 0 ? Number(process.argv[instIndex + 1]) : null;
+const ohneIndex = process.argv.indexOf('--ohne');
+const OHNE = new Set(ohneIndex > 0 ? String(process.argv[ohneIndex + 1] || '').split(',').map(Number) : []);
 const AB = abIndex > 0 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[abIndex + 1] || '') ? process.argv[abIndex + 1] : '2015-01-01';
 
 async function sitzungen() {
@@ -85,12 +92,14 @@ async function neuabruf() {
     for (const session of await listActiveSessions()) {
       const inst = (await query('SELECT id, blz, fints_url FROM banking_institutions WHERE id = $1', [session.institutionId])).rows[0];
       if (!inst || !/^https?:\/\//.test(inst.fints_url || '')) continue;
+      if (NUR_INSTITUT !== null && Number(inst.id) !== NUR_INSTITUT) continue;
       const zugang = await getDecryptedSession(Number(session.id));
       if (!zugang) { ergebnis.push({ institut: inst.id, fehler: 'Zugang nicht entschlüsselbar' }); continue; }
       const produkt = (await query('SELECT product_id FROM banking_sessions WHERE id = $1', [session.id])).rows[0]?.product_id;
       let clientData = zugang.state || undefined;
 
       for (const konto of await listAccounts({ institution_id: Number(inst.id), status: 'active' })) {
+        if (OHNE.has(Number(konto.id))) continue;
         const vorher = (await query(
           `SELECT count(*)::int AS n, coalesce(sum(amount), 0)::float AS summe
              FROM banking_transactions WHERE account_id = $1 AND duplicate_of IS NULL`, [konto.id])).rows[0];
