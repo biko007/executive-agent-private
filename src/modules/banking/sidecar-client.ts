@@ -118,6 +118,8 @@ export interface ConnectResponse {
  * Redact `client_data` and `client_data_b64` fields in objects for safe logging.
  * Recursively walks objects and arrays.
  */
+const ZUGANGSDATEN = new Set(['pin', 'user_id', 'userId', 'tan', 'tan_code']);
+
 export function redactClientData<T>(obj: T): T {
   if (obj == null || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) return obj.map(redactClientData) as T;
@@ -125,6 +127,10 @@ export function redactClientData<T>(obj: T): T {
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
     if ((key === 'client_data_b64' || key === 'client_data') && typeof val === 'string') {
       result[key] = `<REDACTED:${val.length}-chars>`;
+    } else if (ZUGANGSDATEN.has(key) && val != null) {
+      // C5 (20.10.2026): PIN, Anmeldename und TAN stehen NIE im Log — auch
+      // nicht ihre Länge. Vorher ging der connect-Aufruf ungeschwärzt ins Journal.
+      result[key] = '<REDACTED>';
     } else if (val != null && typeof val === 'object') {
       result[key] = redactClientData(val);
     } else {
@@ -145,6 +151,8 @@ export async function connect(params: {
   fints_url: string;
   product_id?: string;
   client_data_b64?: string | null;
+  /** 'SecureGo' = Sidecar wählt SecureGo plus und das TAN-Medium selbst (20.10.2026) */
+  tan_verfahren?: string;
 }): Promise<ConnectResponse> {
   console.log('[banking/sidecar] connect →', redactClientData(params));
   const res = await sidecarFetch('/fints/connect', {
