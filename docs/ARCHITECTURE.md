@@ -453,7 +453,11 @@ bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
   **nicht** ueber die Proton-Weiterleitung kam — also vom Owner weitergeleitet
   oder unmittelbar an data@ adressiert — bekommt zusaetzlich dieselbe Ablage
   wie der Eingangskanal: `transfer/mail-inbox/JJJJ-MM-TT_HHMM_<betreff>/` mit
-  `mail.eml`, `body.md` und den Dateianhaengen. Der Ordnername folgt dem
+  `mail.eml`, `body.md` und den Anhaengen. **Seit 21.10.2026 auch angehaengte
+  Mails** („Als Anlage weiterleiten"): Sie kommen ueber
+  `/attachments/{id}/$value` als `<betreff>.eml` in den Ordner
+  (`anhaengeAusGraph()` in `mail-eingang/graph.ts`, gilt fuer beide Kanaele);
+  vorher lagen sie nur eingebettet in der `mail.eml`. Der Ordnername folgt dem
   **Eintreffzeitpunkt**, nicht dem Datum des weitergeleiteten Originals.
   `body.md` nennt als zusaetzlichen Kopfpunkt den **urspruenglichen Absender**;
   bei einer Weiterleitung des Owners liest ihn `originalAbsenderAusText()` aus

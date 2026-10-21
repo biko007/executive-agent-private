@@ -22,6 +22,47 @@ export interface GraphZugangsdaten {
   user: string;
 }
 
+/**
+ * Anhaenge einer Nachricht ueber Graph holen — Dateien UND angehaengte Mails.
+ *
+ * Angehaengte Outlook-Mails (itemAttachment) liefern keine contentBytes. Bis
+ * 21.10.2026 wurden sie deshalb uebersprungen und lagen nur eingebettet in
+ * der mail.eml; beim Weiterleiten mit „Als Anlage" (Bauser-Mail 18.10.2026)
+ * fehlten so genau die Mails, um die es ging. Graph gibt ihren MIME-Text ueber
+ * `/attachments/{id}/$value` heraus; sie werden als `<name>.eml` abgelegt.
+ * Scheitert das fuer einen Anhang, bleibt er wie bisher nur in der mail.eml.
+ */
+export async function anhaengeAusGraph(
+  hole: (pfad: string) => Promise<any>, nachrichtPfad: string,
+): Promise<EingangsAnhang[]> {
+  const daten = await hole(`${nachrichtPfad}/attachments`);
+  const raus: EingangsAnhang[] = [];
+  for (const a of daten?.value ?? []) {
+    const art = String(a?.['@odata.type'] ?? '');
+    // Schraegstriche im Betreff einer angehaengten Mail sind kein Pfad
+    const name = String(a?.name ?? 'anhang').replace(/[\\/]+/g, '-').trim() || 'anhang';
+    if (art === '#microsoft.graph.fileAttachment' && a?.contentBytes) {
+      raus.push({
+        name,
+        bytes: Buffer.from(String(a.contentBytes), 'base64'),
+        contentType: a.contentType ? String(a.contentType) : undefined,
+      });
+    } else if (art === '#microsoft.graph.itemAttachment' && a?.id) {
+      try {
+        const roh = await hole(`${nachrichtPfad}/attachments/${encodeURIComponent(String(a.id))}/$value`);
+        if (typeof roh !== 'string' || !roh.length) continue;
+        raus.push({
+          name: /\.eml$/i.test(name) ? name : `${name}.eml`,
+          bytes: Buffer.from(roh, 'utf8'),
+          contentType: 'message/rfc822',
+        });
+      } catch { /* bleibt in der mail.eml erhalten */ }
+    }
+    // referenceAttachment (Verweis auf OneDrive/SharePoint): kein Inhalt, nichts abzulegen
+  }
+  return raus;
+}
+
 /** HTML zu lesbarem Text — knapp gehalten, der Mailtext soll 1:1 erkennbar bleiben. */
 export function textAusKoerper(inhalt: string, art: string): string {
   if ((art || '').toLowerCase() === 'text') return String(inhalt ?? '').trim();
@@ -111,19 +152,7 @@ export function erstelleGraphZugang(z: GraphZugangsdaten): PostfachZugang {
     },
 
     async anhaenge(id: string): Promise<EingangsAnhang[]> {
-      const daten = await hole(`/messages/${encodeURIComponent(id)}/attachments`);
-      const raus: EingangsAnhang[] = [];
-      for (const a of daten?.value ?? []) {
-        // Nur echte Dateianhaenge; eingebettete Nachrichten und Verweise nicht.
-        if (String(a?.['@odata.type'] ?? '') !== '#microsoft.graph.fileAttachment') continue;
-        if (!a?.contentBytes) continue;
-        raus.push({
-          name: String(a.name ?? 'anhang'),
-          bytes: Buffer.from(String(a.contentBytes), 'base64'),
-          contentType: a.contentType ? String(a.contentType) : undefined,
-        });
-      }
-      return raus;
+      return anhaengeAusGraph(hole, `/messages/${encodeURIComponent(id)}`);
     },
 
     async einsortieren(id: string): Promise<'verschoben' | 'nicht_moeglich'> {

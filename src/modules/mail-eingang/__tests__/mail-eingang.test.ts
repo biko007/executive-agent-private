@@ -10,7 +10,7 @@ import {
   ladeVermerk, speichereVermerk, auftragSchonZugestellt, vergebeOrdner,
   verarbeiteMailEingangEinmal, meldungstext, reportAbschnitt,
   DROPBOX_MAIL_INBOX,
-  textAusKoerper,
+  textAusKoerper, anhaengeAusGraph,
   type EingangsMail, type EingangsAnhang, type PostfachZugang,
 } from '../index.js';
 import type { DropboxAdapter } from '../../../adapters/dropbox.js';
@@ -566,5 +566,56 @@ describe('Sicherungen', () => {
     const quelle = fs.readFileSync(path.join(import.meta.dir, '..', 'graph.ts'), 'utf-8');
     expect(quelle).not.toContain('graphDelete');
     expect(quelle).not.toContain("'DELETE'");
+  });
+});
+
+describe('anhaengeAusGraph (21.10.2026)', () => {
+  const PFAD = '/messages/m1';
+  const graph = (antworten: Record<string, any>) => async (pfad: string) => {
+    if (!(pfad in antworten)) throw new Error(`unerwartet: ${pfad}`);
+    const a = antworten[pfad];
+    if (a instanceof Error) throw a;
+    return a;
+  };
+
+  test('Datei und angehaengte Mail werden abgelegt, die Mail als .eml', async () => {
+    const hole = graph({
+      [`${PFAD}/attachments`]: { value: [
+        { '@odata.type': '#microsoft.graph.fileAttachment', name: 'image.png', contentBytes: Buffer.from('PNG').toString('base64'), contentType: 'image/png' },
+        { '@odata.type': '#microsoft.graph.itemAttachment', id: 'i/1', name: 'AW: Badhaus_TuT / Zugang per Team Viewer ' },
+      ] },
+      [`${PFAD}/attachments/${encodeURIComponent('i/1')}/$value`]: 'From: a\r\nSubject: x\r\n\r\nText',
+    });
+    const r = await anhaengeAusGraph(hole, PFAD);
+    expect(r.map(a => a.name)).toEqual(['image.png', 'AW: Badhaus_TuT - Zugang per Team Viewer.eml']);
+    expect(r[1].contentType).toBe('message/rfc822');
+    expect(r[1].bytes.toString('utf8')).toContain('Subject: x');
+    // Der Name bleibt nach der Ablage-Bereinigung vollstaendig (kein Pfadschnitt am Schraegstrich)
+    expect(anhangName(r[1].name, 2)).toBe('AW__Badhaus_TuT_-_Zugang_per_Team_Viewer.eml');
+  });
+
+  test('scheitert der MIME-Abruf einer angehaengten Mail, bleiben die anderen Anhaenge', async () => {
+    const hole = graph({
+      [`${PFAD}/attachments`]: { value: [
+        { '@odata.type': '#microsoft.graph.itemAttachment', id: 'kaputt', name: 'Termin' },
+        { '@odata.type': '#microsoft.graph.fileAttachment', name: 'a.pdf', contentBytes: Buffer.from('%PDF').toString('base64') },
+      ] },
+      [`${PFAD}/attachments/kaputt/$value`]: new Error('graph_get_error: status=500'),
+    });
+    const r = await anhaengeAusGraph(hole, PFAD);
+    expect(r.map(a => a.name)).toEqual(['a.pdf']);
+  });
+
+  test('Verweise und Dateien ohne Inhalt werden nicht abgelegt; .eml wird nicht doppelt angehaengt', async () => {
+    const hole = graph({
+      [`${PFAD}/attachments`]: { value: [
+        { '@odata.type': '#microsoft.graph.referenceAttachment', name: 'Link auf SharePoint' },
+        { '@odata.type': '#microsoft.graph.fileAttachment', name: 'leer.txt' },
+        { '@odata.type': '#microsoft.graph.itemAttachment', id: 'e', name: 'schon.eml' },
+      ] },
+      [`${PFAD}/attachments/e/$value`]: 'From: b\r\n\r\n',
+    });
+    const r = await anhaengeAusGraph(hole, PFAD);
+    expect(r.map(a => a.name)).toEqual(['schon.eml']);
   });
 });

@@ -13,7 +13,7 @@
  */
 
 import { graphGet, graphPost } from '../../shared/m365/index.js';
-import { textAusKoerper } from '../mail-eingang/index.js';
+import { anhaengeAusGraph, textAusKoerper } from '../mail-eingang/index.js';
 import type { MailboxZugang, RohMail } from './types.js';
 
 export interface MailboxZugangsdaten {
@@ -121,20 +121,8 @@ export function erstelleMailboxZugang(z: MailboxZugangsdaten): MailboxZugang {
     },
 
     async anhaenge(id: string) {
-      const daten = await hole(`/messages/${encodeURIComponent(id)}/attachments`);
-      const raus: Array<{ name: string; bytes: Buffer; contentType?: string }> = [];
-      for (const a of daten?.value ?? []) {
-        /* Nur echte Dateianhaenge. Eingebettete Nachrichten liefern keine
-           contentBytes; sie bleiben in der mail.eml erhalten. */
-        if (String(a?.['@odata.type'] ?? '') !== '#microsoft.graph.fileAttachment') continue;
-        if (!a?.contentBytes) continue;
-        raus.push({
-          name: String(a.name ?? 'anhang'),
-          bytes: Buffer.from(String(a.contentBytes), 'base64'),
-          contentType: a.contentType ? String(a.contentType) : undefined,
-        });
-      }
-      return raus;
+      // Dateien und angehaengte Mails (als .eml), siehe mail-eingang/graph.ts
+      return anhaengeAusGraph(hole, `/messages/${encodeURIComponent(id)}`);
     },
 
     async verschiebe(id: string, ordnerName: string) {

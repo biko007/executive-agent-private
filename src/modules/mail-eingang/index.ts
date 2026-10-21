@@ -48,7 +48,7 @@ export type {
   Lage, Konfiguration, EingangsAnhang, EingangsMail, PostfachZugang,
   MailEingangZeile, MailEingangLauf, Vermerk,
 } from './types.js';
-export { erstelleGraphZugang, textAusKoerper, ZIELORDNER } from './graph.js';
+export { anhaengeAusGraph, erstelleGraphZugang, textAusKoerper, ZIELORDNER } from './graph.js';
 export type { GraphZugangsdaten } from './graph.js';
 
 /** Zielordner in Dropbox, unter demselben Dach wie die uebrigen Ablagen. */
