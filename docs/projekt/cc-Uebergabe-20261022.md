@@ -1,4 +1,4 @@
-# cc-Übergabe — Stand 22.10.2026, 10:15
+# cc-Übergabe — Stand 22.10.2026, 10:15 (Korrektur 10:45: zweites OAuth-Ablaufdatum)
 
 **Nachfolger von `cc-Uebergabe-20261019.md`.** Dieses Dokument **ersetzt dort
 die Abschnitte 1 bis 5** (Owner-Punkte, Repositories, Dienste, offene
@@ -16,7 +16,8 @@ Alle Zeiten deutsch, wo nicht „UTC“ steht.
 | Wann | Was | Wer |
 |---|---|---|
 | **Fr 23.10.** | **ads-tec**: Frist der Mail vom 19.10. (Controller bezahlt, keine Rückmeldung). Bleibt sie stumm → Chat formuliert Nachfass, cc legt Entwurf an | Owner/Chat |
-| **Fr 23.10. 19:24** (17:24 UTC) | **Smoke-Test meldet Codex-Anmeldung** (weniger als 3 Tage Restlaufzeit). Kein Fehler, sondern die Erinnerung | — |
+| **Fr 23.10. 19:24** (17:24 UTC) | **Smoke-Test meldet Codex-Anmeldung** (weniger als 3 Tage Restlaufzeit von `~/.codex/auth.json`). Kein Fehler, sondern die Erinnerung | — |
+| **So 25.10. 05:00** (03:00 UTC) | **OAuth-Profil der Agenten-Route läuft ab** — `openclaw models status`: `openai:default … expiresAt 2026-10-25 03:00 UTC`, Profil in `~/.openclaw/state/openclaw.sqlite`. **Früher als `auth.json`, und der Smoke-Test sieht es nicht.** Vorher erneuern: `openclaw models auth login` (interaktiv → Owner per `!`). Ob es sich selbst erneuert, ist nicht belegt | **Owner, bis Sa 24.10.** |
 | **ab Fr 23.10.** | **Alte Dropbox-App**: Entfernen von `EA_DROPBOX_*` darf **vorgeschlagen** werden (sieben fehlerfreie Tage). Env-Datei = Rote Zone, nur mit Freigabe | cc schlägt vor |
 | **Mo 26.10. 13:45** | **Erster Banking-Wochencheck** schreibt `report-banking-wochencheck-20261026.md` | Timer |
 | **Mo 26.10. 18:24** (17:24 UTC) | **Codex-Anmeldung läuft ab** (`~/.codex/auth.json`). Vorher `codex login` — interaktiv, also Owner per `! codex login` | Owner |
@@ -95,7 +96,7 @@ Dashboard **8/0**, Smoke **37/37** (20.10.).
 |---|---|---|
 | 6.1 | Deny-Hook ohne Repo-Pfad-Rückfall | unverändert (19.10. Abschnitt 4.1); Pushes immer `git -C /abs/pfad push` |
 | 6.2 | Watcher-Versandprüfung (C7) | unverändert (19.10. 4.2); Korrekturen = neuer Report |
-| 6.3 | Codex/OAuth | Ablauf **26.10.2026 17:24 UTC** bestätigt; Smoke warnt ab 23.10. |
+| 6.3 | Codex/OAuth | **Zwei Abläufe:** OpenClaw-OAuth-Profil (trägt die Route) **25.10.2026 03:00 UTC**; `~/.codex/auth.json` 26.10.2026 17:24 UTC. Der Smoke-Test (Abschnitt 18) liest nur `auth.json`. Vorschlag: Prüfung um das OpenClaw-Profil erweitern (`openclaw models status --json`, `.auth.oauth.profiles[].expiresAt`) — Gate-Skript, REVIEW-pflichtig (C8) |
 | 6.4 | Alte Dropbox-App | Stichtag **23.10.**; nur Vorschlag, env = Rote Zone |
 | 6.5 | Migration `institution_id` nullable | Rote Zone, `/arm` |
 | 6.6 | Laufzeilen 11/12 RUNNING | wartet auf Freigabe |
