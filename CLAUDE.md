@@ -4,15 +4,16 @@
 
 ---
 
-## §0 Erster Schritt nach `/clear` (Stand 19.10.2026)
+## §0 Erster Schritt nach `/clear` (Stand 22.10.2026)
 
-**Vor jeder Arbeit zuerst `docs/projekt/cc-Uebergabe-20261019.md` lesen.**
+**Vor jeder Arbeit zuerst `docs/projekt/cc-Uebergabe-20261022.md` lesen,
+danach `docs/projekt/cc-Uebergabe-20261019.md` ab Abschnitt 6.**
 
-Dort steht, was auf den Owner wartet, welche Dienste laufen, welche
-technischen Punkte offen sind, welche Daten seit dem 16.10.2026 verändert
-wurden und welche Fallen in den letzten Sitzungen Zeit gekostet haben. Die
-Datei ist der Nachfolger von `cc-Uebergabe-20261016.md`; beide zusammen lesen,
-wenn es um V043, den Dropbox-Umstieg oder das Agenten-Backend geht.
+Die Fassung vom 22.10. ersetzt die Abschnitte 1 bis 5 der Fassung vom 19.10.
+(Owner-Punkte, Termine, Repositories, Dienste, Banking-Stand, offene
+technische Punkte, Datenänderungen seit 19.10.); deren Abschnitte 6 bis 9
+(Fallen, Ablageorte, stehende Regeln, Fachstand) gelten weiter. Für V043, den
+Dropbox-Umstieg oder das Agenten-Backend zusätzlich `cc-Uebergabe-20261016.md`.
 
 **Beim Schreiben einer neuen Übergabe wird der Dateiname in diesem Abschnitt
 mitgezogen** — sonst zeigt der Boot-Hinweis auf einen alten Stand.
