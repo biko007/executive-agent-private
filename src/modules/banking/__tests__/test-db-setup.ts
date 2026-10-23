@@ -126,6 +126,10 @@ export async function setupTestDb(): Promise<{ testDbName: string; cleanup: () =
     `ALTER TABLE banking_transactions
        ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
 
+  // V041 — Kontostatus 'neu' und Auszugssalden (23.10.2026); vollständig,
+  // die Migration hängt nur an Banking-Tabellen.
+  await testPool.query(readFileSync(join(import.meta.dir, '../migrations/V041__banking_konto_neu_und_auszugssalden.sql'), 'utf-8'));
+
   // approval_tokens table (needed by approval workflow tests)
   await testPool.query(`
     CREATE TABLE IF NOT EXISTS approval_tokens (

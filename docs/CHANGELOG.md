@@ -4,6 +4,34 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 (5) — Paket Abend: MT940-Tagesversatz, PDF-Toleranz, Kontostatus „neu", Darlehen, Auszugssalden
+
+Owner-Freigabe 23.10.2026 21:40 „Freigabe Paket Abend"
+(report-banking-paket-abend-20261023).
+
+- **MT940-Tagesversatz (Sidecar `_auszuege_auswerten`):** Die KSK datiert
+  :60F: auf den ersten Buchungstag des Auszugs. Liegt eine Buchung des
+  Auszugs am Saldodatum oder davor, gilt der Anfangssaldo ab dem Vortag der
+  ersten Buchung. Die vier Abweichungen vom 23.10. (…4288, …4305, …4295,
+  …9268) waren je genau die Summe des 02.09.2024, des ersten gelieferten Tags.
+- **Probe je Auszug:** Der Sidecar merkt sich bei :60F:/:62F: die Position in
+  der Umsatzliste, auch über mehrere Antwortseiten, und liefert `auszuege`
+  (Anfang, Ende, Zahl, Summe, Probe). Der Kern speichert sie in
+  `banking_statement_balances` (V041), bestmöglich — ein Fehler hält den
+  Abruf nicht auf.
+- **PDF-Verknüpfung:** Abstand bis 5 Tage (vorher 3); Kartenumsatz mit
+  unplausiblem Umsatzjahr (> 300 Tage, anderes Jahr) gilt im Buchungsjahr
+  (`umsatzdatumFuerVergleich`). Gegenprüfung über alle Konten: 0 zusätzliche
+  Verknüpfungen.
+- **Kontostatus `neu` (V041):** Das Verbinden legt von der Bank erstmals
+  gemeldete Konten als `neu` an — ausgeblendet, nicht abgerufen, nicht in
+  Summen, in der Telegram-Meldung genannt. Aktiv erst nach Zuordnung durch den
+  Owner (per Auftrag; keine Schaltfläche).
+- **Darlehen:** Kontoart `darlehen` zählt im Dashboard nicht zur Summe der
+  Konten und steht getrennt als „Verbindlichkeiten (Darlehen)".
+- Datenteil: `scripts/banking-paket-abend-20261023.ts` (Audit 3154, 3155).
+  Prüfabruf: `scripts/banking-auszugsprobe-20261023.ts`.
+
 ## Stand 2026-10-23 (4) — Kennung trimmen, Fehlertext 9340, CAMT-Datum, Freigabe je Konto
 
 **Kennung:** Dashboard (`bankingVerbindenBody`) und Gateway (`bereinigeKennung`,

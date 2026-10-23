@@ -25,6 +25,7 @@ import {
   setInstitutionSyncPaused,
   countRecentScaEvents,
   getSyncRunById,
+  speichereAuszuege,
 } from './store.js';
 import type { Session, InstitutionRow } from './types.js';
 
@@ -425,6 +426,7 @@ export async function startWeeklySync(options?: {
               raw_payload: tx,
             })));
             txInserted += befunde.filter(b => b.ergebnis === 'neu').length;
+            await speichereAuszuege(account.id, result.auszuege, 'abgleich');
           }
 
           // Update account balance
@@ -919,6 +921,7 @@ export async function eventResync(
             raw_payload: tx,
           })));
           txInserted += befunde.filter(b => b.ergebnis === 'neu').length;
+          await speichereAuszuege(account.id, result.auszuege, 'abgleich');
         }
 
         if (result?.balance !== undefined) {

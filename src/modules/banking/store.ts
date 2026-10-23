@@ -62,7 +62,7 @@ function mapAccount(row: AccountRow): Account {
     currency: row.currency,
     currentBalance: row.current_balance ? parseFloat(row.current_balance) : null,
     lastSyncAt: row.last_sync_at ? ts(row.last_sync_at) : null,
-    status: row.status as 'active' | 'archived',
+    status: row.status as 'active' | 'archived' | 'neu',
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
@@ -307,14 +307,18 @@ export async function upsertAccount(
     currency?: string;
     currentBalance?: number;
     lastSyncAt?: string;
+    /** Status NUR beim ersten Anlegen. Das Verbinden legt von der Bank neu
+     *  gemeldete Konten als 'neu' an — erst die Zuordnung durch den Owner
+     *  macht sie aktiv (Owner-Freigabe 23.10.2026 „Paket Abend"). */
+    statusBeiNeuanlage?: 'active' | 'neu';
   },
   actor?: string,
 ): Promise<Account> {
   const { rows } = await dbQuery<AccountRow>(
     `INSERT INTO banking_accounts
        (institution_id, iban, account_number, account_type, display_name,
-        owner_name, currency, current_balance, last_sync_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        owner_name, currency, current_balance, last_sync_at, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (iban) DO UPDATE SET
        display_name = COALESCE(banking_accounts.display_name, EXCLUDED.display_name),
        account_number = COALESCE(EXCLUDED.account_number, banking_accounts.account_number),
@@ -330,6 +334,7 @@ export async function upsertAccount(
       displayName, opts?.ownerName || null,
       opts?.currency || 'EUR',
       opts?.currentBalance ?? null, opts?.lastSyncAt || null,
+      opts?.statusBeiNeuanlage ?? 'active',
     ],
   );
 
@@ -341,6 +346,51 @@ export async function upsertAccount(
   });
 
   return mapAccount(rows[0]);
+}
+
+/** Ein MT940-Auszug, wie ihn der Sidecar liefert (23.10.2026). */
+export interface Auszug {
+  anfang_datum: string;
+  anfang: number;
+  schluss_datum: string;
+  schluss: number;
+  umsaetze: number;
+  summe: number;
+  probe: number;
+}
+
+/**
+ * Speichert die Auszugssalden eines Abrufs (:60F:/:62F: mit Umsatzsumme und
+ * Probe). ANLASS (23.10.2026): Die Abweichungen der KSK-Saldenprobe ließen
+ * sich nicht einem Auszug zuordnen, weil nur der erste Anfangs- und der letzte
+ * Endsaldo durchgereicht wurden. Derselbe Auszug aus einem späteren Abruf
+ * ersetzt den früheren Eintrag.
+ *
+ * Bestmöglich: Ein Fehler hier darf die Übernahme der Umsätze nie aufhalten —
+ * er wird protokolliert, der Abruf läuft weiter. Liefert die Zahl der
+ * gespeicherten Auszüge.
+ */
+export async function speichereAuszuege(accountId: number, auszuege: Auszug[] | undefined | null, quelle: 'verbinden' | 'abgleich' | 'pruefung'): Promise<number> {
+  if (!Array.isArray(auszuege) || auszuege.length === 0) return 0;
+  try {
+    let n = 0;
+    for (const a of auszuege) {
+      await dbQuery(
+        `INSERT INTO banking_statement_balances
+           (account_id, anfang_datum, anfang, schluss_datum, schluss, umsaetze, summe, probe, quelle)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (account_id, anfang_datum, schluss_datum, anfang, schluss) DO UPDATE SET
+           umsaetze = EXCLUDED.umsaetze, summe = EXCLUDED.summe, probe = EXCLUDED.probe,
+           quelle = EXCLUDED.quelle, abgerufen_at = NOW()`,
+        [accountId, a.anfang_datum, a.anfang, a.schluss_datum, a.schluss, a.umsaetze, a.summe, a.probe, quelle],
+      );
+      n++;
+    }
+    return n;
+  } catch (e: any) {
+    console.error('[banking] Auszugssalden nicht gespeichert:', String(e?.message || e).slice(0, 160));
+    return 0;
+  }
 }
 
 /**
@@ -604,6 +654,34 @@ export function umsatzdatumAusZweck(zweck: string | null | undefined): string | 
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso ? iso : null;
 }
 
+const isoTag = (wert: unknown): string | null => {
+  if (wert == null || wert === '') return null;
+  if (wert instanceof Date) return Number.isNaN(wert.getTime()) ? null : wert.toISOString().slice(0, 10);
+  return String(wert).slice(0, 10);
+};
+
+/** Größter Abstand in Tagen zwischen Bank- und PDF-Datum für eine Verknüpfung. */
+export const PDF_TOLERANZ_TAGE = 5;
+
+/**
+ * Umsatzdatum für den Vergleich mit der PDF-Zeile. ANLASS (23.10.2026,
+ * Owner-Freigabe „Paket Abend"): Die Volksbank schrieb bei zwei Visa-Umsätzen,
+ * gebucht am 06.03.2026, „Umsatz vom 07.03.2025" — das Jahr ist falsch, die
+ * PDF-Zeilen vom 07.03.2026 blieben unverknüpft und zählten doppelt. Liegt das
+ * Umsatzdatum mehr als 300 Tage vom Buchungstag entfernt und in einem anderen
+ * Jahr, gilt dasselbe Datum im Buchungsjahr.
+ */
+export function umsatzdatumFuerVergleich(zweck: string | null | undefined, buchungstag: unknown): string | null {
+  const umsatz = umsatzdatumAusZweck(zweck);
+  const tag = isoTag(buchungstag);
+  if (!umsatz || !tag) return umsatz;
+  const abstand = Math.abs(Date.parse(`${umsatz}T00:00:00Z`) - Date.parse(`${tag}T00:00:00Z`)) / 86_400_000;
+  if (abstand <= 300 || umsatz.slice(0, 4) === tag.slice(0, 4)) return umsatz;
+  const imBuchungsjahr = `${tag.slice(0, 4)}${umsatz.slice(4)}`;
+  // 29.02. gibt es nicht in jedem Jahr — dann bleibt das gelieferte Datum
+  return isoTag(new Date(`${imBuchungsjahr}T00:00:00Z`)) === imBuchungsjahr ? imBuchungsjahr : umsatz;
+}
+
 /**
  * Sucht zur FinTS-Zeile `fintsId` die PDF-Zeile derselben Buchung und markiert
  * sie als Dublette. Läuft in der Transaktion des Aufrufers.
@@ -611,9 +689,11 @@ export function umsatzdatumAusZweck(zweck: string | null | undefined): string | 
  * Kandidaten: Kontoauszüge ('pdf_import', wie die Bereinigung in
  * mietforderungen.ts) und Kreditkartenabrechnungen ('kk_pdf_import', seit der
  * Zusammenführung der Kartenkonten 20.10.2026), gleicher Betrag, noch nicht
- * verknüpft. Datum: höchstens drei Tage Abstand zum Buchungstag; bei
- * Kartenabrechnungen das Umsatzdatum aus dem Zweck der Bankzeile, weil die
- * Bank Gutschriften mit bis zu drei Wochen Versatz bucht.
+ * verknüpft. Datum: höchstens fünf Tage Abstand zum Buchungstag (bis
+ * 23.10.2026 drei; die Valuta einer Kartenbuchung auf dem Giro lag einmal vier
+ * Tage neben dem PDF-Datum); bei Kartenabrechnungen das Umsatzdatum aus dem
+ * Zweck der Bankzeile (`umsatzdatumFuerVergleich`), weil die Bank Gutschriften
+ * mit bis zu drei Wochen Versatz bucht.
  *
  * Rangfolge: passende Gegenpartei, dann gleicher Zweck (Vertrags-, Rechnungs-
  * nummer — die PDF-Zeile trägt davor nur die IBAN), dann Datumsabstand, dann
@@ -641,10 +721,11 @@ async function verknuepfePdfZeile(
          FROM banking_transactions
         WHERE account_id = $1 AND source IN ('pdf_import', 'kk_pdf_import') AND duplicate_of IS NULL
           AND amount = $3 AND id <> $2) k
-      WHERE abstand <= 3
+      WHERE abstand <= $8
       ORDER BY passt DESC, zweck_gleich DESC, abstand, booking_date, id
       LIMIT 2`,
-    [accountId, fintsId, tx.amount, tx.booking_date, gegenpartei, umsatzdatumAusZweck(tx.reference), zweck],
+    [accountId, fintsId, tx.amount, tx.booking_date, gegenpartei,
+      umsatzdatumFuerVergleich(tx.reference, tx.booking_date), zweck, PDF_TOLERANZ_TAGE],
   );
   const [erster, zweiter] = kandidaten.rows;
   if (!erster) return { pdfVerknuepft: null, pdfMehrdeutig: false };

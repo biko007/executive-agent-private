@@ -185,6 +185,7 @@ export async function initiateConnect(
             ownerName: acct.owner_name,
             currency: acct.currency,
             currentBalance: acct.balance != null ? Number(acct.balance) : undefined,
+            statusBeiNeuanlage: 'neu',
           },
         );
         if (account.status === 'archived') {
@@ -339,6 +340,7 @@ export async function completeTan(
             ownerName: acct.owner_name,
             currency: acct.currency,
             currentBalance: acct.balance != null ? Number(acct.balance) : undefined,
+            statusBeiNeuanlage: 'neu',
           },
         );
         if (account.status === 'archived') {

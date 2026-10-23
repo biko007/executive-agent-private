@@ -27,7 +27,9 @@ export interface Account {
   currency: string;
   currentBalance: number | null;
   lastSyncAt: string | null;
-  status: 'active' | 'archived';
+  /** 'neu': von der Bank erstmals gemeldet, Zuordnung durch den Owner offen —
+   *  ausgeblendet, nicht abgerufen, nicht in Summen (23.10.2026) */
+  status: 'active' | 'archived' | 'neu';
   createdAt: string;
   updatedAt: string;
 }

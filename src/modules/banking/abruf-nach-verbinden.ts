@@ -31,13 +31,14 @@
 import { query as dbQuery } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import * as sidecar from './sidecar-client.js';
-import { uebernimmUmsaetze, updateAccountBalance, updateSessionState } from './store.js';
+import { uebernimmUmsaetze, updateAccountBalance, updateSessionState, speichereAuszuege } from './store.js';
 import { nimmAbgleichSperre, gibAbgleichSperreFrei } from './sync-engine.js';
 
 export interface KontoErgebnis {
   konto: string;            // nur Endziffern
   // unbekannt: Bank liefert ein Konto, das bikosoc nicht (aktiv) führt
-  status: 'ok' | 'tan_noetig' | 'fehler' | 'uebersprungen' | 'unbekannt';
+  // neu: von der Bank erstmals gemeldet, Zuordnung offen — nicht abgerufen (23.10.2026)
+  status: 'ok' | 'tan_noetig' | 'fehler' | 'uebersprungen' | 'unbekannt' | 'neu';
   ab?: string | null;       // tatsächlicher Beginn des Abrufzeitraums
   umsaetze: number;
   neu: number;
@@ -146,7 +147,11 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
   }
   try {
     const ausgeblendet = (await dbQuery<{ iban: string }>(
-      `SELECT iban FROM banking_accounts WHERE institution_id = $1 AND status = 'archived'`, [institutionId],
+      `SELECT iban FROM banking_accounts WHERE institution_id = $1 AND status IN ('archived', 'neu')`, [institutionId],
+    )).rows.map(r => r.iban);
+    // Neu gemeldete Konten: nicht abrufen, aber in der Meldung nennen (23.10.2026)
+    const neuGemeldet = (await dbQuery<{ iban: string }>(
+      `SELECT iban FROM banking_accounts WHERE institution_id = $1 AND status = 'neu' ORDER BY iban`, [institutionId],
     )).rows.map(r => r.iban);
 
     const antwort = await sidecar.abrufImDialog({
@@ -165,6 +170,8 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
 
     const ergebnisse: KontoErgebnis[] = [];
     for (const k of antwort?.konten ?? []) {
+      // Ein von der Bank trotzdem geliefertes neues Konto bleibt unangetastet
+      if (neuGemeldet.includes(k.iban)) continue;
       // Kontostand und Zeitpunkt VOR dem Abruf — Bezug für die Bezugsprobe
       const konto = (await dbQuery<{ id: string; currency: string; current_balance: string | null; last_sync_at: Date | string | null }>(
         `SELECT id, currency, current_balance, last_sync_at FROM banking_accounts WHERE iban = $1 AND institution_id = $2 AND status = 'active'`,
@@ -196,6 +203,7 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
         raw_payload: tx,
       })));
       if (k.balance != null) await updateAccountBalance(Number(konto.id), k.balance, new Date().toISOString());
+      await speichereAuszuege(Number(konto.id), k.auszuege, 'verbinden');
       ergebnisse.push({
         konto: kurz(k.iban),
         status: 'ok',
@@ -212,6 +220,10 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
             saldenprobeBezug: vorherSaldo != null && vorherZeit && k.balance != null ? vorherZeit.slice(0, 10) : null,
           }),
       });
+    }
+
+    for (const iban of neuGemeldet) {
+      ergebnisse.push({ konto: kurz(iban), status: 'neu', umsaetze: 0, neu: 0, umgeschluesselt: 0, pdfVerknuepft: 0, saldenprobe: null });
     }
 
     await audit.log({
@@ -252,6 +264,8 @@ export function abrufMeldung(institut: string, e: KontoErgebnis[] | null): strin
       zeilen.push(`${x.konto}: Abruf fehlgeschlagen`);
     } else if (x.status === 'unbekannt') {
       zeilen.push(`${x.konto}: neu gemeldetes Konto — nicht übernommen, bitte zuordnen`);
+    } else if (x.status === 'neu') {
+      zeilen.push(`${x.konto}: neu – Zuordnung offen (ausgeblendet, nicht abgerufen, nicht in Summen)`);
     }
   }
   if (ok.length === 0) zeilen.push('Kein Konto abgerufen.');

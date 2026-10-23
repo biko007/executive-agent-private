@@ -5,6 +5,7 @@
  * Etappe f: All endpoints carry credentials + state blobs for stateless sidecar.
  */
 import { fetchWithTimeout } from '../../shared/utils/index.js';
+import type { Auszug } from './store.js';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:18794';
 const TIMEOUT_MS = 30_000;
@@ -202,6 +203,8 @@ export interface AbrufKonto {
   balance: number | null;
   statement_opening: { datum: string; betrag: number } | null;
   statement_closing: { datum: string; betrag: number } | null;
+  /** je MT940-Auszug Anfangs-/Endsaldo, Summe und Probe (23.10.2026) */
+  auszuege?: Auszug[];
 }
 
 export async function abrufImDialog(params: {
