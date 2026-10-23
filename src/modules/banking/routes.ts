@@ -416,6 +416,15 @@ export function registerBankingHttpRoutes(api: any) {
           return true;
         }
 
+        // GET /api/banking/abruf-status/:sessionId — Phase des Abrufs nach dem
+        // Verbinden, für den Hinweis zur zweiten Freigabe (23.10.2026). Nur lesend.
+        if (resource === 'abruf-status' && segments[1] && req.method === 'GET') {
+          const sid = parseInt(segments[1], 10);
+          if (isNaN(sid)) { err(res, 400, 'Invalid session_id'); return true; }
+          json(res, 200, { phase: await sidecar.abrufStatus(sid) });
+          return true;
+        }
+
         // POST /api/banking/approval-preview
         if (resource === 'approval-preview' && req.method === 'POST') {
           await withContext({ requestId, actor, source: 'dashboard' }, async () => {

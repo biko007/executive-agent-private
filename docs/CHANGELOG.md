@@ -4,6 +4,51 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 (3) — Zweite Freigabe für die Historie, Kontonamen ohne IBAN
+
+**Zweite Freigabe (Sidecar `abruf_im_dialog`):** Die Volksbank verlangte am
+23.10. für die Umsätze ab 2015 eine weitere App-Freigabe (3955). python-fints
+verschluckte das, weil die Bank für Umsätze laut Parametern kein
+Freigabe-Segment verlangt. Die Push-Nachricht kam aufs Telefon, wurde aber
+nie abgefragt, und der Abruf kürzte auf 89 Tage.
+- Die erste Anfrage nach der vollen Historie geht jetzt mit Freigabe-Segment
+  hinaus. Bei 3955 fragt der Sidecar den Status höchstens 120 s ab, einmal je
+  Verbinden. Bei Ablehnung oder Zeitablauf kürzt er wie bisher auf 89 Tage.
+- Die Phase des Abrufs ist abfragbar (`GET /fints/abruf-status/:id` →
+  `GET /api/banking/abruf-status/:id`). Das Dashboard zeigt nach „verbunden“
+  den Hinweis „Bitte zweite Freigabe in der App bestätigen – lädt Umsätze ab
+  2015“.
+- Als abgelehnt gilt die Freigabe auch, wenn die Bank danach eine
+  9xxx-Meldung oder erneut 3955 schickt oder keine Umsatzantwort liefert
+  (python-fints wirft dabei nicht immer). Sperrt python-fints die PIN, endet
+  der Abruf, die übrigen Konten bleiben unangefragt. Scheitert der Abruf mit
+  Freigabe-Segment, gelten für alle übrigen Konten 89 Tage.
+- **Grenze:** Verlangt die Bank nach der Bestätigung für ein weiteres Konto
+  erneut eine Freigabe, wird sie nicht angefordert. Die Bank kann dann eine
+  zweite Push-Nachricht schicken, die niemand abfragt. Die übrigen Konten
+  laufen danach mit 89 Tagen.
+- Der Wochenabgleich fordert weiterhin keine Freigabe an. Neu ist dort nur der
+  CAMT-Saldenmitschnitt (siehe unten): Die Saldenprobe läuft für die
+  Volksbank künftig mit, sobald deren CAMT-Dateien Salden tragen.
+
+**Salden bei CAMT:** Die Salden der CAMT-Dateien werden mitgeschnitten
+(`_camt_mit_salden`, PRCD/OPBD → Anfang, CLBD → Ende). Fehlen sie, prüft die
+Bezugsprobe (`bezugsprobe`): Kontostand vom letzten Abruf plus seither
+übernommene Umsätze minus HKSAL-Saldo.
+
+**Kontonamen:**
+- Neue Konten heißen „<Bank> …1234“ (`neueKontoBezeichnung`); der Sidecar
+  meldet die IBAN als Namen. Ein Name ohne Kontonummer (etwa ein
+  Produktname) bliebe stehen.
+- Die Kennung von `account.upsert` im Audit ist die Konto-ID statt der IBAN.
+- Das Audit kürzt volle IBANs (Prüfziffer Modulo 97) in freigegebenen
+  Textfeldern und in `entity_id` (`kuerzeIbansImText`).
+- Umbenennung der 12 Bestandskonten: `scripts/banking-kontonamen-kuerzen-20261023.ts`.
+
+Owner-Freigabe 23.10.2026 17:04.
+
+---
+
 ## Stand 2026-10-23 (2) — PDF-Verknüpfung paarweise
 
 Bei der Übernahme einer FinTS-Zeile blieben gleichwertige PDF-Kandidaten

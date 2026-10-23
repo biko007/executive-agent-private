@@ -335,7 +335,8 @@ export async function upsertAccount(
 
   await audit.log({
     module: 'banking', action: 'account.upsert',
-    entityType: 'banking_account', entityId: iban,
+    // Konto-ID statt IBAN (23.10.2026): eindeutig und ohne Kontonummer im Audit
+    entityType: 'banking_account', entityId: String(rows[0].id),
     after: rows[0] as unknown as Record<string, unknown>,
   });
 

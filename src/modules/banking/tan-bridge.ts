@@ -23,7 +23,7 @@ import {
   loeseAndereSitzungenAb,
 } from './store.js';
 import * as sidecar from './sidecar-client.js';
-import { tanVerfahrenFuerSidecar } from './banken.js';
+import { tanVerfahrenFuerSidecar, neueKontoBezeichnung } from './banken.js';
 import { SidecarError } from './sidecar-client.js';
 
 import type { InstitutionRow, EncryptedPayload } from './types.js';
@@ -172,12 +172,13 @@ export async function initiateConnect(
     }
 
     if (response?.accounts && Array.isArray(response.accounts)) {
+      const institut = await getInstitutionById(sessionRows[0].institution_id);
       let accountCount = 0;
       for (const acct of response.accounts) {
         const account = await upsertAccount(
           sessionRows[0].institution_id,
           acct.iban,
-          acct.display_name || acct.iban,
+          neueKontoBezeichnung(institut?.blz, institut?.name, acct.iban, acct.display_name),
           {
             accountNumber: acct.account_number,
             accountType: acct.account_type,
@@ -324,13 +325,14 @@ export async function completeTan(
     // Upsert accounts
     if (response?.accounts && Array.isArray(response.accounts)) {
       const institutionId = sessionRows[0].institution_id;
+      const institut = await getInstitutionById(institutionId);
 
       let accountCount = 0;
       for (const acct of response.accounts) {
         const account = await upsertAccount(
           institutionId,
           acct.iban,
-          acct.display_name || acct.iban,
+          neueKontoBezeichnung(institut?.blz, institut?.name, acct.iban, acct.display_name),
           {
             accountNumber: acct.account_number,
             accountType: acct.account_type,

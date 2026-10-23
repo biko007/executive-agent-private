@@ -260,6 +260,21 @@ export async function refreshSession(params: {
 }
 
 /**
+ * Phase des Abrufs nach dem Verbinden — GET /fints/abruf-status/:id (23.10.2026).
+ * Das Dashboard zeigt damit den Hinweis zur zweiten Freigabe. Bei jedem Fehler
+ * `unbekannt`: der Hinweis ist Komfort, nie Voraussetzung.
+ */
+export async function abrufStatus(sessionId: number): Promise<string> {
+  try {
+    const res = await sidecarFetch(`/fints/abruf-status/${sessionId}`, { method: 'GET' }, 0, 5_000);
+    const inhalt = await res.json() as { phase?: string };
+    return typeof inhalt?.phase === 'string' ? inhalt.phase : 'unbekannt';
+  } catch {
+    return 'unbekannt';
+  }
+}
+
+/**
  * Cancel a parked sidecar session — fire-and-forget.
  * DELETE /fints/session/:id — always 204, errors suppressed.
  */

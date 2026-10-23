@@ -167,3 +167,93 @@ describe('Abruf nach dem Verbinden', () => {
     expect(t).toContain('…7890');
   });
 });
+
+describe('Bezugsprobe ohne Auszugssalden (CAMT, 23.10.2026)', () => {
+  test('Kontostand vom letzten Abruf plus seither übernommene Umsätze stimmt mit dem neuen Saldo', async () => {
+    const { rufeUmsaetzeNachVerbindenAb, abrufMeldung } = await import('../abruf-nach-verbinden.js');
+    const { updateAccountBalance } = await import('../store.js');
+    const { inst, eigen, sitzung } = await bank('70000020');
+    const gestern = new Date(Date.now() - 86_400_000);
+    await updateAccountBalance(eigen.id, 1000, gestern.toISOString());
+    const heute = new Date().toISOString().slice(0, 10);
+    antwort = { konten: [{
+      iban: eigen.iban, status: 'ok', balance: 970, ab: '2026-07-26',
+      statement_opening: null, statement_closing: null,
+      // eine nachgeholte alte Buchung (steckt im alten Kontostand) und eine neue
+      transactions: [tx('v2_alt', -500, '2026-08-01'), tx('v2_neu', -30, heute)],
+    }] };
+    const [e] = (await rufeUmsaetzeNachVerbindenAb(sitzung.id, inst.id))!;
+    expect(e.saldenprobe).toBe(0);
+    expect(e.saldenprobeBezug).toBe(gestern.toISOString().slice(0, 10));
+    expect(abrufMeldung('Bank', [e])).toContain('Saldenprobe ✓ (gegen Stand ');
+  });
+
+  test('fehlt eine Buchung, zeigt die Bezugsprobe die Differenz', async () => {
+    const { rufeUmsaetzeNachVerbindenAb } = await import('../abruf-nach-verbinden.js');
+    const { updateAccountBalance } = await import('../store.js');
+    const { inst, eigen, sitzung } = await bank('70000021');
+    await updateAccountBalance(eigen.id, 1000, new Date(Date.now() - 86_400_000).toISOString());
+    antwort = { konten: [{
+      iban: eigen.iban, status: 'ok', balance: 900, statement_opening: null, statement_closing: null,
+      transactions: [tx('v2_x', -30, new Date().toISOString().slice(0, 10))],
+    }] };
+    const [e] = (await rufeUmsaetzeNachVerbindenAb(sitzung.id, inst.id))!;
+    expect(e.saldenprobe).toBe(70);
+  });
+
+  test('ohne früheren Kontostand keine Bezugsprobe', async () => {
+    const { rufeUmsaetzeNachVerbindenAb } = await import('../abruf-nach-verbinden.js');
+    const { inst, eigen, sitzung } = await bank('70000022');
+    antwort = { konten: [{ iban: eigen.iban, status: 'ok', balance: 900, statement_opening: null, statement_closing: null, transactions: [] }] };
+    const [e] = (await rufeUmsaetzeNachVerbindenAb(sitzung.id, inst.id))!;
+    expect(e.saldenprobe).toBeNull();
+    expect(e.saldenprobeBezug).toBeNull();
+  });
+});
+
+describe('Kontobezeichnung und Audit ohne volle IBAN (23.10.2026)', () => {
+  test('neues Konto heißt „<Bank> …xxxx“, wenn der Sidecar die IBAN als Namen meldet', async () => {
+    const { neueKontoBezeichnung } = await import('../banken.js');
+    expect(neueKontoBezeichnung('64390130', 'Volksbank Schwarzwald-Donau-Neckar eG', 'DE19643901300034840001', 'DE19643901300034840001')).toBe('Volksbank …0001');
+    expect(neueKontoBezeichnung('64350070', 'Kreissparkasse Tuttlingen', 'DE00643500700000004288', null)).toBe('KSK …4288');
+    expect(neueKontoBezeichnung('12345678', 'Testbank Musterstadt', 'DE00123456780000009999', '0000009999')).toBe('Testbank …9999');
+    expect(neueKontoBezeichnung('64390130', 'Volksbank', 'DE19643901300034840001', 'VR-Giro M')).toBe('VR-Giro M');
+  });
+
+  test('Neuverbinden überschreibt eine vorhandene Bezeichnung nicht', async () => {
+    const { upsertInstitution, upsertAccount } = await import('../store.js');
+    const inst = await upsertInstitution('70000030', 'Bank', null, 'https://example.com/fints');
+    await upsertAccount(inst.id, 'DE00700000300000000001', 'Volksbank …0001', {});
+    const wieder = await upsertAccount(inst.id, 'DE00700000300000000001', 'DE00700000300000000001', {});
+    expect(wieder.displayName).toBe('Volksbank …0001');
+  });
+
+  test('Audit kürzt IBANs in freigegebenen Textfeldern und in der Kennung', async () => {
+    const auditModul = await import('../../../shared/audit/index.js');
+    const m = auditModul.maskSensitiveFields({
+      display_name: 'DE89370400440532013000',
+      reference: 'DE96 7016 0000 0000 1435 00 Vertrag AL-1439683480 01.08.26',
+      notes: 'Rechnung 2600619218',
+    });
+    expect(m.display_name).toBe('…3000');
+    expect(m.reference).toBe('…3500 Vertrag AL-1439683480 01.08.26');
+    expect(m.notes).toBe('Rechnung 2600619218');   // keine IBAN: unverändert
+    expect(auditModul.kuerzeIbansImText('Dritte – nicht auswerten (DE89370400440532013000)')).toBe('Dritte – nicht auswerten (…3000)');
+    // Ziffernfolge in IBAN-Form, aber mit falscher Prüfziffer: bleibt
+    expect(auditModul.kuerzeIbansImText('DE00370400440532013000')).toBe('DE00370400440532013000');
+
+    const { upsertInstitution, upsertAccount } = await import('../store.js');
+    const { query } = await import('../../../shared/db/index.js');
+    const inst = await upsertInstitution('70000031', 'Bank', null, 'https://example.com/fints');
+    const konto = await upsertAccount(inst.id, 'DE89370400440532013000', 'DE89370400440532013000', {});
+    const { rows } = await query(
+      "SELECT entity_id, after_jsonb::text AS a FROM audit_log WHERE action = 'account.upsert' ORDER BY id DESC LIMIT 1");
+    expect(rows[0].entity_id).toBe(String(konto.id));   // Konto-ID statt IBAN
+    expect(rows[0].a).not.toMatch(/DE89370400440532013000/);
+
+    // Eine Kennung mit IBAN (andere Aufrufer) wird ebenfalls gekürzt
+    await auditModul.log({ module: 'test', action: 'kennung', entityType: 'x', entityId: 'DE89370400440532013000' });
+    const k = await query("SELECT entity_id FROM audit_log WHERE action = 'kennung' ORDER BY id DESC LIMIT 1");
+    expect(k.rows[0].entity_id).toBe('…3000');
+  });
+});

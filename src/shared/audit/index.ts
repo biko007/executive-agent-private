@@ -93,6 +93,26 @@ const SENSITIVE_PATTERNS = [
   /\b[a-f0-9]{32,}\b/,                                      // hex tokens/hashes (32+ chars)
 ];
 
+/* IBAN innerhalb eines freigegebenen Textes (23.10.2026): Bankkonten hießen
+   bis dahin oft wie ihre IBAN, und `display_name` steht in SAFE_FIELDS — so
+   landeten volle IBANs im Audit. Gekürzt wird nur, was die Prüfziffer
+   (Modulo 97) besteht; Vertrags- oder Rechnungsnummern bleiben stehen. */
+const IBAN_IM_TEXT = /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/g;
+
+function istIban(roh: string): boolean {
+  const s = roh.replace(/ /g, '');
+  if (s.length < 15 || s.length > 34 || (s.startsWith('DE') && s.length !== 22)) return false;
+  const umgestellt = (s.slice(4) + s.slice(0, 4)).replace(/[A-Z]/g, c => String(c.charCodeAt(0) - 55));
+  let rest = 0;
+  for (const ziffer of umgestellt) rest = (rest * 10 + Number(ziffer)) % 97;
+  return rest === 1;
+}
+
+/** Volle IBANs in einem Text auf „…1234" kürzen. */
+export function kuerzeIbansImText(text: string): string {
+  return text.replace(IBAN_IM_TEXT, m => istIban(m) ? '…' + m.replace(/ /g, '').slice(-4) : m);
+}
+
 function isSensitiveValue(val: unknown): boolean {
   if (typeof val !== 'string') return false;
   return SENSITIVE_PATTERNS.some(p => p.test(val));
@@ -114,7 +134,7 @@ export function maskSensitiveFields(obj: Record<string, unknown>): Record<string
     } else if (typeof val === 'object' && !Array.isArray(val)) {
       result[key] = maskSensitiveFields(val as Record<string, unknown>);
     } else if (SAFE_FIELDS.has(key)) {
-      result[key] = val;
+      result[key] = typeof val === 'string' ? kuerzeIbansImText(val) : val;
     } else if (isSensitiveValue(val)) {
       result[key] = '***';
     } else {
@@ -148,7 +168,8 @@ export async function log(entry: AuditEntry): Promise<void> {
       entry.module,
       entry.action,
       entry.entityType ?? null,
-      entry.entityId ?? null,
+      // Kennung nie mit voller IBAN — account.upsert nahm bis 23.10.2026 die IBAN
+      entry.entityId == null ? null : kuerzeIbansImText(String(entry.entityId)),
       maskedBefore ? JSON.stringify(maskedBefore) : null,
       maskedAfter ? JSON.stringify(maskedAfter) : null,
       source,

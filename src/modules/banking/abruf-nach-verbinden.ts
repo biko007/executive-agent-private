@@ -19,10 +19,14 @@
  *    GESPEICHERTEN Umsätze nach dessen Buchungstag minus Banksaldo — prüft
  *    den Bestand in bikosoc (Dubletten, Lücken).
  *
+ *  - Liefert die Bank keine Auszugssalden (Volksbank: CAMT ohne Salden),
+ *    prüft die Bezugsprobe gegen den Kontostand vom letzten Abruf (23.10.2026).
+ *
  * Läuft NACH der Antwort an das Formular (fire-and-forget), hält die
- * Abgleich-Sperre und meldet das Ergebnis per Telegram. Fordert nie eine
- * weitere Freigabe an (C3): verlangt die Bank für ein Konto eine, wird es
- * übersprungen und gemeldet.
+ * Abgleich-Sperre und meldet das Ergebnis per Telegram. Eine weitere Freigabe
+ * fordert höchstens der Sidecar an, und nur einmal je Verbinden für die volle
+ * Historie (Owner-Freigabe 23.10.2026 17:04); verlangt die Bank darüber hinaus
+ * eine, wird das Konto übersprungen und gemeldet.
  */
 import { query as dbQuery } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
@@ -41,6 +45,8 @@ export interface KontoErgebnis {
   pdfVerknuepft: number;
   abrufprobe?: number | null;
   saldenprobe: number | null;
+  /** Tag des Kontostands, gegen den die Bezugsprobe lief — nur ohne Auszugssalden */
+  saldenprobeBezug?: string | null;
 }
 
 type Saldo = { datum: string; betrag: number } | null;
@@ -76,6 +82,29 @@ export async function saldenprobe(accountId: number, anfang: Saldo, banksaldo: n
   return rund(anfang.betrag + Number(rows[0]?.s ?? 0) - banksaldo);
 }
 
+/**
+ * Bezugsprobe für Banken ohne Auszugssalden (23.10.2026): Kontostand vom
+ * letzten Abruf plus die seither übernommenen Umsätze minus neuer Banksaldo
+ * (HKSAL). Gezählt werden nur Umsätze, die nach dem letzten Abruf übernommen
+ * UND frühestens an dessen Tag gebucht wurden — eine nachgeholte Historie
+ * steckt im alten Kontostand längst drin. Ohne alten Kontostand: keine Probe.
+ */
+export async function bezugsprobe(
+  accountId: number,
+  vorher: { saldo: number | null; zeit: string | null },
+  banksaldo: number | null,
+): Promise<number | null> {
+  if (vorher.saldo == null || !vorher.zeit || banksaldo == null) return null;
+  const { rows } = await dbQuery<{ s: string | null }>(
+    `SELECT sum(amount) AS s FROM banking_transactions
+      WHERE account_id = $1 AND duplicate_of IS NULL AND imported_at > $2::timestamptz
+        AND coalesce(value_date, booking_date) >= ($2::timestamptz AT TIME ZONE 'Europe/Berlin')::date`,
+    // value_date ist der Buchungstag — auch bei CAMT (entry_date = BookingDate), siehe buchungstag()
+    [accountId, vorher.zeit],
+  );
+  return rund(Number(vorher.saldo) + Number(rows[0]?.s ?? 0) - banksaldo);
+}
+
 export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institutionId: number): Promise<KontoErgebnis[] | null> {
   const sperre = await nimmAbgleichSperre();
   if (!sperre) {
@@ -97,8 +126,9 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
 
     const ergebnisse: KontoErgebnis[] = [];
     for (const k of antwort?.konten ?? []) {
-      const konto = (await dbQuery<{ id: string; currency: string }>(
-        `SELECT id, currency FROM banking_accounts WHERE iban = $1 AND institution_id = $2 AND status = 'active'`,
+      // Kontostand und Zeitpunkt VOR dem Abruf — Bezug für die Bezugsprobe
+      const konto = (await dbQuery<{ id: string; currency: string; current_balance: string | null; last_sync_at: Date | string | null }>(
+        `SELECT id, currency, current_balance, last_sync_at FROM banking_accounts WHERE iban = $1 AND institution_id = $2 AND status = 'active'`,
         [k.iban, institutionId],
       )).rows[0];
       if (!konto) {
@@ -111,6 +141,8 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
         ergebnisse.push({ konto: kurz(k.iban), status: k.status, umsaetze: 0, neu: 0, umgeschluesselt: 0, pdfVerknuepft: 0, saldenprobe: null });
         continue;
       }
+      const vorherSaldo = konto.current_balance == null ? null : Number(konto.current_balance);
+      const vorherZeit = konto.last_sync_at == null ? null : new Date(konto.last_sync_at).toISOString();
       const befunde = await uebernimmUmsaetze(Number(konto.id), k.transactions.map((tx: any) => ({
         bank_transaction_id: tx.bank_transaction_id,
         legacy_transaction_id: tx.legacy_transaction_id,
@@ -134,7 +166,12 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
         umgeschluesselt: befunde.filter(b => b.ergebnis === 'umgeschluesselt').length,
         pdfVerknuepft: befunde.filter(b => b.pdfVerknuepft).length,
         abrufprobe: abrufprobe(k.transactions, k.statement_opening, k.statement_closing),
-        saldenprobe: await saldenprobe(Number(konto.id), k.statement_opening, k.balance),
+        ...(k.statement_opening
+          ? { saldenprobe: await saldenprobe(Number(konto.id), k.statement_opening, k.balance) }
+          : {
+            saldenprobe: await bezugsprobe(Number(konto.id), { saldo: vorherSaldo, zeit: vorherZeit }, k.balance),
+            saldenprobeBezug: vorherSaldo != null && vorherZeit && k.balance != null ? vorherZeit.slice(0, 10) : null,
+          }),
       });
     }
 
@@ -163,7 +200,8 @@ export function abrufMeldung(institut: string, e: KontoErgebnis[] | null): strin
   const zeilen = [`🏦 ${institut} verbunden — Umsätze abgerufen:`];
   for (const x of e) {
     if (x.status === 'ok') {
-      const probe = x.saldenprobe === null ? 'Saldenprobe –' : x.saldenprobe === 0 ? 'Saldenprobe ✓' : `Saldenprobe ${euro(x.saldenprobe)}`;
+      const bezug = x.saldenprobeBezug ? ` (gegen Stand ${x.saldenprobeBezug.split('-').reverse().join('.')})` : '';
+      const probe = x.saldenprobe === null ? 'Saldenprobe –' : x.saldenprobe === 0 ? `Saldenprobe ✓${bezug}` : `Saldenprobe ${euro(x.saldenprobe)}${bezug}`;
       const zeitraum = x.ab ? ` ab ${x.ab.split('-').reverse().join('.')}` : '';
       const luecke = x.abrufprobe ? `, Lieferung lückenhaft (${euro(x.abrufprobe)})` : '';
       zeilen.push(`${x.konto}: ${x.umsaetze} Umsätze${zeitraum}, ${x.neu} neu, ${probe}${luecke}`);

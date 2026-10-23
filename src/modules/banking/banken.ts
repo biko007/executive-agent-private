@@ -44,3 +44,22 @@ export function unterstuetzteBank(blz: string | undefined | null): Unterstuetzte
 export function tanVerfahrenFuerSidecar(tanMediumName: string | null | undefined): 'SecureGo' | undefined {
   return tanMediumName === 'SecureGo' ? 'SecureGo' : undefined;
 }
+
+/** Vorsilbe neuer Kontobezeichnungen — getrennt von UNTERSTUETZTE_BANKEN, deren
+    Einträge die Verbindungsdaten festhalten und unverändert bleiben sollen. */
+const KURZNAMEN: Record<string, string> = { '64350070': 'KSK', '64390130': 'Volksbank' };
+
+/**
+ * Bezeichnung eines neu gemeldeten Kontos (23.10.2026). Der Sidecar meldet
+ * als Namen die IBAN; so standen volle IBANs als Kontoname im Dashboard und
+ * im Audit. Ein Vorschlag, der eine Kontonummer enthält, wird verworfen —
+ * dann „<Bank> …1234“. Vorhandene Bezeichnungen überschreibt upsertAccount nie.
+ */
+export function neueKontoBezeichnung(blz: string | null | undefined, institutName: string | null | undefined,
+  iban: string, vorschlag?: string | null): string {
+  const v = String(vorschlag ?? '').trim();
+  if (v && !/\d{6,}/.test(v.replace(/\s+/g, ''))) return v;
+  const bank = KURZNAMEN[String(blz ?? '').trim()]
+    ?? (/kreissparkasse/i.test(String(institutName)) ? 'KSK' : String(institutName || 'Bank').trim().split(/\s+/)[0]);
+  return `${bank} …${String(iban || '').replace(/\s+/g, '').slice(-4)}`;
+}
