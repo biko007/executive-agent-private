@@ -4,6 +4,22 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 (6) — Rückfall in deploy.sh exakt auf den Rückfallpunkt, 2 × 20 € nachgetragen
+
+Owner-Freigabe 23.10.2026 23:09 „Freigabe Rollback-Fix und 2x20 nachtragen"
+(report-rollback-fix-und-2x20-nachtragen-20261023).
+
+- **Rückfall (`scripts/deploy-rueckfall.sh`, eingebunden in `deploy.sh`):**
+  `git restore --source=<LAST_GOOD> --staged --worktree -- .` statt
+  `git checkout <LAST_GOOD> -- .`. Seit dem Rückfallpunkt hinzugekommene
+  versionierte Dateien verschwinden, nicht versionierte und ignorierte
+  bleiben. Anlass: Eine neue Testdatei blieb neben dem alten Code liegen,
+  der Testlauf des Rückfalls scheiterte, Telegram meldete zweimal falsch
+  „ROLLBACK FAILED". Der Ablauf von deploy.sh steht jetzt in `hauptablauf()`.
+- **Mietkonto …9268:** zwei Lastschriften über −20,00 € (15.07.2024,
+  15.08.2024) aus der PDF-Umsatzliste nachgetragen, Herkunft `pdf_import`
+  (`scripts/banking-2x20-nachtragen-20261023.ts`, Audit 3174).
+
 ## Stand 2026-10-23 (5) — Paket Abend: MT940-Tagesversatz, PDF-Toleranz, Kontostatus „neu", Darlehen, Auszugssalden
 
 Owner-Freigabe 23.10.2026 21:40 „Freigabe Paket Abend"

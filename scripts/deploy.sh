@@ -30,6 +30,11 @@ AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DASHBOARD_DIR="${AGENT_DIR}/../executive-dashboard"
 TRADING_DIR="${AGENT_DIR}/../trading-agent"
 MARKER_DIR="${HOME}/.deploy-markers"
+
+# Arbeitsstand für den Rückfall (23.10.2026): entfernt auch seit dem
+# Rückfallpunkt hinzugekommene versionierte Dateien, siehe dort.
+# shellcheck source=deploy-rueckfall.sh
+source "${AGENT_DIR}/scripts/deploy-rueckfall.sh" || { echo "[deploy] scripts/deploy-rueckfall.sh fehlt — Abbruch vor jedem Schritt"; exit 1; }
 NOTIFY_CMD="/home/biko/.scripts/notify"
 NOTIFY_SYSTEM_CMD="/home/biko/bin/notify-system"
 SETTLE_SECS=5   # seconds to wait after restart before health check
@@ -209,6 +214,12 @@ run_smoke() {
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────
+# Der ganze Ablauf steht in einer Funktion (23.10.2026): bash liest sie
+# vollständig, bevor sie läuft. Der Rückfall ersetzt deploy.sh selbst durch
+# den Stand von LAST_GOOD. git legt dabei eine neue Datei an, bash liest
+# meist die alte weiter (Review 23.10.2026) — die Funktion sichert das ab,
+# auch falls ein Werkzeug die Datei an Ort und Stelle überschreibt.
+hauptablauf() {
 
 mkdir -p "$MARKER_DIR"
 
@@ -297,8 +308,10 @@ fi
 LAST_GOOD_SHORT="${LAST_GOOD:0:12}"
 log "Rollback: checkout $LAST_GOOD_SHORT in $PRIMARY_BUILD_DIR"
 
-# Restore working tree to last-good state (only working tree, HEAD stays at DEPLOY_SHA)
-if ! git -C "$PRIMARY_BUILD_DIR" checkout "$LAST_GOOD" -- .; then
+# Restore working tree to last-good state (HEAD stays at DEPLOY_SHA). Exakt:
+# auch seit LAST_GOOD hinzugekommene versionierte Dateien verschwinden,
+# sonst scheitert der Testlauf des Rückfalls an neuen Testdateien.
+if ! rueckfall_arbeitsstand "$PRIMARY_BUILD_DIR" "$LAST_GOOD" "$DEPLOY_SHA"; then
   notify "ROLLBACK FAILED [${PRIMARY}]: git checkout ${LAST_GOOD_SHORT} fehlgeschlagen — ALARM, manueller Eingriff erforderlich!" error
   exit 2
 fi
@@ -332,3 +345,7 @@ else
   log "=== ROLLBACK FAILED ==="
   exit 2
 fi
+}
+
+hauptablauf "$@"
+exit $?
