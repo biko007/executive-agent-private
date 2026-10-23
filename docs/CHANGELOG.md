@@ -4,6 +4,26 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 (2) — PDF-Verknüpfung paarweise
+
+Bei der Übernahme einer FinTS-Zeile blieben gleichwertige PDF-Kandidaten
+unverknüpft („mehrdeutig"). Gruppen gleich hoher Buchungen zählten dadurch
+doppelt: fünf Allianz-Verträge zu je 30 € im Monat und zwei Leasingraten am
+selben Tag auf …0028 (9.217,16 €), auf dem Kartenkonto …0125 eine
+Gutschrift, die die Bank 16 Tage nach dem Umsatz buchte (402,01 € mit einem
+zweiten Fall). Jetzt `verknuepfePdfZeile`:
+- paarweise, jede FinTS-Zeile nimmt die nächste freie PDF-Zeile;
+- Rangfolge: Gegenpartei, gleicher Zweck (die PDF-Zeile trägt davor die
+  IBAN), Abstand, Datum;
+- bei Kartenabrechnungen zählt der Abstand zum „Umsatz vom …" aus dem Zweck
+  der Bankzeile.
+
+`verknuepfePdfNachtraeglich` holt das für den Bestand nach
+(`scripts/banking-pdf-nachverknuepfen-20261023.ts`, ohne Schalter
+Trockenlauf). Owner-Freigabe 23.10.2026 17:01.
+
+---
+
 ## Stand 2026-10-23 — Abgleichstatus je Institut, Sitzungswahl
 
 Der Wochenabgleich schrieb den **Gesamtstatus** und die **Gesamtsummen** in die

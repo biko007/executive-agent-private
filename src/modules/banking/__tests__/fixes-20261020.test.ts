@@ -190,18 +190,25 @@ describe('1 Umsatz-Schlüssel', () => {
     expect(r2.pdfVerknuepft).toBeNull();
   });
 
-  test('zwei gleichwertige PDF-Kandidaten: nicht verknüpfen, sondern melden', async () => {
+  // Seit 23.10.2026 paarweise (Owner-Freigabe „Freigabe 1-3"): gleichwertige
+  // Kandidaten werden der Reihe nach verknüpft statt gar nicht — sonst zählt
+  // jede Buchung einer solchen Gruppe doppelt.
+  test('zwei gleichwertige PDF-Kandidaten: paarweise verknüpfen und melden', async () => {
     const { insertTransaction, uebernimmSynchronisiertenUmsatz } = await import('../store.js');
     const id = await konto('60000013');
+    const pdf = [];
     for (const k of ['pdf_1', 'pdf_2']) {
-      await insertTransaction(id, {
+      pdf.push(await insertTransaction(id, {
         bank_transaction_id: k, booking_date: '2026-03-30', amount: 71, currency: 'EUR',
         counterparty_name: 'Jemand anderes', raw_payload: {}, source: 'pdf_import',
-      });
+      }));
     }
     const r = await uebernimmSynchronisiertenUmsatz(id, gutschrift('v2_a', 'Abschlag 03/26'));
-    expect(r.pdfVerknuepft).toBeNull();
+    expect(r.pdfVerknuepft).toBe(pdf[0]!.id);
     expect(r.pdfMehrdeutig).toBe(true);
+    const r2 = await uebernimmSynchronisiertenUmsatz(id, gutschrift('v2_b', 'Abschlag 03/26'));
+    expect(r2.pdfVerknuepft).toBe(pdf[1]!.id);
+    expect(r2.pdfMehrdeutig).toBe(false);
   });
 
   test('passende Gegenpartei wird vor näherem Datum bevorzugt', async () => {

@@ -592,6 +592,115 @@ export interface UebernahmeBefund {
 const OHNE_LEER = (spalte: string) => `regexp_replace(coalesce(${spalte}, ''), '\\s+', '', 'g')`;
 const ohneLeer = (t: string | undefined) => String(t ?? '').replace(/\s+/g, '');
 
+/** Umsatzdatum aus dem Zweck einer Kartenbuchung („…Umsatz vom 20.08.2026 Visa…“), sonst null. */
+export function umsatzdatumAusZweck(zweck: string | null | undefined): string | null {
+  const m = /Umsatz\s*vom\s*(\d{2})\.(\d{2})\.(\d{4})/.exec(String(zweck ?? ''));
+  if (!m) return null;
+  // Ein unmögliches Datum („31.02.") darf die Übernahme nicht abbrechen — dann
+  // gilt der Buchungstag wie bei Zeilen ohne Umsatzdatum.
+  const iso = `${m[3]}-${m[2]}-${m[1]}`;
+  const d = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+/**
+ * Sucht zur FinTS-Zeile `fintsId` die PDF-Zeile derselben Buchung und markiert
+ * sie als Dublette. Läuft in der Transaktion des Aufrufers.
+ *
+ * Kandidaten: Kontoauszüge ('pdf_import', wie die Bereinigung in
+ * mietforderungen.ts) und Kreditkartenabrechnungen ('kk_pdf_import', seit der
+ * Zusammenführung der Kartenkonten 20.10.2026), gleicher Betrag, noch nicht
+ * verknüpft. Datum: höchstens drei Tage Abstand zum Buchungstag; bei
+ * Kartenabrechnungen das Umsatzdatum aus dem Zweck der Bankzeile, weil die
+ * Bank Gutschriften mit bis zu drei Wochen Versatz bucht.
+ *
+ * Rangfolge: passende Gegenpartei, dann gleicher Zweck (Vertrags-, Rechnungs-
+ * nummer — die PDF-Zeile trägt davor nur die IBAN), dann Datumsabstand, dann
+ * Datum und id. ANLASS (23.10.2026): Bis dahin blieben gleichwertige
+ * Kandidaten unverknüpft; fünf Allianz-Verträge zu je 30 € im Monat zählten
+ * so doppelt. Jetzt wird paarweise verknüpft — jede FinTS-Zeile nimmt die
+ * nächste freie PDF-Zeile. `pdfMehrdeutig` meldet, dass nur die Reihenfolge
+ * entschied; die Summe stimmt dann trotzdem.
+ */
+async function verknuepfePdfZeile(
+  client: { query: (sql: string, werte?: unknown[]) => Promise<{ rows: any[] }> },
+  accountId: number,
+  fintsId: number,
+  tx: { amount: number; booking_date: string; counterparty_name?: string | null; reference?: string | null },
+): Promise<{ pdfVerknuepft: number | null; pdfMehrdeutig: boolean }> {
+  const gegenpartei = ohneLeer(tx.counterparty_name ?? undefined).toLowerCase().slice(0, 10);
+  const zweck = ohneLeer(tx.reference ?? undefined).slice(0, 30);
+  const kandidaten = await client.query(
+    `SELECT id, passt, zweck_gleich, abstand FROM (
+       SELECT id, booking_date,
+              (length($5) >= 3 AND lower(left(${OHNE_LEER('counterparty_name')}, 10)) = $5) AS passt,
+              (length($7) >= 10 AND strpos(${OHNE_LEER('reference')}, $7) > 0) AS zweck_gleich,
+              CASE WHEN source = 'kk_pdf_import' AND $6::date IS NOT NULL THEN abs(booking_date - $6::date)
+                   ELSE abs(booking_date - $4::date) END AS abstand
+         FROM banking_transactions
+        WHERE account_id = $1 AND source IN ('pdf_import', 'kk_pdf_import') AND duplicate_of IS NULL
+          AND amount = $3 AND id <> $2) k
+      WHERE abstand <= 3
+      ORDER BY passt DESC, zweck_gleich DESC, abstand, booking_date, id
+      LIMIT 2`,
+    [accountId, fintsId, tx.amount, tx.booking_date, gegenpartei, umsatzdatumAusZweck(tx.reference), zweck],
+  );
+  const [erster, zweiter] = kandidaten.rows;
+  if (!erster) return { pdfVerknuepft: null, pdfMehrdeutig: false };
+  // Nur eine noch freie Zeile verknüpfen: Hat ein gleichzeitiger Lauf sie eben
+  // genommen, bleibt diese FinTS-Zeile unverknüpft, statt jenen Partner zu überschreiben.
+  const markiert = await client.query(
+    'UPDATE banking_transactions SET duplicate_of = $2, updated_at = NOW() WHERE id = $1 AND duplicate_of IS NULL RETURNING id',
+    [erster.id, fintsId],
+  );
+  if (markiert.rows.length === 0) return { pdfVerknuepft: null, pdfMehrdeutig: false };
+  const pdfMehrdeutig = Boolean(zweiter) && zweiter.passt === erster.passt
+    && zweiter.zweck_gleich === erster.zweck_gleich && Number(zweiter.abstand) === Number(erster.abstand);
+  return { pdfVerknuepft: num(erster.id), pdfMehrdeutig };
+}
+
+/**
+ * Nachträgliche Verknüpfung (Owner-Freigabe 23.10.2026): geht die FinTS-Zeilen
+ * der Konten durch, auf die noch keine PDF-Zeile zeigt, ältester Buchungstag
+ * zuerst, und verknüpft wie bei der Übernahme. `schreiben: false` ist ein
+ * Trockenlauf — alles in einer Transaktion, die zurückgerollt wird.
+ */
+export async function verknuepfePdfNachtraeglich(
+  accountIds: number[],
+  schreiben: boolean,
+): Promise<Array<{ kontoId: number; fintsId: number; pdfId: number; betrag: number; mehrdeutig: boolean }>> {
+  const client = await getClient();
+  let freigegeben = false;
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT f.id, f.account_id, f.amount, f.booking_date::text AS booking_date, f.counterparty_name, f.reference
+         FROM banking_transactions f
+        WHERE f.account_id = ANY($1::bigint[]) AND f.source = 'fints'
+          AND NOT EXISTS (SELECT 1 FROM banking_transactions p WHERE p.duplicate_of = f.id)
+        ORDER BY f.booking_date, f.id`,
+      [accountIds],
+    );
+    const ergebnis = [];
+    for (const f of rows) {
+      const r = await verknuepfePdfZeile(client, num(f.account_id), num(f.id), { ...f, amount: Number(f.amount) });
+      if (r.pdfVerknuepft !== null) {
+        ergebnis.push({ kontoId: num(f.account_id), fintsId: num(f.id), pdfId: r.pdfVerknuepft, betrag: Number(f.amount), mehrdeutig: r.pdfMehrdeutig });
+      }
+    }
+    await client.query(schreiben ? 'COMMIT' : 'ROLLBACK');
+    return ergebnis;
+  } catch (e: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    // Verbindung mit Fehler verwerfen statt in den Pool zurückgeben
+    client.release(e);
+    freigegeben = true;
+    throw e;
+  } finally {
+    if (!freigegeben) client.release();
+  }
+}
+
 /**
  * Übernimmt einen Umsatz aus dem FinTS-Abgleich — Nachfolger von
  * `insertTransaction` für den Sync. Aufrufer verwenden `uebernimmUmsaetze`,
@@ -609,10 +718,9 @@ const ohneLeer = (t: string | undefined) => String(t ?? '').replace(/\s+/g, '');
  *     übereinstimmen — sonst könnte die Zeile von Buchung B (an der schon
  *     Zahlungszuordnungen hängen) auf Buchung A umgestellt werden.
  *  3. Sonst einfügen → `neu`. Steht dieselbe Buchung schon aus einem
- *     PDF-Import da (gleicher Betrag, höchstens drei Tage Abstand, noch nicht
- *     verknüpft; passende Gegenpartei bevorzugt), wird die PDF-Zeile als
- *     Dublette markiert. Gibt es mehrere gleichwertige Kandidaten, wird NICHT
- *     verknüpft, sondern `pdfMehrdeutig` gemeldet.
+ *     PDF-Import da, wird die PDF-Zeile als Dublette markiert — Regeln in
+ *     `verknuepfePdfZeile` (seit 23.10.2026 paarweise; `pdfMehrdeutig` meldet,
+ *     dass nur die Reihenfolge entschied).
  */
 export async function uebernimmSynchronisiertenUmsatz(
   accountId: number,
@@ -686,37 +794,7 @@ export async function uebernimmSynchronisiertenUmsatz(
       return { ergebnis: 'vorhanden', id: null, pdfVerknuepft: null, pdfMehrdeutig: false };
     }
     const neueId = num(eingefuegt.rows[0].id);
-
-    /* PDF-Kandidaten: Kontoauszüge ('pdf_import', wie die Bereinigung in
-       mietforderungen.ts) und Kreditkartenabrechnungen ('kk_pdf_import', seit
-       der Zusammenführung der Kartenkonten 20.10.2026); passende Gegenpartei
-       vor Datumsabstand. */
-    const gegenpartei = ohneLeer(txData.counterparty_name).toLowerCase().slice(0, 10);
-    const kandidaten = await client.query<{ id: string; passt: boolean; abstand: number }>(
-      `SELECT id,
-              (length($5) >= 3 AND lower(left(${OHNE_LEER('counterparty_name')}, 10)) = $5) AS passt,
-              abs(booking_date - $4::date) AS abstand
-         FROM banking_transactions
-        WHERE account_id = $1 AND source IN ('pdf_import', 'kk_pdf_import') AND duplicate_of IS NULL
-          AND amount = $3 AND abs(booking_date - $4::date) <= 3 AND id <> $2
-        ORDER BY passt DESC, abstand, id
-        LIMIT 2`,
-      [accountId, neueId, txData.amount, txData.booking_date, gegenpartei],
-    );
-    let pdfVerknuepft: number | null = null;
-    let pdfMehrdeutig = false;
-    const [erster, zweiter] = kandidaten.rows;
-    if (erster) {
-      if (zweiter && zweiter.passt === erster.passt && Number(zweiter.abstand) === Number(erster.abstand)) {
-        pdfMehrdeutig = true;
-      } else {
-        await client.query(
-          'UPDATE banking_transactions SET duplicate_of = $2, updated_at = NOW() WHERE id = $1',
-          [erster.id, neueId],
-        );
-        pdfVerknuepft = num(erster.id);
-      }
-    }
+    const { pdfVerknuepft, pdfMehrdeutig } = await verknuepfePdfZeile(client, accountId, neueId, txData);
 
     await client.query('COMMIT');
     return { ergebnis: 'neu', id: neueId, pdfVerknuepft, pdfMehrdeutig };
