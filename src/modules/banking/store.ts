@@ -1025,7 +1025,11 @@ export async function listActiveSessions(): Promise<Session[]> {
     `SELECT * FROM banking_sessions
      WHERE institution_id IS NOT NULL
        AND pending_challenge_type IS NULL
-     ORDER BY COALESCE(last_success_at, updated_at) DESC NULLS LAST, id DESC`,
+     -- Sitzungen mit erfolgreicher Verbindung zuerst, darunter die juengste.
+     -- Eine gescheiterte Neuverbindung (last_success_at NULL) darf die
+     -- funktionierende Sitzung desselben Instituts nicht verdraengen — der
+     -- Abgleich nimmt je Institut nur die erste (KSK-Sitzung 22, 23.10.2026).
+     ORDER BY (last_success_at IS NULL), COALESCE(last_success_at, updated_at) DESC NULLS LAST, id DESC`,
   );
   return rows.map(mapSession);
 }

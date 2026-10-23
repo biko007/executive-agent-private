@@ -4,6 +4,25 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 — Abgleichstatus je Institut, Sitzungswahl
+
+Der Wochenabgleich schrieb den **Gesamtstatus** und die **Gesamtsummen** in die
+Laufzeile jedes Instituts. Scheiterte die Volksbank (sie lehnt neue
+Abrufdialoge ab), stand auch der fehlerfreie KSK-Lauf auf IMPORT_FAILED, und
+der Wochencheck hätte einen KSK-Fehler gemeldet. Jetzt bekommt jede Zeile
+Status und Summen aus den eigenen Kontoergebnissen (`instErgebnis`);
+übersprungene Institute nach einem globalen Stopp behalten ihren Status, die
+Zustellung wird nachgetragen. Der Gesamtstatus (Rückgabe, Telegram, Audit)
+bleibt. Der TAN-Knopf zeigt auf die Laufzeile des Instituts, das die TAN
+verlangt hat — vorher auf die erste Zeile (womöglich falsches Institut).
+
+`listActiveSessions` zieht Sitzungen mit Erfolg vor: Eine gescheiterte
+Neuverbindung (KSK-Sitzung 22, 23.10.) verdrängte sonst die funktionierende
+Sitzung, weil der Abgleich je Institut nur die erste nimmt. Befund E1 (neue
+erfolgreiche Sitzung zuerst) bleibt erhalten.
+
+---
+
 ## Stand 2026-10-20 — Umsatzabruf im Verbindungsdialog
 
 Die Volksbank lehnt jeden neuen Abrufdialog ab (9050/9340), den Dialog nach

@@ -219,6 +219,15 @@ export async function startWeeklySync(options?: {
 
   const syncRunIds = new Map<number, number>(); // institutionId → DB sync_run.id
   const processedInstitutions = new Set<number>();
+  /* Ergebnis je Institut, damit jede Laufzeile ihren EIGENEN Status traegt:
+     Bis 23.10.2026 bekam jede Zeile den Gesamtstatus und die Gesamtsummen —
+     scheiterte die Volksbank, stand auch der fehlerfreie KSK-Lauf auf
+     IMPORT_FAILED. `von`/`bis` begrenzen die Kontoergebnisse des Instituts in
+     accountResults; `stop` ist ein globaler Stopp, den DIESES Institut ausgeloest hat. */
+  const instErgebnis = new Map<number, { von: number; bis: number; synced: number; neu: number; stop: 'tan_required' | 'timeout' | false }>();
+  /* Institute, die nach einem globalen Stopp gar nicht mehr kontaktiert wurden:
+     ihr Status steht beim Ueberspringen fest und wird am Ende nicht ueberschrieben. */
+  const festerStatus = new Map<number, ContractStatus>();
   let totalAccountsSynced = 0;
   let totalTransactionsNew = 0;
 
@@ -262,8 +271,10 @@ export async function startWeeklySync(options?: {
             fints_codes: [], transactions_seen: 0, transactions_inserted: 0,
           });
         }
+        const statusUebersprungen: ContractStatus = globalStop === 'timeout' ? 'BANK_TIMEOUT_UNKNOWN' : 'TAN_REQUIRED';
+        festerStatus.set(session.institutionId, statusUebersprungen);
         await updateSyncRun(dbRunId, {
-          status: globalStop === 'timeout' ? 'BANK_TIMEOUT_UNKNOWN' : 'TAN_REQUIRED',
+          status: statusUebersprungen,
           scaRequired: globalStop === 'tan_required',
           accountsSynced: 0, transactionsNew: 0,
         });
@@ -332,6 +343,8 @@ export async function startWeeklySync(options?: {
       const accounts = await listAccounts({ institution_id: session.institutionId, status: 'active' });
       let instAccountsSynced = 0;
       let instTransactionsNew = 0;
+      const instVon = accountResults.length;
+      const stopVorher = globalStop;
 
       const syncFn = _deps?._sidecarSync ?? sidecar.sync;
       let accountIndex = 0;
@@ -479,16 +492,32 @@ export async function startWeeklySync(options?: {
 
       totalAccountsSynced += instAccountsSynced;
       totalTransactionsNew += instTransactionsNew;
+      instErgebnis.set(institution.id, {
+        von: instVon, bis: accountResults.length,
+        synced: instAccountsSynced, neu: instTransactionsNew,
+        stop: globalStop !== stopVorher ? globalStop : false,
+      });
     }
 
     // Determine final status
     let finalStatus = determineStatus(accountResults, globalStop, sidecarUp, anyPaused);
 
-    // CB-Clear: on SUCCESS_FULL, clear any paused status
-    if (finalStatus === 'SUCCESS_FULL') {
-      for (const [instId] of syncRunIds) {
-        await setInstitutionSyncPaused(instId, null);
-      }
+    // Status je Institut aus den eigenen Kontoergebnissen (siehe instErgebnis)
+    const statusJeInstitut = new Map<number, { status: ContractStatus; synced: number; neu: number }>();
+    for (const [instId] of syncRunIds) {
+      const fest = festerStatus.get(instId);
+      if (fest) { statusJeInstitut.set(instId, { status: fest, synced: 0, neu: 0 }); continue; }
+      const e = instErgebnis.get(instId);
+      if (!e) { statusJeInstitut.set(instId, { status: finalStatus, synced: 0, neu: 0 }); continue; }
+      statusJeInstitut.set(instId, {
+        status: determineStatus(accountResults.slice(e.von, e.bis), e.stop, sidecarUp, false),
+        synced: e.synced, neu: e.neu,
+      });
+    }
+
+    // CB-Clear: je Institut, das fehlerfrei durchlief, eine TAN-Pause aufheben
+    for (const [instId, s] of statusJeInstitut) {
+      if (s.status === 'SUCCESS_FULL') await setInstitutionSyncPaused(instId, null);
     }
 
     // Alert delivery — capture real sendTelegram return value (not fire-and-forget)
@@ -500,7 +529,14 @@ export async function startWeeklySync(options?: {
         try {
           // If TAN_REQUIRED and sendTelegramWithKeyboard available, send with button
           if (finalStatus === 'TAN_REQUIRED' && _deps.sendTelegramWithKeyboard && syncRunIds.size > 0) {
-            const firstRunId = syncRunIds.values().next().value;
+            /* Der Knopf gehoert zur Laufzeile des Instituts, das die TAN verlangt
+               hat — nicht einfach zur ersten. Seit die Zeilen ihren eigenen Status
+               tragen (23.10.2026), lehnte validateResyncRequest sonst eine
+               SUCCESS_FULL-Zeile ab; vorher stiess der Knopf womoeglich den
+               Nachabgleich fuer das falsche Institut an. */
+            const tanInstitut = [...instErgebnis].find(([, e]) => e.stop === 'tan_required')?.[0];
+            const firstRunId = (tanInstitut !== undefined ? syncRunIds.get(tanInstitut) : undefined)
+              ?? syncRunIds.values().next().value;
             const keyboard = [[{
               text: '\u2705 TAN bestaetigt \u2192 jetzt syncen',
               callback_data: `bsync_${firstRunId}`,
@@ -522,14 +558,20 @@ export async function startWeeklySync(options?: {
       }
     }
 
-    // Update sync run records
+    // Update sync run records — je Institut der eigene Status und die eigenen Summen
     for (const [instId, dbRunId] of syncRunIds) {
+      if (festerStatus.has(instId)) {
+        // Status und Summen stehen seit dem Ueberspringen fest; nur die Zustellung nachtragen
+        await updateSyncRun(dbRunId, { status: festerStatus.get(instId)!, alertDelivered });
+        continue;
+      }
+      const s = statusJeInstitut.get(instId)!;
       await updateSyncRun(dbRunId, {
-        status: finalStatus,
-        scaRequired,
+        status: s.status,
+        scaRequired: s.status === 'TAN_REQUIRED',
         alertDelivered,
-        accountsSynced: totalAccountsSynced,
-        transactionsNew: totalTransactionsNew,
+        accountsSynced: s.synced,
+        transactionsNew: s.neu,
       });
     }
 

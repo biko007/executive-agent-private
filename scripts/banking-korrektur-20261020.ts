@@ -6,6 +6,7 @@
  * Schritte, einzeln aufrufbar:
  *   --sitzungen   KSK-Sitzungen ausser der gültigen ablösen (18, 19 → abgelöst)
  *   --laeufe      verwaiste Laufzeilen 4, 6, 8, 9 auf ABORTED setzen
+ *                 (--ids 11,12 fuer andere Zeilen, Freigabe 23.10.2026 12:23)
  *   --neuabruf    alle aktiven FinTS-Konten maximal zurück neu abrufen und mit
  *                 dem neuen Schlüssel übernehmen; Saldenprobe je Konto
  *   --ab <datum>  Startdatum des Neuabrufs (Vorgabe 2015-01-01). Ohne TAN gibt
@@ -64,22 +65,28 @@ async function sitzungen() {
   return { behalten: Number(behalten.id), abgeloest };
 }
 
+const idsIndex = process.argv.indexOf('--ids');
+const LAUF_IDS = idsIndex > 0 ? String(process.argv[idsIndex + 1] || '').split(',').map(Number).filter(n => n > 0) : [4, 6, 8, 9];
+const LAUF_FREIGABE = idsIndex > 0 ? 'Owner 23.10.2026 12:23 „Freigabe Status“' : 'Owner 20.10.2026 11:18 „Freigabe 1-3"';
+
 async function laeufe() {
-  const ids = [4, 6, 8, 9];
+  const ids = LAUF_IDS;
   const vorher = (await query('SELECT * FROM banking_sync_runs WHERE id = ANY($1) ORDER BY id', [ids])).rows;
   sichere('banking_sync_runs-vorher', vorher);
   const { rows } = await query(
     `UPDATE banking_sync_runs
         SET status = 'ABORTED', finished_at = COALESCE(finished_at, now()),
-            error_message = 'verwaist: paralleler Lauf ohne Abschluss (Sperre über Pool, Korrektur 20.10.2026)'
+            error_message = $2
       WHERE id = ANY($1) AND status = 'RUNNING'
-      RETURNING id`, [ids]);
+      RETURNING id`, [ids, idsIndex > 0
+        ? 'verwaist: Doppelklick-Lauf vor dem Sperren-Fix vom 20.10.2026 (Korrektur 23.10.2026)'
+        : 'verwaist: paralleler Lauf ohne Abschluss (Sperre über Pool, Korrektur 20.10.2026)']);
   const geaendert = rows.map((r: any) => Number(r.id));
   await audit.log({
     module: 'banking', action: 'sync_run.abort_orphans', actor: aktor,
     entityType: 'banking_sync_run', entityId: geaendert.join(','),
     before: { ids, status: 'RUNNING' },
-    after: { ids: geaendert, status: 'ABORTED', freigabe: 'Owner 20.10.2026 11:18 „Freigabe 1-3"' },
+    after: { ids: geaendert, status: 'ABORTED', freigabe: LAUF_FREIGABE },
   } as any);
   return { geaendert };
 }
