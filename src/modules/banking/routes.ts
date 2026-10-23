@@ -3,7 +3,7 @@
  * Sprint 7b Etappe c: Follows fleet/routes.ts pattern exactly.
  * Auth: Bearer CORE_SERVICE_TOKEN. Actor from X-Actor header.
  */
-import { unterstuetzteBank } from './banken.js';
+import { unterstuetzteBank, bereinigeKennung } from './banken.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseJsonBody } from '../../util/body-parser.js';
 import { withContext, generateId } from '../../shared/correlation/index.js';
@@ -340,6 +340,10 @@ export function registerBankingHttpRoutes(api: any) {
                 // Name und FinTS-Adresse kommen aus der festen Bankliste, nicht aus der
                 // Anfrage (20.10.2026) — eine bekannte BLZ trifft so immer ihren
                 // vorhandenen Institutseintrag, es entsteht kein zweiter.
+                if (!bereinigeKennung(body.user_id)) {
+                  err(res, 400, 'Kennung fehlt');
+                  return;
+                }
                 const bank = unterstuetzteBank(body.blz);
                 if (!bank) {
                   err(res, 400, `Bank ${String(body.blz).slice(0, 8)} wird nicht unterstuetzt`);
@@ -354,7 +358,8 @@ export function registerBankingHttpRoutes(api: any) {
                 );
                 const ctx = await decideReuse(
                   inst.id,
-                  body.user_id,
+                  // erst nach checkApproval: die Freigabe ist an den Anfrageinhalt gebunden
+                  bereinigeKennung(body.user_id),
                   body.pin,
                   body.product_id || 'env-default',
                   // TAN-Verfahren: bei Banken mit festem Verfahren (Volksbank → SecureGo
@@ -421,7 +426,7 @@ export function registerBankingHttpRoutes(api: any) {
         if (resource === 'abruf-status' && segments[1] && req.method === 'GET') {
           const sid = parseInt(segments[1], 10);
           if (isNaN(sid)) { err(res, 400, 'Invalid session_id'); return true; }
-          json(res, 200, { phase: await sidecar.abrufStatus(sid) });
+          json(res, 200, await sidecar.abrufStatus(sid));
           return true;
         }
 

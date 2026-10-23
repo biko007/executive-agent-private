@@ -4,6 +4,56 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-23 (4) — Kennung trimmen, Fehlertext 9340, CAMT-Datum, Freigabe je Konto
+
+**Kennung:** Dashboard (`bankingVerbindenBody`) und Gateway (`bereinigeKennung`,
+nach `checkApproval`) entfernen Leerraum am Anfang und Ende der Kennung,
+auch Tab, Zeilenumbruch und geschütztes Leerzeichen. Die PIN bleibt
+unverändert. Anlass: Das automatische Ausfüllen hängte bei der KSK ein
+Leerzeichen an, die Bank lehnte dreimal mit 9340 ab, obwohl die PIN stimmte.
+
+**Fehlertext:** python-fints wirft bei 9340 dieselbe PIN-Ausnahme wie bei
+9942. Der Sidecar schneidet die 9xxx-Codes je Aufruf mit (`mit_bankcodes`,
+Haken in `_protokolliere_segmentart`). Bei 9340 ohne echten PIN-Code
+(9942/9931/9930/9910) meldet er jetzt „Bank lehnt die Anmeldung ab (9340) –
+bitte Kennung und PIN prüfen“.
+
+**CAMT-Saldenprobe:** Der Eröffnungssaldo der Volksbank trägt das Datum des
+ersten Buchungstags und gilt ab dessen Beginn. `_camt_salden` setzt ihn auf
+den Vortag, wenn der Saldo am Tag der ersten Buchung der Datei oder später
+liegt. Ein Vortagsabschluss mit Vortagsdatum bleibt unverändert. Die sieben
+Abweichungen vom 23.10. ergeben damit 0.
+
+**Freigabe je Konto:**
+- Der Sidecar fordert die Freigabe für die volle Historie je Konto an, jeweils
+  mit bis zu 120 s Wartezeit. Bei Ablehnung oder Zeitablauf bekommt dieses
+  Konto 89 Tage, dann folgt das nächste.
+- Das Gateway gibt Auswahl und Reihenfolge vor (`kontenFuerHistorie`):
+  Kartenkonten, dann das Giro, dann die übrigen, jeweils nach Endziffern.
+  Ohne Konten, deren Historie ein früherer Abruf schon ab 2015 geliefert hat.
+- Der Abrufstatus enthält n, m und das Konto. Das Dashboard zeigt „Freigabe n
+  von m in der App bestätigen – Konto …xxxx“ und einen Abbrechen-Knopf. Der
+  Knopf setzt einen Abbruch-Wunsch, danach bekommen die übrigen Konten
+  89 Tage.
+- Zeitlimit Gateway → Sidecar 30 Minuten.
+- Der Wochenabgleich bleibt unverändert und fordert nie eine Freigabe an.
+- **Grenze:** Antwortet die Bank auf eine abgelehnte Freigabe mit einem
+  PIN-Code (9942), sperrt python-fints die PIN für diesen Dialog. Dann endet
+  die Reihe, die übrigen Konten bleiben unangefragt. Wie die Volksbank auf
+  eine Ablehnung antwortet, ist nicht belegt.
+- Scheitert die Kontenauswahl im Gateway, läuft der Abruf ohne Historie. Das
+  Dashboard wertet „bereit“ nach 150 s als beendet. Eine leere Kennung lehnt
+  das Gateway mit 400 ab.
+
+**Formular:** Der PIN-Hinweis beschreibt jetzt den tatsächlichen Stand.
+Kennung und PIN werden AES-256-GCM-verschlüsselt in `banking_sessions`
+gespeichert, damit der Wochenabgleich ohne erneute Eingabe läuft.
+
+Daten: KSK-Sitzungen 23 und 25 abgelöst (Audit 3081). Owner-Freigabe
+23.10.2026 18:42.
+
+---
+
 ## Stand 2026-10-23 (3) — Zweite Freigabe für die Historie, Kontonamen ohne IBAN
 
 **Zweite Freigabe (Sidecar `abruf_im_dialog`):** Die Volksbank verlangte am

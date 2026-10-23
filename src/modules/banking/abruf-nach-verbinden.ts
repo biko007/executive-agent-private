@@ -105,6 +105,36 @@ export async function bezugsprobe(
   return rund(Number(vorher.saldo) + Number(rows[0]?.s ?? 0) - banksaldo);
 }
 
+/**
+ * Konten, für die beim Verbinden die volle Historie mit eigener Freigabe
+ * angefragt wird, in dieser Reihenfolge (Owner-Freigabe 23.10.2026 „je
+ * Konto“): Kartenkonten zuerst, dann das Giro, dann die übrigen, jeweils nach
+ * Endziffern. Ausgelassen werden Konten, für die ein früherer Abruf nach dem
+ * Verbinden die Historie ab 2015 schon geliefert hat — jede Anfrage kostet
+ * eine Freigabe in der App.
+ */
+export async function kontenFuerHistorie(institutionId: number): Promise<string[]> {
+  const { rows } = await dbQuery<{ iban: string; display_name: string | null; account_type: string | null }>(
+    `SELECT iban, display_name, account_type FROM banking_accounts WHERE institution_id = $1 AND status = 'active'`,
+    [institutionId],
+  );
+  const erledigt = new Set((await dbQuery<{ konto: string }>(
+    `SELECT DISTINCT k->>'konto' AS konto
+       FROM audit_log, jsonb_array_elements(after_jsonb->'konten') AS k
+      WHERE action = 'transactions.abruf_nach_verbinden'
+        AND (after_jsonb->>'institution_id')::int = $1
+        AND k->>'status' = 'ok' AND k->>'ab' <= '2015-01-01'`,
+    [institutionId],
+  )).rows.map(r => r.konto));
+  const gruppe = (k: { display_name: string | null; account_type: string | null }) =>
+    /^kreditkarte/i.test(k.display_name ?? '') || /kredit|card/i.test(k.account_type ?? '') ? 0
+      : /giro/i.test(k.account_type ?? '') ? 1 : 2;
+  return rows
+    .filter(k => !erledigt.has(kurz(k.iban)))
+    .sort((a, b) => gruppe(a) - gruppe(b) || kurz(a.iban).localeCompare(kurz(b.iban)))
+    .map(k => k.iban);
+}
+
 export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institutionId: number): Promise<KontoErgebnis[] | null> {
   const sperre = await nimmAbgleichSperre();
   if (!sperre) {
@@ -119,7 +149,16 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
       `SELECT iban FROM banking_accounts WHERE institution_id = $1 AND status = 'archived'`, [institutionId],
     )).rows.map(r => r.iban);
 
-    const antwort = await sidecar.abrufImDialog({ session_id: sessionId, ausschliessen_ibans: ausgeblendet });
+    const antwort = await sidecar.abrufImDialog({
+      session_id: sessionId,
+      ausschliessen_ibans: ausgeblendet,
+      // Scheitert die Auswahl, ohne Historie weiter: der Abruf der 89 Tage
+      // soll daran nicht hängen, und es geht keine Freigabe aufs Telefon.
+      historie_ibans: await kontenFuerHistorie(institutionId).catch((e: any) => {
+        console.warn('[banking] Kontenauswahl für die Historie fehlgeschlagen:', String(e?.message || e).slice(0, 160));
+        return [];
+      }),
+    });
     if (antwort?.client_data) {
       await updateSessionState(sessionId, antwort.client_data, 'fints5', '5.0.0');
     }

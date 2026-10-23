@@ -208,13 +208,16 @@ export async function abrufImDialog(params: {
   session_id: number;
   ausschliessen_ibans: string[];
   from_date?: string;
+  /** Konten mit Freigabe für die volle Historie, in dieser Reihenfolge (23.10.2026) */
+  historie_ibans?: string[];
 }): Promise<{ konten: AbrufKonto[]; client_data?: string }> {
   const res = await sidecarFetch('/fints/abruf-im-dialog', {
     method: 'POST',
     body: JSON.stringify(params),
-  // Volle Historie ab 2015 für bis zu zehn Konten: 15 Minuten, ohne Wiederholung
-  // (eine Wiederholung fände den Dialog ohnehin geschlossen).
-  }, 0, 900_000);
+  // Freigabe je Konto, je bis zu 120 s, dazu der Abruf der vollen Historie
+  // für bis zu zehn Konten: 30 Minuten, ohne Wiederholung (eine Wiederholung
+  // fände den Dialog ohnehin geschlossen).
+  }, 0, 1_800_000);
   return res.json() as Promise<{ konten: AbrufKonto[]; client_data?: string }>;
 }
 
@@ -264,13 +267,29 @@ export async function refreshSession(params: {
  * Das Dashboard zeigt damit den Hinweis zur zweiten Freigabe. Bei jedem Fehler
  * `unbekannt`: der Hinweis ist Komfort, nie Voraussetzung.
  */
-export async function abrufStatus(sessionId: number): Promise<string> {
+export interface AbrufStatus {
+  phase: string;
+  /** beim Warten auf eine Freigabe: n von m, Endziffern des Kontos */
+  n: number | null;
+  m: number | null;
+  konto: string | null;
+}
+
+export async function abrufStatus(sessionId: number): Promise<AbrufStatus> {
+  const unbekannt: AbrufStatus = { phase: 'unbekannt', n: null, m: null, konto: null };
   try {
     const res = await sidecarFetch(`/fints/abruf-status/${sessionId}`, { method: 'GET' }, 0, 5_000);
-    const inhalt = await res.json() as { phase?: string };
-    return typeof inhalt?.phase === 'string' ? inhalt.phase : 'unbekannt';
+    const inhalt = await res.json() as Partial<AbrufStatus>;
+    if (typeof inhalt?.phase !== 'string') return unbekannt;
+    const zahl = (x: unknown) => (typeof x === 'number' ? x : null);
+    return {
+      phase: inhalt.phase,
+      n: zahl(inhalt.n),
+      m: zahl(inhalt.m),
+      konto: typeof inhalt.konto === 'string' ? inhalt.konto.replace(/\D/g, '').slice(-4) : null,
+    };
   } catch {
-    return 'unbekannt';
+    return unbekannt;
   }
 }
 

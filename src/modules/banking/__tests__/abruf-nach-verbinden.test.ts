@@ -257,3 +257,61 @@ describe('Kontobezeichnung und Audit ohne volle IBAN (23.10.2026)', () => {
     expect(k.rows[0].entity_id).toBe('…3000');
   });
 });
+
+describe('Korrektur 23.10.2026 abends: CAMT-Datum, Historie je Konto, Kennung', () => {
+  // Die sieben Fälle vom 23.10.: Abweichung war jeweils −(Umsätze des ersten Tages).
+  // Der Sidecar meldet den Eröffnungssaldo jetzt mit dem Vortag; dann ergibt die Probe 0.
+  const FAELLE = [
+    { konto: '…0001', ersterTag: '2024-10-14', amErstenTag: [1_000_000], spaeter: [-250, 13_695.94] },
+    { konto: '…0010', ersterTag: '2026-07-28', amErstenTag: [-2.75], spaeter: [100] },
+    { konto: '…0028', ersterTag: '2026-07-27', amErstenTag: [-100, -80.23, -30, -20], spaeter: [1500] },
+    { konto: '…0036', ersterTag: '2026-07-31', amErstenTag: [-9.9], spaeter: [] },
+    { konto: '…0125', ersterTag: '2026-07-27', amErstenTag: [-10.55], spaeter: [-17.99] },
+    { konto: '…0133', ersterTag: '2026-07-28', amErstenTag: [-6000, -400, -100, -10, -7.81], spaeter: [-20.2] },
+    { konto: '…4112', ersterTag: '2026-07-30', amErstenTag: [1200], spaeter: [-883.28] },
+  ];
+  const vortag = (iso: string) => new Date(Date.parse(`${iso}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+
+  for (const f of FAELLE) {
+    test(`Abrufprobe ${f.konto}: mit Eröffnungssaldo vom Vortag 0,00`, async () => {
+      const { abrufprobe } = await import('../abruf-nach-verbinden.js');
+      const anfang = 5000;
+      const umsaetze = [
+        ...f.amErstenTag.map((b, i) => ({ value_date: f.ersterTag, booking_date: f.ersterTag, amount: b, i })),
+        ...f.spaeter.map(b => ({ value_date: '2026-10-20', booking_date: '2026-10-20', amount: b })),
+      ];
+      const schluss = anfang + umsaetze.reduce((s, t) => s + t.amount, 0);
+      const ende = { datum: '2026-10-23', betrag: schluss };
+      expect(abrufprobe(umsaetze, { datum: vortag(f.ersterTag), betrag: anfang }, ende)).toBe(0);
+      // so war es am 23.10.: Saldodatum = erster Tag → um genau diesen Tag versetzt
+      const ersterTagSumme = Math.round(f.amErstenTag.reduce((s, b) => s + b, 0) * 100) / 100;
+      expect(abrufprobe(umsaetze, { datum: f.ersterTag, betrag: anfang }, ende)).toBe(-ersterTagSumme);
+    });
+  }
+
+  test('Historie je Konto: Karten zuerst, dann Giro, dann übrige; schon vollständige Konten fallen weg', async () => {
+    const { kontenFuerHistorie } = await import('../abruf-nach-verbinden.js');
+    const { upsertInstitution, upsertAccount } = await import('../store.js');
+    const audit = await import('../../../shared/audit/index.js');
+    const inst = await upsertInstitution('70000040', 'Bank', null, 'https://example.com/fints');
+    const iban = (e: string) => `DE007000004000000${e.padStart(5, '0')}`;
+    await upsertAccount(inst.id, iban('0702'), 'Bank …0702', {});
+    await upsertAccount(inst.id, iban('0028'), 'Giro', { accountType: 'giro' });
+    await upsertAccount(inst.id, iban('4112'), 'Kreditkarte …6411', {});
+    await upsertAccount(inst.id, iban('0010'), 'Bank …0010', {});
+    await upsertAccount(inst.id, iban('0125'), 'Kreditkarte Visa', {});
+    await upsertAccount(inst.id, iban('0001'), 'Bank …0001', {});
+    await audit.log({ module: 'banking', action: 'transactions.abruf_nach_verbinden', entityType: 'banking_session', entityId: '1',
+      after: { institution_id: inst.id, konten: [{ konto: '…0001', status: 'ok', ab: '2015-01-01' }, { konto: '…0010', status: 'ok', ab: '2026-07-26' }] } as any });
+    expect((await kontenFuerHistorie(inst.id)).map(i => i.slice(-4))).toEqual(['0125', '4112', '0028', '0010', '0702']);
+  });
+
+  test('Kennung: Leerraum am Anfang und Ende entfernt, PIN-Regel unberührt', async () => {
+    const { bereinigeKennung } = await import('../banken.js');
+    expect(bereinigeKennung('KENNUNG ')).toBe('KENNUNG');
+    expect(bereinigeKennung('\tKENNUNG\n')).toBe('KENNUNG');
+    expect(bereinigeKennung('KENNUNG ')).toBe('KENNUNG');   // geschütztes Leerzeichen
+    expect(bereinigeKennung('KEN NUNG')).toBe('KEN NUNG');      // innen bleibt
+    expect(bereinigeKennung(undefined)).toBe('');
+  });
+});

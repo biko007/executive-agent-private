@@ -45,6 +45,17 @@ export function tanVerfahrenFuerSidecar(tanMediumName: string | null | undefined
   return tanMediumName === 'SecureGo' ? 'SecureGo' : undefined;
 }
 
+/**
+ * Kennung ohne Leerraum am Anfang und Ende (23.10.2026). Das automatische
+ * Ausfüllen im Browser hängte bei der KSK ein Leerzeichen an; die Bank lehnte
+ * die Anmeldung mit 9340 ab, obwohl die PIN stimmte. `trim()` entfernt auch
+ * Tabulator, Zeilenumbruch und geschütztes Leerzeichen. Die PIN bleibt
+ * unverändert — Leerzeichen könnten dort gewollt sein.
+ */
+export function bereinigeKennung(kennung: unknown): string {
+  return String(kennung ?? '').trim();
+}
+
 /** Vorsilbe neuer Kontobezeichnungen — getrennt von UNTERSTUETZTE_BANKEN, deren
     Einträge die Verbindungsdaten festhalten und unverändert bleiben sollen. */
 const KURZNAMEN: Record<string, string> = { '64350070': 'KSK', '64390130': 'Volksbank' };
