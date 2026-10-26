@@ -4,6 +4,18 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-26 (2) — Admin-Kanal in der Prompt-Inbox
+
+Owner-Freigabe 26.10.2026 ~13:51 „ADMIN-Kanal".
+
+- `prompt-admin-*.txt` geht an die tmux-Sitzung `admin` (eigene
+  Claude-Code-Instanz in `~/admin`, eigene CLAUDE.md, Start
+  `~/admin/start-admin.sh`); alle anderen Dateien unverändert an `bikosoc`.
+- Eigene Bereitschaftsprüfung und „eine Datei pro Lauf" je Kanal; fehlt die
+  Admin-Sitzung, bleibt die Datei liegen. Der Leerlauf-Wächter zählt
+  Admin-Aufträge nicht mit.
+- Tests: `admin-kanal.test.ts` (12, mit Negativfällen nach C7).
+
 ## Stand 2026-10-26 — Briefing-Ausbau: Fehlerverhalten, neue Abschnitte, Abendbriefing, Ablage
 
 Owner-Freigabe 26.10.2026 ~13:50 (Grundlage report-morgenbriefing-analyse-20261026,

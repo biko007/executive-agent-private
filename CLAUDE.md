@@ -320,7 +320,7 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **/ccstop** | Kill-Switch Claude Code in bikosoc (Owner-only, assertBoundOwner) |
 | **/ccgo** | Plan-Approval (Owner-only; Slug-Match-Prüfung: Folgeauftrag docs/TODO.md #1) |
 | **/do \<text\>** | Prompt-Dispatch an tmux bikosoc (injection-sicher, `--` Separator) |
-| **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/` |
+| **Prompt-Inbox** | `~/inbox/*.txt` → tmux bikosoc, systemd-Timer 10s, → `~/inbox/done/`. **Seit 26.10.2026 Admin-Kanal:** `prompt-admin-*.txt` (auch hinter Dropbox-/Mail-Vorsatz) → tmux-Sitzung `admin` (Fenster `admin`, `~/admin`, Start `~/admin/start-admin.sh`), Quittung `report-prompt-inbox-admin-*.md`, Report `report-admin-*.md`. Läuft die Sitzung nicht, bleibt die Datei liegen — nie Rückfall auf bikosoc. Eigene Sitzung statt Fenster in bikosoc, weil alle Kontrollwege auf das aktive Fenster von `bikosoc` zielen |
 | **/arm [push]** | Owner-only via Hans_Dampf; setzt `~/.armed-bikosoc` (one-shot); cc setzt /arm NIE selbst. **Seit 16.10.2026 sind `/arm` und `/arm push` gleichbedeutend** — beide geben frei UND stoßen den wartenden Schritt an. Angestoßen wird nur, was angemeldet ist: cc-Vormerkung (`scripts/arm-vormerken.ts`) oder sichtbar wartende Übertragung. Unbekanntes Argument armt NICHT (fail-closed) |
 | **/memory list/drop** | Owner-Memory Pflege (assertBoundOwner, `memdrop_` Callback) |
 | **Mail-Eingangskanal** (alt) | Mails an `juergen.bickel+bikosoc@bikolino.com`; ohne Kennzeichnung Ablage nach `transfer/mail-inbox/`, Betreff ab `Auftrag:` zusätzlich Auftragsdatei in `~/inbox/`. Timer `mail-eingang.timer`, 5 min. **Bleibt funktionsfähig, data@ ist bevorzugt** |

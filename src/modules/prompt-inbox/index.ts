@@ -32,6 +32,33 @@ export interface PromptInboxLauf {
   stups?: { kennung: string; versuch: number; gemeldet: boolean };
 }
 
+// ── Admin-Kanal (Owner-Auftrag 26.10.2026) ────────────────────────────────
+//
+// Server- und Wartungsaufträge laufen nicht mehr durch den Fachstrang
+// bikosoc, sondern in eine eigene Claude-Code-Instanz: tmux-Sitzung `admin`,
+// Fenster `admin`, Arbeitsverzeichnis ~/admin (Start: ~/admin/start-admin.sh).
+//
+// WARUM EINE EIGENE SITZUNG UND KEIN FENSTER IN „bikosoc": Alle Kontrollwege
+// (diese Inbox, /do, /ccstop, /ccgo, Wartemelder) zielen auf `bikosoc` — das
+// heißt in tmux: auf das gerade AKTIVE Fenster dieser Sitzung. Ein Fenster
+// „admin" darin würde all diese Wege umlenken, sobald es aktiv ist. In einer
+// eigenen Sitzung bleibt jeder bestehende Weg, wie er ist.
+//
+// Erkannt wird ein Admin-Auftrag allein am Dateinamen: `prompt-admin-*.txt`,
+// gegebenenfalls hinter den Transportvorsätzen der Dropbox-Inbox und des
+// Mail-Eingangs. Groß-/Kleinschreibung zählt; „prompt-administration.txt"
+// oder „PROMPT-ADMIN-…" gehen den bisherigen Weg.
+
+export const ADMIN_TMUX_TARGET = 'admin:admin';
+
+const ADMIN_DATEINAME =
+  /^(\d{4}-\d{2}-\d{2}T[\d-]+Z-)?(dropbox-(\d{8}-\d{6}-)?)?(auftrag-mail-\d{8}-\d{4}-)?prompt-admin-[^/]+\.txt$/;
+//  ^ Zeitstempel des Pollers  ^ Dropbox-Inbox           ^ Mail-Eingangskanal       ^ der eigentliche Name
+
+export function istAdminAuftrag(dateiname: string): boolean {
+  return ADMIN_DATEINAME.test(dateiname);
+}
+
 export function sanitizeDoneName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -139,6 +166,10 @@ export function offeneAuftraege(opts: {
 
     // Quittungen des Pollers selbst sind keine Aufträge.
     if (/^prompt-inbox/.test(kennung)) continue;
+    /* Admin-Aufträge laufen in der Sitzung `admin`. Der Wächter stupst nur
+       bikosoc — einen Admin-Auftrag dort als „offen" zu führen, hieße, ein
+       „weiter mit prompt-admin-…" in den Fachstrang zu tippen. */
+    if (istAdminAuftrag(datei)) continue;
 
     if (!hatReport(berichte, kennung)) {
       offen.push({ datei, kennung, uebergabe: new Date(st.mtimeMs) });
@@ -204,6 +235,8 @@ export function processPromptInboxOnce(opts: {
   runner?: TmuxRunner;
   /** Pane-Text. Nur für Tests — in Produktion wird tmux gelesen. */
   paneText?: string;
+  /** Pane-Text der Admin-Sitzung. Nur für Tests; '' = Sitzung läuft nicht. */
+  adminPaneText?: string;
   /** Prüfung abschalten. Nur für Tests der alten Reihenfolge. */
   ohneBereitschaftspruefung?: boolean;
 }): PromptInboxLauf {
@@ -234,33 +267,78 @@ export function processPromptInboxOnce(opts: {
   const lauf: PromptInboxLauf = { zugestellt: [], zurueckgestellt: [] };
   if (kandidaten.length === 0) return lauf;
 
-  const bereitschaft: Bereitschaft = opts.ohneBereitschaftspruefung
-    ? { bereit: true }
-    : pruefeBereitschaft(opts.paneText ?? lesePaneInhalt());
+  /* Zwei Kanäle, getrennt geprüft und getrennt zugestellt (26.10.2026). Der
+     Fachkanal bikosoc arbeitet exakt wie bisher, nur ohne die Admin-Dateien;
+     der Admin-Kanal hat eigene Bereitschaft und eigene „eine Datei pro Lauf". */
+  const fach = kandidaten.filter(k => !istAdminAuftrag(k.name));
+  const admin = kandidaten.filter(k => istAdminAuftrag(k.name));
 
+  if (fach.length > 0) {
+    const bereitschaft: Bereitschaft = opts.ohneBereitschaftspruefung
+      ? { bereit: true }
+      : pruefeBereitschaft(opts.paneText ?? lesePaneInhalt());
+    kanalZustellen(lauf, fach, bereitschaft, {
+      target: undefined, runner: opts.runner, doneDir, reportDir, now, kanal: 'fach',
+    });
+  }
+
+  if (admin.length > 0) {
+    const adminText = opts.adminPaneText ?? lesePaneInhalt(ADMIN_TMUX_TARGET);
+    /* Ohne laufende Admin-Sitzung bleibt die Datei liegen — sie fällt NIE auf
+       den Fachkanal zurück. Ein Serverauftrag gehört nicht in bikosoc. */
+    const sitzungFehlt = !adminText.trim();
+    const bereitschaft: Bereitschaft = sitzungFehlt
+      ? { bereit: false, grund: 'pane_leer' }
+      : opts.ohneBereitschaftspruefung ? { bereit: true } : pruefeBereitschaft(adminText);
+    kanalZustellen(lauf, admin, bereitschaft, {
+      target: ADMIN_TMUX_TARGET, runner: opts.runner, doneDir, reportDir, now, kanal: 'admin',
+      grundAnders: sitzungFehlt ? 'Admin-Sitzung läuft nicht — Start: ~/admin/start-admin.sh' : undefined,
+    });
+  }
+  return lauf;
+}
+
+/** Eine Datei eines Kanals zustellen, die übrigen zurückstellen. */
+function kanalZustellen(
+  lauf: PromptInboxLauf,
+  kandidaten: { name: string; p: string }[],
+  bereitschaft: Bereitschaft,
+  k: {
+    target: string | undefined; runner?: TmuxRunner; doneDir: string; reportDir: string;
+    now: Date; kanal: 'fach' | 'admin';
+    /** Eigener Grund statt des Standardtexts (fehlende Admin-Sitzung). */
+    grundAnders?: string;
+  },
+): void {
   if (!bereitschaft.bereit) {
-    for (const k of kandidaten) {
+    for (const x of kandidaten) {
       lauf.zurueckgestellt.push({
-        sourcePath: k.p,
-        grund: grundText(bereitschaft.grund),
+        sourcePath: x.p,
+        grund: k.grundAnders ?? grundText(bereitschaft.grund),
         beleg: bereitschaft.beleg,
       });
     }
-    return lauf;
+    return;
   }
 
   // Genau eine Datei zustellen.
   const [erste, ...rest] = kandidaten;
   const text = fs.readFileSync(erste.p, 'utf-8');
-  sendPromptToBikosocTmux(text, { runner: opts.runner });
+  sendPromptToBikosocTmux(text, { runner: k.runner, target: k.target });
 
+  const now = k.now;
   const stamp = now.toISOString().replace(/[:.]/g, '-');
-  const donePath = path.join(doneDir, `${stamp}-${sanitizeDoneName(erste.name)}`);
+  const donePath = path.join(k.doneDir, `${stamp}-${sanitizeDoneName(erste.name)}`);
   fs.renameSync(erste.p, donePath);
 
   const reportDate = formatBerlinDate(now);
   const reportStamp = formatReportTimestamp(now);
-  const reportPath = path.join(reportDir, `report-prompt-inbox-${reportStamp}.md`);
+  // Eigener Name für den Admin-Kanal: Beide Kanäle können im selben Lauf
+  // zustellen, und ihre Quittungen dürfen sich nicht überschreiben.
+  const reportName = k.kanal === 'admin'
+    ? `report-prompt-inbox-admin-${reportStamp}.md`
+    : `report-prompt-inbox-${reportStamp}.md`;
+  const reportPath = path.join(k.reportDir, reportName);
   /* KOPFBLOCK ZUERST (Owner-Vorgabe 14.10.2026). Der Report-Watcher liest ihn
      und formt daraus die Telegram-Nachricht „Aufgabe uebernommen". Vorher las er
      den Fliesstext und schickte Dokument, Textvorschau und Quittung einzeln —
@@ -273,7 +351,7 @@ export function processPromptInboxOnce(opts: {
      Dateinamen — der steht ohnehin eine Zeile darunter. Liefert der Text
      nichts Brauchbares, bleibt der Titel leer und die Meldung zeigt nur die
      Dateizeile. */
-  const titel = titelAusAuftrag(text) ?? '';
+  const titel = (k.kanal === 'admin' ? '[ADMIN] ' : '') + (titelAusAuftrag(text) ?? '');
   const uhrzeit = new Intl.DateTimeFormat('de-DE', {
     hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
   }).format(now);
@@ -308,8 +386,8 @@ export function processPromptInboxOnce(opts: {
       grund: 'eine Datei pro Lauf — kommt beim naechsten Durchgang',
     });
   }
-  return lauf;
 }
+
 
 /**
  * Leerlauf-Wächter.
