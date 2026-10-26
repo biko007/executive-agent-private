@@ -21,6 +21,9 @@ export interface LocationSetting {
 
 export interface Settings {
   briefingTime: string;
+  /** Abendbriefing, "HH:MM" Europe/Berlin (Owner-Auftrag 26.10.2026). Fehlt der
+   *  Eintrag, gilt ABEND_BRIEFING_STANDARD. */
+  abendBriefingTime?: string;
   telegramChatId?: string;
   healthReportDay?: number;
   location?: LocationSetting;
@@ -30,6 +33,7 @@ export interface Settings {
 
 const SETTING_KEYS: Record<string, string> = {
   briefingTime:    'briefing_time',
+  abendBriefingTime: 'abend_briefing_time',
   telegramChatId:  'telegram_chat_id',
   healthReportDay: 'health_report_day',
   location:        'location',
@@ -37,6 +41,9 @@ const SETTING_KEYS: Record<string, string> = {
 const REVERSE_KEYS: Record<string, string> = Object.fromEntries(
   Object.entries(SETTING_KEYS).map(([k, v]) => [v, k])
 );
+
+/** Uhrzeit des Abendbriefings, solange keine eigene gesetzt ist. */
+export const ABEND_BRIEFING_STANDARD = '21:00';
 
 // ── File paths (legacy fallback) ────────────────────────────────────────────
 

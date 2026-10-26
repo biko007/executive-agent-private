@@ -46,6 +46,7 @@ const MIGRATION_DIRS: Array<{ dir: string; module: string }> = [
   { dir: 'src/modules/telegram-binding/migrations', module: 'telegram-binding' },
   { dir: 'src/modules/wiki/migrations',         module: 'wiki' },
   { dir: 'src/modules/casameta/migrations',     module: 'casameta' },
+  { dir: 'src/modules/briefing/migrations',     module: 'briefing' },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
