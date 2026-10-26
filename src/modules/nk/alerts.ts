@@ -29,13 +29,18 @@ const ALERT_THRESHOLDS: { phase: string; days: number; severity: string }[] = [
  * Check all obligations for approaching/expired deadlines.
  * Inserts alert_log entries and sends Telegram notifications.
  */
-export async function handleObligationsAlert(): Promise<{
+export async function handleObligationsAlert(opts: { senden?: boolean } = {}): Promise<{
   checked: number;
   alerts_sent: number;
   errors: string[];
 }> {
   const errors: string[] = [];
   let alertsSent = 0;
+  /* senden = false (seit 26.10.2026): Das Morgenbriefing des Tages ist
+     zugestellt und enthält die Fristen ≤ 30 Tage bereits. Dann keine eigene
+     Telegram-Meldung und kein Eintrag im Meldeprotokoll — der Statuswechsel
+     auf 'expired' läuft trotzdem. */
+  const senden = opts.senden !== false;
 
   // Find obligations with service_deadline_at that are approaching or expired
   const { rows: obligations } = await dbQuery<AlertMatch>(
@@ -55,6 +60,7 @@ export async function handleObligationsAlert(): Promise<{
 
   for (const obl of obligations) {
     for (const threshold of ALERT_THRESHOLDS) {
+      if (!senden) break;
       if (obl.days_remaining > threshold.days) continue;
 
       // Determine phase
@@ -243,7 +249,7 @@ export function fristMeldung(
  * die der Owner persoenlich einhalten muss, ist ein operativer Alarm und
  * gehoert nicht in die Dev-Gruppe.
  */
-export async function handleFristenAlert(): Promise<{
+export async function handleFristenAlert(opts: { senden?: boolean } = {}): Promise<{
   checked: number;
   alerts_sent: number;
   errors: string[];
@@ -267,7 +273,11 @@ export async function handleFristenAlert(): Promise<{
   const heute = new Date().toISOString().slice(0, 10);
   let veraendert = false;
 
+  // Briefing zugestellt → keine eigene Meldung (siehe handleObligationsAlert)
+  const senden = opts.senden !== false;
+
   for (const f of fristen) {
+    if (!senden) break;
     const phase = fristPhase(f.tage_bis, f.vorlauf_tage);
     if (!phase) continue;
     const bisher = log[String(f.frist_id)]?.[phase];

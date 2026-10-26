@@ -4,6 +4,32 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-26 — Briefing-Ausbau: Fehlerverhalten, neue Abschnitte, Abendbriefing, Ablage
+
+Owner-Freigabe 26.10.2026 ~13:50 (Grundlage report-morgenbriefing-analyse-20261026,
+Option A für die Mail).
+
+- **Fehlerverhalten:** Ausfallende Quellen zeigen „⚠️ … nicht abrufbar" statt
+  einer Leerstelle (Wetter, Postfach M365/Yahoo, Kalender, Entwürfe, Fuhrpark,
+  Gewicht, Schlaf, Warnungen). Gesundheitsaufrufe sind einzeln abgefangen.
+  Neuer Taktgeber: Zustand je Art und Tag in der Tabelle `briefings`; fehlt
+  ein Briefing 15 min nach Sollzeit → ein Nachholversuch, sonst kurze
+  Fehlermeldung (Regel `src/modules/briefing/planer.ts`).
+- **Morgenbriefing erweitert:** offene cc-Aufträge der letzten 24 h
+  (Reportköpfe bikosoc + HDCC), NK-/Objektfristen ≤ 30 Tage, Kontensumme
+  ohne Darlehen + Warnung bei Salden älter 2 Tage, Trading (Paper):
+  Verbindung + Vortag als Änderung der Nettoliquidation aus dem Tagesbuch,
+  Reisen ≤ 7 Tage, Gewichts-Messdatum ab 2 Tagen Alter.
+- **NK-Meldung:** Der Tageslauf (08:00) sendet nur noch selbst, wenn das
+  Morgenbriefing des Tages nicht zugestellt ist; Statuswechsel auf `expired`
+  bleibt.
+- **Abendbriefing** 21:00 (`abendBriefingTime`, `/abendbriefingtime`):
+  cc-Tagesrückblick, Termine morgen, Fristen ≤ 14 Tage; Telegram und Mail
+  an das eigene M365-Postfach (einzige Ausnahme von der Entwurfsregel, fester
+  Empfänger in `briefing/mail.ts`).
+- **Ablage + Dashboard:** Boot-Migration Modul `briefing` (001_briefings.sql),
+  Route `GET /api/briefing?tage=7`, Panel „Briefing" in der Tagesübersicht.
+
 ## Stand 2026-10-23 (6) — Rückfall in deploy.sh exakt auf den Rückfallpunkt, 2 × 20 € nachgetragen
 
 Owner-Freigabe 23.10.2026 23:09 „Freigabe Rollback-Fix und 2x20 nachtragen"

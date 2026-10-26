@@ -17,6 +17,8 @@ import {
   handleNkRerender, handleNkServe, handleNkRunList, handleNkRunDetail,
 } from '../nk/routes.js';
 import { handleObligationsAlert, handleFristenAlert } from '../nk/alerts.js';
+import { istZugestellt } from '../briefing/index.js';
+import { berlinDate } from '../../shared/utils/index.js';
 import {
   sollstellungErzeugen, zahlungenZuordnen, ampelJeMieter, ampelJeObjekt,
   dublettenMarkieren, laufenderMonat, abdeckung, kontoFuer, SOLL_AB, vzRegelAnwenden,
@@ -1164,10 +1166,17 @@ export function registerAssetsHttpRoutes(api: any) {
                die Abrechnungspflichten je Mieter aus nk_period_obligations und
                die Objektfristen aus objekt_fristen. Ein zweiter Zeitgeber waere
                eine zweite Stelle, an der etwas ausfallen kann. */
-            const nk = await handleObligationsAlert();
-            const fristen = await handleFristenAlert();
+            /* Seit 26.10.2026 stehen die Fristen ≤ 30 Tage im Morgenbriefing
+               (Owner-Auftrag: „ersetzt die getrennte NK-Meldung"). Ist das
+               Briefing heute zugestellt, entfällt die eigene Meldung; fehlt
+               es — Ausfall, Gateway aus —, meldet dieser Lauf wie bisher.
+               So geht keine Frist verloren, wenn das Briefing ausfällt. */
+            const imBriefing = await istZugestellt('morgen', berlinDate(0)).catch(() => false);
+            const nk = await handleObligationsAlert({ senden: !imBriefing });
+            const fristen = await handleFristenAlert({ senden: !imBriefing });
             json(res, 200, {
               ok: true,
+              gemeldet_im_briefing: imBriefing,
               checked: nk.checked + fristen.checked,
               alerts_sent: nk.alerts_sent + fristen.alerts_sent,
               errors: [...nk.errors, ...fristen.errors],

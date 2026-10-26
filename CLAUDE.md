@@ -327,6 +327,15 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 | **Sammelstelle data@** | `data@bikolino.com` ist die **einzige** Owner-Adresse für Weiterleitungen (ab 18.10.2026). Alles ausser Proton wird zusätzlich wie beim Eingangskanal abgelegt (`transfer/mail-inbox/<datum>_<betreff>/` mit `mail.eml`, `body.md`, Anhängen) und bei Betreff ab `Auftrag:` als Auftragsdatei zugestellt. Proton-Weiterleitungen nur ins Register und in den Ordner `Proton`. Timer `mail-register.timer`, 5 min |
 | **Reise-Import** | Reisedateien aus Dropbox **`/Austausch/reisen/<kennung>.json`** (Schema `bikosoc.reise/1`) → `artifacts/personal/travel/`, PDFs aus `/Austausch/reisen/dokumente/` → `documents/reise/`, verarbeitet nach `/Austausch/reisen/done/`. Zugriff über `dropboxVollzugang` (Kontowurzel). `transfer/reisen/` im App-Ordner bleibt als **alter** zweiter Weg lesbar. Timer `reise-import.timer`, 10 min. Anleitung: `/Austausch/reisen/README-dashboard-import.md` |
 | **Banking-Wochencheck** | Montag 13:45 Berlin, nach dem Montagsabgleich: `scripts/banking-wochencheck.ts` schreibt `~/bikosoc-spec/report-banking-wochencheck-<YYYYMMDD>.md` (Abgleich je Institut, Saldenprobe je Konto gegen den ersten Bezugswert, unklare Buchungen, Mieterstrom-Soll/Ist, ausgebliebene Daueraufträge, Abflüsse > 5.000 €, NK-Fristen). Rein lesend; Merkdatei und Regelwerk unter `artifacts/personal/banking-wochencheck/`. Timer `banking-wochencheck.timer` (Unit in `scripts/systemd/`), vor dem ersten Lauf `--grundstand` |
+| **Morgen-/Abendbriefing** | Modul `src/modules/briefing`, Taktgeber in `index.ts` (jede Minute). Morgen `briefingTime` (Standard 07:00), Abend `abendBriefingTime` (Standard 21:00, `/abendbriefingtime HH:MM`). Fehlt ein Briefing 15 min nach Sollzeit, wird es **einmal** nachgeholt, sonst kurze Fehlermeldung an Telegram. Ausfallende Quellen erscheinen als „⚠️ … nicht abrufbar“. Morgen zusätzlich: offene cc-Aufträge (Reportköpfe 24 h), NK-/Objektfristen ≤ 30 Tage, Kontensumme + Saldenalter, Trading (Paper) mit Vortag aus dem Tagesbuch, Reisen ≤ 7 Tage. Abend: cc-Tagesrückblick, Termine morgen, Fristen ≤ 14 Tage. Ablage Tabelle `briefings` (Boot-Migration Modul `briefing`), Dashboard-Panel „Briefing“ in „Heute“ über `GET /api/briefing?tage=7`. **NK-Tageslauf** (08:00) meldet nur noch selbst, wenn das Morgenbriefing des Tages NICHT zugestellt ist |
+
+**Mailversand — nur Entwürfe, eine Ausnahme (Owner-Freigabe 26.10.2026, Option A):**
+Es gilt weiter die Regel vom 19.10.2026: cc und Agenten legen Mails nur als
+Entwurf an und senden nie. **Einzige Ausnahme:** das Abendbriefing, und nur an
+das eigene M365-Postfach des Owners (`juergen.bickel@bikolino.com`) über Graph
+`sendMail`. Der Empfänger ist eine Konstante in `src/modules/briefing/mail.ts`,
+kein Parameter; der Test `briefing.test.ts` hält das fest. Jeder weitere
+Empfänger oder Mailtyp braucht eine neue Owner-Freigabe.
 
 **Die vier Postwege (Owner-Entscheidung 18.10.2026):**
 

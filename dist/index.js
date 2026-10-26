@@ -35,7 +35,8 @@ import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
-import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, } from "./src/shared/settings/index.js";
+import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
+import { ausfallZeile, alsTelegramHtml, alsMailText, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, sendeAbendbriefingMail, abendBetreff, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, } from "./src/modules/briefing/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
@@ -737,7 +738,7 @@ export default function (api) {
     // the AI agent must NOT respond — the command handler handles it.
     const REGISTERED_COMMANDS = new Set([
         'hilfe',
-        'brief', 'briefing', 'briefingtime',
+        'brief', 'briefing', 'briefingtime', 'abendbriefingtime',
         'calendar', 'meet', 'meetf', 'free',
         'inbox', 'yinbox', 'yverify', 'mailstatus', 'scanmail',
         'draftcreate', 'draftedit', 'draftlist', 'draftshow', 'draftapprove', 'draftsend', 'ytest',
@@ -1426,6 +1427,84 @@ export default function (api) {
             unplausibel,
         };
     }
+    /** Fuhrpark-Fristen bis `grenzeTage` als fertige Zeilen (Morgen 60, Abend 14).
+     *  Wirft, wenn das Fuhrparkmodul nicht lesbar ist. */
+    async function fuhrparkFristZeilen(grenzeTage) {
+        const alle = await checkDeadlines();
+        return alle
+            .filter((w) => w.severity === 'overdue' || w.daysLeft <= grenzeTage)
+            .map((w) => {
+            /* Symbol und Beschriftung kommen seit dem 17.10.2026 aus dem
+               Fuhrpark-Modul. Vorher stand hier fest „TÜV" und ein Motorrad fuer
+               alles, was kein Auto ist — fuer das Boot war beides falsch. */
+            const icon = vehicleIcon(w.vehicleType);
+            const label = w.field === 'tuev' ? pruefungLabel(w.vehicleType) : 'Versicherung';
+            if (w.severity === 'overdue') {
+                return `• ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`;
+            }
+            const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
+            return `• ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE}) ⚠️`;
+        });
+    }
+    /** Termine des morgigen Berliner Tages als Zeilen; null = Kalender nicht abrufbar. */
+    async function termineMorgenZeilen() {
+        if (!m365Enabled)
+            return null;
+        const morgen = berlinDate(1);
+        const uebermorgen = berlinDate(2);
+        const von = naivInZone(morgen + 'T00:00:00', KALENDER_ZONE);
+        const bis = naivInZone(uebermorgen + 'T00:00:00', KALENDER_ZONE);
+        if (!von || !bis)
+            return null;
+        const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}` +
+            `/calendarView?startDateTime=${encodeURIComponent(von.toISOString())}` +
+            `&endDateTime=${encodeURIComponent(bis.toISOString())}` +
+            `&$select=subject,start,end,location,isAllDay&$orderby=start/dateTime&$top=50`;
+        const antwort = await graphGet(tenantId, clientId, m365Secret, url).catch(() => null);
+        if (!antwort)
+            return null;
+        const evs = antwort.value || [];
+        return evs
+            .map(ev => ({ ev, z: kalenderZeitraum(ev) }))
+            .sort((a, b) => {
+            if (a.z.ganztags !== b.z.ganztags)
+                return a.z.ganztags ? -1 : 1;
+            const sa = graphZeitpunkt(a.ev.start);
+            const sb = graphZeitpunkt(b.ev.start);
+            return (sa ? sa.getTime() : 0) - (sb ? sb.getTime() : 0);
+        })
+            .map(({ ev, z }) => {
+            const titel = ev.subject || '(kein Titel)';
+            if (z.ganztags)
+                return `• ganztägig ${titel}`;
+            return `• ${z.zeitText} ${titel}`;
+        });
+    }
+    /**
+     * Abendbriefing (Owner-Auftrag 26.10.2026): Tagesrückblick der cc-Aufträge,
+     * Termine morgen, Fristen ≤ 14 Tage (Fuhrpark + NK). Liefert die Zeilen;
+     * Telegram-HTML und Mailtext entstehen daraus beim Versand.
+     */
+    async function generateAbendZeilen() {
+        const jetzt = new Date();
+        const datumLang = new Intl.DateTimeFormat('de-DE', {
+            timeZone: 'Europe/Berlin', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+        }).format(jetzt);
+        const [rCc, rTermine, rFuhrpark, rNk] = await Promise.allSettled([
+            Promise.resolve().then(() => leseCcReports(berlinerTagesbeginn(jetzt))),
+            termineMorgenZeilen(),
+            fuhrparkFristZeilen(ABEND_FRISTEN_TAGE),
+            leseNkFristen(ABEND_FRISTEN_TAGE),
+        ]);
+        const wert = (r) => (r.status === 'fulfilled' ? r.value : null);
+        return abendZeilen({
+            datumLang,
+            ccReports: wert(rCc),
+            termineMorgen: wert(rTermine),
+            fuhrpark: wert(rFuhrpark),
+            nkFristen: wert(rNk),
+        });
+    }
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
@@ -1471,12 +1550,28 @@ export default function (api) {
             `/calendarView?startDateTime=${encodeURIComponent(rangeStart.toISOString())}` +
             `&endDateTime=${encodeURIComponent(rangeEnd.toISOString())}` +
             `&$select=subject,start,end,location,isAllDay&$orderby=start/dateTime&$top=50`;
+        /* Neue Abschnitte (Owner-Auftrag 26.10.2026) parallel anstossen — sie
+           zaehlen mit gegen das Gesamtlimit von 45 s. Jede Quelle faellt fuer
+           sich aus; der Abschnitt zeigt dann eine „nicht abrufbar"-Zeile. */
+        const heuteBerlin = berlinDate(0);
+        const neueQuellen = Promise.allSettled([
+            Promise.resolve().then(() => leseCcReports(new Date(now.getTime() - 24 * 3600_000))),
+            leseNkFristen(30),
+            leseKonten(),
+            leseTradingStatus(),
+            Promise.resolve().then(() => leseTradingTagesbuch()),
+            Promise.resolve().then(() => leseReisen()),
+        ]);
+        /* AUSFALL STATT LEERSTELLE (Owner-Auftrag 26.10.2026). Bisher wurde ein
+           gescheiterter Abruf zu „0 ungelesen" bzw. zu einem fehlenden Abschnitt
+           — nicht unterscheidbar von „keine Termine". `null` heisst jetzt: Quelle
+           hat nicht geantwortet. */
         const perSource = 10;
         const [weatherResult, inboxResult, calendarResult] = await Promise.all([
             fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null),
             Promise.all([
-                m365Enabled ? m365Unread(perSource).catch(() => []) : [],
-                yahooEnabled ? yahooUnread(perSource).catch(() => []) : [],
+                m365Enabled ? m365Unread(perSource).catch(() => null) : [],
+                yahooEnabled ? yahooUnread(perSource).catch(() => null) : [],
             ]),
             m365Enabled ? graphGet(tenantId, clientId, m365Secret, calUrl).catch(() => null) : null,
         ]);
@@ -1496,16 +1591,24 @@ export default function (api) {
             parts.push('');
             parts.push(`Druck: ${w.pressureHpa} hPa (${w.pressureTrend})`);
         }
+        else {
+            parts.push('');
+            parts.push(`${RUBRIK}🌤 Wetter — ${loc.label}`);
+            parts.push(ausfallZeile('Wetter'));
+        }
         // ── INBOX ──
         {
             const [mMsgs, yMsgs] = inboxResult;
-            const m365Count = mMsgs.length;
-            const yahooCount = yMsgs.length;
-            if (m365Count > 0 || yahooCount > 0) {
-                const combined = [...mMsgs, ...yMsgs].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1));
+            const m365Count = mMsgs ? mMsgs.length : 0;
+            const yahooCount = yMsgs ? yMsgs.length : 0;
+            const ausfaelle = [mMsgs === null ? 'Postfach M365' : '', yMsgs === null ? 'Postfach Yahoo' : ''].filter(Boolean);
+            if (m365Count > 0 || yahooCount > 0 || ausfaelle.length > 0) {
+                const combined = [...(mMsgs || []), ...(yMsgs || [])].sort((a, b) => (a.dateIso < b.dateIso ? 1 : -1));
                 const newest = combined[0];
                 parts.push('');
                 parts.push(`${RUBRIK}📬 Posteingang`);
+                for (const quelle of ausfaelle)
+                    parts.push(ausfallZeile(quelle));
                 if (m365Count > 0)
                     parts.push(`• ${m365Count} ungelesene M365-Mail${m365Count > 1 ? 's' : ''}`);
                 if (yahooCount > 0)
@@ -1515,6 +1618,11 @@ export default function (api) {
             }
         }
         // ── KALENDER (nächste 7 Tage, kompakt) ──
+        if (m365Enabled && !calendarResult) {
+            parts.push('');
+            parts.push(`${RUBRIK}📆 Kalender`);
+            parts.push(ausfallZeile('Kalender'));
+        }
         {
             const allEvs = calendarResult?.value || [];
             if (allEvs.length > 0) {
@@ -1567,6 +1675,23 @@ export default function (api) {
                 }
             }
         }
+        // ── NEUE QUELLEN abholen (oben angestossen) ──
+        const [rCc, rNk, rKonten, rTrading, rTagesbuch, rReisen] = await neueQuellen;
+        const wert = (r) => (r.status === 'fulfilled' ? r.value : null);
+        // ── REISEN (laufend oder Beginn in 7 Tagen) ──
+        if (rReisen.status === 'rejected') {
+            parts.push('', `${RUBRIK}✈️ Reisen (7 Tage)`, ausfallZeile('Reisedaten'));
+        }
+        else {
+            parts.push(...reisenAbschnitt(rReisen.value, heuteBerlin, 7));
+        }
+        // ── OFFENE cc-AUFTRÄGE (Reportköpfe der letzten 24 h) ──
+        if (rCc.status === 'rejected') {
+            parts.push('', `${RUBRIK}📋 Offene cc-Aufträge (24 h)`, ausfallZeile('Reportablage'));
+        }
+        else {
+            parts.push(...ccAbschnittMorgen(rCc.value));
+        }
         // ── DRAFTS ──
         try {
             const ds = listDrafts('draft', 5);
@@ -1580,58 +1705,73 @@ export default function (api) {
                 }
             }
         }
-        catch { /* drafts optional */ }
+        catch {
+            parts.push('', `${RUBRIK}✏️ Entwürfe`, ausfallZeile('Entwurfsablage'));
+        }
         // ── HEALTH ──
         {
+            /* ABSCHNITT STATT TOTALAUSFALL (Owner-Auftrag 26.10.2026): Gewicht,
+               Schlaf und Warnungen waren nicht abgefangen — ein Lesefehler kostete
+               das ganze Briefing des Tages. Jetzt kostet er nur seine Zeile. */
             const healthLines = [];
-            const wt7 = await getWeightTrend(7);
-            const lastWeight = await lastEntry('weight');
-            if (lastWeight && wt7) {
-                const arrow = wt7.direction === 'up' ? '↗' : wt7.direction === 'down' ? '↘' : '→';
-                const sign = wt7.change > 0 ? '+' : '';
-                healthLines.push(`• Gewicht:  ${wt7.current} kg  (Trend: ${arrow} ${sign}${wt7.change} kg/Woche)`);
+            try {
+                const wt7 = await getWeightTrend(7);
+                const lastWeight = await lastEntry('weight');
+                const messung = gewichtAlterZusatz(lastWeight?.timestamp, now);
+                if (lastWeight && wt7) {
+                    const arrow = wt7.direction === 'up' ? '↗' : wt7.direction === 'down' ? '↘' : '→';
+                    const sign = wt7.change > 0 ? '+' : '';
+                    healthLines.push(`• Gewicht:  ${wt7.current} kg  (Trend: ${arrow} ${sign}${wt7.change} kg/Woche)${messung}`);
+                }
+                else if (lastWeight) {
+                    healthLines.push(`• Gewicht:  ${lastWeight.value?.toFixed(1)} kg${messung}`);
+                }
             }
-            else if (lastWeight) {
-                healthLines.push(`• Gewicht:  ${lastWeight.value?.toFixed(1)} kg`);
+            catch {
+                healthLines.push(`• ${ausfallZeile('Gewicht')}`);
             }
             // Last night sleep (dedup by day, pick longest)
             const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-            const sleepEntries = (await readEntries(since7d)).filter(e => e.type === 'sleep');
-            const sleepByDay = new Map();
-            for (const s of sleepEntries) {
-                const day = new Intl.DateTimeFormat('en-CA', {
-                    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-                }).format(new Date(s.timestamp));
-                const prev = sleepByDay.get(day);
-                if (!prev || (Number(s.value || 0) > Number(prev.value || 0)))
-                    sleepByDay.set(day, s);
-            }
-            // 7-day average
-            const sleepDays = Array.from(sleepByDay.values())
-                .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
-            const lastSleep = sleepDays.length ? sleepDays[sleepDays.length - 1] : null;
-            const todayStr = new Intl.DateTimeFormat('en-CA', {
-                timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(new Date());
-            const lastSleepDay = lastSleep ? new Intl.DateTimeFormat('en-CA', {
-                timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(new Date(lastSleep.timestamp)) : null;
-            if (lastSleep && lastSleepDay === todayStr) {
-                const val = Number(lastSleep.value || 0);
-                const hours = Math.floor(val);
-                const mins = Math.round((val - hours) * 60);
-                let sleepLine = `- Schlaf:   ${hours}h ${String(mins).padStart(2, '0')}min`;
-                const last7 = sleepDays.slice(-7);
-                if (last7.length >= 2) {
-                    const avg = last7.reduce((sum, e) => sum + Number(e.value || 0), 0) / last7.length;
-                    const avgH = Math.floor(avg);
-                    const avgM = Math.round((avg - avgH) * 60);
-                    sleepLine += `  (Ø 7 Tage: ${avgH}h ${String(avgM).padStart(2, '0')}min)`;
+            const sleepEntries = (await readEntries(since7d).catch(() => null))?.filter(e => e.type === 'sleep') ?? null;
+            if (sleepEntries === null)
+                healthLines.push(`• ${ausfallZeile('Schlafdaten')}`);
+            if (sleepEntries !== null) {
+                const sleepByDay = new Map();
+                for (const s of sleepEntries) {
+                    const day = new Intl.DateTimeFormat('en-CA', {
+                        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+                    }).format(new Date(s.timestamp));
+                    const prev = sleepByDay.get(day);
+                    if (!prev || (Number(s.value || 0) > Number(prev.value || 0)))
+                        sleepByDay.set(day, s);
                 }
-                healthLines.push(sleepLine);
-            }
-            else {
-                healthLines.push('• Schlaf:   Keine Schlafdaten (letzte Nacht)');
+                // 7-day average
+                const sleepDays = Array.from(sleepByDay.values())
+                    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+                const lastSleep = sleepDays.length ? sleepDays[sleepDays.length - 1] : null;
+                const todayStr = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(new Date());
+                const lastSleepDay = lastSleep ? new Intl.DateTimeFormat('en-CA', {
+                    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(new Date(lastSleep.timestamp)) : null;
+                if (lastSleep && lastSleepDay === todayStr) {
+                    const val = Number(lastSleep.value || 0);
+                    const hours = Math.floor(val);
+                    const mins = Math.round((val - hours) * 60);
+                    let sleepLine = `- Schlaf:   ${hours}h ${String(mins).padStart(2, '0')}min`;
+                    const last7 = sleepDays.slice(-7);
+                    if (last7.length >= 2) {
+                        const avg = last7.reduce((sum, e) => sum + Number(e.value || 0), 0) / last7.length;
+                        const avgH = Math.floor(avg);
+                        const avgM = Math.round((avg - avgH) * 60);
+                        sleepLine += `  (Ø 7 Tage: ${avgH}h ${String(avgM).padStart(2, '0')}min)`;
+                    }
+                    healthLines.push(sleepLine);
+                }
+                else {
+                    healthLines.push('• Schlaf:   Keine Schlafdaten (letzte Nacht)');
+                }
             }
             // HRV (D2: display only, no new alerts)
             const hrvTrend = await getHrvTrend(7).catch(() => null);
@@ -1655,10 +1795,11 @@ export default function (api) {
                 healthLines.push(`• Temperatur: ${sign}${lastTemp.temp_deviation.toFixed(1)} °C`);
             }
             // Alerts
-            const alerts = await checkHealthAlerts();
-            const activeAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'warning');
+            const alerts = await checkHealthAlerts().catch(() => null);
+            if (alerts === null)
+                healthLines.push(`• ${ausfallZeile('Gesundheitswarnungen')}`);
+            const activeAlerts = (alerts || []).filter(a => a.severity === 'critical' || a.severity === 'warning');
             if (activeAlerts.length > 0) {
-                const alertIcons = { critical: '🔴', warning: '⚠️' };
                 healthLines.push(`• Alerts:   ${activeAlerts.length > 1 ? `${activeAlerts.length} aktiv` : '⚠️ 1 aktiv'} → "${activeAlerts[0].message}"`);
             }
             if (healthLines.length > 0) {
@@ -1669,34 +1810,37 @@ export default function (api) {
         }
         // ── FUHRPARK — FRISTEN (nur wenn innerhalb 60 Tage) ──
         try {
-            const allDeadlines = await checkDeadlines();
-            const deadlines = allDeadlines.filter((w) => w.severity === 'overdue' || w.daysLeft <= 60);
-            if (deadlines.length > 0) {
+            const fuhrpark = await fuhrparkFristZeilen(60);
+            if (fuhrpark.length > 0) {
                 parts.push('');
                 parts.push(`${RUBRIK}🚗 Fuhrpark — Fristen`);
-                for (const w of deadlines) {
-                    /* Symbol und Beschriftung kommen seit dem 17.10.2026 aus dem
-                       Fuhrpark-Modul. Vorher stand hier fest „TÜV" und ein Motorrad fuer
-                       alles, was kein Auto ist — fuer das Boot war beides falsch. */
-                    const icon = vehicleIcon(w.vehicleType);
-                    const label = w.field === 'tuev' ? pruefungLabel(w.vehicleType) : 'Versicherung';
-                    if (w.severity === 'overdue') {
-                        parts.push(`• ${icon} ${w.vehicleName} — ${label} überfällig seit ${Math.abs(w.daysLeft)} Tagen 🔴`);
-                    }
-                    else {
-                        const dateDE = `${w.date.slice(8, 10)}.${w.date.slice(5, 7)}.${w.date.slice(0, 4)}`;
-                        parts.push(`• ${icon} ${w.vehicleName} — ${label} in ${w.daysLeft} Tagen (${dateDE}) ⚠️`);
-                    }
-                }
-                // Add "Alle anderen: kein Handlungsbedarf" if there are vehicles without deadlines
+                parts.push(...fuhrpark);
+                // „Alle anderen" nur, wenn es Fahrzeuge ohne Frist im Fenster gibt
                 const allVehicles = await listVehicles();
-                const vehiclesWithDeadlines = new Set(deadlines.map((d) => d.vehicleName));
-                if (allVehicles.length > deadlines.length) {
+                if (allVehicles.length > fuhrpark.length) {
                     parts.push('• Alle anderen: kein Handlungsbedarf');
                 }
             }
         }
-        catch { /* fleet deadlines optional */ }
+        catch {
+            parts.push('', `${RUBRIK}🚗 Fuhrpark — Fristen`, ausfallZeile('Fuhrpark'));
+        }
+        // ── NK- UND OBJEKTFRISTEN (≤ 30 Tage) — ersetzt die getrennte NK-Meldung ──
+        if (rNk.status === 'rejected') {
+            parts.push('', `${RUBRIK}🏠 NK-Fristen (30 Tage)`, ausfallZeile('NK-Fristen'));
+        }
+        else {
+            parts.push(...nkAbschnitt(rNk.value, 30, '🏠 NK-Fristen (30 Tage)'));
+        }
+        // ── BANKING (Kontensumme, Alter der Salden) ──
+        if (rKonten.status === 'rejected') {
+            parts.push('', `${RUBRIK}💶 Banking`, ausfallZeile('Banking'));
+        }
+        else {
+            parts.push(...bankingAbschnitt(rKonten.value, now));
+        }
+        // ── TRADING (Paper): Verbindung + Vortag ──
+        parts.push(...tradingZeilen(wert(rTrading), wert(rTagesbuch), heuteBerlin));
         /* Telegram-HTML: alles maskieren, dann nur die Rubrikzeilen fett setzen.
            Vorher ging der Text als Markdown raus, ohne parse_mode — im Chat standen
            die Sternchen sichtbar da (Owner, 14.10.2026). */
@@ -2121,6 +2265,27 @@ export default function (api) {
                 text: `⏰ Tägliches Briefing auf ${time} Uhr (Europe/Berlin) gesetzt.\n` +
                     `Zustellung: aktives operativ-Binding`,
             };
+        },
+    });
+    // ── /abendbriefingtime — Uhrzeit des Abendbriefings (26.10.2026) ─────────
+    api.registerCommand({
+        name: 'abendbriefingtime',
+        acceptsArgs: true,
+        description: `Abendbriefing-Uhrzeit setzen: /abendbriefingtime HH:MM  (Europe/Berlin, Standard: ${ABEND_BRIEFING_STANDARD})`,
+        handler: async (ctx) => {
+            const raw = String(ctx.args || '').trim();
+            if (!raw) {
+                const jetzt = loadSettings().abendBriefingTime || ABEND_BRIEFING_STANDARD;
+                return { text: `🌙 Abendbriefing täglich um ${jetzt} Uhr (Europe/Berlin), per Telegram und Mail an Ihr M365-Postfach.` };
+            }
+            if (!/^\d{1,2}:\d{2}$/.test(raw))
+                return { text: '❌ Verwendung: /abendbriefingtime 21:00' };
+            const [h, m] = raw.split(':').map(Number);
+            if (h < 0 || h > 23 || m < 0 || m > 59)
+                return { text: '❌ Ungültige Uhrzeit.' };
+            const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            await setSetting('abend_briefing_time', time);
+            return { text: `🌙 Abendbriefing auf ${time} Uhr (Europe/Berlin) gesetzt.` };
         },
     });
     // ── healthreportday → src/modules/health/commands.ts ──────────────────────
@@ -3037,18 +3202,126 @@ export default function (api) {
             }
         }, 30 * 60_000);
     }
-    // ── Tägliches Briefing (Scheduler, prüft jede Minute) ─────────────────────
+    // ── Morgen- und Abendbriefing (Taktgeber, prüft jede Minute) ─────────────
+    //
+    // NEU 26.10.2026 (Owner-Auftrag Briefing-Ausbau):
+    //   - Zustand je Art und Tag steht in der Tabelle `briefings` und überlebt
+    //     einen Neustart (vorher: Variable lastBriefingDate im Prozess).
+    //   - Nachholen: fehlt das Briefing 15 Minuten nach der Sollzeit, wird es
+    //     einmal neu erzeugt; scheitert auch das, geht eine kurze Fehlermeldung
+    //     an Telegram (Regel in src/modules/briefing/planer.ts).
+    //   - Abendbriefing zur Einstellung abendBriefingTime (Standard 21:00),
+    //     Versand über Telegram UND als Mail an das eigene Postfach
+    //     (eng gefasste Ausnahme von der Entwurfsregel, siehe briefing/mail.ts).
     if (!g.__ea_briefingSchedulerRegistered) {
         g.__ea_briefingSchedulerRegistered = true;
-        let lastBriefingDate = '';
+        const BRIEFING_TIMEOUT_MS = 45000;
         let pendingBriefingRetry = null;
+        /* Keine zwei Läufe derselben Art gleichzeitig — ein Lauf dauert bis 45 s,
+           der Taktgeber feuert jede Minute. */
+        const laeuft = new Set();
+        /* Rückfall, falls die Datenbank nicht antwortet: Ohne Tagesstand würde
+           der Taktgeber sonst gar nicht erzeugen. */
+        const lokalerStand = new Map();
+        const ARTNAME = { morgen: 'Morgenbriefing', abend: 'Abendbriefing' };
+        const mitZeitlimit = (arbeit) => Promise.race([
+            arbeit,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS)),
+        ]);
+        async function morgenErzeugen() {
+            // Withings und Oura vorher abgleichen (dürfen scheitern)
+            await Promise.allSettled([
+                syncWithingsForBriefing().catch((syncErr) => {
+                    api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
+                }),
+                syncOuraForBriefing().catch((syncErr) => {
+                    api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler (ignoriert): ${syncErr.message}`);
+                }),
+            ]);
+            return await generateBriefingText();
+        }
+        /** Ein Lauf: erzeugen, zustellen, festhalten. true = per Telegram zugestellt. */
+        async function briefingLauf(art, datum, chatId) {
+            let text = '';
+            let mailText = '';
+            let fehler = null;
+            try {
+                if (art === 'morgen') {
+                    text = await mitZeitlimit(morgenErzeugen());
+                }
+                else {
+                    const zeilen = await mitZeitlimit(generateAbendZeilen());
+                    text = alsTelegramHtml(zeilen);
+                    mailText = alsMailText(zeilen);
+                }
+            }
+            catch (e) {
+                fehler = e?.message === 'briefing_timeout' ? 'Zeitlimit 45 s überschritten' : String(e?.message || e);
+                api.logger.error(`[executive-agent] ${ARTNAME[art]} nicht erzeugt: ${fehler}`);
+            }
+            let telegramOk = false;
+            let mailOk = null;
+            if (text) {
+                telegramOk = (await sendTelegramHtmlWithMarkup(chatId, text, undefined)).sent;
+                if (!telegramOk)
+                    fehler = 'Telegram-Zustellung fehlgeschlagen';
+                if (art === 'abend') {
+                    const bisher = await holeBriefing('abend', datum).catch(() => null);
+                    if (bisher?.mailOk) {
+                        mailOk = true; // Nachholversuch: Mail nicht doppelt
+                    }
+                    else {
+                        try {
+                            const datumKurz = datum.split('-').reverse().join('.');
+                            await sendeAbendbriefingMail((url, body) => graphPost(tenantId, clientId, m365Secret, url, body), { betreff: abendBetreff(datumKurz), text: mailText });
+                            mailOk = true;
+                        }
+                        catch (e) {
+                            mailOk = false;
+                            api.logger.error(`[executive-agent] Abendbriefing-Mail fehlgeschlagen: ${e.message}`);
+                            if (telegramOk) {
+                                await sendTelegramHtmlWithMarkup(chatId, `⚠️ Abendbriefing-Mail nicht zugestellt: ${htmlEscapeSystem(String(e.message).slice(0, 160))}`, undefined).catch(() => { });
+                            }
+                        }
+                    }
+                }
+            }
+            const status = telegramOk ? 'gesendet' : (text ? 'erzeugt' : 'fehler');
+            const vorher = lokalerStand.get(`${art}|${datum}`);
+            lokalerStand.set(`${art}|${datum}`, {
+                status, versuche: (vorher?.versuche ?? 0) + 1, fehlerGemeldet: vorher?.fehlerGemeldet ?? false, fehler,
+            });
+            await speichereVersuch({ art, datum, textHtml: text, status, telegramOk, mailOk, fehler })
+                .catch((e) => api.logger.error(`[executive-agent] ${ARTNAME[art]} nicht gespeichert: ${e.message}`));
+            if (text && !telegramOk) {
+                // Text ist da, nur die Zustellung hakt → bestehende Wiederholung
+                pendingBriefingRetry = { art, datum, text, chatId, attempts: 0 };
+            }
+            if (telegramOk)
+                api.logger.info(`[executive-agent] ${ARTNAME[art]} gesendet (${datum})`);
+            return telegramOk;
+        }
+        /** Kurze Fehlermeldung, genau einmal je Art und Tag. */
+        async function meldeAusfall(art, datum, chatId, grund) {
+            const befehl = art === 'morgen' ? ' Von Hand: /briefing' : '';
+            const meldung = `⚠️ <b>${ARTNAME[art]} ${datum.split('-').reverse().join('.')} ausgefallen</b>\n`
+                + `${htmlEscapeSystem(grund || 'Grund unbekannt')} — auch der Nachholversuch scheiterte.${befehl}`;
+            await sendTelegramHtmlWithMarkup(chatId, meldung, undefined).catch(() => { });
+            const vorher = lokalerStand.get(`${art}|${datum}`);
+            lokalerStand.set(`${art}|${datum}`, {
+                status: 'fehler', versuche: vorher?.versuche ?? 0, fehlerGemeldet: true, fehler: grund,
+            });
+            await markiereFehlerGemeldet(art, datum, grund || 'unbekannt')
+                .catch((e) => api.logger.error(`[executive-agent] Ausfallmeldung nicht gespeichert: ${e.message}`));
+            api.logger.warn(`[executive-agent] ${ARTNAME[art]} ausgefallen, Fehlermeldung gesendet (${datum})`);
+        }
         setInterval(async () => {
             try {
                 const s = loadSettings();
                 const chatId = getCachedTelegramTarget('operativ');
                 if (!chatId)
                     return;
-                // ── Briefing-Retry: zuvor fehlgeschlagene Zustellung nochmal versuchen ──
+                // ── Wiederholung: Text erzeugt, Telegram-Zustellung fehlgeschlagen ──
                 if (pendingBriefingRetry && pendingBriefingRetry.attempts < 5) {
                     const retry = pendingBriefingRetry;
                     const backoffMs = Math.min(1000 * Math.pow(2, retry.attempts), 60000);
@@ -3058,6 +3331,11 @@ export default function (api) {
                     const sent = (await sendTelegramHtmlWithMarkup(retry.chatId, retry.text, undefined)).sent;
                     if (sent) {
                         api.logger.info(`[executive-agent] Briefing-Retry erfolgreich (Versuch ${retry.attempts})`);
+                        const k = `${retry.art}|${retry.datum}`;
+                        const vorher = lokalerStand.get(k);
+                        if (vorher)
+                            lokalerStand.set(k, { ...vorher, status: 'gesendet' });
+                        await markiereGesendet(retry.art, retry.datum).catch(() => { });
                         pendingBriefingRetry = null;
                     }
                     return; // Don't run normal briefing logic during retry
@@ -3072,33 +3350,35 @@ export default function (api) {
                 const mm = String(inBerlin.getMinutes()).padStart(2, '0');
                 const nowHHMM = `${hh}:${mm}`;
                 const today = berlinDate(0);
-                if (nowHHMM === s.briefingTime && lastBriefingDate !== today) {
-                    // Withings-Sync parallel zum Briefing starten (darf fehlschlagen)
-                    const BRIEFING_TIMEOUT_MS = 45000;
-                    const briefingWork = async () => {
-                        // Sync both providers before generating briefing (may fail independently)
-                        await Promise.allSettled([
-                            syncWithingsForBriefing().catch((syncErr) => {
-                                api.logger.warn(`[executive-agent] Briefing Withings-Sync Fehler (ignoriert): ${syncErr.message}`);
-                            }),
-                            syncOuraForBriefing().catch((syncErr) => {
-                                api.logger.warn(`[executive-agent] Briefing Oura-Sync Fehler (ignoriert): ${syncErr.message}`);
-                            }),
-                        ]);
-                        return await generateBriefingText();
-                    };
-                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('briefing_timeout')), BRIEFING_TIMEOUT_MS));
-                    const text = await Promise.race([briefingWork(), timeoutPromise]);
-                    const sent = (await sendTelegramHtmlWithMarkup(chatId, text, undefined)).sent;
-                    if (sent) {
-                        lastBriefingDate = today;
-                        api.logger.info(`[executive-agent] Tägliches Briefing gesendet (${today} ${nowHHMM})`);
+                const plan = [
+                    ['morgen', s.briefingTime],
+                    ['abend', s.abendBriefingTime || ABEND_BRIEFING_STANDARD],
+                ];
+                for (const [art, sollzeit] of plan) {
+                    if (laeuft.has(art))
+                        continue;
+                    const stand = await holeBriefing(art, today)
+                        .catch(() => lokalerStand.get(`${art}|${today}`) ?? null);
+                    const aktion = naechsteAktion(nowHHMM, sollzeit, stand);
+                    if (!aktion)
+                        continue;
+                    laeuft.add(art);
+                    try {
+                        if (aktion === 'fehlermeldung') {
+                            await meldeAusfall(art, today, chatId, stand?.fehler ?? null);
+                        }
+                        else {
+                            if (aktion === 'nachholen')
+                                api.logger.warn(`[executive-agent] ${ARTNAME[art]} fehlt um ${nowHHMM} — Nachholversuch`);
+                            const zugestellt = await briefingLauf(art, today, chatId);
+                            if (!zugestellt && aktion === 'nachholen') {
+                                const nachher = await holeBriefing(art, today).catch(() => null);
+                                await meldeAusfall(art, today, chatId, nachher?.fehler ?? lokalerStand.get(`${art}|${today}`)?.fehler ?? null);
+                            }
+                        }
                     }
-                    else {
-                        // Zustellung fehlgeschlagen → Retry-Queue
-                        pendingBriefingRetry = { text, chatId, attempts: 0 };
-                        lastBriefingDate = today; // Prevent re-generating, retry the existing text
-                        api.logger.warn(`[executive-agent] Briefing generiert aber Zustellung fehlgeschlagen — Retry geplant`);
+                    finally {
+                        laeuft.delete(art);
                     }
                 }
             }
@@ -4736,6 +5016,7 @@ export default function (api) {
     // Die Tools wiki_search/wiki_read sind ausschließlich lesend und liefern
     // niemals als sensibel markierte Seiten (Filter in src/modules/wiki/store.ts).
     registerWikiHttpRoutes(api);
+    registerBriefingHttpRoutes(api);
     registerWikiTools(api);
     // ── Instagram Inbox HTTP API (E2b) ──────────────────────────────────────
     registerInboxHttpRoute(api);
@@ -4920,6 +5201,16 @@ export default function (api) {
         }
         catch (e) {
             api.logger.error(`[casameta] Migration failed: ${e.message}`);
+        }
+        // ── Briefing-Ablage (Owner-Auftrag 26.10.2026) ────────────────────────
+        try {
+            const briefingMigrationsDir = path.join(__dirname, 'src/modules/briefing/migrations');
+            const briefingApplied = await runMigrations(briefingMigrationsDir, 'briefing');
+            if (briefingApplied > 0)
+                api.logger.info(`[briefing] Applied ${briefingApplied} migration(s)`);
+        }
+        catch (e) {
+            api.logger.error(`[briefing] Migration failed: ${e.message}`);
         }
         // ── Instagram Edit Queue Recovery (E4a) ────────────────────────────────
         try {

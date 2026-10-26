@@ -119,8 +119,16 @@ describe('statische Guards gegen alerts.ts und routes.ts', () => {
     path.resolve(import.meta.dir, '..', '..', 'assets', 'routes.ts'), 'utf-8');
 
   test('der Tageslauf ruft beide Wege auf', () => {
-    expect(routes).toContain('const nk = await handleObligationsAlert();');
-    expect(routes).toContain('const fristen = await handleFristenAlert();');
+    expect(routes).toContain('const nk = await handleObligationsAlert({ senden: !imBriefing });');
+    expect(routes).toContain('const fristen = await handleFristenAlert({ senden: !imBriefing });');
+  });
+
+  test('eigene Meldung nur, wenn das Morgenbriefing NICHT zugestellt ist (26.10.2026)', () => {
+    /* Die Fristen stehen seit 26.10.2026 im Morgenbriefing. Fällt es aus,
+       muss der Tageslauf wie früher selbst melden — sonst ginge eine Frist
+       still verloren. Ein Lesefehler zählt als „nicht zugestellt". */
+    expect(routes).toContain("const imBriefing = await istZugestellt('morgen', berlinDate(0)).catch(() => false);");
+    expect(alerts).toContain('const senden = opts.senden !== false;');
   });
 
   test('die Zustellung geht in den Owner-DM, nicht nach dev', () => {
