@@ -4,6 +4,14 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 (5) — Neuheiten-Sekretariat Stufe 1
+
+Spec Neuheiten-Sekretariat v1 (Owner-Freigabe 12:11). KI-Bewertung je Neuheit mit
+Kontext (claude-sonnet-4-6), Vorgänge (Thread hart, sonst KI), zweites Netz,
+Statuskette mit Alarm, Nicht-relevant-Ablage, Kostenprotokoll, Deckel 60/h.
+Migration `vorgaenge`/`vorgang_elemente` angemeldet (Rote Zone), bis dahin JSONL.
+Tests: `sekretariat.test.ts` (27).
+
 ## Stand 2026-10-27 (4) — Report-Watcher holt zurückgestellte Reports selbst nach
 
 Owner-Freigabe 27.10.2026 ~11:37 (Vorschlag aus report-admin-kanal-20261026.md).

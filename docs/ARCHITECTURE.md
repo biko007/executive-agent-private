@@ -597,6 +597,39 @@ Neuheiten hat; Sperrdatei `artifacts/personal/neuheiten/stunde.lock`.
 - **Rückweg:** `systemctl --user disable --now neuheiten-stunde.timer`;
   die Registerdateien bleiben liegen.
 
+## 9f. Neuheiten-Sekretariat, Stufe 1 (sekretariat)
+
+**Status:** gebaut 27.10.2026 (Owner-Freigabe Spec v1, 12:11), eingeschaltet über
+`artifacts/personal/sekretariat/einstellungen.json`.
+
+Spec: `docs/projekt/Spec-Neuheiten-Sekretariat-v1.md`. Stufe 1 des Baus = Spec-Stufen
+2 (Verstehen) und 3 (Verknüpfen) sowie „Sicherstellen“ 1, 2, 3, 5 und 6.
+
+- **Ablauf je Neuheit** (`sekretariat/lauf.ts`): erfasst → Vorfilter → zweites Netz →
+  KI → Vorgang → Vorschlag; Ausgänge `abgelegt` (Vorfilter oder KI, mit Begründung),
+  `vorschlag`, `netz` (KI „nicht relevant“, Netz schlägt an → Einzelzeile), `wartet`
+  (Deckel) oder `fehler` (KI-Antwort ungültig → nächster Lauf). Jede erfasste Neuheit
+  hat genau einen Ausgang; sonst Alarm an die Dev-Gruppe. Wartende und Fehler werden
+  mit ihrem Inhalt gespeichert und im nächsten Lauf zuerst bewertet.
+- **Vorfilter** (`element.ts`): nur Offensichtliches; Gesundheitspost über Absender,
+  Betreff, Pfad oder Text immer raus. `bewerteMitKi` prüft das ein zweites Mal und
+  wirft, bevor das Modell gefragt wird.
+- **KI** (`ki.ts`): Anthropic Messages API, `ANTHROPIC_MODEL` (`claude-sonnet-4-6`),
+  System-Prompt mit Objekten, Kontakten (Regeldatei, Lieferanten, Mieter mit Einheit
+  und Mail), Fristen (NK, Objektfristen), offenen Vorgängen und Owner-Vorgaben
+  (Privatkäufe, Vereine, Eltern, ZZ5). Antwort JSON, geprüft mit `pruefeBewertung`;
+  ungültig → ein zweiter Versuch. Tokens je Lauf in `kosten.jsonl`.
+- **Vorgänge**: Thread-ID (In-Reply-To/References) ordnet hart zu; sonst die vom Modell
+  genannte bestehende Kennung, sonst gleicher Titel + Objekt, sonst neu (`v-<8 hex>`).
+  Das jüngste Element bestimmt den nächsten Schritt, die früheste Frist gilt.
+- **Speicher**: JSON/JSONL unter `artifacts/personal/sekretariat/`, bis die Migration
+  `vorgaenge` + `vorgang_elemente` mit `/arm` angelegt ist.
+- **Report**: `report-neuheiten-stunde-*` je Vorgang (Titel, Objekt, Begründung, Schritt,
+  Frist) mit `Freigabe Vorgang <Kennung>`; f nur als Zähler; Netz-Treffer als
+  Einzelzeilen. Nachlauf: `--sekretariat-nachlauf` → `report-neuheiten-nachlauf-ki-*`.
+- **Rückweg**: `"modus": "regeln"` in der Einstellungsdatei; dann rechnet der Stundenlauf
+  wieder mit den Regeln (9e).
+
 ## 9d. Reise-Import (reise-import)
 
 Owner-Auftrag 18.10.2026. Der Reiseassistent — ein Claude-Projekt mit
