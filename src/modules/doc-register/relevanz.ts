@@ -32,6 +32,11 @@ export interface DokRegeln {
   fotoOrdner: string;
   /** System- und temporaere Dateien (Dateiname). */
   systemMuster: string;
+  /**
+   * Angelegenheiten der Eltern des Owners (Owner 27.10.2026): Pfad oder Name —
+   * kein Objektbezug, nie relevant, nie „Buchung N24".
+   */
+  elternMuster: string;
   /** Erste passende Zeile bestimmt den Vorschlag. */
   stichworte: Array<{ muster: string; vorschlag: Exclude<VorschlagCode, 'offen'>; thema: string }>;
 }
@@ -47,6 +52,7 @@ export const STANDARD_DOK_REGELN: DokRegeln = {
   ],
   fotoOrdner: '(^|/)(camera uploads|kamera-uploads|fotos|photos|bilder|pictures|screenshots|bildschirmfotos)(/|$)',
   systemMuster: '^(~\\$|\\.~lock|\\._)|\\.(tmp|temp|lnk|ini|ds_store|part|crdownload)$|^(thumbs\\.db|desktop\\.ini|\\.ds_store)$',
+  elternMuster: '^/(papa|mama)/|witwenrente|(^|[/ _-])rente([/ _.-]|$)|klaus bickel|waltraud bickel',
   stichworte: [
     { muster: 'z(ä|ae)hlerst|ablesung|protokoll|(ü|ue)bergabe|rapport|servicebericht', vorschlag: 'b', thema: 'Fakten/Protokoll' },
     { muster: 'mahnung|zahlungserinnerung|widerspruch|reklamation', vorschlag: 'e', thema: 'Mahnung/Reklamation' },
@@ -65,7 +71,7 @@ export function ladeDokRegeln(pfad: string): { regeln: DokRegeln; warnungen: str
   if (!roh) return { regeln: STANDARD_DOK_REGELN, warnungen };
   const ok = (s: unknown) => { try { new RegExp(String(s), 'i'); return typeof s === 'string'; } catch { return false; } };
   const r: DokRegeln = { ...STANDARD_DOK_REGELN };
-  for (const k of ['typen', 'bildTypen', 'fotoOrdner', 'systemMuster'] as const) {
+  for (const k of ['typen', 'bildTypen', 'fotoOrdner', 'systemMuster', 'elternMuster'] as const) {
     if (roh[k] === undefined) continue;
     if (ok(roh[k])) r[k] = roh[k]; else warnungen.push(`dokumente.${k} ungültig — Vorgabe gilt`);
   }
@@ -117,6 +123,7 @@ export function dokAusschluss(d: Pick<DokDatei, 'name' | 'pfad'>, r: DokRegeln, 
   const pfad = d.pfad.toLowerCase();
   if (re(r.systemMuster).test(d.name)) return 'System/temporär';
   if (r.ausschlussPfade.some((p) => re(p).test(pfad))) return 'eigener Kanal/cc-Ablage';
+  if (re(r.elternMuster).test(pfad)) return 'Privat (Eltern)';
   if (kopie) return 'Kopie aus anderer Ablage';
   if (!re(r.typen).test(endung(d.name))) return 'Dateityp';
   if (re(r.bildTypen).test(endung(d.name)) && re(r.fotoOrdner).test(pfad)) return 'Foto';

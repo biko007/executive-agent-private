@@ -416,3 +416,18 @@ describe('Nachschärfung 27.10.2026 — gleiche Regeln für Dokumente', () => {
     expect(bewerteDok(datei({ quelle: 'onedrive', pfad: '/FoTA/2025/2026-10-16_FoTA Einladung Mitgliederversammlung 2026.pdf', name: '2026-10-16_FoTA Einladung Mitgliederversammlung 2026.pdf' }), R, D, { text: 'Protokoll' }).grund).toBe('Verein/Social');
   });
 });
+
+describe('Eltern-Ordner (Owner 27.10.2026)', () => {
+  test('Papa/Mama, Witwenrente, Rente, Elternnamen → nicht relevant, nie Buchung N24', () => {
+    for (const pfad of ['/Papa/2026-10-26_Papa Rechnung Hunzinger.pdf', '/Papa/Mama/2026-10-14_Mama Vorschuss Witwenrente.pdf',
+      '/Austausch/2026-10-01_Rente Bescheid.pdf', '/Scans/Klaus Bickel Rechnung.pdf']) {
+      const b = bewerteDok(datei({ pfad, name: pfad.split('/').pop()! }), R, D, { text: 'Nonnenburgstraße 24' });
+      expect(b.relevant, pfad).toBe(false);
+      expect(b.grund, pfad).toBe('Privat (Eltern)');
+    }
+  });
+  test('ähnliche Wörter bleiben unberührt', () => {
+    expect(bewerteDok(datei({ pfad: '/Austausch/Rentenversicherung Rechnung.pdf', name: 'Rentenversicherung Rechnung.pdf' }), R, D).grund).not.toBe('Privat (Eltern)');
+    expect(bewerteDok(datei({ pfad: '/Austausch/Parentes Rechnung.pdf', name: 'Parentes Rechnung.pdf' }), R, D).relevant).toBe(true);
+  });
+});

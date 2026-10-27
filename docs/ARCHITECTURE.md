@@ -572,7 +572,7 @@ die Lieferadresse Zelterweg im Text; Block `privat` in `relevanz.json` — Rechn
 eines privaten Anbieters (PayPal, Amazon, Vodafone, Midjourney …) wird
 „a) Beleg ablegen → Privatausgaben“, reine Bestell- und Versandpost ist nicht
 relevant, eine Mahnung bleibt e; Vereins- und Verbandspost (`ausschluss.verein*`)
-nicht relevant. Vorschlag f („nur zur Kenntnis“) steht im Stundenreport und in
+nicht relevant; Angelegenheiten der Eltern (`dokumente.elternMuster`: `/Papa`, `/Mama`, Witwenrente, Rente, Elternnamen) nie relevant, nie einem Objekt zugeordnet. Vorschlag f („nur zur Kenntnis“) steht im Stundenreport und in
 Telegram nur als Zähler und löst allein keine Meldung aus.
 
 **Gemeinsame Meldung** (`neuheiten/bericht.ts`, `scripts/neuheiten-stunde.ts`):
