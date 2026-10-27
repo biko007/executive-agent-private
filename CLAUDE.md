@@ -313,7 +313,7 @@ Details zu allen Features: docs/CHANGELOG.md (Betriebsautomatisierung-Narrativ).
 
 | Feature | Kurzbeschreibung |
 |---------|-----------------|
-| **Report-Watcher** | Überwacht `~/bikosoc-spec/`, `~/report-*.md`, `~/.claude/plans/`; 5s Debounce, Rate 1/min |
+| **Report-Watcher** | Überwacht `~/bikosoc-spec/`, `~/report-*.md`, `~/.claude/plans/`; 5s Debounce, Rate 1/min; zurückgestellte Dateien holt seit 27.10.2026 ein Nachlauf nach Ablauf der Minute selbst nach (kein `touch` mehr nötig) |
 | **Dropbox-Upload** | Reports → `/bikosoc-reports/` (mit Digest), Plans → `/bikosoc-plans/` (Roh) |
 | **Wait-Notifier** | `tmux capture-pane -t bikosoc` alle 30s; max 1 Notify/5min |
 | **/report [full] [n]** | Manueller Abruf; sendet an dev |

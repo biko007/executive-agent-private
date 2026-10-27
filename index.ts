@@ -124,7 +124,7 @@ import { dropboxZugang } from './src/adapters/dropbox-zugang.js';
 import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import {
   kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
-  ergebnisKnoepfe,
+  ergebnisKnoepfe, erzeugeNachlauf,
 } from './src/modules/report-telegram/index.js';
 import {
   systemNachricht, freigabeZeile, uhrzeit as systemUhrzeit,
@@ -4250,9 +4250,17 @@ export default function (api: any) {
     }
 
     let reportScanInProgress = false;
+    /* Nachlauf (Owner-Freigabe 27.10.2026): Ein wegen des Rate-Limits
+       zurückgestellter Report wird nach Ablauf der Minute von selbst geholt,
+       nicht erst beim nächsten Dateiereignis. Siehe erzeugeNachlauf(). */
+    const reportNachlauf = erzeugeNachlauf({ scan: () => scanAndDeliverReports() });
+    /* Kommt ein Scan-Auslöser, während ein Scan läuft, geht er nicht verloren:
+       Der laufende Scan holt im finally einen Nachlauf nach. */
+    let reportScanErneut = false;
     async function scanAndDeliverReports(): Promise<void> {
-      if (reportScanInProgress) return; // Prevent concurrent scans (double-event guard)
+      if (reportScanInProgress) { reportScanErneut = true; return; } // Prevent concurrent scans (double-event guard)
       reportScanInProgress = true;
+      reportScanErneut = false;
       try {
       let sentMap: Map<string, number | string>;
       try {
@@ -4334,8 +4342,11 @@ export default function (api: any) {
       for (const file of toSend) {
         const now = Date.now();
         if (now - reportLastAutoSendAt < REPORT_RATE_MS) {
-          api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`);
-          break; // Will retry on next scan
+          const restMs = REPORT_RATE_MS - (now - reportLastAutoSendAt);
+          const neu = reportNachlauf.plane(restMs);
+          api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`
+            + `${neu ? ` — Nachlauf in ${Math.ceil(restMs / 1000) + 2} s` : ' — Nachlauf schon geplant'}`);
+          break; // Rate-Limit bleibt: in diesem Scan nichts weiter; der Nachlauf holt den Rest
         }
 
         // Inhalt lesen + Digest erzeugen (nur fuer Reports, nicht Plans)
@@ -4483,6 +4494,10 @@ export default function (api: any) {
       saveReportSentMap(sentMap, standBeimLaden);
       } finally {
         reportScanInProgress = false;
+        if (reportScanErneut) {
+          reportScanErneut = false;
+          reportNachlauf.plane(0);
+        }
       }
     }
 

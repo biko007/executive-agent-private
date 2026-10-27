@@ -376,3 +376,58 @@ export function kopfblockFallback(dateiname: string): Kopfblock {
     fehlt: true,
   };
 }
+
+/* ── Nachlauf zurückgestellter Reports (Owner-Freigabe 27.10.2026) ─────────
+   Der Report-Watcher stellt höchstens einen Report je Minute zu. Bis zum
+   27.10.2026 blieb ein zurückgestellter Report liegen, bis zufällig das
+   nächste Dateiereignis kam — zweimal musste ein `touch` nachhelfen
+   (report-admin-kanal-20261026.md). Der Nachlauf plant genau einen Scan für
+   den Moment, in dem die Rate-Limit-Minute abgelaufen ist.
+
+   Er ändert weder Rate-Limit noch Reihenfolge noch Doppelschutz: Der Scan
+   selbst entscheidet wie bisher (älteste zuerst, sentMap, eine Datei je
+   Minute). Der Nachlauf sorgt nur dafür, dass der Scan stattfindet. */
+
+export interface Nachlauf {
+  /**
+   * Einen Scan in `wartezeitMs` (plus Puffer) planen. Ist schon einer
+   * geplant, der nicht später fällig ist, bleibt es bei diesem — nie zwei
+   * Timer. Liefert true, wenn neu geplant wurde.
+   */
+  plane(wartezeitMs: number): boolean;
+  /** Ist ein Nachlauf geplant? */
+  geplant(): boolean;
+  /** Geplanten Nachlauf verwerfen (z. B. beim Herunterfahren). */
+  stopp(): void;
+}
+
+export function erzeugeNachlauf(opts: {
+  scan: () => Promise<void> | void;
+  pufferMs?: number;
+  jetzt?: () => number;
+  setzeTimer?: (f: () => void, ms: number) => unknown;
+  loescheTimer?: (h: unknown) => void;
+}): Nachlauf {
+  const puffer = opts.pufferMs ?? 2_000;
+  const jetzt = opts.jetzt ?? Date.now;
+  const setze = opts.setzeTimer ?? ((f, ms) => setTimeout(f, ms));
+  const loesche = opts.loescheTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  let handle: unknown = null;
+  let faellig = 0;
+  return {
+    plane(wartezeitMs) {
+      const ms = Math.max(0, wartezeitMs) + puffer;
+      const ziel = jetzt() + ms;
+      if (handle !== null && faellig <= ziel) return false;
+      if (handle !== null) loesche(handle);
+      faellig = ziel;
+      handle = setze(() => {
+        handle = null;
+        void Promise.resolve().then(opts.scan).catch(() => { /* Scan protokolliert selbst */ });
+      }, ms);
+      return true;
+    },
+    geplant: () => handle !== null,
+    stopp() { if (handle !== null) { loesche(handle); handle = null; } },
+  };
+}

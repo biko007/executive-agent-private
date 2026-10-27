@@ -4,6 +4,17 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 (4) — Report-Watcher holt zurückgestellte Reports selbst nach
+
+Owner-Freigabe 27.10.2026 ~11:37 (Vorschlag aus report-admin-kanal-20261026.md).
+
+- Rate-Limit-Zweig plant einen Nachlauf zum Ende der Minute
+  (`erzeugeNachlauf` in `src/modules/report-telegram`); vorher blieb ein
+  zurückgestellter Report bis zum nächsten Dateiereignis liegen.
+- Ein Scan-Auslöser während eines laufenden Scans wird vermerkt und nachgeholt.
+- Rate-Limit (1/min), Reihenfolge (älteste zuerst) und Doppelschutz (sentMap)
+  unverändert. Tests: `nachlauf.test.ts` (12, mit Nachbildung der Schleife).
+
 ## Stand 2026-10-27 (3) — Abendbriefing nur per Telegram
 
 Owner-Vorgabe 27.10.2026 ~11:37: Das Abendbriefing kommt per Telegram, nicht
