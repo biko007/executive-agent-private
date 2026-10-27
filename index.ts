@@ -4117,18 +4117,20 @@ export default function (api: any) {
     function saveReportSentMap(
       m: Map<string, number | string>,
       unveraendert?: string,
-    ): void {
+    ): boolean {
       const obj = Object.fromEntries(m);
       const inhalt = JSON.stringify(obj, null, 2);
-      if (unveraendert !== undefined && inhalt === unveraendert) return;
+      if (unveraendert !== undefined && inhalt === unveraendert) return true;
       const tmpPath = `${REPORT_SENT_PATH}.tmp-${process.pid}`;
       try {
         fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
         fs.writeFileSync(tmpPath, inhalt);
         fs.renameSync(tmpPath, REPORT_SENT_PATH);
+        return true;
       } catch (e: any) {
         try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
         api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
+        return false;
       }
     }
 
@@ -4253,7 +4255,12 @@ export default function (api: any) {
     /* Nachlauf (Owner-Freigabe 27.10.2026): Ein wegen des Rate-Limits
        zurückgestellter Report wird nach Ablauf der Minute von selbst geholt,
        nicht erst beim nächsten Dateiereignis. Siehe erzeugeNachlauf(). */
-    const reportNachlauf = erzeugeNachlauf({ scan: () => scanAndDeliverReports() });
+    const REPORT_NACHLAUF_PUFFER_MS = 2_000;
+    const reportNachlauf = erzeugeNachlauf({
+      pufferMs: REPORT_NACHLAUF_PUFFER_MS,
+      scan: () => scanAndDeliverReports().catch((e: any) =>
+        api.logger.warn(`[report-watcher] Nachlauf-Scan fehlgeschlagen: ${e?.message ?? e}`)),
+    });
     /* Kommt ein Scan-Auslöser, während ein Scan läuft, geht er nicht verloren:
        Der laufende Scan holt im finally einen Nachlauf nach. */
     let reportScanErneut = false;
@@ -4345,7 +4352,7 @@ export default function (api: any) {
           const restMs = REPORT_RATE_MS - (now - reportLastAutoSendAt);
           const neu = reportNachlauf.plane(restMs);
           api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`
-            + `${neu ? ` — Nachlauf in ${Math.ceil(restMs / 1000) + 2} s` : ' — Nachlauf schon geplant'}`);
+            + `${neu ? ` — Nachlauf in ${Math.ceil((restMs + REPORT_NACHLAUF_PUFFER_MS) / 1000)} s` : ' — Nachlauf schon geplant'}`);
           break; // Rate-Limit bleibt: in diesem Scan nichts weiter; der Nachlauf holt den Rest
         }
 
@@ -4491,7 +4498,14 @@ export default function (api: any) {
         }
       }
 
-      saveReportSentMap(sentMap, standBeimLaden);
+      /* Ohne gespeicherte Versandliste wuerde der Nachlauf dieselbe Datei
+         jede Minute erneut senden (Review 27.10.2026). Dann lieber anhalten:
+         Der naechste Scan kommt mit dem naechsten Dateiereignis. */
+      if (!saveReportSentMap(sentMap, standBeimLaden)) {
+        reportNachlauf.stopp();
+        reportScanErneut = false;
+        api.logger.error('[report-watcher] Versandliste nicht gespeichert — Nachlauf angehalten, um Doppelversand zu vermeiden');
+      }
       } finally {
         reportScanInProgress = false;
         if (reportScanErneut) {

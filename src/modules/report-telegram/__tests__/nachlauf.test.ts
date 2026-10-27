@@ -180,6 +180,15 @@ describe('index.ts benutzt den Nachlauf wie geprüft', () => {
     expect(block.indexOf('sentMap.set(file.key, file.mtimeMs);')).toBeLessThan(block.indexOf('reportLastAutoSendAt = Date.now();'));
   });
 
+  test('scheitert das Speichern der Versandliste, wird der Nachlauf angehalten (kein Doppelversand)', () => {
+    expect(block).toMatch(/if \(!saveReportSentMap\(sentMap, standBeimLaden\)\) \{\s*reportNachlauf\.stopp\(\);\s*reportScanErneut = false;/);
+    expect(quelle).toMatch(/function saveReportSentMap\([\s\S]*?\): boolean \{/);
+  });
+
+  test('Fehler im Nachlauf-Scan werden protokolliert', () => {
+    expect(quelle).toContain("scan: () => scanAndDeliverReports().catch((e: any) =>");
+  });
+
   test('laufender Scan: Auslöser wird vermerkt und im finally nachgeholt', () => {
     expect(block).toContain('if (reportScanInProgress) { reportScanErneut = true; return; }');
     expect(block).toMatch(/finally \{\s*reportScanInProgress = false;\s*if \(reportScanErneut\) \{\s*reportScanErneut = false;\s*reportNachlauf\.plane\(0\);/);

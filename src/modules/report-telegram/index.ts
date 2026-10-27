@@ -423,7 +423,9 @@ export function erzeugeNachlauf(opts: {
       faellig = ziel;
       handle = setze(() => {
         handle = null;
-        void Promise.resolve().then(opts.scan).catch(() => { /* Scan protokolliert selbst */ });
+        /* Der Aufrufer faengt und protokolliert Fehler in `scan` (index.ts);
+           hier nur der Schutz vor einer unbehandelten Ablehnung. */
+        void Promise.resolve().then(opts.scan).catch(() => { /* siehe oben */ });
       }, ms);
       return true;
     },

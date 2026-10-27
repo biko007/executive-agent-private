@@ -390,10 +390,12 @@ describe('statische Guards gegen index.ts (Drift-Schutz fuer die Spiegelung oben
   });
 
   test('ein unveraenderter Stand wird nicht geschrieben', () => {
-    expect(source).toContain('if (unveraendert !== undefined && inhalt === unveraendert) return;');
+    /* Seit 27.10.2026 meldet saveReportSentMap Erfolg (true) oder Fehler
+       (false) — der Nachlauf haelt bei false an. „Unveraendert" ist Erfolg. */
+    expect(source).toContain('if (unveraendert !== undefined && inhalt === unveraendert) return true;');
     /* Der Scan haelt den Stand beim Laden fest und uebergibt ihn am Ende. */
     expect(source).toContain('const standBeimLaden = JSON.stringify(Object.fromEntries(sentMap), null, 2);');
-    expect(source).toContain('saveReportSentMap(sentMap, standBeimLaden);');
+    expect(source).toContain('saveReportSentMap(sentMap, standBeimLaden)');
   });
 
   test('saveReportSentMap schreibt nicht mehr direkt auf REPORT_SENT_PATH', () => {
