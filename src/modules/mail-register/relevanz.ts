@@ -40,6 +40,9 @@ export const KATALOG: Record<VorschlagCode, string> = {
   offen: 'Vorschlag offen',
 };
 
+/** Kennzeichen statt Objekt: der Beleg gehoert zu den Privatausgaben. */
+export const PRIVATAUSGABEN = 'Privatausgaben';
+
 // ── Regelwerk ──────────────────────────────────────────────────────────────
 
 export interface Regelwerk {
@@ -59,6 +62,12 @@ export interface Regelwerk {
    * Kuerzel wie D4 oder Z5 nur im Betreff — im Text sind es Produktcodes.
    */
   objekte: Array<{ kuerzel: string; muster: string; text?: string }>;
+  /**
+   * Private Kaeufe und Abos (Nachschaerfung 27.10.2026): eine Rechnung wird
+   * „Beleg ablegen → Privatausgaben", reine Bestell- und Versandpost ist
+   * nicht relevant. `absender` fuer Mails, `namen` fuer Dateinamen/-pfade.
+   */
+  privat: { absender: string; namen: string };
   ausschluss: {
     gesundheitAbsender: string;
     paketAbsender: string;
@@ -70,6 +79,10 @@ export interface Regelwerk {
     werbungOrdner: string;
     werbungBetreff: string;
     bewerbung: string;
+    /** Vereins- und Verbandspost (Mail-Absender, Betreff; Dateiname/-pfad). */
+    vereinAbsender: string;
+    vereinBetreff: string;
+    vereinNamen: string;
   };
 }
 
@@ -115,9 +128,15 @@ export const STANDARD_REGELN: Regelwerk = {
     { kuerzel: 'S28', muster: '\\bS28\\b|sch(ö|oe)nhalde', text: 'sch(ö|oe)nhalde' },
     { kuerzel: 'D4', muster: '\\bD4\\b|daimlerstr', text: 'daimlerstr(\\.|a(ß|ss)e) ?4\\b' },
     { kuerzel: 'I83', muster: '\\bI83\\b|irisweg', text: 'irisweg' },
-    { kuerzel: 'ZZ5', muster: '\\bZ{1,2}5\\b|zelterweg', text: 'zelterweg' },
+    /* Ohne `text`: Zelterweg ist die Privat- und Lieferadresse — Shopmails
+       dorthin sind kein Objektbezug (Nachschaerfung 27.10.2026). */
+    { kuerzel: 'ZZ5', muster: '\\bZ{1,2}5\\b|zelterweg' },
     { kuerzel: 'abc-raum', muster: 'abc-raum', text: 'abc-raum' },
   ],
+  privat: {
+    absender: '(^|[.@])(paypal\\.(de|com)|amazon\\.(de|com)|lieferando\\.de|computeruniverse\\.net|vodafone\\.(de|com)|kundenservice\\.vodafone|midjourney\\.com|ouraring\\.com|oura\\.com|yahoo\\.(de|com)|nytimes\\.com|starlink\\.com|zisch-frisch-getraenke\\.de|reichenauer-gemuesekiste\\.de|weyer\\.de|wieland-vertrieb\\.de|vorwerk\\.(de|com))$',
+    namen: 'paypal|amazon|lieferando|computeruniverse|vodafone|midjourney|oura|yahoo|new york times|nytimes|starlink|zisch|reichenauer|weyer|wieland|vorwerk',
+  },
   ausschluss: {
     gesundheitAbsender: 'zavamed|doktorabc|medcanonestop|nordleaf|apotheke|doctolib|withings',
     paketAbsender: '(^|[.@])(dhl|dpd|gls-pakete|ups|deutschepost|cargoboard|cepra)\\.|^(shipment-tracking|versandbestaetigung|order-update)@amazon\\.',
@@ -129,6 +148,9 @@ export const STANDARD_REGELN: Regelwerk = {
     werbungOrdner: '^(Angebote|Lesestoff)$',
     werbungBetreff: 'empfehlen sie|jetzt .*sichern|geschenk|gutschein|\\d+ ?% rabatt|angebote?: haus zum kauf',
     bewerbung: 'bewerbung|lebenslauf|\\bcv\\b|available for projects|ingenieur - |engineer - |analyst - |developer - ',
+    vereinAbsender: '(^|[.@])(historische-fahrraeder\\.de|cannabiswirtschaft\\.de|cannabis-service\\.de|towerateliers\\.de)$',
+    vereinBetreff: '^\\s*\\[bvcw',
+    vereinNamen: '(^|[/ _-])(fota|bvcw|tower ?ateliers|historische fahrr(ä|ae)der)([/ _.-]|$)',
   },
 };
 
@@ -151,6 +173,7 @@ export function ladeRegeln(pfad: string): { regeln: Regelwerk; warnungen: string
     kontakte: Array.isArray(roh?.kontakte) ? roh.kontakte : STANDARD_REGELN.kontakte,
     stichworte: Array.isArray(roh?.stichworte) ? roh.stichworte : STANDARD_REGELN.stichworte,
     objekte: Array.isArray(roh?.objekte) ? roh.objekte : STANDARD_REGELN.objekte,
+    privat: { ...STANDARD_REGELN.privat, ...(roh?.privat ?? {}) },
     ausschluss: { ...STANDARD_REGELN.ausschluss, ...(roh?.ausschluss ?? {}) },
   };
   /* Jede Regex einmal pruefen; eine kaputte faellt auf die Vorgabe zurueck. */
@@ -171,6 +194,12 @@ export function ladeRegeln(pfad: string): { regeln: Regelwerk; warnungen: string
     if (!ok) warnungen.push(`Objekt „${o?.kuerzel}" ungültig — übergangen`);
     return ok;
   });
+  for (const [k, v] of Object.entries(regeln.privat) as Array<[keyof Regelwerk['privat'], string]>) {
+    if (typeof v !== 'string' || !pruefe(v)) {
+      warnungen.push(`privat.${k} ungültig — Vorgabe gilt`);
+      regeln.privat[k] = STANDARD_REGELN.privat[k];
+    }
+  }
   for (const [k, v] of Object.entries(regeln.ausschluss) as Array<[keyof Regelwerk['ausschluss'], string]>) {
     if (typeof v !== 'string' || !pruefe(v)) {
       warnungen.push(`Ausschluss ${k} ungültig — Vorgabe gilt`);
@@ -243,6 +272,7 @@ export function kopfAusschluss(m: BewertungsEingang, r: Regelwerk): string | nul
   if (re(a.systemAbsender).test(adresse) || re(a.systemBetreff).test(m.betreff)) return 'Systemmeldung';
   if (re(a.socialAbsender).test(adresse) || re(a.socialOrdner).test(m.ordner)) return 'Social';
   if (re(a.bewerbung).test(m.betreff)) return 'Bewerbung';
+  if (re(a.vereinAbsender).test(adresse) || re(a.vereinBetreff).test(m.betreff)) return 'Verein/Social';
   if (m.kopf['list-unsubscribe'] || /^(bulk|list|junk)$/i.test((m.kopf['precedence'] ?? '').trim())) {
     return 'Newsletter';
   }
@@ -286,6 +316,15 @@ export function bewerte(
   }
   if (!kontakt && !stich && !objekt && !antwort) return nein('kein Merkmal');
 
+  /* Privater Kauf: nur die Rechnung zaehlt, und sie gehoert zu den
+     Privatausgaben, nicht zu einem Objekt. Eine Mahnung bleibt eine Mahnung. */
+  if (!kontakt && !antwort && re(r.privat.absender).test(adresse)) {
+    if (stich?.vorschlag === 'a') {
+      return { relevant: true, grund: 'Privatkauf mit Beleg', objekt: PRIVATAUSGABEN, thema: 'Privatausgaben', vorschlag: 'a', antwort: false };
+    }
+    if (stich?.vorschlag !== 'e') return nein('Privatkauf ohne Rechnung');
+  }
+
   let vorschlag: VorschlagCode;
   let thema: string | undefined;
   if (stich) { vorschlag = stich.vorschlag; thema = stich.thema; }
@@ -306,7 +345,9 @@ export function bewerte(
 /** Vorschlag als lesbare Zeile, etwa „a) Beleg ablegen + Buchung N24". */
 export function vorschlagText(b: Pick<Bewertung, 'vorschlag' | 'objekt' | 'thema'>): string {
   switch (b.vorschlag) {
-    case 'a': return `a) ${KATALOG.a} ${b.objekt ?? 'Objekt ?'}`;
+    case 'a': return b.objekt === PRIVATAUSGABEN
+      ? 'a) Beleg ablegen → Privatausgaben'
+      : `a) ${KATALOG.a} ${b.objekt ?? 'Objekt ?'}`;
     case 'b': return `b) ${KATALOG.b}${b.objekt ? ` (${b.objekt})` : ''}`;
     case 'c': return `c) ${KATALOG.c} (${b.thema ?? 'Thema ?'})`;
     case 'd': return `d) ${KATALOG.d} (${b.thema ?? 'Thema ?'})`;

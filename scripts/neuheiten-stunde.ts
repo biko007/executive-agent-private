@@ -28,7 +28,7 @@ import { graphGet, graphToken } from '../src/shared/m365/index.js';
 import { ladeRegeln, regelnAnlegenFallsFehlend } from '../src/modules/mail-register/relevanz.js';
 import { mailLauf, mailZeile, type MailLaufErgebnis } from '../src/modules/neuheiten/mail-lauf.js';
 import {
-  stundenReport, melde, sperre, tabelle, freigabeZeilen, KATALOG_ZEILE, type NeuheitZeile,
+  stundenReport, melde, sperre, tabelle, freigabeZeilen, zurFreigabe, KATALOG_ZEILE, type NeuheitZeile,
 } from '../src/modules/neuheiten/bericht.js';
 import {
   graphQuelle, dropboxQuelle, verzeichnisQuelle, spiegelZustand, type DokQuelle, type SpiegelZustand,
@@ -281,7 +281,8 @@ async function lauf(): Promise<number> {
   }
 
   fehler.push(...spiegel.zeilen);
-  if (!mails.length && !dokumente.length && !spiegel.erzwingen) {
+  /* Nur „zur Kenntnis" braucht keine Freigabe und loest keine Meldung aus. */
+  if (!zurFreigabe(mails).length && !zurFreigabe(dokumente).length && !spiegel.erzwingen) {
     log('neuheiten: keine relevante Neuheit — kein Report');
     for (const f of fehler) warn(`neuheiten: ${f}`);
     return code();

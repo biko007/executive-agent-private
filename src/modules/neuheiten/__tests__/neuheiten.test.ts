@@ -112,3 +112,21 @@ describe('Frühwarnung in der Meldung', () => {
     expect(body.zeilen[0]).toBe('⚠ iCloud-Spiegel steht seit 2026-10-25 08:00 UTC');
   });
 });
+
+describe('„zur Kenntnis" nur als Zähler', () => {
+  const kenntnis: NeuheitZeile = { ...mail, kennung: 'm-ffffffff', vorschlag: 'f', text: 'f) nur zur Kenntnis' };
+  test('Report listet f nicht, zählt es', () => {
+    const r = stundenReport({ mails: [mail, kenntnis], dokumente: [], jetzt: new Date(), fehler: [] });
+    expect(r).not.toContain('m-ffffffff');
+    expect(r).toContain('+ 1 zur Kenntnis');
+    expect(r).toContain('1 Mail(s), 0 Dokument(e) zur Freigabe');
+  });
+  test('Telegram: Zähler statt Zeile', async () => {
+    let body: any;
+    await melde({ mails: [mail, kenntnis, kenntnis], dokumente: [], reportName: 'r', hochgeladen: true },
+      async (b) => { body = b; return { ok: true, status: 200 }; });
+    expect(body.titel).toBe('Neu: 1 Mail(s), 0 Dokument(e)');
+    expect(body.zeilen).toHaveLength(2);
+    expect(body.zeilen[1]).toBe('+ 2 zur Kenntnis');
+  });
+});

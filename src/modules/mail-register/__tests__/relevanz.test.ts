@@ -207,3 +207,42 @@ describe('Kennung und Maskierung', () => {
     expect(maskiere('Rechnung 6007412724')).toBe('Rechnung 6007412724');
   });
 });
+
+describe('Nachschärfung 27.10.2026', () => {
+  test('ZZ5 nicht mehr über die Lieferadresse im Text', () => {
+    const b = bewerte(m({ absender: 'info@shop-x.de', betreff: 'Rechnung 6007412724', text: 'Lieferadresse Zelterweg 5' }), R);
+    expect(b.objekt).toBeUndefined();
+    expect(bewerte(m({ betreff: 'ZZ5 Rechnung Heilo' }), R).objekt).toBe('ZZ5');
+  });
+
+  test('privater Kauf mit Beleg → a) Beleg ablegen → Privatausgaben', () => {
+    for (const [absender, betreff] of [['service@paypal.de', 'Beleg für Ihre Zahlung an Wieland Vertriebs Gm...'],
+      ['nicht.antworten@kundenservice.vodafone', 'Deine Kabel-Rechnung vom 16.10.2026 steht im Internet bereit'],
+      ['invoice+statements@midjourney.com', 'Your receipt from Midjourney Inc #2222'],
+      ['info@zisch-frisch-getraenke.de', 'Getränkerechnung 13842/26']]) {
+      const b = bewerte(m({ absender, betreff }), R);
+      expect(b.relevant, absender).toBe(true);
+      expect(vorschlagText(b), absender).toBe('a) Beleg ablegen → Privatausgaben');
+    }
+  });
+
+  test('reine Bestell-/Versandbestätigung eines Privatkaufs → nicht relevant', () => {
+    for (const [absender, betreff] of [['bestellbestaetigung@amazon.de', 'Bestellt: „INSTADRIVE XXL 6...“'],
+      ['no-reply@lieferando.de', 'Jürgen, Bestellung erhalten'], ['info@weyer.de', 'Bestellbestätigung #42471'],
+      ['nicht.antworten@kundenservice.vodafone', 'Wichtige Info zu Deinem TV-Vertrag']]) {
+      const b = bewerte(m({ absender, betreff }), R);
+      expect(b.relevant, absender).toBe(false);
+      expect(b.grund, absender).toBe('Privatkauf ohne Rechnung');
+    }
+  });
+
+  test('Mahnung eines privaten Anbieters bleibt e', () => {
+    expect(bewerte(m({ absender: 'no-reply@starlink.com', betreff: 'Automatische Zahlungserinnerung' }), R).vorschlag).toBe('e');
+  });
+
+  test('Vereins- und Verbandspost → nicht relevant', () => {
+    expect(bewerte(m({ absender: 'verein@historische-fahrraeder.de', betreff: 'Der Vorstand informiert' }), R).grund).toBe('Verein/Social');
+    expect(bewerte(m({ absender: 'mg@cannabiswirtschaft.de', betreff: '[BvCW Vorstand] Freikarten' }), R).grund).toBe('Verein/Social');
+    expect(bewerte(m({ absender: 'info@towerateliers.de', betreff: 'Einladung Mitgliederversammlung' }), R).grund).toBe('Verein/Social');
+  });
+});

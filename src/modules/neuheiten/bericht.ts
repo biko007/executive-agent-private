@@ -36,6 +36,13 @@ export const datumKurz = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)
 
 const sortiert = (z: NeuheitZeile[]) => [...z].sort((a, b) => a.datum.localeCompare(b.datum));
 
+/**
+ * „f) nur zur Kenntnis" braucht keine Freigabe (Nachschaerfung 27.10.2026):
+ * Solche Zeilen erscheinen im Stundenreport und in Telegram nur als Zaehler.
+ */
+export const zurFreigabe = (z: NeuheitZeile[]) => z.filter((v) => v.vorschlag !== 'f');
+export const nurKenntnis = (z: NeuheitZeile[]) => z.filter((v) => v.vorschlag === 'f').length;
+
 export function tabelle(zeilen: NeuheitZeile[]): string[] {
   const kopf = zeilen[0]?.art === 'Dok'
     ? ['| Kennung | Geändert (UTC) | Ablage | Ordner | Datei | Vorschlag |']
@@ -57,17 +64,22 @@ export function freigabeZeilen(zeilen: NeuheitZeile[]): string[] {
 export function stundenReport(
   p: { mails: NeuheitZeile[]; dokumente: NeuheitZeile[]; jetzt: Date; fehler: string[] },
 ): string {
+  const kenntnis = nurKenntnis(p.mails) + nurKenntnis(p.dokumente);
   const z: string[] = [
     `# Neuheiten ${p.jetzt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
     '',
-    `**${p.mails.length} relevante Mail(s), ${p.dokumente.length} relevante(s) Dokument(e).** `
+    `**${zurFreigabe(p.mails).length} Mail(s), ${zurFreigabe(p.dokumente).length} Dokument(e) zur Freigabe**`
+      + `${kenntnis ? `, + ${kenntnis} zur Kenntnis` : ''}. `
       + 'Nichts wurde ausgeführt; jeder Vorschlag wartet auf Ihre Freigabe.',
     '',
   ];
-  for (const [titel, zeilen] of [['Mails', p.mails], ['Dokumente', p.dokumente]] as const) {
+  for (const [titel, alle] of [['Mails', p.mails], ['Dokumente', p.dokumente]] as const) {
+    const zeilen = zurFreigabe(alle);
+    const k = nurKenntnis(alle);
     z.push(`## ${titel}`, '');
-    if (!zeilen.length) { z.push('keine', ''); continue; }
-    z.push(...tabelle(zeilen), '', ...freigabeZeilen(zeilen), '');
+    if (!zeilen.length) z.push('keine', '');
+    else z.push(...tabelle(zeilen), '', ...freigabeZeilen(zeilen), '');
+    if (k) z.push(`+ ${k} zur Kenntnis (ohne Freigabe, im Register)`, '');
   }
   z.push(KATALOG_ZEILE, '');
   if (p.fehler.length) z.push('## Hinweis', '', ...p.fehler.map((f) => `- ${f}`), '');
@@ -87,13 +99,15 @@ export async function melde(
     return { ok: r.ok, status: r.status };
   },
 ): Promise<void> {
-  const alle = [...sortiert(p.mails), ...sortiert(p.dokumente)];
+  const alle = [...sortiert(zurFreigabe(p.mails)), ...sortiert(zurFreigabe(p.dokumente))];
+  const kenntnis = nurKenntnis(p.mails) + nurKenntnis(p.dokumente);
   const zeilen = alle.slice(0, 12).map((v) =>
     `${v.art === 'Mail' ? '✉' : '📄'} ${zelle(v.von).slice(0, 30)}: ${zelle(v.titel).slice(0, 50)} → ${v.text}`);
   if (alle.length > 12) zeilen.push(`… und ${alle.length - 12} weitere`);
+  if (kenntnis) zeilen.push(`+ ${kenntnis} zur Kenntnis`);
   /* Fruehwarnungen (iCloud-Spiegel) stehen vorn — sie sind der Anlass, wenn sonst nichts neu ist. */
   zeilen.unshift(...(p.hinweise ?? []).map((h) => `⚠ ${h}`));
-  const titel = `Neu: ${p.mails.length} Mail(s), ${p.dokumente.length} Dokument(e)`;
+  const titel = `Neu: ${zurFreigabe(p.mails).length} Mail(s), ${zurFreigabe(p.dokumente).length} Dokument(e)`;
   const r = await senden({
     message: titel, severity: 'info', lage: 'hinweis', titel, zeilen,
     fuss: [p.hochgeladen ? `Report ${p.reportName} (Dropbox)` : `Report ${p.reportName} nur lokal (Dropbox-Upload fehlgeschlagen)`,

@@ -17,7 +17,7 @@
 
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { KATALOG, type Regelwerk, type VorschlagCode } from '../mail-register/relevanz.js';
+import { KATALOG, PRIVATAUSGABEN, type Regelwerk, type VorschlagCode } from '../mail-register/relevanz.js';
 import { ausschluss as inventarAusschluss } from '../mail/index.js';
 import type { DokDatei } from './quellen.js';
 
@@ -161,6 +161,17 @@ export function bewerteDok(
     return nein('Foto ohne Dokumentcharakter');
   }
   if (!stich && !objekt) return { ...nein('kein Merkmal'), textGenutzt: !!text };
+
+  /* Dieselben Regeln wie im Mail-Register (Nachschaerfung 27.10.2026):
+     Vereinspost nicht relevant, private Kaeufe nur mit Rechnung und dann
+     als Privatausgaben. Massgeblich sind Name und Pfad, nicht der Text. */
+  if (re(regeln.ausschluss.vereinNamen).test(namePfad)) return nein('Verein/Social');
+  if (re(regeln.privat.namen).test(namePfad)) {
+    if (stich?.vorschlag === 'a') {
+      return { relevant: true, grund: 'Privatkauf mit Beleg', objekt: PRIVATAUSGABEN, thema: 'Privatausgaben', vorschlag: 'a', textGenutzt };
+    }
+    if (stich?.vorschlag !== 'e') return nein('Privatkauf ohne Rechnung');
+  }
 
   return {
     relevant: true,

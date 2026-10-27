@@ -403,3 +403,16 @@ describe('Review-Befunde 27.10.2026', () => {
     expect(csv).toContain('(Gesundheit)');
   });
 });
+
+describe('Nachschärfung 27.10.2026 — gleiche Regeln für Dokumente', () => {
+  test('privater Beleg → Privatausgaben, Bestellung ohne Rechnung → nicht relevant', () => {
+    const a = bewerteDok(datei({ pfad: '/Austausch/2026-10-25_Amazon Rechnung.pdf', name: '2026-10-25_Amazon Rechnung.pdf' }), R, D);
+    expect(a.objekt).toBe('Privatausgaben');
+    expect(a.vorschlag).toBe('a');
+    expect(bewerteDok(datei({ pfad: '/Austausch/Vodafone Vertrag.pdf', name: 'Vodafone Vertrag.pdf' }), R, D).grund).toBe('Privatkauf ohne Rechnung');
+  });
+
+  test('Vereinsdateien (FoTA) → nicht relevant', () => {
+    expect(bewerteDok(datei({ quelle: 'onedrive', pfad: '/FoTA/2025/2026-10-16_FoTA Einladung Mitgliederversammlung 2026.pdf', name: '2026-10-16_FoTA Einladung Mitgliederversammlung 2026.pdf' }), R, D, { text: 'Protokoll' }).grund).toBe('Verein/Social');
+  });
+});
