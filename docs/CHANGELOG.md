@@ -10,6 +10,7 @@ Owner-Antworten nach dem Bauser-Termin (27.10.2026 19:00) und „Freigabe N24 Ha
 
 - `scripts/bauser-ergebnisse-20261027.ts`: 3 Fristen (N24 W5a-Fühler, N24 W6 Abluftventilator, L19 Enthärtungsanlage) und 7 Notizen (Heizstab-Datum unbekannt, Versicherung WP-Schaden nein, MG24-Nullstellung, Hauswart-Vorbereitung); `--probe`/`--ausfuehren`/`--rueckweg`, Audit 3297–3306.
 - `scripts/n24-hauswart-960-20261027.ts`: Buchung 54 (Hauswart N24 2025) 0 → 960,00 €, Audit 3307; Probeabrechnung v4.
+- `scripts/belege-nk2025-verknuepfen-20261027.ts`: Belegsuche NK 2025 — Belegpfade (`/Austausch/belege-nk2025/`) und Notizen an 9 Buchungen N24/MG24, keine Beträge; Audit 3308–3316.
 
 ## Stand 2026-10-27 (6) — NK-Engine: Versorgermenge als Nenner, Übergabestand vor Logger-Stand
 
