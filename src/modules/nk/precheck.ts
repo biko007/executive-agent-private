@@ -830,7 +830,10 @@ export function zwischenablesungFehlt(
  * verteilt wird. Nur dort ist der fehlende Stand ein Blocker.
  */
 export function hauptzaehlerOhneEndstand(
-  meters: { id: number; meter_number: string; medium: string; is_main_meter?: boolean; unit_id?: number | null }[],
+  meters: {
+    id: number; meter_number: string; medium: string; is_main_meter?: boolean;
+    unit_id?: number | null; submetering_purpose?: string | null;
+  }[],
   readings: { meter_id: number; read_at: string }[],
   year: number,
   nennerMedien: Set<string>,
@@ -841,6 +844,10 @@ export function hauptzaehlerOhneEndstand(
 
   for (const meter of meters) {
     if (!meter.is_main_meter || meter.unit_id) continue;
+    /* Die Abrechnungsmenge des Versorgers ist kein Gerät; sie ersetzt den
+       Nenner nur in Jahren, für die sie erfasst ist (engine.ts,
+       allocateByConsumption). Fehlt sie, gilt der echte Hauptzähler. */
+    if (meter.submetering_purpose === 'versorger_abrechnung') continue;
     const imZeitraum = readings.some((r) => {
       if (r.meter_id !== meter.id) return false;
       const t = new Date(r.read_at).getTime();

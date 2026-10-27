@@ -399,3 +399,46 @@ describe('Verteilung nach Verbrauch — echte Werte MG24 2025', () => {
     expect(summe).toBeCloseTo(1214.01, 2);
   });
 });
+
+describe('Verteilung nach Verbrauch — Abrechnungsmenge des Versorgers als Nenner', () => {
+  /* N24 2025: Der echte Hauptzähler hat nur einen geschätzten Endstand
+     (504,495 m³ Jahresmenge). Der Owner hat festgelegt, dass der Nenner die
+     von den Stadtwerken berechnete Menge ist (546,576 m³). Dafür steht ein
+     Hauptzähler mit `submetering_purpose = 'versorger_abrechnung'`. */
+  const units = [einheit(1, 'W1', 80)];
+  const leases = [vertrag(10, 1)];
+  const wohnung = zaehler(100, 1, 'cold_water');
+  const echt = zaehler(200, null, 'cold_water', { is_main_meter: true });
+  const versorger = zaehler(300, null, 'cold_water', {
+    is_main_meter: true, submetering_purpose: 'versorger_abrechnung',
+  });
+  const readings = [
+    ablesung(100, 0, '2024-12-31'), ablesung(100, 100, '2025-12-31'),
+    ablesung(200, 408, '2024-12-31'), ablesung(200, 912.495, '2025-12-31'),
+    ablesung(300, 408, '2024-12-31'), ablesung(300, 954.576, '2025-12-31'),
+  ];
+
+  it('nimmt die Versorgermenge statt des geschätzten Hauptzählers', () => {
+    const e = verteile(546.576, regel('wasser'), leases, units, [wohnung, echt, versorger], readings);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(546.576, 3);
+    expect(e.leaseAllocations[0].amount).toBeCloseTo(100, 2);
+    expect(e.vacancyAmount).toBeCloseTo(446.58, 2);
+  });
+
+  it('im Folgejahr ohne Versorgerstand ist wieder der echte Hauptzähler der Nenner', () => {
+    const folgejahr = [
+      ...readings,
+      ablesung(100, 150, '2026-12-31'), ablesung(200, 1400, '2026-12-31'),
+    ];
+    const e = allocateCosts(
+      500, regel('wasser'), leases, units, [], [], '2026-01-01', '2026-12-31', 2026,
+      [wohnung, echt, versorger], folgejahr,
+    );
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(1400 - 912.495, 3);
+  });
+
+  it('ohne Versorgermenge bleibt der echte Hauptzähler der Nenner', () => {
+    const e = verteile(546.576, regel('wasser'), leases, units, [wohnung, echt], readings);
+    expect(e.leaseAllocations[0].denominator).toBeCloseTo(504.495, 3);
+  });
+});

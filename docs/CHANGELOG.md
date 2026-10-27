@@ -4,6 +4,23 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 (6) — NK-Engine: Versorgermenge als Nenner, Übergabestand vor Logger-Stand
+
+Owner-Freigaben 27.10.2026 („Wasser Nenner SWT“, „Freigabe N24 W6 ab 24.11.“).
+
+- `allocateByConsumption` (nk/engine.ts): Ein Hauptzähler mit
+  `submetering_purpose = 'versorger_abrechnung'` (Abrechnungsmenge des Versorgers,
+  kein Gerät) ersetzt im Nenner die übrigen Hauptzähler des Mediums — nur in
+  Zeiträumen, in denen er einen Stand hat. N24 2025: SWT 546,576 m³ statt der
+  geschätzten 504,495 m³ des echten Zählers. Die Vorprüfung
+  `hauptzaehlerOhneEndstand` überspringt solche Einträge.
+- `findeEinzugsstand` (nk/nutzerzeit.ts): Ein `move_in`-Stand im Toleranzfenster
+  geht einer näheren anderen Ablesung vor (N24 W6: Übergabe 24.11. statt Logger
+  30.11.). MG24 2025 gegengerechnet: unverändert.
+- Datenänderung über `scripts/n24-nk2025-buchung-v3-20261027.ts` (Hotboy 4.535 kWh
+  als Eigentümerbuchung, A2 archiviert, SWT-Menge), Audit 3282–3289.
+- Tests: `consumption-allocation` (+3), `nutzerzeit` (+3), `hauptzaehler-endstand` (+1).
+
 ## Stand 2026-10-27 (5) — Neuheiten-Sekretariat Stufe 1
 
 Spec Neuheiten-Sekretariat v1 (Owner-Freigabe 12:11). KI-Bewertung je Neuheit mit

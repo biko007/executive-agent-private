@@ -174,7 +174,13 @@ export const EINZUGSSTAND_TOLERANZ_TAGE = 7;
 /**
  * Eine Ablesung nahe am Einzugstag — die Zwischenablesung nach § 9b Abs. 1.
  *
- * Gibt es mehrere, gewinnt die dem Einzugstag nächste.
+ * Gibt es mehrere, gewinnt die dem Einzugstag nächste — mit einer Ausnahme
+ * (27.10.2026, Owner-Entscheidung N24 W6): Ein ausdrücklicher Einzugsstand
+ * (`reading_type = 'move_in'`, etwa aus dem unterschriebenen Übergabeprotokoll)
+ * geht jeder anderen Ablesung im Toleranzfenster vor, auch einer näheren.
+ * Bei N24 W6 übernahmen die neuen Mieter am 24.11.2025, der Vertrag beginnt
+ * am 01.12.; der Logger-Stand vom 30.11. liegt näher, ist aber nicht der
+ * Übergabestand. Ab dem Übergabestand zählt der Verbrauch dem neuen Nutzer.
  */
 export function findeEinzugsstand(
   meterId: number,
@@ -182,7 +188,7 @@ export function findeEinzugsstand(
   readings: MeterReadingRow[],
   toleranzTage = EINZUGSSTAND_TOLERANZ_TAGE,
 ): { tag: string; wert: number } | null {
-  let beste: { tag: string; wert: number; abstand: number } | null = null;
+  let beste: { tag: string; wert: number; abstand: number; einzug: boolean } | null = null;
   for (const r of readings) {
     if (r.meter_id !== meterId) continue;
     const tag = isoTag(r.read_at as any);
@@ -190,9 +196,12 @@ export function findeEinzugsstand(
       Math.round((new Date(`${tag}T00:00:00Z`).getTime()
         - new Date(`${einzugsTag}T00:00:00Z`).getTime()) / 86400000));
     if (abstand > toleranzTage) continue;
-    if (!beste || abstand < beste.abstand) {
-      beste = { tag, wert: parseFloat(String(r.value)), abstand };
-    }
+    const einzug = r.reading_type === 'move_in';
+    // Ein Einzugsstand schlägt jede andere Ablesung; unter Gleichen gewinnt die nähere.
+    const besser = !beste
+      || (einzug && !beste.einzug)
+      || (einzug === beste.einzug && abstand < beste.abstand);
+    if (besser) beste = { tag, wert: parseFloat(String(r.value)), abstand, einzug };
   }
   return beste ? { tag: beste.tag, wert: beste.wert } : null;
 }

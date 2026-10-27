@@ -93,3 +93,15 @@ describe('hauptzaehlerOhneEndstand', () => {
     expect(hauptzaehlerOhneEndstand([], [], 2025, WASSER_IST_NENNER)).toHaveLength(0);
   });
 });
+
+describe('hauptzaehlerOhneEndstand — Abrechnungsmenge des Versorgers', () => {
+  it('meldet die Versorgermenge nicht, wenn sie für das Jahr fehlt (kein Gerät)', () => {
+    const versorger = {
+      id: 9, meter_number: 'N24-LS01-SWT-ABRECHNUNGSMENGE', medium: 'cold_water',
+      is_main_meter: true, unit_id: null, submetering_purpose: 'versorger_abrechnung',
+    };
+    const f = hauptzaehlerOhneEndstand(
+      [HAUPT_WASSER, versorger], [stand(1, '2026-12-31'), stand(9, '2025-12-31')], 2026, WASSER_IST_NENNER);
+    expect(f).toHaveLength(0);
+  });
+});

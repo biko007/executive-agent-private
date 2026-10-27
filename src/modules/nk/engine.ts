@@ -823,10 +823,24 @@ function allocateByConsumption(
 
      Ist der Hauptzähler KLEINER als die Summe der Wohnungszähler, ist er
      unbrauchbar — dann würden Anteile über 100 Prozent entstehen. In dem Fall
-     bleibt es beim alten Nenner, aber mit ausdrücklicher Warnung. */
-  const hauptZaehler = meters.filter(
+     bleibt es beim alten Nenner, aber mit ausdrücklicher Warnung.
+
+     Abrechnungsmenge des Versorgers (27.10.2026): Ist der Endstand des echten
+     Hauptzählers nur geschätzt, kann der Owner festlegen, dass der Nenner die
+     vom Versorger berechnete Menge ist. Dafür gibt es einen Hauptzähler mit
+     `submetering_purpose = 'versorger_abrechnung'`, dessen Stände die der
+     Versorgerrechnung sind (N24 2025: SWT 408,000 → 954,576 = 546,576 m³).
+     Gibt es ihn, ersetzt er die übrigen Hauptzähler des Mediums im Nenner;
+     der geschätzte Stand des echten Zählers bleibt erfasst, verteilt aber nicht.
+     Er gilt nur in einem Zeitraum, in dem er einen Stand hat — in den Jahren
+     danach ist wieder der echte Zähler der Nenner. */
+  const alleHaupt = meters.filter(
     m => m.is_main_meter && !m.unit_id && medien.includes(m.medium),
   );
+  const versorgerMenge = alleHaupt.filter(m => m.submetering_purpose === 'versorger_abrechnung'
+    && readings.some(r => r.meter_id === m.id
+      && isoTag(r.read_at as any) > periodStart && isoTag(r.read_at as any) <= periodEnd));
+  const hauptZaehler = versorgerMenge.length > 0 ? versorgerMenge : alleHaupt;
   const hauptVerbrauch = hauptZaehler.reduce(
     (s, m) => s + calculateConsumption(m.id, periodStart, periodEnd, readings), 0);
 

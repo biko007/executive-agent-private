@@ -454,3 +454,25 @@ describe('nutzungsAbschnitt — Übergabe statt Vertrag', () => {
     expect(a).toEqual({ von: '2025-03-01', bis: '2025-09-30' });
   });
 });
+
+describe('Einzugsstand aus dem Übergabeprotokoll hat Vorrang (N24 W6, 27.10.2026)', () => {
+  /* Übergabe 24.11.2025 mit unterschriebenem Protokoll, Vertrag ab 01.12.,
+     Logger-Stand vom 30.11. Der Logger liegt näher, zählt aber nicht als
+     Übergabestand — der Verbrauch ab 24.11. gehört dem neuen Nutzer. */
+  const uebergabe = { ...ablesung(50, '2025-11-24', 6401), reading_type: 'move_in' } as MeterReadingRow;
+  const logger = ablesung(50, '2025-11-30', 6521);
+
+  it('nimmt den move_in-Stand, auch wenn eine Ablesung näher liegt', () => {
+    expect(findeEinzugsstand(50, '2025-12-01', [logger, uebergabe])).toEqual({ tag: '2025-11-24', wert: 6401 });
+  });
+
+  it('ohne move_in-Stand bleibt es bei der nächsten Ablesung', () => {
+    expect(findeEinzugsstand(50, '2025-12-01', [logger, ablesung(50, '2025-11-24', 6401)]))
+      .toEqual({ tag: '2025-11-30', wert: 6521 });
+  });
+
+  it('ein move_in-Stand außerhalb der Toleranz zählt nicht', () => {
+    const zuFrueh = { ...ablesung(50, '2025-11-10', 6000), reading_type: 'move_in' } as MeterReadingRow;
+    expect(findeEinzugsstand(50, '2025-12-01', [logger, zuFrueh])).toEqual({ tag: '2025-11-30', wert: 6521 });
+  });
+});
