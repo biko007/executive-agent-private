@@ -36,7 +36,7 @@ import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
-import { ausfallZeile, alsTelegramHtml, alsMailText, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, sendeAbendbriefingMail, abendBetreff, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, } from "./src/modules/briefing/index.js";
+import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, } from "./src/modules/briefing/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
@@ -2276,7 +2276,7 @@ export default function (api) {
             const raw = String(ctx.args || '').trim();
             if (!raw) {
                 const jetzt = loadSettings().abendBriefingTime || ABEND_BRIEFING_STANDARD;
-                return { text: `🌙 Abendbriefing täglich um ${jetzt} Uhr (Europe/Berlin), per Telegram und Mail an Ihr M365-Postfach.` };
+                return { text: `🌙 Abendbriefing täglich um ${jetzt} Uhr (Europe/Berlin), per Telegram.` };
             }
             if (!/^\d{1,2}:\d{2}$/.test(raw))
                 return { text: '❌ Verwendung: /abendbriefingtime 21:00' };
@@ -3211,8 +3211,9 @@ export default function (api) {
     //     einmal neu erzeugt; scheitert auch das, geht eine kurze Fehlermeldung
     //     an Telegram (Regel in src/modules/briefing/planer.ts).
     //   - Abendbriefing zur Einstellung abendBriefingTime (Standard 21:00),
-    //     Versand über Telegram UND als Mail an das eigene Postfach
-    //     (eng gefasste Ausnahme von der Entwurfsregel, siehe briefing/mail.ts).
+    //     Versand nur über Telegram. Die Mail an das eigene Postfach (Ausnahme
+    //     von der Entwurfsregel, 26.10.2026) ist seit 27.10.2026 entfernt —
+    //     Owner-Vorgabe: Telegram ist der einzige Kanal.
     if (!g.__ea_briefingSchedulerRegistered) {
         g.__ea_briefingSchedulerRegistered = true;
         const BRIEFING_TIMEOUT_MS = 45000;
@@ -3243,7 +3244,6 @@ export default function (api) {
         /** Ein Lauf: erzeugen, zustellen, festhalten. true = per Telegram zugestellt. */
         async function briefingLauf(art, datum, chatId) {
             let text = '';
-            let mailText = '';
             let fehler = null;
             try {
                 if (art === 'morgen') {
@@ -3252,7 +3252,6 @@ export default function (api) {
                 else {
                     const zeilen = await mitZeitlimit(generateAbendZeilen());
                     text = alsTelegramHtml(zeilen);
-                    mailText = alsMailText(zeilen);
                 }
             }
             catch (e) {
@@ -3260,38 +3259,17 @@ export default function (api) {
                 api.logger.error(`[executive-agent] ${ARTNAME[art]} nicht erzeugt: ${fehler}`);
             }
             let telegramOk = false;
-            let mailOk = null;
             if (text) {
                 telegramOk = (await sendTelegramHtmlWithMarkup(chatId, text, undefined)).sent;
                 if (!telegramOk)
                     fehler = 'Telegram-Zustellung fehlgeschlagen';
-                if (art === 'abend') {
-                    const bisher = await holeBriefing('abend', datum).catch(() => null);
-                    if (bisher?.mailOk) {
-                        mailOk = true; // Nachholversuch: Mail nicht doppelt
-                    }
-                    else {
-                        try {
-                            const datumKurz = datum.split('-').reverse().join('.');
-                            await sendeAbendbriefingMail((url, body) => graphPost(tenantId, clientId, m365Secret, url, body), { betreff: abendBetreff(datumKurz), text: mailText });
-                            mailOk = true;
-                        }
-                        catch (e) {
-                            mailOk = false;
-                            api.logger.error(`[executive-agent] Abendbriefing-Mail fehlgeschlagen: ${e.message}`);
-                            if (telegramOk) {
-                                await sendTelegramHtmlWithMarkup(chatId, `⚠️ Abendbriefing-Mail nicht zugestellt: ${htmlEscapeSystem(String(e.message).slice(0, 160))}`, undefined).catch(() => { });
-                            }
-                        }
-                    }
-                }
             }
             const status = telegramOk ? 'gesendet' : (text ? 'erzeugt' : 'fehler');
             const vorher = lokalerStand.get(`${art}|${datum}`);
             lokalerStand.set(`${art}|${datum}`, {
                 status, versuche: (vorher?.versuche ?? 0) + 1, fehlerGemeldet: vorher?.fehlerGemeldet ?? false, fehler,
             });
-            await speichereVersuch({ art, datum, textHtml: text, status, telegramOk, mailOk, fehler })
+            await speichereVersuch({ art, datum, textHtml: text, status, telegramOk, mailOk: null, fehler })
                 .catch((e) => api.logger.error(`[executive-agent] ${ARTNAME[art]} nicht gespeichert: ${e.message}`));
             if (text && !telegramOk) {
                 // Text ist da, nur die Zustellung hakt → bestehende Wiederholung
