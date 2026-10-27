@@ -10,7 +10,7 @@
 import { ANTHROPIC_MODEL, fetchWithTimeout } from '../../shared/utils/index.js';
 import { SCHEMA_TEXT, pruefeBewertung, type Bewertung } from './schema.js';
 import { gesundheitImText, type Element } from './element.js';
-import { maskiere } from '../mail-register/relevanz.js';
+import { maskiere, maskiere as maskiereIban } from '../mail-register/relevanz.js';
 
 export interface Kontext {
   objekte: Array<{ kuerzel: string; adresse: string }>;
@@ -65,6 +65,7 @@ export function systemPrompt(k: Kontext): string {
     'Relevant ist, was eine Handlung, Entscheidung, Zahlung, Frist oder Ablage verlangt oder Fakten zu Objekten, Verträgen, Behörden, Banken, Versicherungen enthält. Nicht relevant: Werbung, Newsletter, reine Information ohne Bezug, Privates ohne Handlungsbedarf.',
     'Ordne einem BESTEHENDEN Vorgang zu, wenn Objekt und Thema passen (auch bei anderem Absender, z. B. Behörde und Handwerker zum selben Nachweis). Sonst neuer Vorgang mit kurzem Titel „<Objekt> <Thema>".',
     'Vorschlag: a Beleg ablegen + Buchungsvorschlag (Objekt, Kostenart, Betrag) · b Fakten in bikosoc einarbeiten (Zählerstände, Vertragsdaten) · c Antwortentwurf (Kernpunkte des Textes) · d Frist/Termin anlegen (Datum, Quelle) · e Reklamation/Widerspruch · f nur zur Kenntnis.',
+    'Gib nie Passwörter, PINs oder andere Zugangsdaten wieder — schreibe stattdessen „Zugangsdaten liegen in der Mail".',
     'Erfinde nichts: Fakten nur, wenn sie im Text stehen. Datum immer YYYY-MM-DD. Antworte NUR mit JSON nach diesem Schema, ohne Erklärtext:',
     SCHEMA_TEXT,
     '',
@@ -90,11 +91,11 @@ export function nutzerPrompt(e: Element): string {
     `Art: ${e.typ === 'mail' ? 'Mail' : 'Dokument'} (${e.quelle})`,
     `Datum: ${e.datum.slice(0, 16).replace('T', ' ')} UTC`,
     e.typ === 'mail' ? `Absender: ${e.vonName ? `${e.vonName} <${e.von}>` : e.von}` : `Ablageort: ${e.von}`,
-    `${e.typ === 'mail' ? 'Betreff' : 'Dateiname'}: ${maskiere(e.titel)}`,
+    `${e.typ === 'mail' ? 'Betreff' : 'Dateiname'}: ${ohneZugangsdaten(maskiere(e.titel))}`,
     e.anhaenge?.length ? `Anhänge: ${e.anhaenge.join(', ')}` : '',
     '',
     /* IBAN und Kontonummern verlassen den Server nicht (C5). */
-    e.text ? `Text (gekürzt):\n${maskiere(e.text.slice(0, 3000))}` : 'Text: (keiner lesbar)',
+    e.text ? `Text (gekürzt):\n${ohneZugangsdaten(maskiere(e.text.slice(0, 3000)))}` : 'Text: (keiner lesbar)',
   ].filter((z) => z !== '').join('\n');
 }
 
@@ -121,8 +122,19 @@ export async function bewerteMitKi(e: Element, k: Kontext, client: KiClient): Pr
   return { bewertung: null, fehler: letzterFehler, tokensEin: ein, tokensAus: aus, aufrufe };
 }
 
+/**
+ * Zugangsdaten (Passwort, PIN, Kennwort …) verlassen den Server nicht und
+ * stehen in keinem Report (C5). Nachlauf 27.10.2026: Ein weitergeleitetes
+ * Portal-Passwort stand im Vorschlag. Ersetzt wird der Wert hinter dem Stichwort.
+ */
+const ZUGANG = /\b(pw|passwort|kennwort|password|passcode|pin|zugangscode|freischaltcode|tan)(\s*[:=]\s*|\s+(?:lautet|ist)\s+)("[^"]*"|'[^']*'|[^\s,;)]+)/gi;
+export function ohneZugangsdaten(t: string): string {
+  return t.replace(ZUGANG, (_m, wort, trenn) => `${wort}${trenn}[entfernt]`);
+}
+
 /** Alles, was das Modell schreibt, geht in Report, Dropbox und Telegram — ohne volle IBAN (C5). */
 export function maskiereBewertung(b: Bewertung): Bewertung {
+  const maskiere = (t: string) => ohneZugangsdaten(maskiereIban(t));
   return {
     ...b,
     begruendung: maskiere(b.begruendung),

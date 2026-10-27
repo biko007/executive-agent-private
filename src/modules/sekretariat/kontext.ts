@@ -62,22 +62,37 @@ export async function ladeKontext(q: Abfrage, regeln: Regelwerk, vorgaenge: stri
 /**
  * Reports, Dropbox und Telegram tragen keine Mieternamen (Owner-Regel). Die KI
  * kennt sie aus dem Kontext und kann sie in Begründung oder Titel nennen —
- * dieser Ersetzer macht daraus „Mieter <Objekt> <Einheit>". Ersetzt werden der
- * volle Name und der Nachname (ab 4 Zeichen), ohne Rücksicht auf Groß-/Kleinschreibung.
+ * dieser Ersetzer macht daraus „Mieter <Objekt> <Einheit>".
+ *
+ * Ersetzt werden voller Name und Nachname (auch allein, etwa im Vorgangstitel).
+ * Nicht ersetzt (Nachlauf 27.10.2026): der Owner selbst, der in eigenen
+ * Einheiten als Mieter geführt ist; Behörden als Mieter (die Stadt); Wörter,
+ * die zugleich Ortsname oder Teil eines Lieferantennamens sind.
  */
-export function mieterErsetzer(kontakte: string[]): (text: string) => string {
+export function mieterErsetzer(kontakte: string[], nieErsetzen: string[] = []): (text: string) => string {
+  const tabu = new Set(['bickel', 'jürgen bickel', 'juergen bickel', ...nieErsetzen.map((x) => x.toLowerCase())]);
+  for (const k of kontakte) {
+    if (/ — Mieter /.test(k)) continue;
+    for (const w of k.split(' — ')[0].split(/[\s&,./()-]+/)) if (w.length >= 3) tabu.add(w.toLowerCase());
+  }
+  const BEHOERDE = /\b(stadt|gemeinde|landkreis|landratsamt|kreis|land|bund)\b/i;
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const paare: Array<[RegExp, string]> = [];
   for (const k of kontakte) {
     const m = k.match(/^(.+?) — Mieter (\S+ \S+)$/);
     if (!m) continue;
     const name = m[1].trim();
+    if (tabu.has(name.toLowerCase()) || BEHOERDE.test(name)) continue;
     const ersatz = `Mieter ${m[2]}`;
+    if (name.length >= 4) paare.push([new RegExp(`(?<![\\p{L}])${esc(name)}(?![\\p{L}])`, 'giu'), ersatz]);
     /* Firmen nur mit vollem Namen — sonst träfe „GmbH" jede Firma. */
     const firma = /\b(gmbh|mbh|ag|kg|ug|gbr|ohg|e\.\s?v\.|co\.?|ltd|inc|se|stiftung|verein)\b/i.test(name);
-    const teile = [name, ...(firma ? [] : [name.split(/\s+/).slice(-1)[0]])].filter((t, i, a) => t.length >= 4 && a.indexOf(t) === i);
-    for (const t of teile) paare.push([new RegExp(`(?<![\\p{L}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'giu'), ersatz]);
+    const nach = name.split(/\s+/).slice(-1)[0];
+    if (!firma && nach.length >= 4 && nach !== name && !tabu.has(nach.toLowerCase())) {
+      paare.push([new RegExp(`(?<![\\p{L}])${esc(nach)}(?![\\p{L}])`, 'giu'), ersatz]);
+    }
   }
-  /* Längere Namen zuerst, damit „Firma Muster GmbH" vor „GmbH"-Resten greift. */
+  /* Längere Muster zuerst, damit der volle Name vor dem Nachnamen greift. */
   paare.sort((a, b) => b[0].source.length - a[0].source.length);
   return (text) => paare.reduce((t, [re, e]) => t.replace(re, e), text);
 }

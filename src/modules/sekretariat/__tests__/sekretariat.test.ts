@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   pruefeBewertung, vorfilter, zweitesNetz, bewerteMitKi, verarbeite, ladeSpeicher, vorgangsZeilen,
-  stundenReportSekretariat, telegramZeilen, mieterErsetzer, type Element, type KiClient, type Bewertung,
+  stundenReportSekretariat, telegramZeilen, mieterErsetzer, ohneZugangsdaten, type Element, type KiClient, type Bewertung,
 } from '../index.js';
 import { STANDARD_REGELN } from '../../mail-register/relevanz.js';
 import { STANDARD_DOK_REGELN } from '../../doc-register/relevanz.js';
@@ -333,11 +333,25 @@ describe('Bericht je Vorgang', () => {
 });
 
 describe('Mieternamen', () => {
-  test('voller Name und Nachname werden ersetzt, andere Wörter nicht', () => {
-    const weg = mieterErsetzer(['Erika Musterfrau — Mieter N24 W3', 'Stadtwerke Tuttlingen — Dienstleister/Lieferant (N24)', 'Beispiel GmbH — Mieter MG24 G1']);
-    expect(weg('Frau Erika Musterfrau fragt nach; musterfrau@web.de; Beispiel GmbH zahlt')).toBe('Frau Mieter N24 W3 fragt nach; Mieter N24 W3@web.de; Mieter MG24 G1 zahlt');
-    expect(weg('Stadtwerke Tuttlingen Rechnung')).toBe('Stadtwerke Tuttlingen Rechnung');
+  test('voller Name und Nachname; Owner, Behörde, Orte und Lieferanten bleiben', () => {
+    const weg = mieterErsetzer(['Erika Musterfrau — Mieter N24 W3', 'Koch Brennstoffe — Dienstleister/Lieferant (MG24)',
+      'Beispiel GmbH — Mieter MG24 G1', 'Jürgen Bickel — Mieter L19 W3', 'Anna Bickel — Mieter N24 W5', 'Stadt Tuttlingen — Mieter MG22 G3',
+      'Paul Koch — Mieter S28 W1'], ['Tuttlingen']);
+    expect(weg('Erika Musterfrau fragt; Musterfrau zahlt; Beispiel GmbH zahlt; WHG W3 Musterfrau')).toBe('Mieter N24 W3 fragt; Mieter N24 W3 zahlt; Mieter MG24 G1 zahlt; WHG W3 Mieter N24 W3');
     expect(weg('Musterfrauenverein')).toBe('Musterfrauenverein');
-    expect(weg('Rechnung der Stadtwerke GmbH')).toBe('Rechnung der Stadtwerke GmbH');
+    expect(weg('Storz&Bickel GmbH, Herr Jürgen Bickel, Anna Bickel')).toBe('Storz&Bickel GmbH, Herr Jürgen Bickel, Mieter N24 W5');
+    expect(weg('Nachweis der Stadt Tuttlingen, 78532 Tuttlingen')).toBe('Nachweis der Stadt Tuttlingen, 78532 Tuttlingen');
+    expect(weg('Rechnung Koch Brennstoffe; Paul Koch zahlt')).toBe('Rechnung Koch Brennstoffe; Mieter S28 W1 zahlt');
+  });
+});
+
+describe('Zugangsdaten', () => {
+  test('Passwort, PIN, Kennwort werden entfernt — im Prompt und in der Bewertung', async () => {
+    expect(ohneZugangsdaten('User: m.b@x.de, PW: Geheim&28; PIN 1234, Kennwort lautet abc')).toBe('User: m.b@x.de, PW: [entfernt]; PIN 1234, Kennwort lautet [entfernt]');
+    const z = tmp();
+    const ki = fakeKi([bew({ naechsterSchritt: 'Zugang eintragen (User: a, PW: Geheim&28)' })]);
+    await verarbeite([mail({ text: 'Zugang: Passwort: Geheim&28 bitte bis 30.11.2026 eintragen' })], deps(z, ki));
+    expect(ki.aufrufe[0]).not.toContain('Geheim&28');
+    expect(JSON.stringify(ladeSpeicher(z).elemente)).not.toContain('Geheim&28');
   });
 });

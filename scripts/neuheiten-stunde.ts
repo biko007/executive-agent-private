@@ -40,7 +40,7 @@ import { erstelleMailboxZugang } from '../src/modules/mail-register/index.js';
 import { nurLesendGraph } from '../src/modules/mail-register/lesend.js';
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
-  anthropicClient, ladeKontext, mieterErsetzer, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
+  anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
   vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
 
@@ -321,6 +321,8 @@ async function lauf(): Promise<number> {
 const SEK_ZUSTAND = path.join(PERSONAL, 'sekretariat');
 const SEK_EINSTELLUNGEN = path.join(SEK_ZUSTAND, 'einstellungen.json');
 const sekNachlauf = argv.includes('--sekretariat-nachlauf');
+/** Nur den Nachlauf-Report aus dem Speicher neu schreiben — ohne Erfassen, ohne KI. */
+const sekNurBericht = argv.includes('--sekretariat-bericht');
 
 /** Modus und Deckel aus artifacts/personal/sekretariat/einstellungen.json; Rückweg = `"modus": "regeln"` (wirkt beim nächsten Lauf). */
 function sekEinstellungen(): { modus: 'ki' | 'regeln'; deckelProStunde: number } {
@@ -402,7 +404,19 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   let kontext: Awaited<ReturnType<typeof ladeKontext>>;
   try { kontext = await ladeKontext((s, p) => query(s, p as any[]), regeln, []); }
   catch (e) { await closePool(); throw e; }
-  const ohneMieter = mieterErsetzer(kontext.kontakte);
+  /* Ortsnamen der Objekte bleiben stehen (Adressen, Behördendomains). */
+  const orte = kontext.objekte.flatMap((o) => o.adresse.split(/[\s,]+/)).filter((w) => /^\p{Lu}\p{Ll}{3,}$/u.test(w));
+  const mieterWeg = mieterErsetzer(kontext.kontakte, orte);
+  /* Letzte Sperre vor Datei, Dropbox und Telegram: Mieternamen und Zugangsdaten. */
+  const ohneMieter = (t: string) => ohneZugangsdaten(mieterWeg(t));
+  if (sekNurBericht) {
+    await closePool();
+    const stand0 = ladeSpeicher(SEK_ZUSTAND);
+    fs.writeFileSync(path.join(SPEC, `report-neuheiten-nachlauf-ki-${jetzt.toISOString().slice(0, 10).replace(/-/g, '')}.md`),
+      ohneMieter(nachlaufKiReport(null, stand0, [], 1)), 'utf-8');
+    log('Nachlauf-Report aus dem Speicher neu geschrieben');
+    return 0;
+  }
 
   // 1 Erfassen: Mails (juergen.bickel@, Yahoo), data@, Dokumente
   const mail = await mailLauf({ zustand: MAIL_ZUSTAND, regeln, env, probe: nachlaufModus, nachlauf: nachlaufModus, jetzt,
@@ -487,8 +501,23 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
 }
 
 /** Nachlauf-Report: Vorgangsliste, Vergleich Regeln vs. KI, Kosten. */
-function nachlaufKiReport(e: LaufErgebnis, s: ReturnType<typeof ladeSpeicher>, hinweise: string[], dauer: number): string {
-  const z = e.zaehler;
+function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeicher>, hinweise: string[], dauer: number): string {
+  /* Summen über den ganzen Nachlauf (alle Teilläufe), nicht nur den letzten. */
+  const alleSt = Object.values(s.elemente);
+  const anzahl = (st: string) => alleSt.filter((x) => x.status === st).length;
+  const vorgefiltert = alleSt.filter((x) => x.status === 'abgelegt' && x.vorfilter).length;
+  const z = { erfasst: alleSt.length, vorgefiltert, bewertet: alleSt.filter((x) => x.bewertung).length,
+    abgelegtKi: anzahl('abgelegt') - vorgefiltert, vorschlag: anzahl('vorschlag'), netzEinzeln: anzahl('netz'),
+    wartet: anzahl('wartet') + anzahl('erfasst'), fehler: anzahl('fehler') };
+  const kosten = (() => {
+    try {
+      return fs.readFileSync(path.join(SEK_ZUSTAND, 'kosten.jsonl'), 'utf-8').split('\n').filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
+        .reduce((a: any, k: any) => ({ ein: a.ein + (k.tokensEin || 0), aus: a.aus + (k.tokensAus || 0), aufrufe: a.aufrufe + (k.aufrufe || 0) }), { ein: 0, aus: 0, aufrufe: 0 });
+    } catch { return { ein: 0, aus: 0, aufrufe: 0 }; }
+  })();
+  const usd = Math.round(((kosten.ein * 3 + kosten.aus * 15) / 1_000_000) * 100) / 100;
+  const alarm = e?.alarm ?? [];
   const { zeilen, kenntnis } = vorgangsZeilen(s.vorgaenge, s.elemente);
   // Regeln (Nachlauf heute Vormittag): Mail-Vorschläge vor 10:00 und relevante Dokumente des Registers
   const regelMails = new Set(fs.readFileSync(path.join(MAIL_ZUSTAND, 'vorschlaege.jsonl'), 'utf-8').split('\n').filter(Boolean)
@@ -506,11 +535,11 @@ function nachlaufKiReport(e: LaufErgebnis, s: ReturnType<typeof ladeSpeicher>, h
   return [
     '---',
     'titel: Neuheiten-Nachlauf mit KI – Vorgänge seit 18.10.',
-    `status: ${e.alarm.length ? 'hinweis' : 'aktion'}`,
+    `status: ${alarm.length ? 'hinweis' : 'aktion'}`,
     'aufgabe: Nachlauf seit 18.10.2026 komplett mit der KI neu bewerten (Sekretariat Stufe 1), Vorgangsliste, Vergleich Regeln vs. KI, Kosten',
     `ergebnis: [ ${[`${alle.length} Neuheiten bewertet (Mails ${mails.length}, Dokumente ${doks.length}): ${zeilen.length} Vorgänge zur Freigabe, + ${kenntnis} zur Kenntnis, ${alle.filter((x) => x.status === 'netz').length} Netz-Treffer`,
       `Regeln vs. KI: ${bleiben.length} bleiben, ${weg.length} fallen weg, ${neu.length} kommen dazu`,
-      `KI-Kosten Nachlauf: ${e.tokensEin} + ${e.tokensAus} Tokens ≈ ${e.kostenUsd.toFixed(2)} $ (claude-sonnet-4-6)`].map((x) => JSON.stringify(x)).join(', ')} ]`,
+      `KI-Kosten Nachlauf: ${kosten.aufrufe} Aufrufe, ${kosten.ein} + ${kosten.aus} Tokens ≈ ${usd.toFixed(2)} $ (claude-sonnet-4-6)`].map((x) => JSON.stringify(x)).join(', ')} ]`,
     'aktion: "Vorgänge durchsehen; Korrekturen (anderer Vorschlag, nicht relevant, anderes Objekt) im Chat nennen — sie werden für Stufe 2 gesammelt"',
     'tests: n/a',
     'rote_zone: nein',
@@ -548,9 +577,9 @@ function nachlaufKiReport(e: LaufErgebnis, s: ReturnType<typeof ladeSpeicher>, h
     '', '| Kennung | Datum | Von/Ort | Titel | Begründung |', '|---|---|---|---|---|', ...neu.map(zeile), '',
     '## Kosten',
     '',
-    `${e.tokensEin} Eingabe- und ${e.tokensAus} Ausgabe-Tokens, geschätzt ${e.kostenUsd.toFixed(2)} $ (Listenpreis 3 $/15 $ je Mio. Tokens). Protokoll: \`artifacts/personal/sekretariat/kosten.jsonl\`.`,
+    `${kosten.aufrufe} Aufrufe, ${kosten.ein} Eingabe- und ${kosten.aus} Ausgabe-Tokens, geschätzt ${usd.toFixed(2)} $ (Listenpreis 3 $/15 $ je Mio. Tokens). Protokoll: \`artifacts/personal/sekretariat/kosten.jsonl\`.`,
     '',
-    ...(e.alarm.length || hinweise.length ? ['## Hinweis', '', ...[...e.alarm, ...hinweise].map((h) => `- ${h}`), ''] : []),
+    ...(alarm.length || hinweise.length ? ['## Hinweis', '', ...[...alarm, ...hinweise].map((h) => `- ${h}`), ''] : []),
     'Rote Zone berührt: nein. Postfächer und Ablagen nur gelesen; nichts ausgeführt.',
     '',
     '## Owner-Aktion',
@@ -564,7 +593,7 @@ async function main(): Promise<number> {
   const frei = sperre(SPERRE);
   if (!frei) { log('neuheiten: ein anderer Lauf ist aktiv — übersprungen'); return 0; }
   try {
-    if (sekNachlauf) return await sekretariatLauf(true);
+    if (sekNachlauf || sekNurBericht) return await sekretariatLauf(true);
     if (!nur && !nachlauf && !probe && sekEinstellungen().modus === 'ki' && env('ANTHROPIC_API_KEY')) {
       return await sekretariatLauf(false);
     }

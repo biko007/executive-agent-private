@@ -11,7 +11,7 @@ export { ARTEN, VORSCHLAEGE, VORSCHLAG_TEXT, pruefeBewertung, SCHEMA_TEXT } from
 export type { Bewertung, Art, Vorschlag } from './schema.js';
 export { vorfilter, zweitesNetz, gesundheitImText } from './element.js';
 export type { Element, NetzTreffer } from './element.js';
-export { anthropicClient, bewerteMitKi, systemPrompt, nutzerPrompt, kostenUsd } from './ki.js';
+export { anthropicClient, bewerteMitKi, systemPrompt, nutzerPrompt, kostenUsd, ohneZugangsdaten } from './ki.js';
 export type { Kontext, KiClient, KiAntwort } from './ki.js';
 export { ladeKontext, mieterErsetzer, OWNER_VORGABEN } from './kontext.js';
 export {
