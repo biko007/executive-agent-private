@@ -60,6 +60,11 @@ describe('Schema', () => {
       expect(pruefeBewertung(kaputt).ok).toBe(false);
     }
   });
+  test('„nicht relevant" ohne Vorgangstitel und Schritt ist gültig, „relevant" nicht', () => {
+    expect(pruefeBewertung({ ...bew({ relevant: false }), vorgang: null, naechsterSchritt: '' }).ok).toBe(true);
+    expect(pruefeBewertung({ ...bew(), vorgang: { bestehend: null, titel: '' } }).ok).toBe(false);
+  });
+
   test('Fristen mit falschem Datum werden verworfen, nicht erfunden', () => {
     const p = pruefeBewertung({ ...bew(), fakten: { fristen: [{ datum: 'bald', was: 'x' }, { datum: '2026-11-30', was: 'Nachweis' }] } });
     expect(p.ok && p.wert.fakten.fristen).toEqual([{ datum: '2026-11-30', was: 'Nachweis' }]);

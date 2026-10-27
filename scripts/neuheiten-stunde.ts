@@ -28,7 +28,7 @@ import { graphGet, graphToken } from '../src/shared/m365/index.js';
 import { ladeRegeln, regelnAnlegenFallsFehlend } from '../src/modules/mail-register/relevanz.js';
 import { mailLauf, mailZeile, type MailLaufErgebnis } from '../src/modules/neuheiten/mail-lauf.js';
 import {
-  stundenReport, melde, sperre, tabelle, freigabeZeilen, zurFreigabe, KATALOG_ZEILE, type NeuheitZeile,
+  stundenReport, melde, sperre, tabelle, freigabeZeilen, zurFreigabe, KATALOG_ZEILE, zelle, type NeuheitZeile,
 } from '../src/modules/neuheiten/bericht.js';
 import {
   graphQuelle, dropboxQuelle, verzeichnisQuelle, spiegelZustand, type DokQuelle, type SpiegelZustand,

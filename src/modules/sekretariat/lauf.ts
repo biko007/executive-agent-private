@@ -256,7 +256,8 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
     aufrufe += antwort.aufrufe;
     ergebnis.tokensEin += antwort.tokensEin;
     ergebnis.tokensAus += antwort.tokensAus;
-    haenge(d, 'kosten', { zeit: new Date().toISOString(), kennung: e.kennung, aufrufe: antwort.aufrufe, tokensEin: antwort.tokensEin,
+    /* Laufzeit statt Wanduhr: dieselbe Uhr wie der Deckel in aufrufeLetzteStunde. */
+    haenge(d, 'kosten', { zeit, kennung: e.kennung, aufrufe: antwort.aufrufe, tokensEin: antwort.tokensEin,
       tokensAus: antwort.tokensAus, kostenUsd: kostenUsd(antwort.tokensEin, antwort.tokensAus), modell: 'claude-sonnet-4-6', deckel: d.deckelProStunde });
 
     if (!antwort.bewertung) {

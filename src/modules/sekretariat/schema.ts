@@ -70,14 +70,17 @@ export function pruefeBewertung(roh: unknown): { ok: true; wert: Bewertung } | {
   if (typeof o.relevant !== 'boolean') f.push('relevant fehlt oder ist kein Wahrheitswert');
   if (!text(o.begruendung)) f.push('begruendung fehlt');
   if (o.objekt !== null && o.objekt !== undefined && typeof o.objekt !== 'string') f.push('objekt muss Text oder null sein');
-  if (!o.vorgang || typeof o.vorgang !== 'object' || !text(o.vorgang.titel)) f.push('vorgang.titel fehlt');
+  /* Bei „nicht relevant" lässt das Modell Vorgangstitel und Schritt oft leer —
+     sie werden dann nicht gebraucht (Nachlauf 27.10.2026: 10 von 158). */
+  const nichtRelevant = o.relevant === false;
+  if (!nichtRelevant && (!o.vorgang || typeof o.vorgang !== 'object' || !text(o.vorgang.titel))) f.push('vorgang.titel fehlt');
   if (o.vorgang && o.vorgang.bestehend !== null && o.vorgang.bestehend !== undefined
     && !(typeof o.vorgang.bestehend === 'string' && /^v-[0-9a-f]{8}$/.test(o.vorgang.bestehend))) {
     f.push('vorgang.bestehend muss v-xxxxxxxx oder null sein');
   }
   if (!ARTEN.includes(o.art)) f.push(`art unbekannt (${o.art})`);
   if (!VORSCHLAEGE.includes(o.vorschlag)) f.push(`vorschlag muss a–f sein (${o.vorschlag})`);
-  if (!text(o.naechsterSchritt)) f.push('naechsterSchritt fehlt');
+  if (!nichtRelevant && !text(o.naechsterSchritt)) f.push('naechsterSchritt fehlt');
   if (o.bis !== null && o.bis !== undefined && !istDatum(o.bis)) f.push('bis muss YYYY-MM-DD oder null sein');
   const fk = o.fakten ?? {};
   const liste = (x: unknown) => Array.isArray(x) ? x : [];
@@ -89,7 +92,7 @@ export function pruefeBewertung(roh: unknown): { ok: true; wert: Bewertung } | {
       relevant: o.relevant,
       begruendung: text(o.begruendung, 400),
       objekt: o.objekt ? text(o.objekt, 40) : null,
-      vorgang: { bestehend: o.vorgang.bestehend ?? null, titel: text(o.vorgang.titel, 120) },
+      vorgang: { bestehend: o.vorgang?.bestehend ?? null, titel: text(o.vorgang?.titel, 120) },
       art: o.art,
       fakten: {
         betraege: liste(fk.betraege).filter((x: any) => typeof x?.betrag === 'number')
