@@ -10,7 +10,13 @@ Spec Neuheiten-Sekretariat v1 (Owner-Freigabe 12:11). KI-Bewertung je Neuheit mi
 Kontext (claude-sonnet-4-6), Vorgänge (Thread hart, sonst KI), zweites Netz,
 Statuskette mit Alarm, Nicht-relevant-Ablage, Kostenprotokoll, Deckel 60/h.
 Migration `vorgaenge`/`vorgang_elemente` angemeldet (Rote Zone), bis dahin JSONL.
-Tests: `sekretariat.test.ts` (27).
+Tests: `sekretariat.test.ts` (35).
+
+Review-Befunde behoben (c5bea9e, ab17afe): abbruchfeste Statuskette, Deckel je
+API-Aufruf, drei Versuche dann Einzelmeldung, Thread vor Relevanz (nur direkter
+Verweis), IBAN-Maskierung in Prompt und Antwort, Gesundheit über den ganzen Text,
+Mieter ohne Mail im Kontext und ohne Namen in Report/Telegram, Einstellung nur bei
+`modus: "ki"` aktiv, Abgleich Register ↔ Sekretariat.
 
 ## Stand 2026-10-27 (4) — Report-Watcher holt zurückgestellte Reports selbst nach
 

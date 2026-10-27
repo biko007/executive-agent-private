@@ -609,17 +609,27 @@ Spec: `docs/projekt/Spec-Neuheiten-Sekretariat-v1.md`. Stufe 1 des Baus = Spec-S
   KI → Vorgang → Vorschlag; Ausgänge `abgelegt` (Vorfilter oder KI, mit Begründung),
   `vorschlag`, `netz` (KI „nicht relevant“, Netz schlägt an → Einzelzeile), `wartet`
   (Deckel) oder `fehler` (KI-Antwort ungültig → nächster Lauf). Jede erfasste Neuheit
-  hat genau einen Ausgang; sonst Alarm an die Dev-Gruppe. Wartende und Fehler werden
-  mit ihrem Inhalt gespeichert und im nächsten Lauf zuerst bewertet.
+  hat genau einen Ausgang; sonst Alarm an die Dev-Gruppe. **Abbruchfest:** jede Neuheit
+  wird vor der ersten KI-Frage als `erfasst` mit Inhalt gesichert, nach jedem Element
+  wird gespeichert; `erfasst`, `wartet` und `fehler` werden im nächsten Lauf zuerst
+  bewertet. Nach drei Fehlversuchen → `netz` (Einzelmeldung + Alarm), keine Endlosschleife.
+  Der Kontext aus bikosoc wird vor den Registerläufen geladen. Abgleich: Dokumente der
+  letzten 7 Tage im Register, die das Sekretariat nicht kennt, werden mit Namen nachbewertet.
 - **Vorfilter** (`element.ts`): nur Offensichtliches; Gesundheitspost über Absender,
   Betreff, Pfad oder Text immer raus. `bewerteMitKi` prüft das ein zweites Mal und
   wirft, bevor das Modell gefragt wird.
 - **KI** (`ki.ts`): Anthropic Messages API, `ANTHROPIC_MODEL` (`claude-sonnet-4-6`),
-  System-Prompt mit Objekten, Kontakten (Regeldatei, Lieferanten, Mieter mit Einheit
-  und Mail), Fristen (NK, Objektfristen), offenen Vorgängen und Owner-Vorgaben
+  System-Prompt (Prompt-Caching) mit Objekten, Kontakten (Regeldatei, Mieter mit Einheit
+  ohne Mailadresse, Lieferanten), Fristen (NK, Objektfristen), offenen Vorgängen und Owner-Vorgaben
   (Privatkäufe, Vereine, Eltern, ZZ5). Antwort JSON, geprüft mit `pruefeBewertung`;
-  ungültig → ein zweiter Versuch. Tokens je Lauf in `kosten.jsonl`.
-- **Vorgänge**: Thread-ID (In-Reply-To/References) ordnet hart zu; sonst die vom Modell
+  ungültig → ein zweiter Versuch. IBAN/Kontonummern werden vor dem Senden und in der
+  Modellantwort maskiert. Kostenzeile je Element sofort nach dem Aufruf in `kosten.jsonl`;
+  der Deckel zählt API-Aufrufe (kaputte Zeilen werden übersprungen, nicht als 0 gezählt).
+  Reports und Telegram laufen durch `mieterErsetzer` (Mietername → „Mieter <Objekt> <Einheit>“).
+- **Vorgänge**: Thread-Regel hart und vor der Relevanz — verweist In-Reply-To/References
+  direkt auf die Message-ID eines Elements in einem Vorgang, kommt die Mail dazu (auch
+  wenn die KI sie allein unwichtig fände; der nächste Schritt bleibt dann); eine bloß
+  gemeinsame References-Kette führt nicht zusammen; sonst die vom Modell
   genannte bestehende Kennung, sonst gleicher Titel + Objekt, sonst neu (`v-<8 hex>`).
   Das jüngste Element bestimmt den nächsten Schritt, die früheste Frist gilt.
 - **Speicher**: JSON/JSONL unter `artifacts/personal/sekretariat/`, bis die Migration
