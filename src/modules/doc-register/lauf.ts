@@ -74,9 +74,16 @@ export interface DokLaufOptionen {
   dropbox?: DropboxAdapter | null;
   log?: (m: string) => void;
   warn?: (m: string) => void;
+  /**
+   * Sekretariat-Nachlauf: alle Dateien seit 18.10. liefern, auch schon
+   * registrierte (nur zusammen mit `probe`, damit nichts doppelt registriert wird).
+   */
+  alleSeitStart?: boolean;
 }
 
 export interface DokLaufErgebnis {
+  /** Gelesener Text je Kennung (PDF), für das Sekretariat. */
+  texte: Record<string, string>;
   neu: DokEintrag[];
   relevant: DokEintrag[];
   zaehler: Record<string, number>;
@@ -89,12 +96,12 @@ export interface DokLaufErgebnis {
 }
 
 /** Erste PDF-Seite ueber pdftotext; leer, wenn es keine Textebene gibt. */
-export function pdfErsteSeite(pdf: Buffer): string {
+export function pdfErsteSeite(pdf: Buffer, seiten = 1): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dok-seite-'));
   const datei = path.join(dir, 'd.pdf');
   try {
     fs.writeFileSync(datei, pdf);
-    const r = spawnSync('pdftotext', ['-f', '1', '-l', '1', '-q', datei, '-'], { timeout: 20_000, encoding: 'utf-8' });
+    const r = spawnSync('pdftotext', ['-f', '1', '-l', String(seiten), '-q', datei, '-'], { timeout: 20_000, encoding: 'utf-8' });
     if (r.error) throw r.error;
     return String(r.stdout ?? '');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -142,7 +149,8 @@ export async function dokLauf(o: DokLaufOptionen): Promise<DokLaufErgebnis> {
   const standPfad = path.join(o.zustand, 'stand.json');
   const stand = ladeJson<Stand>(standPfad, { version: 1, quellen: {}, nachholen: {} });
   stand.nachholen ??= {};
-  const erg: DokLaufErgebnis = { neu: [], relevant: [], zaehler: {}, jeQuelle: {}, fehler: [], hinweise: [], zusammen: '' };
+  const erg: DokLaufErgebnis = { texte: {}, neu: [], relevant: [], zaehler: {}, jeQuelle: {}, fehler: [], hinweise: [], zusammen: '' };
+  if (o.alleSeitStart && !o.probe) throw new Error('alleSeitStart nur mit probe');
 
   for (const q of o.quellen) {
     const registerPfad = path.join(o.zustand, `${q.name}.jsonl`);
@@ -188,7 +196,7 @@ export async function dokLauf(o: DokLaufOptionen): Promise<DokLaufErgebnis> {
       ...(stand.nachholen[q.name] ?? []).filter((d) => !frischeIds.has(d.id)),
       ...frisch,
     ].filter((d, i, a) => a.findIndex((x) => x.id === d.id && x.hash === d.hash) === i)
-      .filter((d) => letzterHash.get(d.id) !== d.hash);
+      .filter((d) => o.alleSeitStart || letzterHash.get(d.id) !== d.hash);
     statistik.gesehen = aend.dateien.length;
     const nachholen: Array<DokDatei & { versuche: number }> = [];
 
@@ -223,6 +231,7 @@ export async function dokLauf(o: DokLaufOptionen): Promise<DokLaufErgebnis> {
           warn(`doc-register ${q.name}: erste Seite nicht lesbar, nur Name bewertet: ${d.pfad}`);
         }
       }
+      if (text) erg.texte[dokKennung(d)] = text;
       const b = bewerteDok(d, o.regeln, o.dokRegeln, { kopie, text });
       const { versuche: _v, ...datei } = d as DokDatei & { versuche?: number };
       const eintrag: DokEintrag = {

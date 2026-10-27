@@ -22,6 +22,7 @@ import {
   type Regelwerk, type VorschlagCode,
 } from '../mail-register/relevanz.js';
 import { ladeJson, schreibeJson, type NeuheitZeile } from './bericht.js';
+import type { Element } from '../sekretariat/element.js';
 import type { DropboxAdapter } from '../../adapters/dropbox.js';
 
 export const POSTFACH: Record<string, string> = {
@@ -66,9 +67,17 @@ export interface MailLaufOptionen {
   warn?: (m: string) => void;
   /** Fuer Tests: eigene Quellen statt Graph/IMAP. */
   quellen?: Array<{ name: 'm365' | 'yahoo'; zugang: () => LeseQuelle }>;
+  /**
+   * Sekretariat (Spec v1, 27.10.2026): statt der Regelbewertung jede noch
+   * unbekannte Mail als Element sammeln — mit Text (bis 3.000 Zeichen) und
+   * Thread-IDs. `bekannt` sagt, was das Sekretariat schon hat.
+   */
+  sekretariat?: { bekannt: (kennung: string) => boolean };
 }
 
 export interface MailLaufErgebnis {
+  /** Nur im Sekretariat-Modus: gesammelte Neuheiten. */
+  elemente?: Element[];
   vorschlaege: MailVorschlag[];
   laeufe: LeseLauf[];
   zaehler: Record<string, number>;
@@ -172,6 +181,43 @@ export async function mailLauf(o: MailLaufOptionen): Promise<MailLaufErgebnis> {
     }
   }
 
+  if (o.sekretariat) {
+    /* Sekretariat: jede unbekannte Mail genau einmal sammeln. Text nur, wenn
+       der Kopf nicht schon offensichtlich ausscheidet (Newsletter, Paket …) —
+       das spart Abrufe; die endgueltige Entscheidung trifft das Sekretariat. */
+    const OFFENSICHTLICH = new Set(['eigene Mail', 'Gesundheit', 'Newsletter', 'Paketstatus', 'Systemmeldung', 'Social']);
+    const elemente: Element[] = [];
+    const anhaenge = new Map<string, string[]>();
+    for (const l of laeufe) for (const e of l.neu) anhaenge.set(e.messageId.trim(), e.anhaenge);
+    let textFehlerS = 0;
+    for (const { g, zugang } of offen) {
+      const mid = g.mail.messageId.trim();
+      const kennung = kurzId(mid);
+      if (o.sekretariat.bekannt(kennung) || elemente.some((x) => x.kennung === kennung)) continue;
+      const k = g.mail.kopf;
+      const grund = kopfAusschluss({ absender: g.mail.absender, absenderName: g.mail.absenderName,
+        betreff: g.mail.betreff, ordner: g.ordner, kopf: k }, o.regeln);
+      let text = '';
+      if (!grund || !OFFENSICHTLICH.has(grund)) {
+        try { text = (await zugang.text(g.mail.id)).slice(0, 3000); } catch { textFehlerS++; continue; }
+      }
+      const thread = `${k['references'] ?? ''} ${k['in-reply-to'] ?? ''}`.match(/<[^<>\s]+>/g) ?? [];
+      elemente.push({
+        typ: 'mail', kennung, quelle: g.quelle, datum: g.mail.empfangenIso, titel: g.mail.betreff,
+        von: g.mail.absender.toLowerCase(), vonName: g.mail.absenderName, text, anhaenge: anhaenge.get(mid),
+        messageId: mid, threadIds: [...new Set(thread)], ordner: g.ordner, kopf: k,
+      });
+    }
+    for (const z of zugaenge) await z.schliessen();
+    if (textFehlerS) fehler.push(`${textFehlerS} Mailtext(e) nicht lesbar — werden im nächsten Lauf erneut gesammelt`);
+    if (!o.probe) schreibeJson(P.stand, stand);
+    const zusammen = `mail: ${laeufe.map((l) => `${l.quelle} ${l.mailsGesehen} gesehen/${l.neu.length} neu`).join(', ')}; `
+      + `${elemente.length} für das Sekretariat`;
+    if (o.probe) for (const q of ['m365', 'yahoo']) { try { fs.unlinkSync(probeDatei(q)); } catch { /* keine */ } }
+    else await csvHochladen();
+    return { elemente, vorschlaege: [], laeufe, zaehler: {}, fehler, zusammen };
+  }
+
   /* Relevanz: jede Nachricht genau einmal, auch wenn sie in beiden Postfaechern liegt. */
   const vorschlaege: MailVorschlag[] = [];
   const zaehler: Record<string, number> = {};
@@ -225,7 +271,11 @@ export async function mailLauf(o: MailLaufOptionen): Promise<MailLaufErgebnis> {
     fs.appendFileSync(P.vorschlaege, vorschlaege.map((v) => JSON.stringify(v)).join('\n') + '\n', 'utf-8');
   }
 
+  await csvHochladen();
+  return { vorschlaege, laeufe, zaehler, fehler, zusammen };
+
   /* CSV nur, wenn das Register gewachsen ist. */
+  async function csvHochladen(): Promise<void> {
   for (const l of laeufe.filter((x) => x.neu.length)) {
     const name = `${l.quelle}-register.csv`;
     /* Betreff gekuerzt um IBAN/Kontonummern, bevor er Dropbox erreicht. */
@@ -240,5 +290,5 @@ export async function mailLauf(o: MailLaufOptionen): Promise<MailLaufErgebnis> {
         .catch((e: any) => { fehler.push(`CSV ${name} nicht hochgeladen: ${e?.message ?? e}`); });
     }
   }
-  return { vorschlaege, laeufe, zaehler, fehler, zusammen };
+  }
 }
