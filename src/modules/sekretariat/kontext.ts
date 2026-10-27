@@ -58,3 +58,26 @@ export async function ladeKontext(q: Abfrage, regeln: Regelwerk, vorgaenge: stri
     vorgaben: OWNER_VORGABEN,
   };
 }
+
+/**
+ * Reports, Dropbox und Telegram tragen keine Mieternamen (Owner-Regel). Die KI
+ * kennt sie aus dem Kontext und kann sie in Begründung oder Titel nennen —
+ * dieser Ersetzer macht daraus „Mieter <Objekt> <Einheit>". Ersetzt werden der
+ * volle Name und der Nachname (ab 4 Zeichen), ohne Rücksicht auf Groß-/Kleinschreibung.
+ */
+export function mieterErsetzer(kontakte: string[]): (text: string) => string {
+  const paare: Array<[RegExp, string]> = [];
+  for (const k of kontakte) {
+    const m = k.match(/^(.+?) — Mieter (\S+ \S+)$/);
+    if (!m) continue;
+    const name = m[1].trim();
+    const ersatz = `Mieter ${m[2]}`;
+    /* Firmen nur mit vollem Namen — sonst träfe „GmbH" jede Firma. */
+    const firma = /\b(gmbh|mbh|ag|kg|ug|gbr|ohg|e\.\s?v\.|co\.?|ltd|inc|se|stiftung|verein)\b/i.test(name);
+    const teile = [name, ...(firma ? [] : [name.split(/\s+/).slice(-1)[0]])].filter((t, i, a) => t.length >= 4 && a.indexOf(t) === i);
+    for (const t of teile) paare.push([new RegExp(`(?<![\\p{L}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'giu'), ersatz]);
+  }
+  /* Längere Namen zuerst, damit „Firma Muster GmbH" vor „GmbH"-Resten greift. */
+  paare.sort((a, b) => b[0].source.length - a[0].source.length);
+  return (text) => paare.reduce((t, [re, e]) => t.replace(re, e), text);
+}

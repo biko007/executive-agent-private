@@ -40,7 +40,7 @@ import { erstelleMailboxZugang } from '../src/modules/mail-register/index.js';
 import { nurLesendGraph } from '../src/modules/mail-register/lesend.js';
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
-  anthropicClient, ladeKontext, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
+  anthropicClient, ladeKontext, mieterErsetzer, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
   vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
 
@@ -402,6 +402,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   let kontext: Awaited<ReturnType<typeof ladeKontext>>;
   try { kontext = await ladeKontext((s, p) => query(s, p as any[]), regeln, []); }
   catch (e) { await closePool(); throw e; }
+  const ohneMieter = mieterErsetzer(kontext.kontakte);
 
   // 1 Erfassen: Mails (juergen.bickel@, Yahoo), data@, Dokumente
   const mail = await mailLauf({ zustand: MAIL_ZUSTAND, regeln, env, probe: nachlaufModus, nachlauf: nachlaufModus, jetzt,
@@ -450,7 +451,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
 
   if (nachlaufModus) {
     fs.writeFileSync(path.join(SPEC, `report-neuheiten-nachlauf-ki-${jetzt.toISOString().slice(0, 10).replace(/-/g, '')}.md`),
-      nachlaufKiReport(ergebnis, stand, hinweise, Math.max(1, Math.round((Date.now() - beginn) / 60_000))), 'utf-8');
+      ohneMieter(nachlaufKiReport(ergebnis, stand, hinweise, Math.max(1, Math.round((Date.now() - beginn) / 60_000)))), 'utf-8');
     log('Nachlauf-Report geschrieben');
     return 0;
   }
@@ -463,7 +464,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   }
   const stempel = jetzt.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
   const name = `report-neuheiten-stunde-${stempel}.md`;
-  const inhalt = stundenReportSekretariat({ ergebnis, elemente: stand.elemente, jetzt, hinweise });
+  const inhalt = ohneMieter(stundenReportSekretariat({ ergebnis, elemente: stand.elemente, jetzt, hinweise }));
   fs.mkdirSync(STUNDEN, { recursive: true });
   fs.writeFileSync(path.join(STUNDEN, name), inhalt, 'utf-8');
   let hochgeladen = false;
@@ -471,7 +472,8 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
     await app.adapter.uploadFile({ path: `${DROPBOX_REPORTS}/${name}`, body: Buffer.from(inhalt, 'utf-8'), contentType: 'text/markdown; charset=utf-8' })
       .then(() => { hochgeladen = true; }).catch((e: any) => hinweise.push(`Report-Upload fehlgeschlagen: ${e?.message ?? e}`));
   }
-  const t = telegramZeilen({ ergebnis, elemente: stand.elemente });
+  const t0 = telegramZeilen({ ergebnis, elemente: stand.elemente });
+  const t = { titel: ohneMieter(t0.titel), zeilen: t0.zeilen.map(ohneMieter) };
   if (zeilen.length || ergebnis.einzeln.length) {
     await fetch('http://127.0.0.1:18789/api/internal/notify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   pruefeBewertung, vorfilter, zweitesNetz, bewerteMitKi, verarbeite, ladeSpeicher, vorgangsZeilen,
-  stundenReportSekretariat, telegramZeilen, type Element, type KiClient, type Bewertung,
+  stundenReportSekretariat, telegramZeilen, mieterErsetzer, type Element, type KiClient, type Bewertung,
 } from '../index.js';
 import { STANDARD_REGELN } from '../../mail-register/relevanz.js';
 import { STANDARD_DOK_REGELN } from '../../doc-register/relevanz.js';
@@ -324,5 +324,15 @@ describe('Bericht je Vorgang', () => {
     expect(r).not.toContain('Info Firma');
     const t = telegramZeilen({ ergebnis: e, elemente: s.elemente });
     expect(t.titel).toBe('Neu: 1 Vorgang/Vorgänge');
+  });
+});
+
+describe('Mieternamen', () => {
+  test('voller Name und Nachname werden ersetzt, andere Wörter nicht', () => {
+    const weg = mieterErsetzer(['Erika Musterfrau — Mieter N24 W3', 'Stadtwerke Tuttlingen — Dienstleister/Lieferant (N24)', 'Beispiel GmbH — Mieter MG24 G1']);
+    expect(weg('Frau Erika Musterfrau fragt nach; musterfrau@web.de; Beispiel GmbH zahlt')).toBe('Frau Mieter N24 W3 fragt nach; Mieter N24 W3@web.de; Mieter MG24 G1 zahlt');
+    expect(weg('Stadtwerke Tuttlingen Rechnung')).toBe('Stadtwerke Tuttlingen Rechnung');
+    expect(weg('Musterfrauenverein')).toBe('Musterfrauenverein');
+    expect(weg('Rechnung der Stadtwerke GmbH')).toBe('Rechnung der Stadtwerke GmbH');
   });
 });

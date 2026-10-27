@@ -13,7 +13,7 @@ export { vorfilter, zweitesNetz, gesundheitImText } from './element.js';
 export type { Element, NetzTreffer } from './element.js';
 export { anthropicClient, bewerteMitKi, systemPrompt, nutzerPrompt, kostenUsd } from './ki.js';
 export type { Kontext, KiClient, KiAntwort } from './ki.js';
-export { ladeKontext, OWNER_VORGABEN } from './kontext.js';
+export { ladeKontext, mieterErsetzer, OWNER_VORGABEN } from './kontext.js';
 export {
   verarbeite, ladeSpeicher, vorgangsListe, vorgangPerThread, aufrufeLetzteStunde, vorgangKennung, vorschlagKurz,
 } from './lauf.js';
