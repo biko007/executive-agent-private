@@ -43,7 +43,7 @@ import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramI
 import { sendPromptToBikosocTmux } from './src/modules/cc-prompt-dispatch/index.js';
 import { initCueCommands, registerCueCommands, initCueDelegation, noteInboundMessageId, } from './src/modules/cue-delegation/index.js';
 import { dropboxZugang } from './src/adapters/dropbox-zugang.js';
-import { kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, ergebnisKnoepfe, } from './src/modules/report-telegram/index.js';
+import { kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, ergebnisKnoepfe, erzeugeNachlauf, } from './src/modules/report-telegram/index.js';
 import { systemNachricht, uhrzeit as systemUhrzeit, htmlEscape as htmlEscapeSystem, roteZoneKlartext, stillBeantwortet, } from './src/modules/system-telegram/index.js';
 import { KNOPF_PRAEFIX, ablaufZeitpunkt, knopfMarkup, pruefeKnopf, freigabeGesetztText, startFehlgeschlagenText, knopfErledigtText, NUTZUNG_TEXT, } from './src/modules/arm-freigabe/index.js';
 import { vormerkungLesen, vormerkungLoeschen } from './src/modules/arm-freigabe/vormerkung.js';
@@ -3769,12 +3769,13 @@ export default function (api) {
             const obj = Object.fromEntries(m);
             const inhalt = JSON.stringify(obj, null, 2);
             if (unveraendert !== undefined && inhalt === unveraendert)
-                return;
+                return true;
             const tmpPath = `${REPORT_SENT_PATH}.tmp-${process.pid}`;
             try {
                 fs.mkdirSync(path.dirname(REPORT_SENT_PATH), { recursive: true });
                 fs.writeFileSync(tmpPath, inhalt);
                 fs.renameSync(tmpPath, REPORT_SENT_PATH);
+                return true;
             }
             catch (e) {
                 try {
@@ -3782,6 +3783,7 @@ export default function (api) {
                 }
                 catch { /* best-effort cleanup */ }
                 api.logger.warn(`[report-watcher] save sent-map failed: ${e.message}`);
+                return false;
             }
         }
         // ── Strand-Klassifikation: bikosoc vs. HDCC vs. unclassified ──────────────
@@ -3900,10 +3902,24 @@ export default function (api) {
             }
         }
         let reportScanInProgress = false;
+        /* Nachlauf (Owner-Freigabe 27.10.2026): Ein wegen des Rate-Limits
+           zurückgestellter Report wird nach Ablauf der Minute von selbst geholt,
+           nicht erst beim nächsten Dateiereignis. Siehe erzeugeNachlauf(). */
+        const REPORT_NACHLAUF_PUFFER_MS = 2_000;
+        const reportNachlauf = erzeugeNachlauf({
+            pufferMs: REPORT_NACHLAUF_PUFFER_MS,
+            scan: () => scanAndDeliverReports().catch((e) => api.logger.warn(`[report-watcher] Nachlauf-Scan fehlgeschlagen: ${e?.message ?? e}`)),
+        });
+        /* Kommt ein Scan-Auslöser, während ein Scan läuft, geht er nicht verloren:
+           Der laufende Scan holt im finally einen Nachlauf nach. */
+        let reportScanErneut = false;
         async function scanAndDeliverReports() {
-            if (reportScanInProgress)
-                return; // Prevent concurrent scans (double-event guard)
+            if (reportScanInProgress) {
+                reportScanErneut = true;
+                return;
+            } // Prevent concurrent scans (double-event guard)
             reportScanInProgress = true;
+            reportScanErneut = false;
             try {
                 let sentMap;
                 try {
@@ -3987,8 +4003,11 @@ export default function (api) {
                 for (const file of toSend) {
                     const now = Date.now();
                     if (now - reportLastAutoSendAt < REPORT_RATE_MS) {
-                        api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`);
-                        break; // Will retry on next scan
+                        const restMs = REPORT_RATE_MS - (now - reportLastAutoSendAt);
+                        const neu = reportNachlauf.plane(restMs);
+                        api.logger.info(`[report-watcher] Rate-limited, deferring: ${file.name}`
+                            + `${neu ? ` — Nachlauf in ${Math.ceil((restMs + REPORT_NACHLAUF_PUFFER_MS) / 1000)} s` : ' — Nachlauf schon geplant'}`);
+                        break; // Rate-Limit bleibt: in diesem Scan nichts weiter; der Nachlauf holt den Rest
                     }
                     // Inhalt lesen + Digest erzeugen (nur fuer Reports, nicht Plans)
                     let reportContent = '';
@@ -4138,10 +4157,21 @@ export default function (api) {
                         }
                     }
                 }
-                saveReportSentMap(sentMap, standBeimLaden);
+                /* Ohne gespeicherte Versandliste wuerde der Nachlauf dieselbe Datei
+                   jede Minute erneut senden (Review 27.10.2026). Dann lieber anhalten:
+                   Der naechste Scan kommt mit dem naechsten Dateiereignis. */
+                if (!saveReportSentMap(sentMap, standBeimLaden)) {
+                    reportNachlauf.stopp();
+                    reportScanErneut = false;
+                    api.logger.error('[report-watcher] Versandliste nicht gespeichert — Nachlauf angehalten, um Doppelversand zu vermeiden');
+                }
             }
             finally {
                 reportScanInProgress = false;
+                if (reportScanErneut) {
+                    reportScanErneut = false;
+                    reportNachlauf.plane(0);
+                }
             }
         }
         // Seed BEFORE starting watchers
