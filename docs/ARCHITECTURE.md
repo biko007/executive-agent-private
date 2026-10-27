@@ -575,8 +575,17 @@ Neuheiten hat; Sperrdatei `artifacts/personal/neuheiten/stunde.lock`.
 - **Takt:** `neuheiten-stunde.timer`, stündlich Minute 7 (ersetzt
   `mail-register-stunde.timer`); data@ bleibt bei 5 Minuten, der nächtliche
   SharePoint-Vollabgleich bleibt unverändert.
-- **iCloud:** vom VPS nicht erreichbar (keine API) — Lücke, siehe
-  `report-doc-register-stuendlich-20261027.md`.
+- **iCloud** (Owner-Entscheidung 27.10.2026, 10:46): Der iMac schiebt iCloud
+  Drive stündlich per rsync über den SSH-Alias `vps` nach `~/icloud-spiegel/`
+  (nur Push, kein `--delete`, `*.icloud`-Platzhalter ausgeschlossen). Quelle
+  `icloud` = `verzeichnisQuelle`: liest den Baum (id = relativer Pfad, Hash =
+  Größe + mtime), Symlinks und Platzhalter übergangen, `inhalt` nur innerhalb
+  des Spiegels. Owner-Datenklasse **privat**: Register bleibt lokal, keine CSV
+  nach Dropbox, Dateien nie kopiert, verändert oder gelöscht. Ohne Stand wird
+  ab 18.10. registriert (der Spiegel erscheint erst mit dem Job).
+  Frühwarnung im Stundenreport, wenn der Marker `.letzter-lauf` (sonst die
+  Verzeichniszeit) älter als 26 h ist — höchstens einmal je 24 h, dann auch
+  ohne andere Neuheiten; Hinweis, wenn der Spiegel 20 GB überschreitet.
 - **Rückweg:** `systemctl --user disable --now neuheiten-stunde.timer`;
   die Registerdateien bleiben liegen.
 
