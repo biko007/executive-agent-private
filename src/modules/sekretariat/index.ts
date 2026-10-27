@@ -18,4 +18,7 @@ export {
   verarbeite, ladeSpeicher, vorgangsListe, vorgangPerThread, aufrufeLetzteStunde, vorgangKennung, vorschlagKurz,
 } from './lauf.js';
 export type { ElementStand, Vorgang, LaufErgebnis, Zaehler, SekretariatDeps } from './lauf.js';
+export { vorgangsFrist } from './lauf.js';
+export { ladeKorrekturen, speichereKorrektur, korrekturZeilen, wendeAn } from './korrektur.js';
+export type { Korrektur } from './korrektur.js';
 export { stundenReportSekretariat, telegramZeilen, vorgangsZeilen, vorgangsTabelle, einzelTabelle, elementKurz } from './bericht.js';

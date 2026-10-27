@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   pruefeBewertung, vorfilter, zweitesNetz, bewerteMitKi, verarbeite, ladeSpeicher, vorgangsZeilen,
-  stundenReportSekretariat, telegramZeilen, mieterErsetzer, ohneZugangsdaten, type Element, type KiClient, type Bewertung,
+  stundenReportSekretariat, telegramZeilen, mieterErsetzer, ohneZugangsdaten, vorgangsTabelle, wendeAn, speichereKorrektur,
+  ladeKorrekturen, korrekturZeilen, type Element, type KiClient, type Bewertung,
 } from '../index.js';
 import { STANDARD_REGELN } from '../../mail-register/relevanz.js';
 import { STANDARD_DOK_REGELN } from '../../doc-register/relevanz.js';
@@ -84,11 +85,19 @@ describe('Vorfilter — nur Offensichtliches', () => {
     expect(vorfilter(mail({ von: 'verein@historische-fahrraeder.de', titel: 'Der Vorstand informiert', text: '' }), R, D)).toBeNull();
     expect(vorfilter(mail({ von: 'order@hailo-shop.de', titel: 'Rechnung zur Bestellung 354258', text: '', ordner: 'Angebote' }), R, D)).toBeNull();
   });
-  test('Gesundheitspost immer raus — Absender, Betreff oder Text', () => {
+  test('Gesundheitspost raus bei eindeutigem Absender, Betreff oder Anhang', () => {
     expect(vorfilter(mail({ von: 'info@email-zavamed.com', titel: 'Folgerezept' }), R, D)).toBe('Gesundheit');
-    expect(vorfilter(mail({ von: 'service@lkh.de', titel: 'Ihre Erstattung', text: 'Krankenversicherung LKH Beitragsrückerstattung' }), R, D)).toBe('Gesundheit');
-    expect(vorfilter({ typ: 'dokument', kennung: 'd-1', quelle: 'sharepoint', datum: '2026-10-27T00:00:00Z', titel: 'Scan.pdf',
-      von: '/Scans', pfad: '/Scans/Scan.pdf', text: 'LKH Landeskrankenhilfe V.V.a.G.' }, R, D)).toBe('Gesundheit');
+    expect(vorfilter(mail({ von: 'service@lkh.de', titel: 'Ihre Erstattung', text: '' }), R, D)).toBe('Gesundheit');
+    expect(vorfilter(mail({ von: 'info@praxis-dr-muster.de', titel: 'Termin', text: '' }), R, D)).toBe('Gesundheit');
+    expect(vorfilter(mail({ von: 'a@b.de', titel: 'Ihr Arztbrief', text: '' }), R, D)).toBe('Gesundheit');
+    expect(vorfilter(mail({ von: 'a@b.de', titel: 'Unterlagen', text: '', anhaenge: ['Laborbefund_2026.pdf'] }), R, D)).toBe('Gesundheit');
+    expect(vorfilter({ typ: 'dokument', kennung: 'd-1', quelle: 'sharepoint', datum: '2026-10-27T00:00:00Z', titel: 'Krankenkasse Bescheid.pdf',
+      von: '/Scans', pfad: '/Scans/Krankenkasse Bescheid.pdf', text: '' }, R, D)).toBe('Gesundheit');
+  });
+  test('„Befund" im Text einer Objektmail filtert nicht (Chat-Review 27.10.: Zähler-Mails Bauser)', () => {
+    const e = mail({ von: 'matthias.bauser@bikolino.com', titel: 'AW: Zählerfragen MG24 und N24 – bitte prüfen',
+      text: 'W3 (E3) Süd/West Befund: 165 kWh Wärme bei 0 m³ Warmwasser. Diagnose der Leittechnik folgt.' });
+    expect(vorfilter(e, R, D)).toBeNull();
   });
   test('Dokumente: eigener Kanal, Eltern, Dateityp', () => {
     const dok = (pfad: string): Element => ({ typ: 'dokument', kennung: 'd-2', quelle: 'dropbox', datum: '2026-10-27T00:00:00Z', titel: pfad.split('/').pop()!, von: '/', pfad, text: '' });
@@ -119,7 +128,8 @@ describe('Zweites Netz — deterministisch', () => {
 describe('KI-Aufruf', () => {
   test('Gesundheitspost erreicht das Modell nie', async () => {
     const ki = fakeKi([bew()]);
-    await expect(bewerteMitKi(mail({ text: 'Ihr Rezept liegt in der Apotheke' }), { ...kontext, vorgaenge: [] }, ki)).rejects.toThrow('Gesundheit');
+    await expect(bewerteMitKi(mail({ titel: 'Ihr Rezept liegt in der Apotheke' }), { ...kontext, vorgaenge: [] }, ki)).rejects.toThrow('Gesundheit');
+    await expect(bewerteMitKi(mail({ von: 'praxis@arztpraxis-muster.de', titel: 'Termin' }), { ...kontext, vorgaenge: [] }, ki)).rejects.toThrow('Gesundheit');
     expect(ki.aufrufe).toHaveLength(0);
   });
   test('ungültiges JSON → ein zweiter Versuch, dann Fehler', async () => {
@@ -353,5 +363,53 @@ describe('Zugangsdaten', () => {
     await verarbeite([mail({ text: 'Zugang: Passwort: Geheim&28 bitte bis 30.11.2026 eintragen' })], deps(z, ki));
     expect(ki.aufrufe[0]).not.toContain('Geheim&28');
     expect(JSON.stringify(ladeSpeicher(z).elemente)).not.toContain('Geheim&28');
+  });
+});
+
+describe('Fristen, Wartestatus, Netz-Ablage, Korrekturen (Chat-Review 27.10.2026)', () => {
+  test('vergangene Frist ist keine Vorgangsfrist, sondern „abgelaufen – prüfen"', async () => {
+    const z = tmp();
+    await verarbeite([mail({ kennung: 'm-alt' })], deps(z, fakeKi([bew({ bis: '2024-12-31', fakten: { betraege: [], nummern: [], zaehlerstaende: [], fristen: [{ datum: '2025-09-24', was: 'Ablesung' }] } })])));
+    const v = ladeSpeicher(z).vorgaenge[0];
+    expect([v.frist, v.fristAbgelaufen]).toEqual([null, '2025-09-24']);
+    const s = ladeSpeicher(z);
+    expect(vorgangsTabelle(vorgangsZeilen(s.vorgaenge, s.elemente, new Date('2026-10-27T12:00:00Z')).zeilen).join('\n')).toContain('abgelaufen 24.09.2025 – prüfen');
+  });
+  test('künftige Frist gewinnt vor vergangener; am Folgetag wird sie zur abgelaufenen', async () => {
+    const z = tmp();
+    await verarbeite([mail()], deps(z, fakeKi([bew({ bis: '2026-10-28', fakten: { betraege: [], nummern: [], zaehlerstaende: [], fristen: [{ datum: '2026-10-01', was: 'alt' }] } })])));
+    const s = ladeSpeicher(z);
+    expect(s.vorgaenge[0].frist).toBe('2026-10-28');
+    const morgen = vorgangsZeilen(s.vorgaenge, s.elemente, new Date('2026-10-29T08:00:00Z')).zeilen[0].v;
+    expect([morgen.frist, morgen.fristAbgelaufen]).toEqual([null, '2026-10-28']);
+  });
+  test('wartet auf Owner: Kennzeichen in der Tabelle, keine Freigabezeile; erledigt: nicht mehr gelistet', async () => {
+    const z = tmp();
+    await verarbeite([mail({ kennung: 'm-1' }), mail({ kennung: 'm-2', messageId: '<b@x>', titel: 'Anderes', text: 'x' })],
+      deps(z, fakeKi([bew(), bew({ objekt: 'N24', vorgang: { bestehend: null, titel: 'N24 Anderes' } })])));
+    const s = ladeSpeicher(z);
+    const [a, b] = s.vorgaenge;
+    wendeAn(s.vorgaenge as any, { zeit: '', quelle: 't', art: 'fehler', bezug: [a.kennung], befund: '', aenderung: { vorgang: a.kennung, status: 'wartet', wartetAuf: 'Bauser-Termin 27.10.' } }, '2026-10-27T13:00:00Z');
+    wendeAn(s.vorgaenge as any, { zeit: '', quelle: 't', art: 'fehler', bezug: [b.kennung], befund: '', aenderung: { vorgang: b.kennung, status: 'erledigt', verweis: 'Auftrag 20261027-1425' } }, '2026-10-27T13:00:00Z');
+    const r = stundenReportSekretariat({ ergebnis: { zaehler: { erfasst: 0, vorgefiltert: 0, bewertet: 0, abgelegtKi: 0, vorschlag: 0, netzEinzeln: 0, wartet: 0, fehler: 0 },
+      vorgaenge: s.vorgaenge, einzeln: [], tokensEin: 0, tokensAus: 0, kostenUsd: 0, alarm: [], elemente: [] }, elemente: s.elemente, jetzt: new Date('2026-10-27T14:00:00Z'), hinweise: [] });
+    expect(r).toContain('⏸ wartet auf Owner (Bauser-Termin 27.10.)');
+    expect(r).not.toContain(`Freigabe Vorgang ${a.kennung}`);
+    expect(r).not.toContain(b.kennung);
+  });
+  test('Netz-Treffer mit KI „nicht relevant" liegen auch in der Nicht-relevant-Ablage, mit Netz-Vermerk', async () => {
+    const z = tmp();
+    await verarbeite([mail({ von: 'info@imkerverein.de', titel: 'Rechnung Jahresbeitrag', text: 'Rechnung 25,00 € zahlbar bis 30.11.2026' })],
+      deps(z, fakeKi([bew({ relevant: false, begruendung: 'Vereinspost', vorschlag: 'f' })])));
+    const nr = JSON.parse(fs.readFileSync(path.join(z, 'nicht-relevant.jsonl'), 'utf-8').trim());
+    expect(nr.netz.length).toBeGreaterThan(0);
+    expect(ladeSpeicher(z).elemente['m-00000001'].status).toBe('netz');
+  });
+  test('Korrekturen werden Regeln und Beispiele für das Modell', () => {
+    const z = tmp();
+    speichereKorrektur(z, { zeit: 'x', quelle: 'Chat', art: 'fehler', bezug: ['v-1'], befund: 'Passwort', regel: 'Zugangsdaten nie speichern.' });
+    speichereKorrektur(z, { zeit: 'x', quelle: 'Chat', art: 'bestaetigt', bezug: ['v-2'], befund: 'MG24 EWärmeG: Stadt + Handwerker + PDF ein Vorgang' });
+    fs.appendFileSync(path.join(z, 'korrekturen.jsonl'), '{kaputt\n');
+    expect(korrekturZeilen(ladeKorrekturen(z))).toEqual(['Korrektur des Owners: Zugangsdaten nie speichern.', 'Richtig bewertet (Beispiel): MG24 EWärmeG: Stadt + Handwerker + PDF ein Vorgang']);
   });
 });

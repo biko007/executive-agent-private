@@ -58,10 +58,15 @@ export interface Vorgang {
   kennung: string;
   titel: string;
   objekt: string | null;
-  status: 'offen' | 'freigegeben' | 'erledigt' | 'abgelegt';
+  /** `wartet`: auf den Owner (z. B. Termin), Grund in `wartetAuf`; `erledigt`: Verweis in `verweis`. */
+  status: 'offen' | 'wartet' | 'freigegeben' | 'erledigt' | 'abgelegt';
+  wartetAuf?: string;
+  verweis?: string;
   erstellt: string;
   aktualisiert: string;
+  /** Nächste Frist in der Zukunft; liegt keine mehr vor, steht die letzte vergangene in `fristAbgelaufen`. */
   frist: string | null;
+  fristAbgelaufen?: string | null;
   vorschlag: Vorschlag;
   naechsterSchritt: string;
   begruendung: string;
@@ -168,6 +173,20 @@ export function vorgangPerThread(e: Element, s: Speicher): string | null {
     .filter((st) => st.vorgang && st.messageId && ids.has(st.messageId.trim().toLowerCase()))
     .sort((a, b) => b.datum.localeCompare(a.datum));
   return treffer[0]?.vorgang ?? null;
+}
+
+/**
+ * Vorgangsfrist aus allen Elementen: die nächste Frist ab heute. Eine Frist
+ * aus einem Dokument, die schon vorbei ist, ist keine Vorgangsfrist — sie wird
+ * als „abgelaufen – prüfen" geführt (Chat-Review 27.10.2026: 31.12.2024,
+ * 24.09.2025 standen als Frist).
+ */
+export function vorgangsFrist(elemente: Array<ElementStand | undefined>, jetztIso: string): { frist: string | null; fristAbgelaufen: string | null } {
+  const heute = jetztIso.slice(0, 10);
+  const alle = elemente.flatMap((st) => st?.bewertung ? [st.bewertung.bis, ...st.bewertung.fakten.fristen.map((f) => f.datum)] : [])
+    .filter((x): x is string => !!x).sort();
+  const kuenftig = alle.filter((d) => d >= heute);
+  return { frist: kuenftig[0] ?? null, fristAbgelaufen: kuenftig.length ? null : alle[alle.length - 1] ?? null };
 }
 
 /** Zwischenstand sichern — nach jedem Element, damit ein Abbruch nichts verliert. */
@@ -297,6 +316,9 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
       Object.assign(st, { status: 'netz', wartend: undefined,
         begruendung: `Netz: ${st.netz.map((n) => n.grund).join(', ')} — KI: ${b.begruendung}` });
       st.kette.netz = zeit;
+      /* Auch in die Nicht-relevant-Ablage, mit Netz-Vermerk (Chat-Review 27.10.2026). */
+      haenge(d, 'nichtRelevant', { zeit, kennung: e.kennung, titel: e.titel, von: e.von, grund: `KI: ${b.begruendung}`,
+        netz: st.netz.map((n) => n.grund), beleg: st.beleg });
       z.netzEinzeln++;
       ergebnis.einzeln.push(st);
       sichere(d, s);
@@ -322,8 +344,7 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
     if (b.relevant && e.datum >= juengstes) {
       v.vorschlag = b.vorschlag; v.naechsterSchritt = b.naechsterSchritt; v.begruendung = b.begruendung;
     }
-    const fristen = [b.bis, ...b.fakten.fristen.map((f) => f.datum), v.frist].filter((x): x is string => !!x).sort();
-    v.frist = fristen[0] ?? null;
+    Object.assign(v, vorgangsFrist(v.elemente.map((k) => (k === e.kennung ? { ...st, bewertung: b } : s.elemente[k])), zeit));
     if (!v.objekt && b.objekt) v.objekt = b.objekt;
     Object.assign(st, { status: 'vorschlag', vorgang: v.kennung, wartend: undefined });
     st.kette.vorschlag = zeit;

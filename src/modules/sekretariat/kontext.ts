@@ -17,6 +17,8 @@ export const OWNER_VORGABEN = [
   'Vereins- und Ehrenamtspost (FoTA/Tower Ateliers, BvCW, Historische Fahrräder, Rotary) ist nicht relevant, außer sie verlangt eine Zahlung oder Frist vom Owner.',
   'Angelegenheiten der Eltern des Owners (Ordner Papa/Mama, Rente, Witwenrente) sind kein Objektbezug.',
   'Mails werden nie gesendet, nur als Entwurf vorbereitet. Buchungen und Fristen nur als Vorschlag.',
+  'Zugangsdaten und Passwörter werden nie in bikosoc gespeichert (Owner-Regel). Mails mit Zugangsdaten: Vorschlag f (Kenntnis), nur festhalten, für wen der Zugang besteht; keinen Passwortwechsel vorschlagen.',
+  'Eine Frist, die schon vorbei ist, ist keine Frist mehr für den Vorgang — nenne sie im Text, aber setze sie nicht als „bis".',
 ];
 
 export async function ladeKontext(q: Abfrage, regeln: Regelwerk, vorgaenge: string[]): Promise<Kontext> {

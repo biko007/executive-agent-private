@@ -10,7 +10,7 @@
 
 import { zelle, datumKurz } from '../neuheiten/bericht.js';
 import { VORSCHLAG_TEXT } from './schema.js';
-import type { ElementStand, LaufErgebnis, Vorgang } from './lauf.js';
+import { vorgangsFrist, type ElementStand, type LaufErgebnis, type Vorgang } from './lauf.js';
 
 const tag = (iso: string | null) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : '–');
 
@@ -19,19 +19,21 @@ export function elementKurz(e: ElementStand): string {
 }
 
 /** Zeilen je Vorgang (f ausgenommen) und die Zahl der Kenntnis-Vorgänge. */
-export function vorgangsZeilen(vorgaenge: Vorgang[], elemente: Record<string, ElementStand>):
+export function vorgangsZeilen(vorgaenge: Vorgang[], elemente: Record<string, ElementStand>, jetzt = new Date()):
 { zeilen: Array<{ v: Vorgang; el: ElementStand[] }>; kenntnis: number } {
-  const zeilen = vorgaenge.filter((v) => v.vorschlag !== 'f')
-    .map((v) => ({ v, el: v.elemente.map((k) => elemente[k]).filter(Boolean) }))
+  /* Frist immer frisch aus den Elementen: eine gestern gültige Frist ist heute abgelaufen. */
+  const zeilen = vorgaenge.filter((v) => v.vorschlag !== 'f' && v.status !== 'erledigt' && v.status !== 'abgelegt')
+    .map((v) => ({ v: { ...v, ...vorgangsFrist(v.elemente.map((k) => elemente[k]), jetzt.toISOString()) }, el: v.elemente.map((k) => elemente[k]).filter(Boolean) }))
     .sort((a, b) => (a.v.frist ?? '9999').localeCompare(b.v.frist ?? '9999') || b.v.aktualisiert.localeCompare(a.v.aktualisiert));
-  return { zeilen, kenntnis: vorgaenge.filter((v) => v.vorschlag === 'f').length };
+  return { zeilen, kenntnis: vorgaenge.filter((v) => v.vorschlag === 'f' && v.status !== 'erledigt').length };
 }
 
 export function vorgangsTabelle(z: Array<{ v: Vorgang; el: ElementStand[] }>): string[] {
   const t = ['| Kennung | Vorgang | Objekt | Elemente | Begründung | Nächster Schritt | Frist |', '|---|---|---|---|---|---|---|'];
   for (const { v, el } of z) {
     t.push(`| \`${v.kennung}\` | ${zelle(v.titel)} | ${v.objekt ?? '–'} | ${el.map(elementKurz).join('<br>')} | ${zelle(v.begruendung)} `
-      + `| **${v.vorschlag})** ${zelle(v.naechsterSchritt).slice(0, 400)} | ${tag(v.frist)} |`);
+      + `| ${v.status === 'wartet' ? `⏸ wartet auf Owner${v.wartetAuf ? ` (${zelle(v.wartetAuf)})` : ''} — ` : ''}**${v.vorschlag})** ${zelle(v.naechsterSchritt).slice(0, 400)} `
+      + `| ${v.frist ? tag(v.frist) : v.fristAbgelaufen ? `abgelaufen ${tag(v.fristAbgelaufen)} – prüfen` : '–'} |`);
   }
   return t;
 }
@@ -59,7 +61,7 @@ export function stundenReportSekretariat(p: {
     '',
   ];
   if (zeilen.length) {
-    out.push('## Vorgänge', '', ...vorgangsTabelle(zeilen), '', ...zeilen.map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``), '');
+    out.push('## Vorgänge', '', ...vorgangsTabelle(zeilen), '', ...zeilen.filter(({ v }) => v.status !== 'wartet').map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``), '');
   }
   if (p.ergebnis.einzeln.length) {
     out.push('## Netz-Treffer ohne Vorgang (KI: nicht relevant — zur Prüfung)', '', ...einzelTabelle(p.ergebnis.einzeln), '');

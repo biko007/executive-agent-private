@@ -40,7 +40,7 @@ import { erstelleMailboxZugang } from '../src/modules/mail-register/index.js';
 import { nurLesendGraph } from '../src/modules/mail-register/lesend.js';
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
-  anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
+  anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, ladeKorrekturen, korrekturZeilen, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
   vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
 
@@ -444,6 +444,8 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   let ergebnis: LaufErgebnis;
   try {
     const { vorgaenge: _v, ...ohneVorgaenge } = kontext;
+    /* Lernschleife: Korrekturen des Owners gehen als Vorgaben mit (korrekturen.jsonl). */
+    ohneVorgaenge.vorgaben = [...ohneVorgaenge.vorgaben, ...korrekturZeilen(ladeKorrekturen(SEK_ZUSTAND))];
     ergebnis = await verarbeite(elemente, {
       zustand: SEK_ZUSTAND, regeln, dokRegeln, ki: anthropicClient(env('ANTHROPIC_API_KEY')), kontext: ohneVorgaenge,
       deckelProStunde: nachlaufModus ? null : einst.deckelProStunde, jetzt, log,
@@ -524,11 +526,15 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
     .map((l) => JSON.parse(l)).filter((v) => v.erstelltIso < '2026-10-27T10:00').map((v) => v.id));
   const regelDoks = new Set(['sharepoint', 'onedrive', 'dropbox'].flatMap((q) => ladeDokRegister(path.join(DOK_ZUSTAND, `${q}.jsonl`)))
     .filter((x) => x.relevant).map((x) => x.kennung));
-  const kiRelevant = (st: any) => st.status === 'vorschlag' || st.status === 'netz';
+  /* Relevant ist, was die KI in einen Vorgang gelegt hat. Netz-Treffer, die die
+     KI selbst als nicht relevant bewertet, zählen nicht als „kommen dazu" —
+     sie stehen getrennt (Chat-Review 27.10.2026). */
+  const kiRelevant = (st: any) => st.status === 'vorschlag';
   const alle = Object.values(s.elemente);
   const regelSet = new Set([...regelMails, ...regelDoks]);
   const weg = alle.filter((st) => regelSet.has(st.kennung) && !kiRelevant(st));
   const neu = alle.filter((st) => !regelSet.has(st.kennung) && kiRelevant(st));
+  const nurNetz = alle.filter((st) => st.status === 'netz');
   const bleiben = alle.filter((st) => regelSet.has(st.kennung) && kiRelevant(st));
   const mails = alle.filter((x) => x.typ === 'mail'); const doks = alle.filter((x) => x.typ === 'dokument');
   const zeile = (st: any) => `| \`${st.kennung}\` | ${st.datum.slice(0, 10)} | ${zelle(st.typ === 'mail' ? st.von : st.von)} | ${zelle(st.titel).slice(0, 70)} | ${zelle(st.begruendung).slice(0, 200)} |`;
@@ -538,7 +544,7 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
     `status: ${alarm.length ? 'hinweis' : 'aktion'}`,
     'aufgabe: Nachlauf seit 18.10.2026 komplett mit der KI neu bewerten (Sekretariat Stufe 1), Vorgangsliste, Vergleich Regeln vs. KI, Kosten',
     `ergebnis: [ ${[`${alle.length} Neuheiten bewertet (Mails ${mails.length}, Dokumente ${doks.length}): ${zeilen.length} Vorgänge zur Freigabe, + ${kenntnis} zur Kenntnis, ${alle.filter((x) => x.status === 'netz').length} Netz-Treffer`,
-      `Regeln vs. KI: ${bleiben.length} bleiben, ${weg.length} fallen weg, ${neu.length} kommen dazu`,
+      `Regeln vs. KI: ${bleiben.length} bleiben, ${weg.length} fallen weg, ${neu.length} kommen dazu (+ ${nurNetz.length} nur Netz, KI nicht relevant)`,
       `KI-Kosten Nachlauf: ${kosten.aufrufe} Aufrufe, ${kosten.ein} + ${kosten.aus} Tokens ≈ ${usd.toFixed(2)} $ (claude-sonnet-4-6)`].map((x) => JSON.stringify(x)).join(', ')} ]`,
     'aktion: "Vorgänge durchsehen; Korrekturen (anderer Vorschlag, nicht relevant, anderes Objekt) im Chat nennen — sie werden für Stufe 2 gesammelt"',
     'tests: n/a',
@@ -556,20 +562,20 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
     '',
     ...vorgangsTabelle(zeilen),
     '',
-    ...zeilen.map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``),
+    ...zeilen.filter(({ v }) => v.status !== 'wartet').map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``),
     '',
     `+ ${kenntnis} Vorgänge nur zur Kenntnis (im Speicher, ohne Freigabe).`,
     '',
-    '## Netz-Treffer ohne Vorgang (KI: nicht relevant)',
+    '## Netz-Treffer ohne Vorgang (KI: nicht relevant — liegen in der Nicht-relevant-Ablage mit Netz-Vermerk)',
     '',
     ...einzelTabelle(alle.filter((x) => x.status === 'netz') as any),
     '',
     '## Vergleich Regeln (Nachlauf 09:54/10:27) vs. KI',
     '',
-    `| | Regeln relevant | KI relevant | bleiben | fallen weg | kommen dazu |`,
-    `|---|---:|---:|---:|---:|---:|`,
-    `| Mails | ${[...regelMails].length} | ${mails.filter(kiRelevant).length} | ${bleiben.filter((x) => x.typ === 'mail').length} | ${weg.filter((x) => x.typ === 'mail').length} | ${neu.filter((x) => x.typ === 'mail').length} |`,
-    `| Dokumente | ${[...regelDoks].length} | ${doks.filter(kiRelevant).length} | ${bleiben.filter((x) => x.typ === 'dokument').length} | ${weg.filter((x) => x.typ === 'dokument').length} | ${neu.filter((x) => x.typ === 'dokument').length} |`,
+    `| | Regeln relevant | KI relevant | bleiben | fallen weg | kommen dazu | nur Netz (KI: nicht relevant) |`,
+    `|---|---:|---:|---:|---:|---:|---:|`,
+    `| Mails | ${[...regelMails].length} | ${mails.filter(kiRelevant).length} | ${bleiben.filter((x) => x.typ === 'mail').length} | ${weg.filter((x) => x.typ === 'mail').length} | ${neu.filter((x) => x.typ === 'mail').length} | ${nurNetz.filter((x) => x.typ === 'mail').length} |`,
+    `| Dokumente | ${[...regelDoks].length} | ${doks.filter(kiRelevant).length} | ${bleiben.filter((x) => x.typ === 'dokument').length} | ${weg.filter((x) => x.typ === 'dokument').length} | ${neu.filter((x) => x.typ === 'dokument').length} | ${nurNetz.filter((x) => x.typ === 'dokument').length} |`,
     '',
     '### Fallen weg (Regeln relevant, KI nicht)',
     '', '| Kennung | Datum | Von/Ort | Titel | Begründung |', '|---|---|---|---|---|', ...weg.map(zeile), '',

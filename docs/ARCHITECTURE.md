@@ -615,8 +615,10 @@ Spec: `docs/projekt/Spec-Neuheiten-Sekretariat-v1.md`. Stufe 1 des Baus = Spec-S
   bewertet. Nach drei Fehlversuchen → `netz` (Einzelmeldung + Alarm), keine Endlosschleife.
   Der Kontext aus bikosoc wird vor den Registerläufen geladen. Abgleich: Dokumente der
   letzten 7 Tage im Register, die das Sekretariat nicht kennt, werden mit Namen nachbewertet.
-- **Vorfilter** (`element.ts`): nur Offensichtliches; Gesundheitspost über Absender,
-  Betreff, Pfad oder Text immer raus. `bewerteMitKi` prüft das ein zweites Mal und
+- **Vorfilter** (`element.ts`): nur Offensichtliches; Gesundheitspost nur bei eindeutigem
+  Absender (Praxis, Klinik, Labor, Apotheke, Krankenkasse/-versicherung, Regeldatei),
+  Betreff, Anhang- oder Dateinamen. Der Mailtext allein filtert nicht (Chat-Review
+  27.10.2026: „Befund: 165 kWh" in Zähler-Mails); bei Zweifel entscheidet die KI. `bewerteMitKi` prüft das ein zweites Mal und
   wirft, bevor das Modell gefragt wird.
 - **KI** (`ki.ts`): Anthropic Messages API, `ANTHROPIC_MODEL` (`claude-sonnet-4-6`),
   System-Prompt (Prompt-Caching) mit Objekten, Kontakten (Regeldatei, Mieter mit Einheit
@@ -632,6 +634,14 @@ Spec: `docs/projekt/Spec-Neuheiten-Sekretariat-v1.md`. Stufe 1 des Baus = Spec-S
   gemeinsame References-Kette führt nicht zusammen; sonst die vom Modell
   genannte bestehende Kennung, sonst gleicher Titel + Objekt, sonst neu (`v-<8 hex>`).
   Das jüngste Element bestimmt den nächsten Schritt, die früheste Frist gilt.
+- **Fristen**: Vorgangsfrist = nächste Frist ab heute aus allen Elementen, beim Report frisch
+  berechnet; liegt keine mehr in der Zukunft → „abgelaufen <Datum> – prüfen".
+- **Status**: `offen`, `wartet` (auf den Owner, Grund `wartetAuf`, keine Freigabezeile),
+  `erledigt` (mit `verweis`, nicht mehr gelistet). Netz-Treffer mit KI „nicht relevant"
+  stehen als Einzelzeile UND in `nicht-relevant.jsonl` mit Netz-Vermerk.
+- **Lernschleife**: `korrekturen.jsonl` (Bezug, Befund, Regel, Änderung am Vorgang);
+  `scripts/sekretariat-korrektur.ts <datei.json>` übernimmt Korrekturen (Sicherung der
+  Speicherdateien vorher), Regeln und bestätigte Beispiele gehen als Owner-Vorgaben ans Modell.
 - **Speicher**: JSON/JSONL unter `artifacts/personal/sekretariat/`, bis die Migration
   `vorgaenge` + `vorgang_elemente` mit `/arm` angelegt ist.
 - **Report**: `report-neuheiten-stunde-*` je Vorgang (Titel, Objekt, Begründung, Schritt,

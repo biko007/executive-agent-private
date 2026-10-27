@@ -59,14 +59,18 @@ export function vorfilter(e: Element, regeln: Regelwerk, dok: DokRegeln): string
 }
 
 /**
- * Gesundheitspost — geprüft wird ALLES, was an das Modell ginge: Titel, der
- * ganze Text und die Anhangnamen (Review 27.10.2026). Wortanfang statt ganzer
- * Wörter, damit „Patienten", „Befundbericht", „Rezepte" greifen. Lieber eine
- * Geschäftsmail zu viel ausgesondert als ein Arztbrief beim Modell.
+ * Gesundheitspost — nur bei eindeutigem Absender, Betreff oder Anhangnamen
+ * (Arztpraxis, Klinik, Krankenkasse/-versicherung, Labor, Apotheke). Der
+ * Mailtext allein filtert NICHT mehr: Chat-Review 27.10.2026 — „Befund: 165 kWh
+ * Wärme …" in zwei Zähler-Mails von Herrn Bauser galt als Gesundheitspost. Bei
+ * Zweifel entscheidet die KI (Owner-Vorgabe), Gesundheitsabsender bleiben
+ * über `kopfAusschluss`/Regeldatei draußen.
  */
-const GESUNDHEIT_TEXT = /\b(ärzt|aerzt|arzt|zahnarzt|arztbrief|klinik|krankenhaus|therapie|therapeut|physio|laborbefund|laborwert|blutbild|mrt\b|befund|diagnose|rezept|apothek|patient|krankenkasse|krankenversicher|pflegeversicher|pflegekasse|beihilfe|lkh\b|dkv\b|debeka|signal iduna|hallesche|barmenia|impf|reha-?klinik|praxis dr|dr\. med)/i;
-export function gesundheitImText(e: Pick<Element, 'text' | 'titel'> & { anhaenge?: string[] }): boolean {
-  return GESUNDHEIT_TEXT.test(`${e.titel}\n${e.text}\n${(e.anhaenge ?? []).join('\n')}`);
+const GESUNDHEIT_ABSENDER = /@([a-z0-9-]+\.)*(praxis[a-z-]*|arztpraxis[a-z-]*|[a-z-]*klinik[a-z-]*|[a-z-]*klinikum[a-z-]*|krankenhaus[a-z-]*|[a-z-]*labor[a-z-]*|apotheke[a-z-]*|aok|tk|barmer|dak|ikk[a-z-]*|bkk[a-z-]*|debeka|dkv|signal-iduna|hallesche|barmenia|lkh|beihilfe[a-z-]*)\.[a-z.]+$/i;
+const GESUNDHEIT_BETREFF = /\b(arztbrief|arztpraxis|praxis dr|dr\. med|zahnarzt|hausarzt|facharzt|klinik|krankenhaus|laborbefund|laborwert|blutbild|krankenkasse|krankenversicherung|pflegekasse|beihilfe|rezept|apotheke|patient(?:in|en)?|arzttermin|impfung)(?![a-zäöüß])/i;
+export function gesundheitImText(e: Pick<Element, 'titel'> & { von?: string; anhaenge?: string[] }): boolean {
+  return (!!e.von && GESUNDHEIT_ABSENDER.test(e.von))
+    || GESUNDHEIT_BETREFF.test(`${e.titel}\n${(e.anhaenge ?? []).join('\n')}`);
 }
 
 // ── Zweites Netz ───────────────────────────────────────────────────────────
