@@ -567,6 +567,14 @@ data@ und `+bikosoc`.
 - **Kein Lesefehler wird festgeschrieben:** Ist Seite 1 nicht lesbar, wartet
   die Datei in der Nachholliste (höchstens 3 Versuche, dann nur Name).
 
+**Nachschärfung 27.10.2026** (gilt für Mails und Dokumente): ZZ5 nicht mehr über
+die Lieferadresse Zelterweg im Text; Block `privat` in `relevanz.json` — Rechnung
+eines privaten Anbieters (PayPal, Amazon, Vodafone, Midjourney …) wird
+„a) Beleg ablegen → Privatausgaben“, reine Bestell- und Versandpost ist nicht
+relevant, eine Mahnung bleibt e; Vereins- und Verbandspost (`ausschluss.verein*`)
+nicht relevant. Vorschlag f („nur zur Kenntnis“) steht im Stundenreport und in
+Telegram nur als Zähler und löst allein keine Meldung aus.
+
 **Gemeinsame Meldung** (`neuheiten/bericht.ts`, `scripts/neuheiten-stunde.ts`):
 eine Owner-DM-Meldung und `report-neuheiten-stunde-<JJJJMMTT-HHMM>.md` mit den
 Abschnitten „Mails“ und „Dokumente“, nur wenn eins von beiden relevante
