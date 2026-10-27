@@ -1,0 +1,16 @@
+[Unit]
+Description=bikosoc Neuheiten stündlich (Minute 7)
+
+[Timer]
+# Owner-Anweisungen 27.10.2026: Postfaecher (10:26) und Dokumentenablagen
+# (10:45) alle 1 h pruefen. Minute 7, damit der Lauf nicht mit den
+# 5-Minuten-Timern und dem stuendlichen Rest auf Minute 0 zusammenfaellt.
+# Ersetzt mail-register-stunde.timer.
+OnCalendar=*-*-* *:07:00
+AccuracySec=1min
+# Ein verpasster Lauf wird nicht nachgeholt; Mails blicken 48 h zurueck,
+# Dokumente arbeiten mit dem Delta-Stand und verlieren nichts.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

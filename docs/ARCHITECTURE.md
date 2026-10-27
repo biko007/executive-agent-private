@@ -482,7 +482,7 @@ bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
   heraus. Geloeschte Elemente, Junk, Entwuerfe und Postausgang bleiben aus dem
   Register — mit Zaehlerstand im Report, damit die Luecke benannt ist.
 
-## 9e. Mail-Register stündlich mit Verarbeitungsvorschlag (mail-register/lesend, relevanz)
+## 9e. Neuheiten stündlich: Mails und Dokumente mit Verarbeitungsvorschlag (mail-register/lesend, neuheiten, doc-register)
 
 **Status:** ✅ live seit 2026-10-27
 
@@ -533,11 +533,51 @@ data@ und `+bikosoc`.
   Bewusst nicht über `~/bikosoc-spec/`: der Watcher würde dieselbe Meldung ein
   zweites Mal in die Dev-Gruppe schicken und an seinem Rate-Limit hängen.
   IBAN und Kontonummern werden auf die letzten vier Stellen gekürzt.
-- **Erstlauf:** `--nachlauf` bewertet alles seit 18.10.2026 und schreibt
-  `~/bikosoc-spec/report-mail-nachlauf-<datum>.md` (ohne DM).
-- **Takt:** `mail-register-stunde.timer`, stündlich Minute 7, beide
-  Postfächer nacheinander; data@ bleibt bei 5 Minuten.
-- **Rückweg:** `systemctl --user disable --now mail-register-stunde.timer`;
+- **Erstlauf:** `scripts/neuheiten-stunde.ts --nur mail --nachlauf` bewertet
+  alles seit 18.10.2026 und schreibt `~/bikosoc-spec/report-mail-nachlauf-<datum>.md`
+  (ohne DM).
+
+**Dokumentenablagen (Owner-Anweisung 27.10.2026, 10:45)** — gleiche Mechanik:
+
+- **Quellen** (`doc-register/quellen.ts`, Schnittstelle `DokQuelle` nur mit
+  `aenderungen`, `inhalt`, `pfadErgaenzen`): SharePoint, Laufwerk „Dokumente“
+  der Site bikolino GmbH (id aus dem Index), und OneDrive juergen.bickel@ über
+  Graph `root/delta` — der deltaLink ist der Stand; Delta liefert für
+  Business-Laufwerke keinen Pfad, er wird je neuer Datei einmal per GET
+  nachgeladen. Dropbox: Kontowurzel über `list_folder` rekursiv
+  (`DropboxAdapter.listChanges`, neu, nur lesend), der Cursor ist der Stand.
+  Inhalte nur für die erste PDF-Seite (`pdftotext -f 1 -l 1`, ≤ 25 MB).
+- **Register:** `artifacts/personal/doc-register/<quelle>.jsonl`, eine Zeile je
+  Datei-Version (id + Hash): Pfad, Name, Größe, geändert, Hash, erkannt,
+  Status neu/geändert, Relevanz, Vorschlag, Kennung `d-<8 hex>`. Stand und
+  Nachholliste in `stand.json`. CSV `transfer/doc-register/<quelle>-register.csv`.
+  Gezählt wird ab 18.10.2026. Ohne Stand setzt ein Stundenlauf nur den Stand
+  (keine Flut beim ersten Lauf); `--nur dokumente --nachlauf` meldet alles
+  seit 18.10. als `report-doc-nachlauf-<datum>.md`.
+- **Relevanz** (`doc-register/relevanz.ts`, Block `dokumente` in
+  `relevanz.json`, beim ersten Lauf ergänzt): nein bei System-/Temp-Dateien,
+  eigenem Kanal und cc-Ablagen (Pfadregeln: `Apps/bikosoc-reports`,
+  `Austausch/reisen/done|vorlage|belege`, `docs/`, `profil/`, `mail-*/`,
+  `l19/enthaertung/`, `report-*`), Kopien in `Austausch/` (gleiche Größe und
+  Endung wie eine Datei im SharePoint-Index), fremden Dateitypen, Fotos,
+  Gesundheitspost (Name/Pfad wie Mail-Register, Seite 1 eng). Ja bei Stichwort
+  (Rechnung, Abrechnung, Lieferschein, Protokoll, Bescheid, Vertrag, Police …)
+  oder Objekt in Name/Pfad, bei PDF auch auf Seite 1 (dort Objekte nur über
+  die ausgeschriebene Adresse). Unterstriche gelten als Worttrenner.
+- **Kein Lesefehler wird festgeschrieben:** Ist Seite 1 nicht lesbar, wartet
+  die Datei in der Nachholliste (höchstens 3 Versuche, dann nur Name).
+
+**Gemeinsame Meldung** (`neuheiten/bericht.ts`, `scripts/neuheiten-stunde.ts`):
+eine Owner-DM-Meldung und `report-neuheiten-stunde-<JJJJMMTT-HHMM>.md` mit den
+Abschnitten „Mails“ und „Dokumente“, nur wenn eins von beiden relevante
+Neuheiten hat; Sperrdatei `artifacts/personal/neuheiten/stunde.lock`.
+
+- **Takt:** `neuheiten-stunde.timer`, stündlich Minute 7 (ersetzt
+  `mail-register-stunde.timer`); data@ bleibt bei 5 Minuten, der nächtliche
+  SharePoint-Vollabgleich bleibt unverändert.
+- **iCloud:** vom VPS nicht erreichbar (keine API) — Lücke, siehe
+  `report-doc-register-stuendlich-20261027.md`.
+- **Rückweg:** `systemctl --user disable --now neuheiten-stunde.timer`;
   die Registerdateien bleiben liegen.
 
 ## 9d. Reise-Import (reise-import)

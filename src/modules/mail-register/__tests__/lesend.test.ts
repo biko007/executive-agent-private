@@ -147,7 +147,10 @@ describe('nur lesend — Graph', () => {
 describe('nur lesend — statische Prüfung', () => {
   const wurzel = path.resolve(import.meta.dir, '..', '..', '..', '..');
   const lesend = fs.readFileSync(path.join(wurzel, 'src', 'modules', 'mail-register', 'lesend.ts'), 'utf-8');
-  const skript = fs.readFileSync(path.join(wurzel, 'scripts', 'mail-register-stunde.ts'), 'utf-8');
+  /* Der Stundenlauf steht seit dem Dokumenten-Register (27.10.2026) in
+     neuheiten/mail-lauf.ts, das Skript ist scripts/neuheiten-stunde.ts. */
+  const skript = fs.readFileSync(path.join(wurzel, 'src', 'modules', 'neuheiten', 'mail-lauf.ts'), 'utf-8')
+    + fs.readFileSync(path.join(wurzel, 'scripts', 'neuheiten-stunde.ts'), 'utf-8');
   const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
   test('IMAP: kein verändernder Befehl in lesend.ts', () => {

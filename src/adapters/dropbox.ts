@@ -47,6 +47,25 @@ export interface DropboxEntry {
   readonly size: number;
 }
 
+/** Eintrag aus listChanges — mit Aenderungsdatum und Inhalts-Hash. */
+export interface DropboxChange {
+  readonly tag: "file" | "folder" | "deleted";
+  readonly id: string;
+  readonly pathLower: string;
+  readonly pathDisplay: string;
+  readonly name: string;
+  readonly size: number;
+  /** ISO, Server-Zeit der letzten Aenderung (nur Dateien). */
+  readonly serverModified: string;
+  readonly contentHash: string;
+}
+
+export interface DropboxChangePage {
+  readonly entries: DropboxChange[];
+  readonly cursor: string;
+  readonly hasMore: boolean;
+}
+
 export interface DropboxAdapter {
   uploadFile(params: {
     path: string;
@@ -70,6 +89,14 @@ export interface DropboxAdapter {
 
   /** Datei verschieben oder umbenennen. */
   moveFile(fromPath: string, toPath: string): Promise<void>;
+
+  /**
+   * Aenderungen seit einem Cursor, rekursiv und nur lesend (Dokumenten-Register
+   * 27.10.2026). Ohne Cursor beginnt die Liste bei `path` von vorn; `latest`
+   * liefert nur einen Cursor fuer „ab jetzt", ohne Eintraege. Eine Seite je
+   * Aufruf — der Aufrufer blaettert, solange `hasMore` wahr ist.
+   */
+  listChanges?(params: { path: string; cursor?: string; latest?: boolean }): Promise<DropboxChangePage>;
 
   healthCheck(): Promise<boolean>;
 }
@@ -502,6 +529,37 @@ export function createDropboxAdapter(params: {
       return Buffer.from(await response.arrayBuffer());
     },
 
+    async listChanges({ path, cursor, latest }): Promise<DropboxChangePage> {
+      const url = cursor
+        ? `${API_BASE}/2/files/list_folder/continue`
+        : latest
+          ? `${API_BASE}/2/files/list_folder/get_latest_cursor`
+          : `${API_BASE}/2/files/list_folder`;
+      const body = cursor
+        ? { cursor }
+        : { path, recursive: true, include_deleted: false, limit: 2000 };
+      const response = await apiCallWithRefresh(url, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw mapError(response.status, await response.text());
+      const data = (await response.json()) as Record<string, unknown>;
+      return {
+        entries: ((data["entries"] as Record<string, unknown>[]) ?? []).map((e) => ({
+          tag: (e[".tag"] as DropboxChange["tag"]) ?? "file",
+          id: (e["id"] as string) ?? "",
+          pathLower: (e["path_lower"] as string) ?? "",
+          pathDisplay: (e["path_display"] as string) ?? "",
+          name: (e["name"] as string) ?? "",
+          size: (e["size"] as number) ?? 0,
+          serverModified: (e["server_modified"] as string) ?? "",
+          contentHash: (e["content_hash"] as string) ?? "",
+        })),
+        cursor: (data["cursor"] as string) ?? "",
+        hasMore: data["has_more"] === true,
+      };
+    },
+
     async moveFile(fromPath, toPath): Promise<void> {
       const response = await apiCallWithRefresh(
         `${API_BASE}/2/files/move_v2`,
@@ -568,6 +626,15 @@ export function createDropboxAdapter(params: {
     },
     downloadFile: (p) => roh.downloadFile(hinein(p)),
     moveFile: (von, nach) => roh.moveFile(hinein(von), hinein(nach)),
+    async listChanges(p) {
+      const seite = await roh.listChanges!({ ...p, path: hinein(p.path) });
+      return {
+        ...seite,
+        entries: seite.entries.map((e) => ({
+          ...e, pathLower: heraus(e.pathLower), pathDisplay: heraus(e.pathDisplay),
+        })),
+      };
+    },
     /* Bewusst nur lesend: Mit Vollzugriff waere eine Testdatei im Wurzel-
        verzeichnis des Kontos das Letzte, was hier entstehen soll. */
     async healthCheck() {

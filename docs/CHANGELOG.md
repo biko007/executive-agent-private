@@ -4,6 +4,22 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 (2) — Dokumentenablagen stündlich, gemeinsame Neuheiten-Meldung
+
+Owner-Anweisung 27.10.2026, 10:45.
+
+- SharePoint und OneDrive (Graph-Delta) sowie die Dropbox-Kontowurzel
+  (`listChanges`, neu im Adapter, nur lesend) werden stündlich auf neue oder
+  geänderte Dateien seit 18.10.2026 geprüft; Register je Quelle mit Dedup über
+  id + Hash.
+- Relevanzregeln für Dateien als Block `dokumente` in derselben
+  `relevanz.json`; Vorschlag a–f, Freigabe `Freigabe Dok <id> <a–f>`.
+- Mails und Dokumente melden gemeinsam: `scripts/neuheiten-stunde.ts`, Timer
+  `neuheiten-stunde.timer`, Report `report-neuheiten-stunde-*.md`. Der Mailteil
+  ist unverändert nach `neuheiten/mail-lauf.ts` umgezogen;
+  `scripts/mail-register-stunde.ts` und sein Timer entfallen.
+- Tests: `doc-register.test.ts` (37), `neuheiten.test.ts` (8).
+
 ## Stand 2026-10-27 — Mail-Register stündlich mit Verarbeitungsvorschlag
 
 Owner-Anweisung 27.10.2026, 10:26.
