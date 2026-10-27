@@ -48,7 +48,9 @@ export interface ElementStand {
   /** Mail-Kennung bzw. Dateipfad. */
   beleg: string;
   fehler?: string;
-  /** Nur solange es wartet: das Element selbst, damit der nächste Lauf es bewerten kann. */
+  /** KI-Versuche bisher (Obergrenze 3, dann Einzelmeldung). */
+  versuche?: number;
+  /** Solange nicht fertig bewertet: das Element selbst, damit ein späterer Lauf es bewerten kann. */
   wartend?: Element;
 }
 
@@ -145,27 +147,44 @@ export function vorgangsListe(s: Speicher, jetzt: Date): string[] {
 export function aufrufeLetzteStunde(zustand: string, jetzt: Date): number {
   try {
     const grenze = jetzt.getTime() - 3_600_000;
+    /* Kaputte Zeilen einzeln überspringen — sonst wäre der Deckel offen. */
     return fs.readFileSync(P(zustand).kosten, 'utf-8').split('\n').filter(Boolean)
-      .map((z) => JSON.parse(z)).filter((k) => Date.parse(k.zeit) > grenze)
-      .reduce((a, k) => a + (k.aufrufe ?? 0), 0);
+      .map((z) => { try { return JSON.parse(z); } catch { return null; } })
+      .filter((k) => k && Date.parse(k.zeit) > grenze)
+      .reduce((a, k) => a + (Number(k.aufrufe) || 0), 0);
   } catch { return 0; }
 }
 
-/** Thread-Regel (hart): gehört eine der Thread-IDs zu einem Element mit Vorgang? */
+/**
+ * Thread-Regel (hart): Verweist die Mail (In-Reply-To/References) auf die
+ * Message-ID eines Elements, das schon in einem Vorgang steht, gehört sie
+ * dazu. Nur direkte Verweise auf eine bekannte Nachricht zählen — eine bloß
+ * gemeinsame References-Kette (Ticketsysteme) führt nichts zusammen.
+ */
 export function vorgangPerThread(e: Element, s: Speicher): string | null {
-  const ids = new Set((e.threadIds ?? []).map((x) => x.trim().toLowerCase()));
+  const ids = new Set((e.threadIds ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean));
   if (!ids.size) return null;
-  for (const st of Object.values(s.elemente)) {
-    if (!st.vorgang) continue;
-    const mid = st.messageId?.trim().toLowerCase();
-    if (mid && ids.has(mid)) return st.vorgang;
-    /* Auch umgekehrt: Ein früheres Element verweist auf diese Mail? Dann nicht —
-       nur Vorgänger zählen. Gleicher Thread-Anfang (erste References-ID) zählt. */
-    if (st.threadIds?.length && e.threadIds?.length
-      && st.threadIds[0].toLowerCase() === e.threadIds[0].toLowerCase()) return st.vorgang;
-  }
-  return null;
+  const treffer = Object.values(s.elemente)
+    .filter((st) => st.vorgang && st.messageId && ids.has(st.messageId.trim().toLowerCase()))
+    .sort((a, b) => b.datum.localeCompare(a.datum));
+  return treffer[0]?.vorgang ?? null;
 }
+
+/** Zwischenstand sichern — nach jedem Element, damit ein Abbruch nichts verliert. */
+function sichere(d: SekretariatDeps, s: Speicher): void {
+  if (d.probe) return;
+  const p = P(d.zustand);
+  fs.mkdirSync(d.zustand, { recursive: true });
+  schreibeJson(p.elemente, s.elemente);
+  schreibeJson(p.vorgaenge, { vorgaenge: s.vorgaenge });
+}
+function haenge(d: SekretariatDeps, datei: 'nichtRelevant' | 'kosten', zeile: unknown): void {
+  if (d.probe) return;
+  fs.mkdirSync(d.zustand, { recursive: true });
+  fs.appendFileSync(P(d.zustand)[datei], JSON.stringify(zeile) + '\n');
+}
+
+const MAX_VERSUCHE = 3;
 
 export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<LaufErgebnis> {
   const jetzt = d.jetzt ?? new Date();
@@ -175,28 +194,34 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
   const z: Zaehler = { erfasst: 0, vorgefiltert: 0, bewertet: 0, abgelegtKi: 0, vorschlag: 0, netzEinzeln: 0, wartet: 0, fehler: 0 };
   const ergebnis: LaufErgebnis = { zaehler: z, vorgaenge: [], einzeln: [], tokensEin: 0, tokensAus: 0, kostenUsd: 0, alarm: [], elemente: [] };
   const beruehrt = new Set<string>();
-  const nichtRelevant: unknown[] = [];
   let aufrufe = 0;
   const schonAufrufe = d.deckelProStunde == null ? 0 : aufrufeLetzteStunde(d.zustand, jetzt);
 
-  /* Wartende aus früheren Läufen kommen zuerst wieder dran; dann das Neue.
-     Fertig Bewertetes wird nie zweimal angefasst. */
-  const wartende = Object.values(s.elemente).filter((x) => (x.status === 'wartet' || x.status === 'fehler') && x.wartend)
+  /* Offenes aus früheren Läufen (erfasst, wartet, fehler) kommt zuerst wieder
+     dran; dann das Neue. Fertig Bewertetes wird nie zweimal angefasst. */
+  const offen = Object.values(s.elemente).filter((x) => ['erfasst', 'wartet', 'fehler'].includes(x.status) && x.wartend)
     .map((x) => x.wartend!) as Element[];
-  const liste = [...wartende, ...neu.filter((e) => !s.elemente[e.kennung]
-    || s.elemente[e.kennung].status === 'erfasst')]
+  const liste = [...offen, ...neu.filter((e) => !s.elemente[e.kennung] || ['erfasst', 'wartet', 'fehler'].includes(s.elemente[e.kennung].status))]
     .filter((e, i, a) => a.findIndex((x) => x.kennung === e.kennung) === i)
+    .map((e) => ({ ...e, titel: e.titel ?? '', datum: e.datum || zeit, text: e.text ?? '' }))
     .sort((a, b) => a.datum.localeCompare(b.datum));
+
+  /* Erst alles als „erfasst" sichern — mit Inhalt. Bricht der Lauf danach ab,
+     findet der nächste Lauf jede Neuheit wieder (Review 27.10.2026). */
+  for (const e of liste) {
+    const beleg = e.typ === 'mail' ? `${e.kennung} (${e.quelle})` : `${e.quelle}:${e.pfad ?? e.titel}`;
+    s.elemente[e.kennung] ??= {
+      kennung: e.kennung, typ: e.typ, quelle: e.quelle, datum: e.datum, titel: e.titel, von: e.von,
+      messageId: e.messageId, threadIds: e.threadIds, status: 'erfasst', kette: { erfasst: zeit },
+      netz: [], begruendung: '', beleg, wartend: e,
+    };
+    s.elemente[e.kennung].wartend = e;
+  }
+  sichere(d, s);
 
   for (const e of liste) {
     z.erfasst++;
-    const beleg = e.typ === 'mail' ? `${e.kennung} (${e.quelle})` : `${e.quelle}:${e.pfad ?? e.titel}`;
-    const st: ElementStand = s.elemente[e.kennung] ?? {
-      kennung: e.kennung, typ: e.typ, quelle: e.quelle, datum: e.datum, titel: e.titel, von: e.von,
-      messageId: e.messageId, threadIds: e.threadIds, status: 'erfasst', kette: { erfasst: zeit },
-      netz: [], begruendung: '', beleg,
-    };
-    s.elemente[e.kennung] = st;
+    const st = s.elemente[e.kennung];
     delete st.fehler;
 
     const vf = vorfilter(e, d.regeln, d.dokRegeln);
@@ -204,32 +229,53 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
       Object.assign(st, { status: 'abgelegt', vorfilter: vf, begruendung: `Vorfilter: ${vf}`, wartend: undefined });
       st.kette.abgelegt = zeit;
       z.vorgefiltert++;
-      nichtRelevant.push({ zeit, kennung: e.kennung, titel: e.titel, von: e.von, grund: `Vorfilter: ${vf}`, beleg });
+      haenge(d, 'nichtRelevant', { zeit, kennung: e.kennung, titel: e.titel, von: e.von, grund: `Vorfilter: ${vf}`, beleg: st.beleg });
+      sichere(d, s);
       continue;
     }
     st.netz = zweitesNetz(e, d.bankVersicherer);
 
     if (d.deckelProStunde != null && schonAufrufe + aufrufe >= d.deckelProStunde) {
-      Object.assign(st, { status: 'wartet', begruendung: 'Deckel erreicht — nächster Lauf', wartend: e });
+      Object.assign(st, { status: 'wartet', begruendung: 'Deckel erreicht — nächster Lauf' });
       st.kette.wartet = zeit;
       z.wartet++;
+      sichere(d, s);
       continue;
     }
 
+    /* Thread-Regel VOR der Relevanz: eine Antwort im Thread gehört zum Vorgang,
+       auch wenn das Modell sie für sich allein unwichtig findet. */
+    const perThread = e.typ === 'mail' ? vorgangPerThread(e, s) : null;
     const kontext: Kontext = { ...d.kontext, vorgaenge: vorgangsListe(s, jetzt) };
     let antwort;
     try {
-      aufrufe++;
       antwort = await bewerteMitKi(e, kontext, d.ki);
     } catch (x: any) {
-      antwort = { bewertung: null, fehler: String(x?.message ?? x).slice(0, 200), tokensEin: 0, tokensAus: 0 };
+      antwort = { bewertung: null, fehler: String(x?.message ?? x).slice(0, 200), tokensEin: 0, tokensAus: 0, aufrufe: 1 };
     }
+    aufrufe += antwort.aufrufe;
     ergebnis.tokensEin += antwort.tokensEin;
     ergebnis.tokensAus += antwort.tokensAus;
+    haenge(d, 'kosten', { zeit: new Date().toISOString(), kennung: e.kennung, aufrufe: antwort.aufrufe, tokensEin: antwort.tokensEin,
+      tokensAus: antwort.tokensAus, kostenUsd: kostenUsd(antwort.tokensEin, antwort.tokensAus), modell: 'claude-sonnet-4-6', deckel: d.deckelProStunde });
+
     if (!antwort.bewertung) {
-      Object.assign(st, { status: 'fehler', fehler: antwort.fehler ?? 'unbekannt', begruendung: 'KI-Bewertung fehlgeschlagen — nächster Lauf', wartend: e });
-      st.kette.fehler = zeit;
-      z.fehler++;
+      st.versuche = (st.versuche ?? 0) + 1;
+      if (st.versuche >= MAX_VERSUCHE) {
+        /* Nicht endlos wiederholen — aber auch nicht still verlieren: als
+           Einzelmeldung mit dem Netz-Befund (Review 27.10.2026). */
+        Object.assign(st, { status: 'netz', wartend: undefined, fehler: antwort.fehler ?? 'unbekannt',
+          begruendung: `KI ${st.versuche}× nicht bewertbar${st.netz.length ? ` — Netz: ${st.netz.map((n) => n.grund).join(', ')}` : ''}` });
+        st.kette.netz = zeit;
+        z.netzEinzeln++;
+        ergebnis.einzeln.push(st);
+        ergebnis.alarm.push(`${e.kennung}: KI ${st.versuche}× fehlgeschlagen — als Einzelmeldung ausgegeben`);
+      } else {
+        Object.assign(st, { status: 'fehler', fehler: antwort.fehler ?? 'unbekannt', begruendung: 'KI-Bewertung fehlgeschlagen — nächster Lauf' });
+        st.kette.fehler = zeit;
+        z.fehler++;
+      }
+      sichere(d, s);
       continue;
     }
     const b = antwort.bewertung;
@@ -237,26 +283,27 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
     st.bewertung = b;
     st.begruendung = b.begruendung;
 
-    if (!b.relevant && !st.netz.length) {
+    if (!b.relevant && !st.netz.length && !perThread) {
       Object.assign(st, { status: 'abgelegt', wartend: undefined });
       st.kette.abgelegt = zeit;
       z.abgelegtKi++;
-      nichtRelevant.push({ zeit, kennung: e.kennung, titel: e.titel, von: e.von, grund: `KI: ${b.begruendung}`, beleg });
+      haenge(d, 'nichtRelevant', { zeit, kennung: e.kennung, titel: e.titel, von: e.von, grund: `KI: ${b.begruendung}`, beleg: st.beleg });
+      sichere(d, s);
       continue;
     }
-    if (!b.relevant) {
+    if (!b.relevant && !perThread) {
       /* Zweites Netz schlägt an, die KI nicht: immer melden, als Einzelzeile. */
       Object.assign(st, { status: 'netz', wartend: undefined,
         begruendung: `Netz: ${st.netz.map((n) => n.grund).join(', ')} — KI: ${b.begruendung}` });
       st.kette.netz = zeit;
       z.netzEinzeln++;
       ergebnis.einzeln.push(st);
+      sichere(d, s);
       continue;
     }
 
     /* Vorgang: Thread-ID hart, sonst KI (nur bestehende Kennung), sonst
        gleicher Titel und Objekt, sonst neu. */
-    const perThread = e.typ === 'mail' ? vorgangPerThread(e, s) : null;
     const perKi = b.vorgang.bestehend && s.vorgaenge.some((v) => v.kennung === b.vorgang.bestehend) ? b.vorgang.bestehend : null;
     const perTitel = s.vorgaenge.find((v) => v.titel.toLowerCase() === b.vorgang.titel.toLowerCase()
       && (v.objekt ?? '') === (b.objekt ?? ''))?.kennung ?? null;
@@ -269,8 +316,9 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
     }
     if (!v.elemente.includes(e.kennung)) v.elemente.push(e.kennung);
     v.aktualisiert = zeit;
-    /* Das jüngste Element bestimmt den nächsten Schritt; die früheste Frist gilt. */
-    if (e.datum >= (v.elemente.map((k) => s.elemente[k]?.datum ?? '').sort().slice(-1)[0] ?? '')) {
+    /* Das jüngste relevante Element bestimmt den nächsten Schritt; die früheste Frist gilt. */
+    const juengstes = v.elemente.map((k) => s.elemente[k]?.datum ?? '').sort().slice(-1)[0] ?? '';
+    if (b.relevant && e.datum >= juengstes) {
       v.vorschlag = b.vorschlag; v.naechsterSchritt = b.naechsterSchritt; v.begruendung = b.begruendung;
     }
     const fristen = [b.bis, ...b.fakten.fristen.map((f) => f.datum), v.frist].filter((x): x is string => !!x).sort();
@@ -280,6 +328,7 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
     st.kette.vorschlag = zeit;
     z.vorschlag++;
     beruehrt.add(v.kennung);
+    sichere(d, s);
     log(`[sekretariat] ${e.kennung} → ${v.kennung} ${v.titel} (${b.vorschlag})${perThread ? ' [Thread]' : ''}`);
   }
 
@@ -290,23 +339,23 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
   /* Statuskette: Jede erfasste Neuheit muss genau einen Ausgang haben. */
   const ausgang = z.vorgefiltert + z.abgelegtKi + z.vorschlag + z.netzEinzeln + z.wartet + z.fehler;
   if (ausgang !== z.erfasst) ergebnis.alarm.push(`Statuskette lückenhaft: erfasst ${z.erfasst}, Ausgänge ${ausgang}`);
-  if (z.bewertet !== z.abgelegtKi + z.vorschlag + z.netzEinzeln) ergebnis.alarm.push(`bewertet ${z.bewertet} ≠ abgelegt+Vorschlag+Netz`);
   if (z.fehler) ergebnis.alarm.push(`${z.fehler} KI-Bewertung(en) fehlgeschlagen — werden im nächsten Lauf wiederholt`);
-  const altWartend = Object.values(s.elemente).filter((x) => x.status === 'wartet' && x.kette.wartet
-    && jetzt.getTime() - Date.parse(x.kette.wartet) > 3 * 3_600_000).length;
-  if (altWartend) ergebnis.alarm.push(`${altWartend} Neuheit(en) warten länger als 3 h auf die KI (Deckel)`);
+  const altWartend = Object.values(s.elemente).filter((x) => ['wartet', 'erfasst'].includes(x.status)
+    && jetzt.getTime() - Date.parse(x.kette.wartet ?? x.kette.erfasst ?? zeit) > 3 * 3_600_000).length;
+  if (altWartend) ergebnis.alarm.push(`${altWartend} Neuheit(en) warten länger als 3 h auf die Bewertung`);
 
   if (!d.probe) {
-    const p = P(d.zustand);
-    fs.mkdirSync(d.zustand, { recursive: true });
-    schreibeJson(p.elemente, s.elemente);
-    schreibeJson(p.vorgaenge, { vorgaenge: s.vorgaenge });
-    if (nichtRelevant.length) fs.appendFileSync(p.nichtRelevant, nichtRelevant.map((x) => JSON.stringify(x)).join('\n') + '\n');
-    fs.appendFileSync(p.kosten, JSON.stringify({ zeit, aufrufe, tokensEin: ergebnis.tokensEin, tokensAus: ergebnis.tokensAus,
-      kostenUsd: ergebnis.kostenUsd, modell: 'claude-sonnet-4-6', deckel: d.deckelProStunde }) + '\n');
-    fs.appendFileSync(p.laeufe, JSON.stringify({ zeit, ...z, alarm: ergebnis.alarm }) + '\n');
+    sichere(d, s);
+    fs.appendFileSync(P(d.zustand).laeufe, JSON.stringify({ zeit, ...z, aufrufe, tokensEin: ergebnis.tokensEin,
+      tokensAus: ergebnis.tokensAus, kostenUsd: ergebnis.kostenUsd, alarm: ergebnis.alarm }) + '\n');
   }
   return ergebnis;
+}
+
+/** Abgleich (Sicherstellen 1): Kennungen aus den Registern, die das Sekretariat nicht kennt. */
+export function fehlendeKennungen(zustand: string, registerKennungen: string[]): string[] {
+  const s = ladeSpeicher(zustand);
+  return [...new Set(registerKennungen)].filter((k) => !s.elemente[k]);
 }
 
 export function vorschlagKurz(v: Pick<Vorgang, 'vorschlag'>): string {

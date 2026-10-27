@@ -52,6 +52,8 @@ export function stundenReportSekretariat(p: {
   const out = [
     `# Neuheiten ${p.jetzt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
     '',
+    '**AUTO · Sekretariat Stufe 1** · Zeiten UTC · Datenklassifizierung: intern/privat (IBAN maskiert, Gesundheit ausgeschlossen)',
+    '',
     `**${zeilen.length} Vorgang/Vorgänge zur Freigabe**${kenntnis ? `, + ${kenntnis} zur Kenntnis` : ''}`
       + `${p.ergebnis.einzeln.length ? `, ${p.ergebnis.einzeln.length} Netz-Treffer` : ''}. Nichts wurde ausgeführt.`,
     '',

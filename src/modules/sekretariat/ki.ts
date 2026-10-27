@@ -10,6 +10,7 @@
 import { ANTHROPIC_MODEL, fetchWithTimeout } from '../../shared/utils/index.js';
 import { SCHEMA_TEXT, pruefeBewertung, type Bewertung } from './schema.js';
 import { gesundheitImText, type Element } from './element.js';
+import { maskiere } from '../mail-register/relevanz.js';
 
 export interface Kontext {
   objekte: Array<{ kuerzel: string; adresse: string }>;
@@ -28,6 +29,8 @@ export interface KiAntwort {
   fehler: string | null;
   tokensEin: number;
   tokensAus: number;
+  /** API-Aufrufe (1 oder 2) — zählt für den Deckel. */
+  aufrufe: number;
 }
 
 export type KiClient = (system: string, nutzer: string) => Promise<{ text: string; tokensEin: number; tokensAus: number }>;
@@ -38,14 +41,19 @@ export function anthropicClient(apiKey: string, model = ANTHROPIC_MODEL): KiClie
     const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: 1500, system, messages: [{ role: 'user', content: nutzer }] }),
+      /* System-Prompt (Kontext) mit Prompt-Caching: innerhalb eines Laufs fast
+         gleich, also nur einmal voll bezahlt. */
+      body: JSON.stringify({ model, max_tokens: 1500,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: nutzer }] }),
     }, 60_000);
     if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text().catch(() => '')).slice(0, 160)}`);
     const d: any = await res.json();
+    const u = d?.usage ?? {};
     return {
       text: String(d?.content?.[0]?.text ?? ''),
-      tokensEin: Number(d?.usage?.input_tokens ?? 0),
-      tokensAus: Number(d?.usage?.output_tokens ?? 0),
+      tokensEin: Number(u.input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0),
+      tokensAus: Number(u.output_tokens ?? 0),
     };
   };
 }
@@ -64,7 +72,7 @@ export function systemPrompt(k: Kontext): string {
     ...k.objekte.map((o) => `- ${o.kuerzel}: ${o.adresse}`),
     '',
     '## Kontakte',
-    ...k.kontakte.slice(0, 150).map((c) => `- ${c}`),
+    ...k.kontakte.slice(0, 300).map((c) => `- ${c}`),
     '',
     '## Laufende Fristen',
     ...(k.fristen.length ? k.fristen.slice(0, 40).map((f) => `- ${f}`) : ['- keine']),
@@ -82,10 +90,11 @@ export function nutzerPrompt(e: Element): string {
     `Art: ${e.typ === 'mail' ? 'Mail' : 'Dokument'} (${e.quelle})`,
     `Datum: ${e.datum.slice(0, 16).replace('T', ' ')} UTC`,
     e.typ === 'mail' ? `Absender: ${e.vonName ? `${e.vonName} <${e.von}>` : e.von}` : `Ablageort: ${e.von}`,
-    `${e.typ === 'mail' ? 'Betreff' : 'Dateiname'}: ${e.titel}`,
+    `${e.typ === 'mail' ? 'Betreff' : 'Dateiname'}: ${maskiere(e.titel)}`,
     e.anhaenge?.length ? `Anhänge: ${e.anhaenge.join(', ')}` : '',
     '',
-    e.text ? `Text (gekürzt):\n${e.text.slice(0, 3000)}` : 'Text: (keiner lesbar)',
+    /* IBAN und Kontonummern verlassen den Server nicht (C5). */
+    e.text ? `Text (gekürzt):\n${maskiere(e.text.slice(0, 3000))}` : 'Text: (keiner lesbar)',
   ].filter((z) => z !== '').join('\n');
 }
 
@@ -94,8 +103,9 @@ export async function bewerteMitKi(e: Element, k: Kontext, client: KiClient): Pr
   if (gesundheitImText(e)) throw new Error('Gesundheitspost darf nicht an das Modell');
   const system = systemPrompt(k);
   let nutzer = nutzerPrompt(e);
-  let ein = 0; let aus = 0; let letzterFehler = '';
+  let ein = 0; let aus = 0; let letzterFehler = ''; let aufrufe = 0;
   for (let versuch = 0; versuch < 2; versuch++) {
+    aufrufe++;
     const r = await client(system, nutzer);
     ein += r.tokensEin; aus += r.tokensAus;
     const m = r.text.match(/\{[\s\S]*\}/);
@@ -103,12 +113,24 @@ export async function bewerteMitKi(e: Element, k: Kontext, client: KiClient): Pr
     try { roh = m ? JSON.parse(m[0]) : null; } catch (x: any) { letzterFehler = `JSON: ${x.message}`; }
     if (roh) {
       const p = pruefeBewertung(roh);
-      if (p.ok) return { bewertung: p.wert, fehler: null, tokensEin: ein, tokensAus: aus };
+      if (p.ok) return { bewertung: maskiereBewertung(p.wert), fehler: null, tokensEin: ein, tokensAus: aus, aufrufe };
       letzterFehler = p.fehler.join('; ');
     } else if (!letzterFehler) letzterFehler = 'kein JSON in der Antwort';
     nutzer = `${nutzerPrompt(e)}\n\nDeine letzte Antwort war ungültig (${letzterFehler}). Antworte nur mit gültigem JSON nach Schema.`;
   }
-  return { bewertung: null, fehler: letzterFehler, tokensEin: ein, tokensAus: aus };
+  return { bewertung: null, fehler: letzterFehler, tokensEin: ein, tokensAus: aus, aufrufe };
+}
+
+/** Alles, was das Modell schreibt, geht in Report, Dropbox und Telegram — ohne volle IBAN (C5). */
+export function maskiereBewertung(b: Bewertung): Bewertung {
+  return {
+    ...b,
+    begruendung: maskiere(b.begruendung),
+    vorgang: { ...b.vorgang, titel: maskiere(b.vorgang.titel) },
+    fakten: { ...b.fakten, nummern: b.fakten.nummern.map(maskiere), betraege: b.fakten.betraege.map((x) => ({ ...x, bezeichnung: maskiere(x.bezeichnung) })) },
+    erwartet: b.erwartet ? maskiere(b.erwartet) : null,
+    naechsterSchritt: maskiere(b.naechsterSchritt),
+  };
 }
 
 /** Geschätzte Kosten (Listenpreis claude-sonnet-4-6: 3 $ / 15 $ je Mio. Tokens). */

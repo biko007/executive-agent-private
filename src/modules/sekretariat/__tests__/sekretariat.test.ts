@@ -228,6 +228,81 @@ describe('Verarbeiten: Vorgänge, Netz, Ablage, Deckel, Statuskette', () => {
     expect(k.kostenUsd).toBeCloseTo(0.006, 5);
   });
 
+  test('Abbruchfest: jede Neuheit liegt als „erfasst" mit Inhalt im Speicher, bevor das Modell gefragt wird', async () => {
+    const z = tmp();
+    let gesehen: any = null;
+    const ki: KiClient = async () => {
+      gesehen ??= JSON.parse(fs.readFileSync(path.join(z, 'elemente.json'), 'utf-8'));
+      return { text: JSON.stringify(bew()), tokensEin: 10, tokensAus: 5 };
+    };
+    await verarbeite([mail({ kennung: 'm-1' }), mail({ kennung: 'm-2', messageId: '<b@x>' })], deps(z, ki));
+    expect(gesehen['m-1'].status).toBe('erfasst');
+    expect(gesehen['m-2'].status).toBe('erfasst');
+    expect(gesehen['m-2'].wartend.text).toContain('Erfüllungsnachweis');
+    const s = ladeSpeicher(z);
+    expect(s.elemente['m-2'].wartend).toBeUndefined();
+  });
+
+  test('„erfasst" aus einem abgebrochenen Lauf wird im nächsten Lauf bewertet', async () => {
+    const z = tmp();
+    const e = mail({ kennung: 'm-x' });
+    fs.writeFileSync(path.join(z, 'elemente.json'), JSON.stringify({ 'm-x': { kennung: 'm-x', typ: 'mail', quelle: 'm365', datum: e.datum,
+      titel: e.titel, von: e.von, status: 'erfasst', kette: { erfasst: '2026-10-27T11:00:00Z' }, netz: [], begruendung: '', beleg: 'm-x', wartend: e } }));
+    const r = await verarbeite([], deps(z, fakeKi([bew()])));
+    expect(r.zaehler.vorschlag).toBe(1);
+  });
+
+  test('nach drei Fehlversuchen: Einzelmeldung statt endloser Wiederholung', async () => {
+    const z = tmp();
+    const ki = fakeKi(['kaputt']);
+    await verarbeite([mail()], deps(z, ki));
+    await verarbeite([], deps(z, ki));
+    const r3 = await verarbeite([], deps(z, ki));
+    expect(r3.einzeln.map((x) => x.kennung)).toEqual(['m-00000001']);
+    expect(r3.alarm.join(' ')).toContain('3× fehlgeschlagen');
+    expect(ladeSpeicher(z).elemente['m-00000001'].status).toBe('netz');
+    const vorher = ki.aufrufe.length;
+    await verarbeite([], deps(z, ki));
+    expect(ki.aufrufe.length).toBe(vorher);
+  });
+
+  test('Thread-Treffer schlägt die Relevanz: Antwort kommt in den Vorgang, Schritt bleibt', async () => {
+    const z = tmp();
+    const a = mail({ kennung: 'm-a', messageId: '<a@x>' });
+    const b = mail({ kennung: 'm-b', messageId: '<b@x>', datum: '2026-10-22T08:00:00Z', titel: 'AW: danke', text: 'Danke, erledigt.', threadIds: ['<a@x>'], von: 'kopf@maurer.de' });
+    await verarbeite([a, b], deps(z, fakeKi([bew(), bew({ relevant: false, begruendung: 'nur Dank', vorschlag: 'f', naechsterSchritt: 'nichts' })])));
+    const v = ladeSpeicher(z).vorgaenge[0];
+    expect(v.elemente).toEqual(['m-a', 'm-b']);
+    expect(v.naechsterSchritt).toBe('Antwort mit Nachweis an die Stadt');
+  });
+
+  test('gemeinsame References-Kette ohne direkten Verweis führt nicht zusammen (Ticketsysteme)', async () => {
+    const z = tmp();
+    const a = mail({ kennung: 'm-a', messageId: '<a@x>', threadIds: ['<ticket@sys>'] });
+    const b = mail({ kennung: 'm-b', messageId: '<b@x>', threadIds: ['<ticket@sys>'], titel: 'Anderes Thema' });
+    await verarbeite([a, b], deps(z, fakeKi([bew(), bew({ objekt: 'N24', vorgang: { bestehend: null, titel: 'N24 Anderes' } })])));
+    expect(ladeSpeicher(z).vorgaenge).toHaveLength(2);
+  });
+
+  test('Deckel zählt API-Aufrufe, nicht Elemente; kaputte Kostenzeilen öffnen ihn nicht', async () => {
+    const z = tmp();
+    const r = await verarbeite([mail({ kennung: 'm-1' }), mail({ kennung: 'm-2', messageId: '<b@x>' })], deps(z, fakeKi(['kaputt']), { deckelProStunde: 2 }));
+    expect(r.zaehler.fehler).toBe(1);
+    expect(r.zaehler.wartet).toBe(1);
+    const z2 = tmp();
+    fs.writeFileSync(path.join(z2, 'kosten.jsonl'), '{kaputt\n' + JSON.stringify({ zeit: '2026-10-27T11:30:00Z', aufrufe: 5 }) + '\n');
+    const r2 = await verarbeite([mail()], deps(z2, fakeKi([bew()]), { deckelProStunde: 5 }));
+    expect(r2.zaehler.wartet).toBe(1);
+  });
+
+  test('IBAN verlässt den Server nicht und steht nicht in der Bewertung', async () => {
+    const z = tmp();
+    const ki = fakeKi([bew({ begruendung: 'Zahlung an DE89 3704 0044 0532 0130 00' })]);
+    await verarbeite([mail({ text: 'Bitte überweisen Sie auf DE89370400440532013000 bis 30.11.2026.' })], deps(z, ki));
+    expect(ki.aufrufe[0]).not.toContain('DE89370400440532013000');
+    expect(JSON.stringify(ladeSpeicher(z).elemente['m-00000001'].bewertung)).not.toMatch(/0532\s?0130/);
+  });
+
   test('Probe schreibt nichts', async () => {
     const z = tmp();
     await verarbeite([mail()], deps(z, fakeKi([bew()]), { probe: true }));

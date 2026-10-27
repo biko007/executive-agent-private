@@ -326,7 +326,7 @@ const sekNachlauf = argv.includes('--sekretariat-nachlauf');
 function sekEinstellungen(): { modus: 'ki' | 'regeln'; deckelProStunde: number } {
   try {
     const r = JSON.parse(fs.readFileSync(SEK_EINSTELLUNGEN, 'utf-8'));
-    return { modus: r.modus === 'regeln' ? 'regeln' : 'ki', deckelProStunde: Number(r.deckelProStunde) > 0 ? Number(r.deckelProStunde) : 60 };
+    return { modus: r.modus === 'ki' ? 'ki' : 'regeln', deckelProStunde: Number(r.deckelProStunde) > 0 ? Number(r.deckelProStunde) : 60 };
   } catch {
     /* Ohne Einstellungsdatei bleibt es bei den Regeln — eingeschaltet wird das
        Sekretariat bewusst mit `"modus": "ki"` (nach Nachlauf und Review). */
@@ -354,6 +354,29 @@ async function dataElemente(bekannt: (k: string) => boolean, seit: string): Prom
   return { elemente, fehler };
 }
 
+/**
+ * Abgleich Register ↔ Sekretariat (Spec „Sicherstellen" 1): Dokumente, die das
+ * Register in den letzten 7 Tagen aufgenommen hat, die das Sekretariat aber
+ * nicht kennt (etwa nach einem Abbruch zwischen Register und Bewertung),
+ * kommen mit Namen und Pfad erneut zur Bewertung. Mails brauchen das nicht —
+ * sie werden gesammelt, solange das Sekretariat sie nicht kennt.
+ */
+function dokNachzuegler(bekannt: (k: string) => boolean, jetzt: Date): Element[] {
+  if (!fs.existsSync(DOK_ZUSTAND)) return [];
+  const grenze = new Date(jetzt.getTime() - 7 * 86_400_000).toISOString();
+  const raus: Element[] = [];
+  for (const datei of fs.readdirSync(DOK_ZUSTAND).filter((f) => f.endsWith('.jsonl'))) {
+    for (const z of fs.readFileSync(path.join(DOK_ZUSTAND, datei), 'utf-8').split('\n').filter(Boolean)) {
+      let d: any;
+      try { d = JSON.parse(z); } catch { continue; }
+      if (!d?.kennung || (d.erkanntIso ?? '') < grenze || bekannt(d.kennung) || raus.some((x) => x.kennung === d.kennung)) continue;
+      raus.push({ typ: 'dokument', kennung: d.kennung, quelle: d.quelle, datum: d.geaendertIso ?? d.erkanntIso, titel: d.name ?? '',
+        von: String(d.pfad ?? '').slice(0, Math.max(0, String(d.pfad ?? '').lastIndexOf('/'))) || '/', pfad: d.pfad, text: '' });
+    }
+  }
+  return raus;
+}
+
 function dokElemente(dok: DokLaufErgebnis): Element[] {
   return dok.neu.map((d) => ({
     typ: 'dokument' as const, kennung: d.kennung, quelle: d.quelle, datum: d.geaendertIso, titel: d.name,
@@ -373,6 +396,13 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   const speicher = ladeSpeicher(SEK_ZUSTAND);
   const bekannt = (k: string) => !!speicher.elemente[k] && speicher.elemente[k].status !== 'erfasst';
 
+  /* Kontext zuerst: Fällt die Datenbank aus, bricht der Lauf ab, BEVOR die
+     Register Neuheiten als gesehen verbuchen (Review 27.10.2026). */
+  const { query, closePool } = await import('../src/shared/db/index.js');
+  let kontext: Awaited<ReturnType<typeof ladeKontext>>;
+  try { kontext = await ladeKontext((s, p) => query(s, p as any[]), regeln, []); }
+  catch (e) { await closePool(); throw e; }
+
   // 1 Erfassen: Mails (juergen.bickel@, Yahoo), data@, Dokumente
   const mail = await mailLauf({ zustand: MAIL_ZUSTAND, regeln, env, probe: nachlaufModus, nachlauf: nachlaufModus, jetzt,
     dropbox: app?.adapter ?? null, log, warn, sekretariat: { bekannt } });
@@ -388,14 +418,16 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
       ersteSeite: (b) => pdfErsteSeite(b, 2) });
     hinweise.push(...dok.fehler, ...dok.hinweise);
   } catch (e: any) { hinweise.push(`Dokumententeil Abbruch: ${String(e?.message ?? e).slice(0, 200)}`); }
-  const elemente = [...(mail.elemente ?? []), ...data.elemente, ...(dok ? dokElemente(dok).filter((e) => !bekannt(e.kennung)) : [])];
+  const dokNeu = dok ? dokElemente(dok).filter((e) => !bekannt(e.kennung)) : [];
+  const nachzuegler = nachlaufModus || !Object.keys(speicher.elemente).length ? []
+    : dokNachzuegler((k) => bekannt(k) || !!speicher.elemente[k] || dokNeu.some((x) => x.kennung === k), jetzt);
+  if (nachzuegler.length) hinweise.push(`Abgleich: ${nachzuegler.length} Dokument(e) im Register, aber nicht im Sekretariat — erneut zur Bewertung (nur Name)`);
+  const elemente = [...(mail.elemente ?? []), ...data.elemente, ...dokNeu, ...nachzuegler];
   log(`sekretariat: ${elemente.length} Neuheiten erfasst (Mail ${mail.elemente?.length ?? 0}, data@ ${data.elemente.length}, Dokumente ${elemente.length - (mail.elemente?.length ?? 0) - data.elemente.length})`);
 
   // 2+3 Verstehen und Verknüpfen
-  const { query, closePool } = await import('../src/shared/db/index.js');
   let ergebnis: LaufErgebnis;
   try {
-    const kontext = await ladeKontext((s, p) => query(s, p as any[]), regeln, []);
     const { vorgaenge: _v, ...ohneVorgaenge } = kontext;
     ergebnis = await verarbeite(elemente, {
       zustand: SEK_ZUSTAND, regeln, dokRegeln, ki: anthropicClient(env('ANTHROPIC_API_KEY')), kontext: ohneVorgaenge,
@@ -406,7 +438,8 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   const stand = ladeSpeicher(SEK_ZUSTAND);
   log(`sekretariat: ${JSON.stringify(ergebnis.zaehler)}; ${ergebnis.tokensEin}/${ergebnis.tokensAus} Tokens ≈ ${ergebnis.kostenUsd} $`);
 
-  // Alarm bei Lücke in der Statuskette
+  // Alarm bei Lücke in der Statuskette (und bei Nachzüglern aus dem Abgleich)
+  if (nachzuegler.length) ergebnis.alarm.push(`Abgleich: ${nachzuegler.length} Dokument(e) fehlten im Sekretariat — nachbewertet`);
   if (ergebnis.alarm.length) {
     await fetch('http://127.0.0.1:18789/api/internal/notify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),

@@ -25,7 +25,7 @@ export async function ladeKontext(q: Abfrage, regeln: Regelwerk, vorgaenge: stri
   const lieferanten = (await q(`SELECT DISTINCT p.name obj, eb.vendor_name v FROM expense_bookings eb JOIN properties p ON p.id = eb.property_id
     WHERE eb.archived_at IS NULL AND eb.vendor_name IS NOT NULL AND eb.vendor_name NOT ILIKE 'noch offen%'
       AND eb.service_period_end >= '2024-01-01' ORDER BY 2`)).rows;
-  const mieter = (await q(`SELECT p.name obj, u.code einheit, t.first_name, t.last_name, t.company_name, t.email
+  const mieter = (await q(`SELECT p.name obj, u.code einheit, t.first_name, t.last_name, t.company_name
     FROM leases l JOIN units u ON u.id = l.unit_id JOIN properties p ON p.id = u.property_id
     JOIN lease_tenants lt ON lt.lease_id = l.id JOIN tenants t ON t.id = lt.tenant_id
     WHERE l.status = 'active' OR l.end_date >= CURRENT_DATE - 400 ORDER BY 1, 2`)).rows;
@@ -36,17 +36,20 @@ export async function ladeKontext(q: Abfrage, regeln: Regelwerk, vorgaenge: stri
     WHERE f.erledigt_am IS NULL ORDER BY f.termin`)).rows;
 
   const kontakte: string[] = [];
+  const mieterZeilen: string[] = [];
   for (const k of regeln.kontakte) kontakte.push(`${k.name} — Kontakt (Absendermuster ${k.absender})`);
   const lief = new Map<string, Set<string>>();
   for (const r of lieferanten) { const s = lief.get(r.v) ?? new Set(); s.add(r.obj); lief.set(r.v, s); }
   for (const [v, o] of lief) kontakte.push(`${v} — Dienstleister/Lieferant (${[...o].join(', ')})`);
   for (const m of mieter) {
     const name = m.company_name || `${m.first_name ?? ''} ${m.last_name ?? ''}`.trim();
-    if (name) kontakte.push(`${name}${m.email ? ` <${m.email}>` : ''} — Mieter ${m.obj} ${m.einheit}`);
+    /* Nur Name und Einheit — keine Mailadresse (Review 27.10.2026: Datensparsamkeit). */
+    if (name) mieterZeilen.push(`${name} — Mieter ${m.obj} ${m.einheit}`);
   }
   return {
     objekte,
-    kontakte,
+    /* Mieter vor den Lieferanten, damit eine Kürzung sie nicht zufällig trifft. */
+    kontakte: [...kontakte.slice(0, regeln.kontakte.length), ...new Set(mieterZeilen), ...kontakte.slice(regeln.kontakte.length)],
     fristen: [
       ...nk.map((r: any) => `${r.d} ${r.obj}: NK-Abrechnung ${r.year} muss zugegangen sein`),
       ...fristen.map((r: any) => `${r.d} ${r.obj}: ${r.bezeichnung}`),

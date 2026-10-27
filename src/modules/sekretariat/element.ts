@@ -58,10 +58,15 @@ export function vorfilter(e: Element, regeln: Regelwerk, dok: DokRegeln): string
   return gesundheitImText(e) ? 'Gesundheit' : null;
 }
 
-/** Gesundheitspost im Text — eng, damit „Labor" in einem Servicebericht nicht greift. */
-const GESUNDHEIT_TEXT = /\b(lkh|dkv|debeka|signal iduna|hallesche|barmenia|beihilfe|krankenversicherung|krankenkasse|pflegeversicherung|arztpraxis|patient(in)?|diagnose|rezept|apotheke|befund)\b/i;
-export function gesundheitImText(e: Pick<Element, 'text' | 'titel'>): boolean {
-  return GESUNDHEIT_TEXT.test(`${e.titel}\n${e.text.slice(0, 1500)}`);
+/**
+ * Gesundheitspost — geprüft wird ALLES, was an das Modell ginge: Titel, der
+ * ganze Text und die Anhangnamen (Review 27.10.2026). Wortanfang statt ganzer
+ * Wörter, damit „Patienten", „Befundbericht", „Rezepte" greifen. Lieber eine
+ * Geschäftsmail zu viel ausgesondert als ein Arztbrief beim Modell.
+ */
+const GESUNDHEIT_TEXT = /\b(ärzt|aerzt|arzt|zahnarzt|arztbrief|klinik|krankenhaus|therapie|therapeut|physio|laborbefund|laborwert|blutbild|mrt\b|befund|diagnose|rezept|apothek|patient|krankenkasse|krankenversicher|pflegeversicher|pflegekasse|beihilfe|lkh\b|dkv\b|debeka|signal iduna|hallesche|barmenia|impf|reha-?klinik|praxis dr|dr\. med)/i;
+export function gesundheitImText(e: Pick<Element, 'text' | 'titel'> & { anhaenge?: string[] }): boolean {
+  return GESUNDHEIT_TEXT.test(`${e.titel}\n${e.text}\n${(e.anhaenge ?? []).join('\n')}`);
 }
 
 // ── Zweites Netz ───────────────────────────────────────────────────────────
