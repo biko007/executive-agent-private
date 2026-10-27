@@ -482,6 +482,64 @@ bleibt unberuehrt — er ist Owner-Eingang, nicht Sammelstelle.
   heraus. Geloeschte Elemente, Junk, Entwuerfe und Postausgang bleiben aus dem
   Register — mit Zaehlerstand im Report, damit die Luecke benannt ist.
 
+## 9e. Mail-Register stündlich mit Verarbeitungsvorschlag (mail-register/lesend, relevanz)
+
+**Status:** ✅ live seit 2026-10-27
+
+Owner-Anweisung 27.10.2026, 10:26: „Sowohl juergen.bickel@bikolino.com als
+auch jbickel2@yahoo.de alle 1h prüfen und direkt Verarbeitung für relevante
+E-Mails vorschlagen." Anlass: Der Abdeckungsbefund vom selben Tag
+(`report-mail-register-abdeckung-20261027.md`) — laufend registriert waren nur
+data@ und `+bikosoc`.
+
+- **Nur lesend, im Typ verankert.** Der Lauf arbeitet gegen `LeseQuelle`
+  (`lesend.ts`): `ordner`, `mails`, `anhangsnamen`, `text`, `gesendeteIds`.
+  Graph: `nurLesendGraph()` reicht nur diese Methoden durch — `verschiebe`,
+  `mime`, `anhaenge` gibt es am Objekt nicht. IMAP: jeder Ordner mit
+  `getMailboxLock(…, { readOnly: true })` (EXAMINE), Text über `download()`
+  mit BODY.PEEK; kein Lesevermerk. Statische Tests halten verändernde
+  IMAP-Befehle, `graphPost` und Ablage-/Verschiebewege heraus.
+- **Quellen:** `m365` = juergen.bickel@, alle Ordner ausser Gelöscht, Junk,
+  Entwürfe, Postausgang und **Gesendet** (Gesendet liefert nur die
+  Message-IDs für die Antworterkennung). `yahoo` = INBOX, Technik-Backups,
+  Lesestoff, Angebote, Soziale Updates; „Bulk" (Spam) nicht.
+- **Zeitraum:** ab 18.10.2026; jeder Stundenlauf blickt 48 h zurück
+  (`stunde-stand.json`), damit spät eintreffende Mails nicht fehlen.
+- **Register:** `m365.jsonl`, `yahoo.jsonl` neben `data.jsonl`, gleiche
+  Zeilen (`eintragAus`). Doppel über die Message-ID gegen **alle drei**
+  Register; eine Mail, die schon über Proton/data@ kam, wird nicht noch einmal
+  geschrieben. CSV `transfer/postfach/m365-register.csv` und
+  `…/yahoo-register.csv`, nur wenn das Register gewachsen ist.
+- **Relevanz (Regeln, keine KI):** `relevanz.json`, Owner-editierbar, wird
+  beim ersten Lauf aus `STANDARD_REGELN` angelegt und nie überschrieben;
+  kaputte Muster fallen einzeln auf die Vorgabe zurück. Reihenfolge: eigene
+  Mail → nein; Gesundheit → nein (immer); Kontakt → ja; Newsletter
+  (List-Unsubscribe), Paketstatus (ausser „verspätet"/„nicht zustellbar"),
+  Systemmeldung, Social, Bewerbung, Werbeordner → nein; Stichwort, Objekt,
+  Antwort auf eine gesendete Mail → ja. Kurze Objektkürzel (D4, Z5) nur im
+  Betreff, im Text nur Adressen; „Bestellung"/„Angebot" nur im Betreff (sonst
+  trifft jede Shop-Fusszeile). Bewertet wird jede Message-ID genau einmal
+  (`bewertet.json`), auch wenn die Mail in beiden Postfächern oder schon in
+  data@ liegt.
+- **Vorschlag:** fester Katalog a Beleg ablegen + Buchung Objekt X, b
+  Zählerstände/Fakten einarbeiten, c Antwortentwurf, d Frist/Termin, e
+  Reklamation/Widerspruch, f nur zur Kenntnis, sonst „Vorschlag offen".
+  Kennung `m-<8 hex>` aus der Message-ID. Ablage `vorschlaege.jsonl`.
+  **Nichts wird ausgeführt**; die Freigabe lautet `Freigabe Mail <id> <a–f>`.
+- **Zustellung:** nur wenn die Stunde relevante neue Mails hat — Owner-DM
+  (`/api/internal/notify`, Rolle operativ, höchstens 12 Zeilen) und
+  `report-mail-stunde-<JJJJMMTT-HHMM>.md` direkt nach Dropbox
+  `/bikosoc-reports/` (Kopie unter `artifacts/personal/mail-register/stunden/`).
+  Bewusst nicht über `~/bikosoc-spec/`: der Watcher würde dieselbe Meldung ein
+  zweites Mal in die Dev-Gruppe schicken und an seinem Rate-Limit hängen.
+  IBAN und Kontonummern werden auf die letzten vier Stellen gekürzt.
+- **Erstlauf:** `--nachlauf` bewertet alles seit 18.10.2026 und schreibt
+  `~/bikosoc-spec/report-mail-nachlauf-<datum>.md` (ohne DM).
+- **Takt:** `mail-register-stunde.timer`, stündlich Minute 7, beide
+  Postfächer nacheinander; data@ bleibt bei 5 Minuten.
+- **Rückweg:** `systemctl --user disable --now mail-register-stunde.timer`;
+  die Registerdateien bleiben liegen.
+
 ## 9d. Reise-Import (reise-import)
 
 Owner-Auftrag 18.10.2026. Der Reiseassistent — ein Claude-Projekt mit

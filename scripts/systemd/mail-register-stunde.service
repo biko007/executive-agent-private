@@ -1,0 +1,11 @@
+[Unit]
+Description=bikosoc Mail-Register stündlich: juergen.bickel@ und Yahoo, nur lesend, mit Verarbeitungsvorschlag
+Documentation=file:///home/biko/bikosoc-spec/report-mail-register-stuendlich-20261027.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.openclaw/workspace/.openclaw/extensions/executive-agent
+ExecStart=/home/biko/.bun/bin/bun scripts/mail-register-stunde.ts
+EnvironmentFile=-%h/.config/openclaw/env
+# Ein haengender IMAP-Server soll den naechsten Stundenlauf nicht blockieren.
+TimeoutStartSec=20min

@@ -4,6 +4,20 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 — Mail-Register stündlich mit Verarbeitungsvorschlag
+
+Owner-Anweisung 27.10.2026, 10:26.
+
+- juergen.bickel@ (Graph) und Yahoo (IMAP `readOnly`) werden stündlich und nur
+  lesend registriert (`m365.jsonl`, `yahoo.jsonl`), Doppel über die Message-ID
+  gegen alle drei Register.
+- Relevanzregeln als editierbare `relevanz.json`; je relevanter Mail ein
+  Vorschlag aus dem Katalog a–f, Freigabe `Freigabe Mail <id> <a–f>`.
+- Owner-DM und `report-mail-stunde-*.md` nur bei relevanten Mails; Erstlauf
+  `--nachlauf` seit 18.10.2026.
+- Tests: `relevanz.test.ts` (37), `lesend.test.ts` (14, mit Dedup und
+  Schreibschutz für Graph und IMAP).
+
 ## Stand 2026-10-26 (2) — Admin-Kanal in der Prompt-Inbox
 
 Owner-Freigabe 26.10.2026 ~13:51 „ADMIN-Kanal".
