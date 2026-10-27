@@ -94,11 +94,10 @@ import {
   ABEND_BRIEFING_STANDARD,
 } from "./src/shared/settings/index.js";
 import {
-  RUBRIK as BRIEFING_RUBRIK, ausfallZeile, alsTelegramHtml, alsMailText,
+  RUBRIK as BRIEFING_RUBRIK, ausfallZeile, alsTelegramHtml,
   ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt,
   gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE,
   naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet,
-  sendeAbendbriefingMail, abendBetreff,
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   registerBriefingHttpRoutes,
 } from "./src/modules/briefing/index.js";
@@ -2508,7 +2507,7 @@ export default function (api: any) {
       const raw = String(ctx.args || '').trim();
       if (!raw) {
         const jetzt = loadSettings().abendBriefingTime || ABEND_BRIEFING_STANDARD;
-        return { text: `🌙 Abendbriefing täglich um ${jetzt} Uhr (Europe/Berlin), per Telegram und Mail an Ihr M365-Postfach.` };
+        return { text: `🌙 Abendbriefing täglich um ${jetzt} Uhr (Europe/Berlin), per Telegram.` };
       }
       if (!/^\d{1,2}:\d{2}$/.test(raw)) return { text: '❌ Verwendung: /abendbriefingtime 21:00' };
       const [h, m] = raw.split(':').map(Number);
@@ -3525,8 +3524,9 @@ export default function (api: any) {
   //     einmal neu erzeugt; scheitert auch das, geht eine kurze Fehlermeldung
   //     an Telegram (Regel in src/modules/briefing/planer.ts).
   //   - Abendbriefing zur Einstellung abendBriefingTime (Standard 21:00),
-  //     Versand über Telegram UND als Mail an das eigene Postfach
-  //     (eng gefasste Ausnahme von der Entwurfsregel, siehe briefing/mail.ts).
+  //     Versand nur über Telegram. Die Mail an das eigene Postfach (Ausnahme
+  //     von der Entwurfsregel, 26.10.2026) ist seit 27.10.2026 entfernt —
+  //     Owner-Vorgabe: Telegram ist der einzige Kanal.
 
   if (!g.__ea_briefingSchedulerRegistered) {
     g.__ea_briefingSchedulerRegistered = true;
@@ -3561,7 +3561,6 @@ export default function (api: any) {
     /** Ein Lauf: erzeugen, zustellen, festhalten. true = per Telegram zugestellt. */
     async function briefingLauf(art: BriefingArt, datum: string, chatId: string): Promise<boolean> {
       let text = '';
-      let mailText = '';
       let fehler: string | null = null;
       try {
         if (art === 'morgen') {
@@ -3569,7 +3568,6 @@ export default function (api: any) {
         } else {
           const zeilen = await mitZeitlimit(generateAbendZeilen());
           text = alsTelegramHtml(zeilen);
-          mailText = alsMailText(zeilen);
         }
       } catch (e: any) {
         fehler = e?.message === 'briefing_timeout' ? 'Zeitlimit 45 s überschritten' : String(e?.message || e);
@@ -3577,33 +3575,9 @@ export default function (api: any) {
       }
 
       let telegramOk = false;
-      let mailOk: boolean | null = null;
       if (text) {
         telegramOk = (await sendTelegramHtmlWithMarkup(chatId, text, undefined)).sent;
         if (!telegramOk) fehler = 'Telegram-Zustellung fehlgeschlagen';
-        if (art === 'abend') {
-          const bisher = await holeBriefing('abend', datum).catch(() => null);
-          if (bisher?.mailOk) {
-            mailOk = true;                     // Nachholversuch: Mail nicht doppelt
-          } else {
-            try {
-              const datumKurz = datum.split('-').reverse().join('.');
-              await sendeAbendbriefingMail(
-                (url, body) => graphPost(tenantId, clientId, m365Secret, url, body),
-                { betreff: abendBetreff(datumKurz), text: mailText },
-              );
-              mailOk = true;
-            } catch (e: any) {
-              mailOk = false;
-              api.logger.error(`[executive-agent] Abendbriefing-Mail fehlgeschlagen: ${e.message}`);
-              if (telegramOk) {
-                await sendTelegramHtmlWithMarkup(chatId,
-                  `⚠️ Abendbriefing-Mail nicht zugestellt: ${htmlEscapeSystem(String(e.message).slice(0, 160))}`,
-                  undefined).catch(() => {});
-              }
-            }
-          }
-        }
       }
 
       const status = telegramOk ? 'gesendet' : (text ? 'erzeugt' : 'fehler');
@@ -3611,7 +3585,7 @@ export default function (api: any) {
       lokalerStand.set(`${art}|${datum}`, {
         status, versuche: (vorher?.versuche ?? 0) + 1, fehlerGemeldet: vorher?.fehlerGemeldet ?? false, fehler,
       });
-      await speichereVersuch({ art, datum, textHtml: text, status, telegramOk, mailOk, fehler })
+      await speichereVersuch({ art, datum, textHtml: text, status, telegramOk, mailOk: null, fehler })
         .catch((e: any) => api.logger.error(`[executive-agent] ${ARTNAME[art]} nicht gespeichert: ${e.message}`));
 
       if (text && !telegramOk) {

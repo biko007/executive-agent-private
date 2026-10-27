@@ -54,13 +54,6 @@ export function alsTelegramHtml(zeilen: string[]): string {
     .join('\n');
 }
 
-/** Klartext für die Mail: Rubrikzeichen weg, Überschriften großgeschrieben. */
-export function alsMailText(zeilen: string[]): string {
-  return zeilen.join('\n').trim().split('\n')
-    .map(z => (z.startsWith(RUBRIK) ? z.slice(1).toUpperCase() : z))
-    .join('\n');
-}
-
 /* ── cc-Aufträge aus den Reportköpfen ────────────────────────────────────── */
 
 export interface CcReport {

@@ -344,8 +344,10 @@ Das hat in dieser Sitzung Zeit gekostet — jede Zeile ist belegt:
 1. **Nie senden. Nur Entwürfe.** Keine Mail verlässt das System durch cc.
    Erlaubt sind `createMessage`, `createReply` und `PATCH`; ein `send`-Aufruf
    kommt in keinem Skript vor.
-   *Nachtrag 26.10.2026:* Einzige Ausnahme ist das Abendbriefing an das eigene
-   M365-Postfach des Owners (`src/modules/briefing/mail.ts`, CLAUDE.md §8).
+   *Nachtrag 26.10.2026, zurückgenommen am 27.10.2026:* Die Ausnahme für das
+   Abendbriefing an das eigene M365-Postfach gibt es nicht mehr — das
+   Abendbriefing kommt nur per Telegram, `briefing/mail.ts` ist entfernt
+   (CLAUDE.md §8). Es gilt die Regel ohne Ausnahme.
 2. **Jeder Mailvorschlag des Chats wird gleich als Entwurf angelegt**
    (Owner-Regel vom 19.10.2026). Der Chat erteilt den Auftrag, cc legt an, cc
    sendet nie. Nach dem Anlegen wird der Entwurf **wieder ausgelesen und

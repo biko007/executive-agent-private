@@ -4,6 +4,19 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-27 (3) — Abendbriefing nur per Telegram
+
+Owner-Vorgabe 27.10.2026 ~11:37: Das Abendbriefing kommt per Telegram, nicht
+per Mail.
+
+- Mailversand des Abendbriefings entfernt (`briefing/mail.ts`, `alsMailText`,
+  Mailzweig im Taktgeber). `briefings.mail_ok` bleibt als Spalte, neue
+  Einträge tragen `null`.
+- Die Ausnahme von der Entwurfsregel (26.10.2026) ist zurückgenommen:
+  CLAUDE.md §8, Nachtrag in `docs/projekt/cc-Uebergabe-20261019.md`.
+- Tests: statische Prüfung, dass Briefing-Modul und Taktgeber keinen
+  Mailversand enthalten.
+
 ## Stand 2026-10-27 (2) — Dokumentenablagen stündlich, gemeinsame Neuheiten-Meldung
 
 Owner-Anweisung 27.10.2026, 10:45.

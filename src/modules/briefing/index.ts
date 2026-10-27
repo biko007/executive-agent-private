@@ -2,8 +2,8 @@
  * briefing — Modulschnittstelle (Owner-Auftrag 26.10.2026).
  *
  * Morgenbriefing: Fehlerverhalten, Nachholen, neue Abschnitte (cc-Aufträge,
- * NK-Fristen, Banking, Trading, Reisen). Abendbriefing 21:00 über Telegram und
- * Mail an das eigene Postfach. Ablage beider in der Tabelle `briefings` für
+ * NK-Fristen, Banking, Trading, Reisen). Abendbriefing 21:00 nur über Telegram
+ * (Mailversand am 27.10.2026 entfernt, Owner-Vorgabe). Ablage beider in der Tabelle `briefings` für
  * das Dashboard-Panel.
  *
  * Der Morgentext selbst entsteht weiterhin in index.ts (generateBriefingText),
@@ -14,7 +14,7 @@
  * werden (ESLint-Regel no-deep-module-import).
  */
 export {
-  RUBRIK, tagMonat, tageZwischen, euro, ausfallZeile, alsTelegramHtml, alsMailText,
+  RUBRIK, tagMonat, tageZwischen, euro, ausfallZeile, alsTelegramHtml,
   ccEinordnung, ccAbschnittMorgen, ccAbschnittAbend,
   nkFristZeile, nkFristZeilen, nkAbschnitt,
   bankingAbschnitt, SALDO_ALT_STUNDEN,
@@ -33,11 +33,6 @@ export {
   listeBriefings, istZugestellt,
 } from './store.js';
 export type { BriefingArt, BriefingStatus, BriefingEintrag } from './store.js';
-
-export {
-  ABENDBRIEFING_EMPFAENGER, abendBetreff, abendMailAnfrage, sendeAbendbriefingMail,
-} from './mail.js';
-export type { GraphPost, AbendMail } from './mail.js';
 
 export {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,

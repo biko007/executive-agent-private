@@ -7,11 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  RUBRIK, ausfallZeile, alsTelegramHtml, alsMailText,
+  RUBRIK, ausfallZeile, alsTelegramHtml,
   ccEinordnung, ccAbschnittMorgen, ccAbschnittAbend,
   nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz,
   abendZeilen, naechsteAktion,
-  ABENDBRIEFING_EMPFAENGER, abendBetreff, abendMailAnfrage, sendeAbendbriefingMail,
   leseCcReports,
 } from '../index.js';
 import type { CcReport, KontoStand } from '../index.js';
@@ -19,13 +18,10 @@ import type { CcReport, KontoStand } from '../index.js';
 const cc = (statusRoh: string, titel = 'T', aktion = 'keine', strang: 'bikosoc' | 'hdcc' = 'bikosoc'): CcReport =>
   ({ datei: `report-${titel}.md`, strang, titel, statusRoh, aktion, zeit: '2026-10-26T10:00:00Z' });
 
-describe('Telegram-HTML und Mailtext', () => {
+describe('Telegram-HTML', () => {
   test('maskiert Inhalt und setzt nur Rubriken fett', () => {
     const html = alsTelegramHtml([`${RUBRIK}📆 Kalender`, '09:00 A<b>&C']);
     expect(html).toBe('<b>📆 Kalender</b>\n09:00 A&lt;b&gt;&amp;C');
-  });
-  test('Mailtext ohne Steuerzeichen, Überschrift groß', () => {
-    expect(alsMailText([`${RUBRIK}Termine morgen`, '• x'])).toBe('TERMINE MORGEN\n• x');
   });
   test('Ausfallzeile ist eindeutig', () => {
     expect(ausfallZeile('Kalender')).toBe('⚠️ Kalender nicht abrufbar');
@@ -208,44 +204,28 @@ describe('Taktgeber: erzeugen, nachholen, melden', () => {
   });
 });
 
-describe('Mailversand Abendbriefing — eng gefasste Ausnahme', () => {
-  test('genau ein fester Empfänger: das eigene Postfach', () => {
-    expect(ABENDBRIEFING_EMPFAENGER).toBe('juergen.bickel@bikolino.com');
-    const { url, body } = abendMailAnfrage({ betreff: 'B', text: 'T' });
-    expect(url).toBe('https://graph.microsoft.com/v1.0/users/juergen.bickel%40bikolino.com/sendMail');
-    expect(body.message.toRecipients).toEqual([{ emailAddress: { address: 'juergen.bickel@bikolino.com' } }]);
-    expect(body.message.ccRecipients).toBeUndefined();
-    expect(body.message.bccRecipients).toBeUndefined();
-    expect(body.message.body).toEqual({ contentType: 'Text', content: 'T' });
-  });
+describe('Abendbriefing nur per Telegram (Owner-Vorgabe 27.10.2026)', () => {
+  /* Die Mail-Ausnahme vom 26.10.2026 ist zurückgenommen. Diese Tests halten
+     fest, dass kein Weg zurück in den Mailversand führt. */
+  const wurzel = path.resolve(import.meta.dir, '..', '..', '..', '..');
+  const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
-  test('die Versandfunktion nimmt keinen Empfänger entgegen', () => {
-    // Zwei Parameter: Graph-Aufruf und Mail (Betreff + Text). Kein dritter.
-    expect(sendeAbendbriefingMail.length).toBe(2);
-    expect(abendMailAnfrage({ betreff: 'B', text: 'T', an: 'fremd@example.com' } as any).body.message.toRecipients)
-      .toEqual([{ emailAddress: { address: ABENDBRIEFING_EMPFAENGER } }]);
-  });
-
-  test('Versand ruft Graph genau einmal mit der festen Anfrage (gemockt)', async () => {
-    const aufrufe: { url: string; body: any }[] = [];
-    await sendeAbendbriefingMail(async (url, body) => { aufrufe.push({ url, body }); }, { betreff: abendBetreff('26.10.2026'), text: 'Hallo' });
-    expect(aufrufe.length).toBe(1);
-    expect(aufrufe[0].body.message.subject).toBe('Abendbriefing 26.10.2026');
-  });
-
-  test('Graph-Fehler wird weitergereicht', async () => {
-    await expect(sendeAbendbriefingMail(async () => { throw new Error('401'); }, { betreff: 'B', text: 'T' }))
-      .rejects.toThrow('401');
-  });
-
-  test('Testkennzeichnung im Betreff', () => {
-    expect(abendBetreff('26.10.2026', true)).toBe('[TEST] Abendbriefing 26.10.2026');
-  });
-
-  test('kein weiterer sendMail-Aufruf im Modul', () => {
+  test('das Briefing-Modul enthält keinen Mailversand', () => {
     const dir = path.resolve(import.meta.dir, '..');
+    expect(fs.existsSync(path.join(dir, 'mail.ts'))).toBe(false);
     const treffer = fs.readdirSync(dir).filter(f => f.endsWith('.ts'))
-      .filter(f => fs.readFileSync(path.join(dir, f), 'utf-8').includes('/sendMail'));
-    expect(treffer).toEqual(['mail.ts']);
+      .filter(f => /sendMail|graphPost|createReply|createForward/.test(code(fs.readFileSync(path.join(dir, f), 'utf-8'))));
+    expect(treffer).toEqual([]);
+  });
+
+  test('der Taktgeber stellt nur per Telegram zu', () => {
+    const quelle = fs.readFileSync(path.join(wurzel, 'index.ts'), 'utf-8');
+    const start = quelle.indexOf('async function briefingLauf(');
+    const ende = quelle.indexOf('async function meldeAusfall(', start);
+    expect(start).toBeGreaterThan(-1);
+    const block = code(quelle.slice(start, ende));
+    expect(block).toContain('sendTelegramHtmlWithMarkup(chatId, text');
+    expect(block).not.toMatch(/sendMail|graphPost|sendeAbendbriefingMail|Mail/);
+    expect(block).toContain('mailOk: null');
   });
 });
