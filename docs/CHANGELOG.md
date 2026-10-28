@@ -4,6 +4,17 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-28 (2) — Freigaben MG24 Grundsteuer/Kehrung, Mietbuch N24 W2, Absturzsicherung N24
+
+Owner-Freigaben 28.10.2026 20:53. Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/freigaben-mg24-n24-20261028.ts`, eine Transaktion, Audit 3338–3350:
+  - MG24 2025: Grundsteuer, Buchung 80, 409,45 → 905,45 €. Neue Buchungen 93 (Kehrung R25/807 75,70 €, umlagefähig) und 94 (Mahngebühr 5,05 €, nicht umlagefähig).
+  - Offene Punkte nur als Notiz: Flst. 239/4 (an Buchung 80) und SWT-Gutschrift 2024-30664 (an Buchung 22).
+  - N24 2025: Absturzsicherung, Buchung 69, umlagefähig.
+  - Mietbuch N24 W2: Die fünf Zahlungen vom Stromkonto 202 sind Dezember 2025 bis April 2026 zugeordnet. Die Verknüpfungen Mai bis Juli 2026 sind neu geordnet; für Juli gilt das Original 7697 statt des Doppelimports 1914.
+  - `--probe`/`--ausfuehren`/`--rueckweg`.
+
 ## Stand 2026-10-28 (1) — Notiz Wasserzählerwechsel N24
 
 SWT-Portalabgleich (Auftrag 28.10.2026 06:40). Nur Datenskript, kein Code der Anwendung.
