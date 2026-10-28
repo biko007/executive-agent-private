@@ -4,6 +4,12 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-28 (1) — Notiz Wasserzählerwechsel N24
+
+SWT-Portalabgleich (Auftrag 28.10.2026 06:40). Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/n24-wasserzaehlerwechsel-notiz-20261028.ts`: Notizen an meters 54/104 und objekt_fristen 20 zum Zählerwechsel 8AXI1005533567 → 8ZRI0012230358 (24.03.2026); keine Stammdatenänderung; Audit 3324–3326.
+
 ## Stand 2026-10-27 (7) — Datenskripte Bauser-Ergebnisse und Hauswart N24
 
 Owner-Antworten nach dem Bauser-Termin (27.10.2026 19:00) und „Freigabe N24 Hauswart 960“ (19:04). Nur Datenskripte, kein Code der Anwendung.
