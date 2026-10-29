@@ -4,6 +4,17 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-29 — Fuhrpark: zwei Porsche-Rechnungen
+
+Owner-Anweisung 29.10.2026 07:29. Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/fuhrpark-porsche-rechnungen-20261029.ts`, eine Transaktion, Audit 3363–3365:
+  - Kostensatz 28 für FZG-911T: Rechnung 81045762, 332,07 €.
+  - Kostensatz 29 für FZG-PANAMERA: Rechnung 81045736, 2.365,67 €.
+  - HU-Fälligkeit 12 für FZG-PANAMERA: 31.05.2027.
+- Kein Bankumsatz verknüpft (Datenstand 26.10.). Der Kilometerstand im Fahrzeug ist unverändert.
+- `--probe`/`--ausfuehren`/`--rueckweg`.
+
 ## Stand 2026-10-28 (2) — Freigaben MG24 Grundsteuer/Kehrung, Mietbuch N24 W2, Absturzsicherung N24
 
 Owner-Freigaben 28.10.2026 20:53. Nur Datenskript, kein Code der Anwendung.
