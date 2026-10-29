@@ -4,6 +4,16 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-29 (4) — Neue Umsätze 29.10.: Garagenmiete November, Zahlstatus Porsche
+
+Owner-Auftrag 29.10.2026 14:06 („analysieren und verarbeiten“). Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/umsaetze-scans-20261029.ts`, eine Transaktion, Audit 3441–3444:
+  - Mietbuch mg22 G3 (Vertrag 52): Forderung November 2026 (Zeile 2121, gebildet mit `sollZeilen` wie die Sollstellung) und Verknüpfung 2379 mit Umsatz 11451 (40,00, 28.10.).
+  - Kostensätze `vehicle_service_records` 28 und 29: Zahlstatus „bezahlt 29.10.2026“ (Umsätze 11474, 11475).
+- Bewusst nicht `zahlungenZuordnen`: Der Probelauf hätte 76 ältere Zahlungen neu zugeordnet, darunter Originale, deren Doppelimport die Verknüpfung schon trägt.
+- `--probe`/`--ausfuehren`/`--rueckweg`.
+
 ## Stand 2026-10-29 (3) — Fuhrpark: Reifensätze Winter 911/Panamera, Sommer 911
 
 Owner-Freigabe 29.10.2026 13:52. Nur Datenskript, kein Code der Anwendung.
