@@ -4,6 +4,16 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-29 (2) — Fuhrpark: Nacharbeit Porsche
+
+Owner-Freigabe 29.10.2026 07:57. Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/fuhrpark-nacharbeit-porsche-20261029.ts`, eine Transaktion, Audit 3366–3368:
+  - Kilometerstand FZG-911T 87.193 (Stand 28.10.), FZG-PANAMERA 50.563 (Stand 21.10.). Datum und Quelle stehen in `source_payload`.
+  - Fahrgestellnummer FZG-911T `WPO…` → `WP0…`.
+  - Reifensatz 3 für FZG-PANAMERA: Michelin Sommer, eingelagert. `removed_at` = Einlagerung, damit der Satz nicht als montiert gilt.
+- `--probe`/`--ausfuehren`/`--rueckweg`.
+
 ## Stand 2026-10-29 — Fuhrpark: zwei Porsche-Rechnungen
 
 Owner-Anweisung 29.10.2026 07:29. Nur Datenskript, kein Code der Anwendung.
