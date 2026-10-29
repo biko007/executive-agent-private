@@ -4,6 +4,17 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-29 (3) — Fuhrpark: Reifensätze Winter 911/Panamera, Sommer 911
+
+Owner-Freigabe 29.10.2026 13:52. Nur Datenskript, kein Code der Anwendung.
+
+- `scripts/fuhrpark-reifensaetze-20261029.ts`, eine Transaktion, Audit 3376–3378:
+  - Reifensatz 7 FZG-911T Winter, montiert 28.10.2026; Reifensatz 8 FZG-911T Sommer, eingelagert 28.10.2026.
+  - Reifensatz 9 FZG-PANAMERA Winter, montiert 26.10.2026.
+  - Marke und Dimension stehen nicht auf den Rechnungen und bleiben leer. Km-Stand und Lagerort stehen in der Notiz.
+  - Abbruch bei vorhandenem Satz gleichen Typs. Reifensatz 3 wird vor und nach dem Schreiben verglichen.
+- `--probe`/`--ausfuehren`/`--rueckweg`.
+
 ## Stand 2026-10-29 (2) — Fuhrpark: Nacharbeit Porsche
 
 Owner-Freigabe 29.10.2026 07:57. Nur Datenskript, kein Code der Anwendung.
