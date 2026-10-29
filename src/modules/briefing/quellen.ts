@@ -10,7 +10,10 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import { listAccounts } from '../banking/index.js';
 import { listTrips } from '../travel/index.js';
 import { kopfblockLesen } from '../report-telegram/index.js';
+import { ccEinordnung } from './abschnitte.js';
 import type { CcReport, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
+import { AKTION_TAGE, berichtTag, entwurfStand, istSendeAktion, mailZiele, offeneAktionen } from './aktionen.js';
+import type { MailKurz, MailZiel, OffeneAktionen } from './aktionen.js';
 
 const HOME = process.env.HOME || '/home/biko';
 
@@ -60,6 +63,135 @@ export function leseCcReports(seit: Date, ablagen = REPORT_ABLAGEN): CcReport[] 
     }
   }
   return ergebnis.sort((a, b) => a.zeit.localeCompare(b.zeit));
+}
+
+/** Merkdatei der erledigten Owner-Aktionen. Punkt vorn: Der Report-Watcher
+ *  liest nur report-*.md, der Docs-Spiegel keine Punktdateien. */
+export const ERLEDIGT_DATEI = path.join(HOME, 'bikosoc-spec', '.aktionen-erledigt.json');
+
+export interface ErledigtEintrag {
+  /** `<strang>:<datei>` */
+  schluessel: string;
+  zeit: string;
+  grund: string;
+}
+
+export function ladeErledigt(datei = ERLEDIGT_DATEI): ErledigtEintrag[] {
+  try {
+    const d = JSON.parse(fs.readFileSync(datei, 'utf-8'));
+    return Array.isArray(d) ? d : [];
+  } catch { return []; }
+}
+
+/** Neue Einträge anhängen; vorhandene Schlüssel bleiben, wie sie sind. Atomar über eine Zwischendatei. */
+export function vermerkeErledigt(neu: ErledigtEintrag[], datei = ERLEDIGT_DATEI): void {
+  if (neu.length === 0) return;
+  const alle = ladeErledigt(datei);
+  const da = new Set(alle.map(e => e.schluessel));
+  for (const e of neu) if (!da.has(e.schluessel)) { alle.push(e); da.add(e.schluessel); }
+  const zwischen = `${datei}.tmp-${process.pid}`;
+  fs.writeFileSync(zwischen, JSON.stringify(alle, null, 1));
+  fs.renameSync(zwischen, datei);
+}
+
+/** Alle Reports mit offenem Status, samt Mailziel bei „Entwurf … senden". */
+export function leseOffeneCcReports(ablagen = REPORT_ABLAGEN): (CcReport & { ziel?: MailZiel })[] {
+  const ergebnis: (CcReport & { ziel?: MailZiel })[] = [];
+  for (const r of leseCcReports(new Date(0), ablagen)) {
+    if (ccEinordnung(r.statusRoh) !== 'offen') continue;
+    if (!istSendeAktion(r.aktion)) { ergebnis.push(r); continue; }
+    const dir = ablagen.find(a => a.strang === r.strang)!.dir;
+    const ziel = mailZiele(fs.readFileSync(path.join(dir, r.datei), 'utf-8'));
+    ergebnis.push(ziel.an.length ? { ...r, ziel } : r);
+  }
+  return ergebnis;
+}
+
+export interface PostfachStand { gesendet: MailKurz[]; entwuerfe: MailKurz[] }
+
+/** graphRequest wiederholt bis zu viermal mit je 20 s — so lange darf das Briefing nicht warten. */
+export const POSTFACH_ZEITLIMIT_MS = 10_000;
+
+/**
+ * Offene Aktionen prüfen (Owner-Auftrag 29.10.2026): gesendete Entwürfe
+ * herausnehmen und in der Merkdatei vermerken, ältere als 7 Tage zählen.
+ * `holePostfach` liest Gesendete Elemente und Entwürfe; schlägt es fehl, bleibt
+ * die Liste ohne Postfachprüfung und `postfachAusfall` ist gesetzt.
+ */
+export async function pruefeOffeneAktionen(opts: {
+  heute: string;
+  /** erster Berichtstag, der einzeln erscheint (Abend: heute, Morgen: gestern) */
+  abTag: string;
+  holePostfach: (seitIso: string) => Promise<PostfachStand>;
+  ablagen?: typeof REPORT_ABLAGEN;
+  erledigtDatei?: string;
+  jetzt?: Date;
+  /** Höchstdauer der Postfachabfrage; das ganze Briefing hat nur 45 s. */
+  zeitlimitMs?: number;
+}): Promise<{ offen: OffeneAktionen; postfachAusfall: boolean; neuErledigt: ErledigtEintrag[] }> {
+  const datei = opts.erledigtDatei ?? ERLEDIGT_DATEI;
+  const reports = leseOffeneCcReports(opts.ablagen);
+  const erledigt = new Set(ladeErledigt(datei).map(e => e.schluessel));
+  const grenze = new Date(Date.parse(`${opts.heute}T00:00:00Z`) - AKTION_TAGE * 86_400_000).toISOString().slice(0, 10);
+  const zuPruefen = reports.filter(r => r.ziel && !erledigt.has(`${r.strang}:${r.datei}`)
+    && berichtTag(r.datei, r.zeit) >= grenze);
+  const hinweise = new Map<string, string>();
+  const neuErledigt: ErledigtEintrag[] = [];
+  let postfachAusfall = false;
+  if (zuPruefen.length) {
+    let pf: PostfachStand | null = null;
+    let uhr: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_, nein) => {
+      uhr = setTimeout(() => nein(new Error('Postfach-Zeitlimit')), opts.zeitlimitMs ?? POSTFACH_ZEITLIMIT_MS);
+    });
+    try { pf = await Promise.race([opts.holePostfach(`${grenze}T00:00:00Z`), limit]); } catch { postfachAusfall = true; } finally { clearTimeout(uhr); }
+    if (pf) {
+      for (const r of zuPruefen) {
+        const schluessel = `${r.strang}:${r.datei}`;
+        // Gesendet zählt ab eine Stunde vor dem Report: Der Entwurf entsteht kurz
+        // vor dem Report, eine frühere Mail im selben Strang ist nicht dieser Entwurf.
+        const seit = new Date(Date.parse(r.zeit) - 3600_000).toISOString();
+        const st = entwurfStand(r.ziel!, pf.gesendet, pf.entwuerfe, seit);
+        if (st.stand === 'gesendet') {
+          neuErledigt.push({ schluessel, zeit: (opts.jetzt ?? new Date()).toISOString(), grund: `gesendet ${st.zeit} an ${st.an}` });
+          erledigt.add(schluessel);
+        } else if (st.stand === 'fehlt') {
+          hinweise.set(schluessel, 'Entwurf nicht mehr in Entwürfe, keine gesendete Mail gefunden');
+        }
+      }
+    }
+  }
+  vermerkeErledigt(neuErledigt, datei);
+  return { offen: offeneAktionen(reports, opts.heute, opts.abTag, erledigt, hinweise), postfachAusfall, neuErledigt };
+}
+
+/** Sekretariat-Zustand (Stufe 1, Dateien statt Tabelle). */
+export const SEKRETARIAT_VORGAENGE = path.join(HOME, '.openclaw/workspace/artifacts/personal/sekretariat/vorgaenge.json');
+/** Vorlauf, wenn eine Frist keinen eigenen nennt. */
+export const SEKRETARIAT_VORLAUF_TAGE = 14;
+
+/**
+ * Fristen, die an offenen Sekretariat-Vorgängen hängen (`fristen: [{termin,
+ * was, vorlaufTage}]`, Owner-Auftrag 29.10.2026 — für Fristen ohne Objekt, die
+ * `objekt_fristen` nicht aufnehmen kann). Ab dem Vorlauf bis zur Erledigung
+ * des Vorgangs, auch überfällig.
+ */
+export function leseSekretariatFristen(heute: string, datei = SEKRETARIAT_VORGAENGE): NkFrist[] {
+  if (!fs.existsSync(datei)) return [];
+  const d = JSON.parse(fs.readFileSync(datei, 'utf-8'));
+  const liste: NkFrist[] = [];
+  for (const v of Array.isArray(d?.vorgaenge) ? d.vorgaenge : []) {
+    if (v?.status === 'erledigt' || !Array.isArray(v?.fristen)) continue;
+    for (const f of v.fristen) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(f?.termin))) continue;
+      const tage = Math.round((Date.parse(`${f.termin}T00:00:00Z`) - Date.parse(`${heute}T00:00:00Z`)) / 86_400_000);
+      const roh = f.vorlaufTage;
+      const vorlauf = roh !== null && roh !== '' && Number.isFinite(Number(roh)) ? Number(roh) : SEKRETARIAT_VORLAUF_TAGE;
+      if (tage > vorlauf) continue;
+      liste.push({ objekt: String(v.objekt || 'Sekretariat'), bezeichnung: String(f.was || v.titel), termin: f.termin, tage });
+    }
+  }
+  return liste;
 }
 
 /**

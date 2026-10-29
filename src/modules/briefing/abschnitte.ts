@@ -13,6 +13,9 @@
  * mit Titel und Owner-Aktion aus dem Kopfblock.
  */
 
+import { AKTION_TAGE, AKTION_TEXT_MAX, AKTION_ZEILEN_MAX } from './aktionen.js';
+import type { OffeneAktionen } from './aktionen.js';
+
 export const RUBRIK = '\u0001';
 
 /* ── Formatierung ────────────────────────────────────────────────────────── */
@@ -97,29 +100,68 @@ function ccAktionText(aktion: string): string {
   return !a || /^keine\.?$/i.test(a) ? '' : ` — Ihre Aktion: ${a}`;
 }
 
-/** Morgen: nur die offenen Aufträge der letzten 24 h. Nichts offen → kein Abschnitt. */
-export function ccAbschnittMorgen(reports: CcReport[]): string[] {
-  const offen = reports.filter(r => ccEinordnung(r.statusRoh) === 'offen');
-  if (offen.length === 0) return [];
+/**
+ * Zeilen für offene Aktionen nach der Postfach- und Altersprüfung
+ * (aktionen.ts, Owner-Auftrag 29.10.2026): höchstens AKTION_ZEILEN_MAX einzeln,
+ * der Rest und alles älter als AKTION_TAGE als je eine Sammelzeile.
+ */
+function offenZeilen(offen: OffeneAktionen, einzug: string): string[] {
+  const zeilen: string[] = [];
+  for (const r of offen.aktuell.slice(0, AKTION_ZEILEN_MAX)) {
+    const strang = r.strang === 'hdcc' ? ' [HDCC]' : '';
+    const hinweis = r.hinweis ? ` (${r.hinweis})` : '';
+    const aktion = r.aktion.length > AKTION_TEXT_MAX ? `${r.aktion.slice(0, AKTION_TEXT_MAX - 1)}…` : r.aktion;
+    zeilen.push(`${einzug}${ccSymbol(r.statusRoh)} ${r.titel || r.datei}${strang}${ccAktionText(aktion)}${hinweis}`);
+  }
+  const weitere = offen.aktuell.length - AKTION_ZEILEN_MAX;
+  if (weitere > 0) zeilen.push(`${einzug}… weitere ${weitere} offene Aktionen`);
+  if (offen.vortage > 0) zeilen.push(`${einzug}offene Aktionen der Vortage (≤ ${AKTION_TAGE} Tage): ${offen.vortage}`);
+  if (offen.aelter > 0) zeilen.push(`${einzug}ältere offene Aktionen: ${offen.aelter}`);
+  return zeilen;
+}
+
+/**
+ * Morgen: offene Aufträge der letzten 24 h. Mit `offen` die geprüfte Liste
+ * (gesendete Entwürfe heraus, Vortage und Ältere als Anzahl), sonst wie
+ * bisher aus `reports`.
+ * Nichts offen → kein Abschnitt.
+ */
+export function ccAbschnittMorgen(reports: CcReport[], offen?: OffeneAktionen): string[] {
+  if (offen) {
+    if (offen.aktuell.length === 0 && offen.vortage === 0 && offen.aelter === 0) return [];
+    return ['', `${RUBRIK}📋 Offene cc-Aufträge (24 h)`, ...offenZeilen(offen, '• ')];
+  }
+  const liste = reports.filter(r => ccEinordnung(r.statusRoh) === 'offen');
+  if (liste.length === 0) return [];
   const zeilen = ['', `${RUBRIK}📋 Offene cc-Aufträge (24 h)`];
-  for (const r of offen) {
+  for (const r of liste) {
     const strang = r.strang === 'hdcc' ? ' [HDCC]' : '';
     zeilen.push(`• ${ccSymbol(r.statusRoh)} ${r.titel || r.datei}${strang}${ccAktionText(r.aktion)}`);
   }
   return zeilen;
 }
 
-/** Abend: Tagesrückblick — erledigt als Anzahl, offen mit Titel und Aktion. */
-export function ccAbschnittAbend(reports: CcReport[]): string[] {
+/**
+ * Abend: Tagesrückblick — erledigt heute als Anzahl, offen mit Titel und
+ * Aktion. Mit `offen` stammt die Offen-Liste aus der geprüften Liste
+ * (gesendete Entwürfe fallen heraus, Vortage und Ältere als Anzahl), sonst
+ * wie bisher aus den Reports des Tages.
+ */
+export function ccAbschnittAbend(reports: CcReport[], offen?: OffeneAktionen): string[] {
   const erledigt = reports.filter(r => ccEinordnung(r.statusRoh) === 'erledigt');
-  const offen = reports.filter(r => ccEinordnung(r.statusRoh) === 'offen');
   const zeilen = ['', `${RUBRIK}📋 cc-Aufträge heute`];
   zeilen.push(`• Erledigt: ${erledigt.length}`);
-  if (offen.length === 0) {
+  if (offen) {
+    zeilen.push(offen.aktuell.length === 0 ? '• Offen: keine' : `• Offen: ${offen.aktuell.length}`);
+    zeilen.push(...offenZeilen(offen, '  '));
+    return zeilen;
+  }
+  const liste = reports.filter(r => ccEinordnung(r.statusRoh) === 'offen');
+  if (liste.length === 0) {
     zeilen.push('• Offen: keine');
   } else {
-    zeilen.push(`• Offen: ${offen.length}`);
-    for (const r of offen) {
+    zeilen.push(`• Offen: ${liste.length}`);
+    for (const r of liste) {
       const strang = r.strang === 'hdcc' ? ' [HDCC]' : '';
       zeilen.push(`  ${ccSymbol(r.statusRoh)} ${r.titel || r.datei}${strang}${ccAktionText(r.aktion)}`);
     }
@@ -293,6 +335,12 @@ export interface AbendDaten {
   /** "Montag, 26. Oktober 2026" */
   datumLang: string;
   ccReports: CcReport[] | null;
+  /** Geprüfte offene Aktionen; fehlt sie, gilt die alte Tagesliste aus ccReports */
+  offen?: OffeneAktionen;
+  /** Gesendete Elemente/Entwürfe nicht lesbar: Liste ohne Postfachprüfung */
+  postfachAusfall?: boolean;
+  /** Fristen an Sekretariat-Vorgängen ab ihrem Vorlauf; null = nicht abrufbar */
+  sekretariatFristen?: NkFrist[] | null;
   /** Fertig formatierte Terminzeilen für morgen; null = Kalender nicht abrufbar */
   termineMorgen: string[] | null;
   /** Fertig formatierte Fuhrparkzeilen (≤ 14 Tage); null = nicht abrufbar */
@@ -306,7 +354,8 @@ export function abendZeilen(d: AbendDaten): string[] {
   const zeilen = [`${RUBRIK}🌙 Abendbriefing — ${d.datumLang}`];
 
   if (d.ccReports === null) zeilen.push('', `${RUBRIK}📋 cc-Aufträge heute`, ausfallZeile('Reportablage'));
-  else zeilen.push(...ccAbschnittAbend(d.ccReports));
+  else zeilen.push(...ccAbschnittAbend(d.ccReports, d.offen));
+  if (d.ccReports !== null && d.postfachAusfall) zeilen.push(ausfallZeile('Postfach (Prüfung gesendeter Entwürfe)'));
 
   zeilen.push('', `${RUBRIK}📆 Termine morgen`);
   if (d.termineMorgen === null) zeilen.push(ausfallZeile('Kalender'));
@@ -319,6 +368,9 @@ export function abendZeilen(d: AbendDaten): string[] {
   else fristZeilen.push(...d.fuhrpark);
   if (d.nkFristen === null) fristZeilen.push(ausfallZeile('NK-Fristen'));
   else fristZeilen.push(...nkFristZeilen(d.nkFristen, ABEND_FRISTEN_TAGE));
+  /* Sekretariat-Fristen kommen schon auf ihren Vorlauf gefiltert (quellen.ts). */
+  if (d.sekretariatFristen === null) fristZeilen.push(ausfallZeile('Sekretariat-Fristen'));
+  else if (d.sekretariatFristen) fristZeilen.push(...nkFristZeilen(d.sekretariatFristen, Number.POSITIVE_INFINITY));
   zeilen.push(...(fristZeilen.length ? fristZeilen : ['• keine']));
 
   return zeilen;

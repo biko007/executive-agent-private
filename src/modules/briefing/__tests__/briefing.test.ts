@@ -229,3 +229,239 @@ describe('Abendbriefing nur per Telegram (Owner-Vorgabe 27.10.2026)', () => {
     expect(block).toContain('mailOk: null');
   });
 });
+
+/* ── Offene Aktionen: Postfachprüfung und 7-Tage-Regel (Owner-Auftrag 29.10.2026) ── */
+import {
+  mailZiele, betreffNormal, betreffKern, entwurfStand, berichtTag, offeneAktionen, istSendeAktion,
+  pruefeOffeneAktionen, ladeErledigt, leseSekretariatFristen, AKTION_ZEILEN_MAX,
+} from '../index.js';
+
+const PORSCHE_REPORT = [
+  '---', 'titel: Entwurf Unfallschaden Panamera', 'status: aktion', 'aufgabe: x', 'ergebnis: [ "a" ]',
+  'aktion: "Entwurf im Postfach prüfen und senden"', 'tests: n/a', 'rote_zone: nein', 'dauer_min: 5', '---', '',
+  '- **An:** info@porsche-villingen.de · **Cc:** keiner',
+  '- **Betreff:** Unfallschaden Porsche Panamera TUT-ZZ 2E – Unfall 28.10.2026 Zürich',
+].join('\n');
+const MAXIM_TEXT = [
+  '| Betreff | RE: Follow-up: share transfer | gleich |',
+  '| An / Cc | dsullivan@maximgrp.com / corporateservices@maximgrp.com | gleich |',
+].join('\n');
+
+describe('Offene Aktionen: Entwurf gesendet?', () => {
+  test('Empfänger und Betreff aus Aufzählung und Tabelle, Cc zählt nicht', () => {
+    expect(mailZiele(PORSCHE_REPORT)).toEqual({
+      an: ['info@porsche-villingen.de'],
+      betreffe: ['unfallschaden porsche panamera tut-zz 2e – unfall 28.10.2026 zürich'],
+      genau: ['unfallschaden porsche panamera tut-zz 2e – unfall 28.10.2026 zürich'],
+    });
+    expect(mailZiele(MAXIM_TEXT)).toEqual({ an: ['dsullivan@maximgrp.com'], betreffe: ['follow-up: share transfer'], genau: ['re: follow-up: share transfer'] });
+    expect(mailZiele('- **An:** a@x.de · **Cc:** b@y.de').an).toEqual(['a@x.de']);
+  });
+
+  test('Betreff ohne RE:/AW:, Anführungszeichen und Gross/klein', () => {
+    expect(betreffNormal('„AW: RE:  Zählerfragen  MG24“')).toBe('zählerfragen mg24');
+  });
+
+  test('Notizen nach dem Betreff fallen weg (Doris-Reports 28.10.)', () => {
+    expect(betreffKern('N24 Nebenkostenabrechnung 2025 – Probeabrechnung v4 zur Prüfung (unverändert)'))
+      .toBe('N24 Nebenkostenabrechnung 2025 – Probeabrechnung v4 zur Prüfung');
+    expect(betreffKern('„RE: N24 Nebenkostenabrechnung 2025 – Probeabrechnung v4 zur Prüfung“: Antwort auf ihre Mail vom 28.10.'))
+      .toBe('RE: N24 Nebenkostenabrechnung 2025 – Probeabrechnung v4 zur Prüfung');
+    expect(mailZiele('| Betreff | Thema X (unverändert) |\n| An / Cc | d@b.com / – (unverändert) |'))
+      .toEqual({ an: ['d@b.com'], betreffe: ['thema x', 'thema x (unverändert)'], genau: ['thema x', 'thema x (unverändert)'] });
+  });
+
+  test('Review 1: Antwort-Entwurf liegt noch, Erstmail im Strang gesendet → nicht gesendet', () => {
+    const ziel = mailZiele('| Betreff | RE: Angebot v5 |\n| An | d@b.com |');
+    const gesendet = [{ betreff: 'Angebot v5', an: ['d@b.com'], zeit: '2026-10-28T04:57:00Z' }];
+    const entwuerfe = [{ betreff: 'RE: Angebot v5', an: ['d@b.com'], zeit: '2026-10-28T19:38:00Z' }];
+    expect(entwurfStand(ziel, gesendet, entwuerfe, '2026-10-28T00:00:00Z').stand).toBe('entwurf');
+  });
+  test('Review 2: ohne Betreff im Report nie „gesendet"', () => {
+    const ziel = mailZiele('- **An:** d@b.com');
+    expect(entwurfStand(ziel, [{ betreff: 'Irgendwas', an: ['d@b.com'], zeit: '2026-10-29T09:00:00Z' }], [], '2026-10-29T00:00:00Z').stand).toBe('fehlt');
+  });
+  test('Review 5: Klammer, die zum Betreff gehört, passt trotzdem', () => {
+    const ziel = mailZiele('- **An:** d@b.com\n- **Betreff:** Nebenkosten 2025 (MG24)');
+    expect(entwurfStand(ziel, [{ betreff: 'Nebenkosten 2025 (MG24)', an: ['d@b.com'], zeit: '2026-10-29T09:00:00Z' }], [], '2026-10-29T00:00:00Z').stand).toBe('gesendet');
+  });
+
+  test('genauer Betreff hat Vorrang: Erstmail und Antwort im selben Strang', () => {
+    const post = [
+      { betreff: 'N24 NK 2025 v4', an: ['d@b.com'], zeit: '2026-10-28T05:57:45Z' },
+      { betreff: 'RE: N24 NK 2025 v4', an: ['d@b.com'], zeit: '2026-10-28T20:38:52Z' },
+    ];
+    expect(entwurfStand(mailZiele('| Betreff | „RE: N24 NK 2025 v4“: Antwort |\n| An | d@b.com |'), post, [], '2026-10-28T00:00:00Z'))
+      .toEqual({ stand: 'gesendet', zeit: '2026-10-28T20:38:52Z', an: 'd@b.com' });
+    expect(entwurfStand(mailZiele('| Betreff | N24 NK 2025 v4 (unverändert) |\n| An / Cc | d@b.com / – |'), post, [], '2026-10-28T00:00:00Z'))
+      .toEqual({ stand: 'gesendet', zeit: '2026-10-28T05:57:45Z', an: 'd@b.com' });
+  });
+
+  test('Sendeaktion erkennen', () => {
+    expect(istSendeAktion('Entwurf an Derek Sullivan prüfen und senden')).toBe(true);
+    expect(istSendeAktion('Entwürfe prüfen und senden')).toBe(true);
+    expect(istSendeAktion('Steuererklärungen unterschreiben')).toBe(false);
+  });
+
+  const ziel = { an: ['dsullivan@maximgrp.com'], betreffe: ['follow-up: share transfer'] };
+  const gesendet = [{ betreff: 'RE: Follow-up: share transfer', an: ['dsullivan@maximgrp.com'], zeit: '2026-10-29T08:23:48Z' }];
+  test('gesendet: gleicher Empfänger, gleicher Betreff, nach dem Berichtstag', () => {
+    expect(entwurfStand(ziel, gesendet, [], '2026-10-29T00:00:00Z'))
+      .toEqual({ stand: 'gesendet', zeit: '2026-10-29T08:23:48Z', an: 'dsullivan@maximgrp.com' });
+  });
+  test('nicht gesendet: alter Versand vor dem Bericht, anderer Betreff, anderer Empfänger', () => {
+    expect(entwurfStand(ziel, gesendet, [], '2026-10-30T00:00:00Z').stand).toBe('fehlt');
+    expect(entwurfStand(ziel, [{ ...gesendet[0], betreff: 'Anderes Thema' }], [], '2026-10-29T00:00:00Z').stand).toBe('fehlt');
+    expect(entwurfStand(ziel, [{ ...gesendet[0], an: ['x@y.de'] }], [], '2026-10-29T00:00:00Z').stand).toBe('fehlt');
+  });
+  test('Entwurf liegt noch: bleibt offen ohne Hinweis', () => {
+    expect(entwurfStand(ziel, [], [{ ...gesendet[0], zeit: '2026-10-29T07:00:00Z' }], '2026-10-29T00:00:00Z').stand).toBe('entwurf');
+  });
+  test('mehrere Empfänger: erst erledigt, wenn alle eine Mail bekamen', () => {
+    const zwei = { an: ['a@x.de', 'b@x.de'], betreffe: ['s'] };
+    const nurA = [{ betreff: 's', an: ['a@x.de'], zeit: '2026-10-29T09:00:00Z' }];
+    expect(entwurfStand(zwei, nurA, [], '2026-10-29T00:00:00Z').stand).toBe('fehlt');
+    expect(entwurfStand(zwei, [...nurA, { betreff: 'AW: s', an: ['b@x.de'], zeit: '2026-10-29T10:00:00Z' }], [], '2026-10-29T00:00:00Z'))
+      .toEqual({ stand: 'gesendet', zeit: '2026-10-29T10:00:00Z', an: 'a@x.de, b@x.de' });
+  });
+});
+
+describe('Offene Aktionen: 7-Tage-Regel und Darstellung', () => {
+  const r = (datei: string, titel = datei) => ({ ...cc('aktion', titel, 'Etwas tun'), datei, zeit: '2026-10-29T10:00:00Z' });
+  test('Berichtstag aus dem Dateinamen, sonst Änderungszeit', () => {
+    expect(berichtTag('report-x-20261022.md', '2026-10-29T10:00:00Z')).toBe('2026-10-22');
+    expect(berichtTag('report-neuheiten-stunde-20261029-1407.md', '')).toBe('2026-10-29');
+    expect(berichtTag('report-ohne-datum.md', '2026-10-27T10:00:00Z')).toBe('2026-10-27');
+    // 00:30 Berlin = 23:30 UTC des Vortags → Berliner Tag zählt
+    expect(berichtTag('report-ohne-datum.md', '2026-10-27T23:30:00Z')).toBe('2026-10-28');
+  });
+  test('eigenes Fenster einzeln, Vortage ≤ 7 Tage gezählt, älter gezählt, erledigt weg', () => {
+    const o = offeneAktionen([r('report-a-20261029.md'), r('report-b-20261022.md'), r('report-c-20261021.md'), r('report-d-20261029.md')],
+      '2026-10-29', '2026-10-29', new Set(['bikosoc:report-d-20261029.md']));
+    expect(o.aktuell.map(x => x.datei)).toEqual(['report-a-20261029.md']);
+    expect(o.vortage).toBe(1);
+    expect(o.aelter).toBe(1);
+    const morgen = offeneAktionen([r('report-a-20261028.md'), r('report-b-20261027.md')], '2026-10-29', '2026-10-28', new Set());
+    expect(morgen.aktuell.map(x => x.datei)).toEqual(['report-a-20261028.md']);
+    expect(morgen.vortage).toBe(1);
+  });
+  test('Abend: Liste, Hinweis, Sammelzeilen; ohne Offenes „keine"', () => {
+    const viele = Array.from({ length: AKTION_ZEILEN_MAX + 2 }, (_, i) => ({ ...r(`report-${i}-20261029.md`, `T${i}`) }));
+    const z = ccAbschnittAbend([cc('ok')], { aktuell: [{ ...viele[0], hinweis: 'Entwurf nicht mehr in Entwürfe' }, ...viele.slice(1)], vortage: 4, aelter: 3 });
+    expect(z).toContain('• Erledigt: 1');
+    expect(z).toContain(`• Offen: ${AKTION_ZEILEN_MAX + 2}`);
+    expect(z.some(x => x.includes('T0 — Ihre Aktion: Etwas tun (Entwurf nicht mehr in Entwürfe)'))).toBe(true);
+    expect(z).toContain('  … weitere 2 offene Aktionen');
+    expect(z).toContain('  offene Aktionen der Vortage (≤ 7 Tage): 4');
+    expect(z).toContain('  ältere offene Aktionen: 3');
+    expect(ccAbschnittAbend([], { aktuell: [], vortage: 0, aelter: 0 })).toEqual(['', `${RUBRIK}📋 cc-Aufträge heute`, '• Erledigt: 0', '• Offen: keine']);
+    const lang = ccAbschnittAbend([], { aktuell: [{ ...r('report-l-20261029.md', 'L'), aktion: 'x'.repeat(500) }], vortage: 0, aelter: 0 });
+    expect(lang.find(z => z.includes('Ihre Aktion'))!.length).toBeLessThan(220);
+  });
+  test('Morgen mit geprüfter Liste; nichts offen → kein Abschnitt', () => {
+    expect(ccAbschnittMorgen([], { aktuell: [], vortage: 0, aelter: 0 })).toEqual([]);
+    expect(ccAbschnittMorgen([], { aktuell: [], vortage: 0, aelter: 2 })).toContain('• ältere offene Aktionen: 2');
+  });
+});
+
+describe('pruefeOffeneAktionen: Postfach, Merkdatei, Ausfall', () => {
+  const ablage = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aktionen-'));
+    fs.writeFileSync(path.join(dir, 'report-mail-entwurf-porsche-20261029.md'), PORSCHE_REPORT);
+    fs.writeFileSync(path.join(dir, 'report-heni-20261029.md'), PORSCHE_REPORT
+      .replace('Entwurf Unfallschaden Panamera', 'Heni').replace('Entwurf im Postfach prüfen und senden', 'Steuererklärungen unterschreiben'));
+    fs.writeFileSync(path.join(dir, 'report-alt-20261001.md'), PORSCHE_REPORT.replace('Entwurf Unfallschaden Panamera', 'Alt'));
+    // Reportzeit wie im echten Fall: Report 07:29, gesendet 07:33
+    const t = new Date('2026-10-29T07:29:42Z');
+    for (const f of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, f), t, t);
+    return dir;
+  };
+  const gesendet = [{ betreff: 'Unfallschaden Porsche Panamera TUT-ZZ 2E – Unfall 28.10.2026 Zürich', an: ['info@porsche-villingen.de'], zeit: '2026-10-29T07:33:37Z' }];
+
+  test('gesendeter Entwurf fällt heraus und wird vermerkt; Report bleibt unverändert', async () => {
+    const dir = ablage();
+    const merk = path.join(dir, '.aktionen-erledigt.json');
+    const vorher = fs.statSync(path.join(dir, 'report-mail-entwurf-porsche-20261029.md')).mtimeMs;
+    let abfragen = 0;
+    const holePostfach = async () => { abfragen++; return { gesendet, entwuerfe: [] }; };
+    const e = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', holePostfach, ablagen: [{ strang: 'bikosoc', dir }], erledigtDatei: merk });
+    expect(e.offen.aktuell.map(x => x.titel)).toEqual(['Heni']);
+    expect(e.offen.aelter).toBe(1);
+    expect(e.postfachAusfall).toBe(false);
+    expect(ladeErledigt(merk)).toEqual([expect.objectContaining({
+      schluessel: 'bikosoc:report-mail-entwurf-porsche-20261029.md', grund: 'gesendet 2026-10-29T07:33:37Z an info@porsche-villingen.de' })]);
+    expect(fs.statSync(path.join(dir, 'report-mail-entwurf-porsche-20261029.md')).mtimeMs).toBe(vorher);
+    // Zweiter Lauf: aus der Merkdatei erledigt, keine erneute Postfachabfrage
+    const e2 = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', holePostfach, ablagen: [{ strang: 'bikosoc', dir }], erledigtDatei: merk });
+    expect(e2.offen.aktuell.map(x => x.titel)).toEqual(['Heni']);
+    expect(abfragen).toBe(1);
+    expect(ladeErledigt(merk).length).toBe(1);
+  });
+
+  test('Entwurf liegt noch → bleibt gelistet; Postfach fällt aus → Liste ohne Prüfung, Ausfall gemeldet', async () => {
+    const dir = ablage();
+    const merk = path.join(dir, '.aktionen-erledigt.json');
+    const liegt = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', ablagen: [{ strang: 'bikosoc', dir }], erledigtDatei: merk,
+      holePostfach: async () => ({ gesendet: [], entwuerfe: [{ ...gesendet[0], zeit: '2026-10-29T07:00:00Z' }] }) });
+    expect(liegt.offen.aktuell.map(x => [x.titel, x.hinweis]).sort()).toEqual([['Entwurf Unfallschaden Panamera', undefined], ['Heni', undefined]]);
+    const aus = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', ablagen: [{ strang: 'bikosoc', dir }], erledigtDatei: merk,
+      holePostfach: async () => { throw new Error('graph down'); } });
+    expect(aus.postfachAusfall).toBe(true);
+    expect(aus.offen.aktuell.length).toBe(2);
+    expect(fs.existsSync(merk)).toBe(false);
+  });
+
+  test('langsames Postfach: Zeitlimit greift, Briefing bekommt die Liste mit Ausfall', async () => {
+    const dir = ablage();
+    const start = Date.now();
+    const e = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', ablagen: [{ strang: 'bikosoc', dir }],
+      erledigtDatei: path.join(dir, '.m.json'), zeitlimitMs: 50, holePostfach: () => new Promise(() => {}) });
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(e.postfachAusfall).toBe(true);
+    expect(e.offen.aktuell.length).toBe(2);
+  });
+
+  test('Entwurf weder gesendet noch in Entwürfe → gelistet mit Hinweis', async () => {
+    const dir = ablage();
+    const e = await pruefeOffeneAktionen({ heute: '2026-10-29', abTag: '2026-10-29', ablagen: [{ strang: 'bikosoc', dir }], erledigtDatei: path.join(dir, '.m.json'),
+      holePostfach: async () => ({ gesendet: [], entwuerfe: [] }) });
+    expect(e.offen.aktuell.find(x => x.titel === 'Entwurf Unfallschaden Panamera')?.hinweis)
+      .toBe('Entwurf nicht mehr in Entwürfe, keine gesendete Mail gefunden');
+  });
+});
+
+describe('Sekretariat-Fristen im Abendbriefing', () => {
+  const datei = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sek-'));
+    const p = path.join(dir, 'vorgaenge.json');
+    fs.writeFileSync(p, JSON.stringify({ vorgaenge: [
+      { kennung: 'v-1', objekt: 'privat', titel: 'ELSTER', status: 'offen', fristen: [
+        { termin: '2026-12-31', was: 'ELSTER: Bekanntgabe annehmen oder widersprechen', vorlaufTage: 14 },
+        { termin: '2027-02-28', was: 'Steuererklärung 2025 über Heni abgeben', vorlaufTage: 14 }] },
+      { kennung: 'v-2', objekt: 'privat', titel: 'Erledigt', status: 'erledigt', fristen: [{ termin: '2026-12-20', was: 'x' }] },
+    ] }));
+    return p;
+  };
+  test('erst ab Vorlauf sichtbar, bis zur Erledigung auch überfällig', () => {
+    const p = datei();
+    expect(leseSekretariatFristen('2026-12-16', p)).toEqual([]);
+    expect(leseSekretariatFristen('2026-12-17', p)).toEqual([{ objekt: 'privat', bezeichnung: 'ELSTER: Bekanntgabe annehmen oder widersprechen', termin: '2026-12-31', tage: 14 }]);
+    expect(leseSekretariatFristen('2027-01-02', p).map(f => f.tage)).toEqual([-2]);
+    expect(leseSekretariatFristen('2027-02-14', p).map(f => f.termin)).toEqual(['2026-12-31', '2027-02-28']);
+  });
+  test('Vorlauf leer oder null → 14 Tage', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sek-'));
+    const p = path.join(dir, 'vorgaenge.json');
+    fs.writeFileSync(p, JSON.stringify({ vorgaenge: [{ kennung: 'v', objekt: 'privat', status: 'offen',
+      fristen: [{ termin: '2026-12-31', was: 'a', vorlaufTage: null }, { termin: '2026-12-31', was: 'b', vorlaufTage: '' }] }] }));
+    expect(leseSekretariatFristen('2026-12-17', p).length).toBe(2);
+    expect(leseSekretariatFristen('2026-12-16', p).length).toBe(0);
+  });
+  test('Abendtext zeigt die Frist; Ausfall als eigene Zeile', () => {
+    const t = abendZeilen({ datumLang: 'x', ccReports: [], termineMorgen: [], fuhrpark: [], nkFristen: [],
+      sekretariatFristen: leseSekretariatFristen('2026-12-17', datei()) }).join('\n');
+    expect(t).toContain('• privat — ELSTER: Bekanntgabe annehmen oder widersprechen: in 14 Tagen (31.12.)');
+    const aus = abendZeilen({ datumLang: 'x', ccReports: [], termineMorgen: [], fuhrpark: [], nkFristen: [], sekretariatFristen: null }).join('\n');
+    expect(aus).toContain('⚠️ Sekretariat-Fristen nicht abrufbar');
+  });
+});

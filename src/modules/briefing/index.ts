@@ -37,6 +37,14 @@ export type { BriefingArt, BriefingStatus, BriefingEintrag } from './store.js';
 export {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   REPORT_ABLAGEN,
+  ERLEDIGT_DATEI, ladeErledigt, vermerkeErledigt, leseOffeneCcReports, pruefeOffeneAktionen,
+  leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE,
 } from './quellen.js';
+export type { ErledigtEintrag, PostfachStand } from './quellen.js';
+
+export {
+  AKTION_TAGE, AKTION_ZEILEN_MAX, istSendeAktion, mailZiele, betreffNormal, betreffKern, entwurfStand, berichtTag, offeneAktionen,
+} from './aktionen.js';
+export type { MailZiel, MailKurz, EntwurfStand, OffeneAktionen } from './aktionen.js';
 
 export { registerBriefingHttpRoutes } from './routes.js';

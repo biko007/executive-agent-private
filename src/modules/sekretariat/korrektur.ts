@@ -30,6 +30,8 @@ export interface Korrektur {
     vorschlag?: Vorschlag;
     naechsterSchritt?: string;
     begruendung?: string;
+    /** Fristen ohne Objekt (z. B. Steuer, ELSTER), die das Abendbriefing ab ihrem Vorlauf zeigt. */
+    fristen?: Array<{ termin: string; was: string; vorlaufTage?: number }>;
   };
 }
 

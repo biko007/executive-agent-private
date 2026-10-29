@@ -4,6 +4,26 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-29 (6) — Briefing: offene Aktionen gegen das Postfach geprüft, Sekretariat-Fristen
+
+Owner-Rüge 29.10.2026 21:43 („Hier sind mails erwähnt, die ich längst versendet habe“).
+
+- **Ursache:** Die Briefings listeten `status: aktion` mit `aktion:` aus den Reportköpfen des Tages (Abend) bzw. der letzten 24 h (Morgen). Ob der Owner gehandelt hat, wusste niemand: Porsche-Entwurf (07:33 UTC gesendet) und Maxim-Entwurf (08:23 UTC) standen abends noch als „senden“ da.
+- **Neu, `src/modules/briefing/aktionen.ts` (rein) und `quellen.ts`:**
+  - Aktion „Entwurf … senden“: Empfänger und Betreff aus dem Reporttext (`**An:**`/`**Betreff:**` oder Tabellenzeile), Abgleich mit Gesendete Elemente und Entwürfe von juergen.bickel@ (Graph, nur lesend). Gesendet → erledigt, vermerkt in `~/bikosoc-spec/.aktionen-erledigt.json`. Der Report selbst wird nicht angefasst, sonst stellte der Report-Watcher ihn neu zu. Genauer Betreff (mit „RE:“) hat Vorrang vor dem vergleichbaren.
+  - Entwurf weder gesendet noch in Entwürfe → Zeile mit Hinweis. Postfach nicht lesbar → Liste ohne Prüfung plus „⚠️ Postfach … nicht abrufbar“.
+  - Einzeln steht nur das eigene Fenster (Abend heute, Morgen seit gestern). Offene der Vortage bis 7 Tage und ältere als 7 Tage erscheinen je als eine Zeile mit Anzahl. Höchstens 12 Einzelzeilen (Telegram-Grenze).
+  - Fristen an Sekretariat-Vorgängen (`fristen: [{termin, was, vorlaufTage}]`, für Fristen ohne Objekt) stehen im Abendbriefing ab dem Vorlauf bis zur Erledigung. `Korrektur.aenderung.fristen` ergänzt.
+- Tests in `briefing.test.ts` für beide Pfade (gesendet/Entwurf liegt/fehlt/Postfach-Ausfall, Vorrang genauer Betreff, 7-Tage-Regel, Sekretariat-Vorlauf).
+
+## Stand 2026-10-29 (5) — Freigaben Doppelverknüpfungen und Scan Riess
+
+Owner-Freigabe 29.10.2026 21:43. Nur Datenskript `scripts/freigaben-20261029-abend.ts`, eine Transaktion, Audit 3450–3455:
+
+- 40 Mietverknüpfungen von Doppelimporten auf die Originale umgehängt, dazu 37 Buchungsverweise im Mietbuch. Rückstand je Vertrag, Ist je Zeile und Verknüpfungssumme je Zeile vorher = nachher (geprüft in der Transaktion).
+- FZG-G580: Kostensätze 32 (Radwechsel 27.10.2026, 169,00) und 33 (Frontscheibe 02.06.2026, 3.274,59), Reifensätze 12 (montiert) und 13 (eingelagert bei Riess), Km 9.366 → 15.012.
+- `--zuordnen-probe`: `zahlungenZuordnen` würde noch 34 Zahlungen zuordnen, keine davon ein Doppel (Mieterstrom …8621, Kabelgebühr auf …0001, …5844, Privatüberweisungen …0028). Weiter nicht starten.
+
 ## Stand 2026-10-29 (4) — Neue Umsätze 29.10.: Garagenmiete November, Zahlstatus Porsche
 
 Owner-Auftrag 29.10.2026 14:06 („analysieren und verarbeiten“). Nur Datenskript, kein Code der Anwendung.

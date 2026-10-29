@@ -36,7 +36,7 @@ import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
-import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, } from "./src/modules/briefing/index.js";
+import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, } from "./src/modules/briefing/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
@@ -1481,6 +1481,35 @@ export default function (api) {
         });
     }
     /**
+     * Gesendete Elemente und Entwürfe des Geschäftspostfachs, nur lesend — für die
+     * Prüfung „Entwurf … senden" in den Briefings (Owner-Auftrag 29.10.2026).
+     * Entwürfe legt cc nur in juergen.bickel@ an; nur dort wird geprüft.
+     */
+    async function holePostfachStand(seitIso) {
+        if (!m365Enabled || !tenantId || !clientId || !m365User || !m365Secret)
+            throw new Error('m365_disabled');
+        const basis = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/mailFolders`;
+        const auswahl = '$select=subject,toRecipients,sentDateTime,lastModifiedDateTime';
+        const kurz = (m, zeit) => ({
+            betreff: String(m.subject || ''),
+            an: (m.toRecipients || []).map((r) => String(r?.emailAddress?.address || '').toLowerCase()).filter(Boolean),
+            zeit,
+        });
+        const gesendet = [];
+        let url = `${basis}/sentitems/messages?${auswahl}&$top=100&$orderby=sentDateTime desc`
+            + `&$filter=${encodeURIComponent(`sentDateTime ge ${seitIso}`)}`;
+        // Höchstens 5 Seiten (500 Mails); mehr verschickt der Owner in 7 Tagen nicht.
+        for (let seite = 0; url && seite < 5; seite++) {
+            const json = await graphGet(tenantId, clientId, m365Secret, url);
+            for (const m of json?.value || [])
+                gesendet.push(kurz(m, String(m.sentDateTime || '')));
+            url = json?.['@odata.nextLink'] || null;
+        }
+        const entw = await graphGet(tenantId, clientId, m365Secret, `${basis}/drafts/messages?${auswahl}&$top=200`);
+        const entwuerfe = (entw?.value || []).map((m) => kurz(m, String(m.lastModifiedDateTime || '')));
+        return { gesendet, entwuerfe };
+    }
+    /**
      * Abendbriefing (Owner-Auftrag 26.10.2026): Tagesrückblick der cc-Aufträge,
      * Termine morgen, Fristen ≤ 14 Tage (Fuhrpark + NK). Liefert die Zeilen;
      * Telegram-HTML und Mailtext entstehen daraus beim Versand.
@@ -1490,16 +1519,27 @@ export default function (api) {
         const datumLang = new Intl.DateTimeFormat('de-DE', {
             timeZone: 'Europe/Berlin', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
         }).format(jetzt);
-        const [rCc, rTermine, rFuhrpark, rNk] = await Promise.allSettled([
+        const heute = berlinDate(0);
+        const [rCc, rTermine, rFuhrpark, rNk, rOffen, rSek] = await Promise.allSettled([
             Promise.resolve().then(() => leseCcReports(berlinerTagesbeginn(jetzt))),
             termineMorgenZeilen(),
             fuhrparkFristZeilen(ABEND_FRISTEN_TAGE),
             leseNkFristen(ABEND_FRISTEN_TAGE),
+            // Offene Aktionen: heute einzeln, gesendete Entwürfe herausgeprüft (29.10.2026)
+            pruefeOffeneAktionen({ heute, abTag: heute, holePostfach: holePostfachStand }),
+            Promise.resolve().then(() => leseSekretariatFristen(heute)),
         ]);
         const wert = (r) => (r.status === 'fulfilled' ? r.value : null);
+        const offen = wert(rOffen);
+        if (rOffen.status === 'rejected')
+            api.logger.warn(`[abendbriefing] offene Aktionen nicht prüfbar: ${rOffen.reason?.message || rOffen.reason}`);
         return abendZeilen({
             datumLang,
             ccReports: wert(rCc),
+            // Fällt die Prüfung ganz aus, bleibt die alte Tagesliste aus ccReports.
+            offen: offen?.offen,
+            postfachAusfall: offen?.postfachAusfall,
+            sekretariatFristen: wert(rSek),
             termineMorgen: wert(rTermine),
             fuhrpark: wert(rFuhrpark),
             nkFristen: wert(rNk),
@@ -1557,6 +1597,7 @@ export default function (api) {
         const neueQuellen = Promise.allSettled([
             Promise.resolve().then(() => leseCcReports(new Date(now.getTime() - 24 * 3600_000))),
             leseNkFristen(30),
+            pruefeOffeneAktionen({ heute: heuteBerlin, abTag: berlinDate(-1), holePostfach: holePostfachStand }),
             leseKonten(),
             leseTradingStatus(),
             Promise.resolve().then(() => leseTradingTagesbuch()),
@@ -1676,7 +1717,7 @@ export default function (api) {
             }
         }
         // ── NEUE QUELLEN abholen (oben angestossen) ──
-        const [rCc, rNk, rKonten, rTrading, rTagesbuch, rReisen] = await neueQuellen;
+        const [rCc, rNk, rOffen, rKonten, rTrading, rTagesbuch, rReisen] = await neueQuellen;
         const wert = (r) => (r.status === 'fulfilled' ? r.value : null);
         // ── REISEN (laufend oder Beginn in 7 Tagen) ──
         if (rReisen.status === 'rejected') {
@@ -1690,7 +1731,15 @@ export default function (api) {
             parts.push('', `${RUBRIK}📋 Offene cc-Aufträge (24 h)`, ausfallZeile('Reportablage'));
         }
         else {
-            parts.push(...ccAbschnittMorgen(rCc.value));
+            // Geprüfte Liste (seit gestern, gesendete Entwürfe heraus); fällt die Prüfung aus, die alte 24-h-Liste.
+            const offen = rOffen.status === 'fulfilled' ? rOffen.value : null;
+            const abschnitt = ccAbschnittMorgen(rCc.value, offen?.offen);
+            // Ausfallzeile nie ohne Überschrift: ist der Abschnitt leer, kommt sie mit.
+            if (offen?.postfachAusfall && abschnitt.length === 0)
+                abschnitt.push('', `${RUBRIK}📋 Offene cc-Aufträge (24 h)`);
+            if (offen?.postfachAusfall)
+                abschnitt.push(ausfallZeile('Postfach (Prüfung gesendeter Entwürfe)'));
+            parts.push(...abschnitt);
         }
         // ── DRAFTS ──
         try {
