@@ -4,6 +4,16 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-30 (4) — MG24 Grundsteuer Flst. 239/4, NK MG24 v1
+
+Owner-Freigabe 30.10.2026 11:52 („Freigabe MG24 Grundsteuer 239/4“): Buchung 80 Grundsteuer MG24 2025
+905,45 → 1.344,27 € (+ 438,82 € Flst. 239/4, Bescheid …0005.4; Buchhaltung 29.10.2026). Datenskript
+`scripts/mg24-grundsteuer-239-4-20261030.ts` (Probe/Ausführen/Rückweg), Audit 3484. Salden MG24 (Engine):
+W1 724,10 · W2 493,48 · W3 2.985,49 · Eigentümer 4.839,58; Summe 16.142,65 € = vorher + 438,82.
+Daneben `scripts/fristen-nk-n24-plan-20261030.ts` (vier N24-Wiedervorlagen, Audit 3480–3483).
+
+---
+
 ## Stand 2026-10-30 (3) — iCloud-Frühwarnung wieder im Stundenlauf
 
 Befund bei der Fortsetzung des Auftrags „Dokumentenablagen stündlich" (27.10.): Der
