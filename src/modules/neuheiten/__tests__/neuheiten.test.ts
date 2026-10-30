@@ -113,6 +113,21 @@ describe('Frühwarnung in der Meldung', () => {
   });
 });
 
+describe('Frühwarnung im Sekretariat-Lauf (Befund 30.10.2026)', () => {
+  /* Seit modus „ki" läuft nur sekretariatLauf; die Warnung muss dort gerufen
+     und ohne Vorgang eigens gemeldet werden. Statisch, weil das Skript beim
+     Import sofort läuft. */
+  const skript = fs.readFileSync(path.resolve(import.meta.dir, '..', '..', '..', '..', 'scripts', 'neuheiten-stunde.ts'), 'utf-8');
+  const sek = skript.slice(skript.indexOf('async function sekretariatLauf'), skript.indexOf('/** iCloud-Frühwarnung als eigene'));
+
+  test('sekretariatLauf ruft spiegelHinweise und meldet auch ohne Vorgang', () => {
+    expect(sek.length).toBeGreaterThan(1000);
+    expect(sek).toContain('spiegelHinweise(spiegelZustand(SPIEGEL)');
+    expect(sek).toContain('hinweise.push(...spiegel.zeilen)');
+    expect(sek.match(/meldeSpiegel\(/g)?.length).toBe(2);
+  });
+});
+
 describe('„zur Kenntnis" nur als Zähler', () => {
   const kenntnis: NeuheitZeile = { ...mail, kennung: 'm-ffffffff', vorschlag: 'f', text: 'f) nur zur Kenntnis' };
   test('Report listet f nicht, zählt es', () => {

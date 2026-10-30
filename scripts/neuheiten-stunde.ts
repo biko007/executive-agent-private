@@ -137,8 +137,10 @@ function spiegelHinweise(z: SpiegelZustand, jetzt: Date, probe: boolean): { zeil
         fs.writeFileSync(SPIEGEL_WARNUNG, JSON.stringify({ gemeldet: jetzt.toISOString() }));
       }
     }
-    zeilen.push(`iCloud-Spiegel steht seit ${z.letzterIso.slice(0, 16).replace('T', ' ')} UTC `
-      + `(${z.quelleZeitpunkt === 'marker' ? 'Marker .letzter-lauf' : 'Verzeichniszeit'}) — launchd-Job am iMac prüfen`);
+    zeilen.push(z.dateien === 0 && z.quelleZeitpunkt !== 'marker'
+      ? `iCloud-Spiegel ist seit ${z.letzterIso.slice(0, 16).replace('T', ' ')} UTC leer — der launchd-Job am iMac ist noch nicht eingerichtet`
+      : `iCloud-Spiegel steht seit ${z.letzterIso.slice(0, 16).replace('T', ' ')} UTC `
+        + `(${z.quelleZeitpunkt === 'marker' ? 'Marker .letzter-lauf' : 'Verzeichniszeit'}) — launchd-Job am iMac prüfen`);
   }
   if (z.groesseBytes > SPIEGEL_GROSS_BYTES) {
     zeilen.push(`iCloud-Spiegel ist ${gb} GB groß (> 20 GB) — Ausschlüsse im rsync-Job vorschlagen (Fotos, Videos, Backups)`);
@@ -459,6 +461,10 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
       ersteSeite: (b) => pdfErsteSeite(b, 2) });
     hinweise.push(...dok.fehler, ...dok.hinweise);
   } catch (e: any) { hinweise.push(`Dokumententeil Abbruch: ${String(e?.message ?? e).slice(0, 200)}`); }
+  /* iCloud-Frühwarnung auch im Sekretariat-Lauf (seit modus „ki" lief nur noch
+     dieser Zweig, die Warnung aus dem Regel-Lauf kam nie an; Befund 30.10.2026). */
+  const spiegel = nachlaufModus ? { zeilen: [] as string[], erzwingen: false } : spiegelHinweise(spiegelZustand(SPIEGEL), jetzt, false);
+  hinweise.push(...spiegel.zeilen);
   const dokNeu = dok ? dokElemente(dok).filter((e) => !bekannt(e.kennung)) : [];
   const nachzuegler = nachlaufModus || !Object.keys(speicher.elemente).length ? []
     : dokNachzuegler((k) => bekannt(k) || !!speicher.elemente[k] || dokNeu.some((x) => x.kennung === k), jetzt);
@@ -509,6 +515,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
 
   const { zeilen } = vorgangsZeilen(ergebnis.vorgaenge, stand.elemente);
   if (!zeilen.length && !ergebnis.einzeln.length && !ergebnis.alarm.length) {
+    if (spiegel.erzwingen) await meldeSpiegel(spiegel.zeilen, hinweise);
     log('neuheiten: kein Vorgang zur Freigabe — kein Report');
     for (const h of hinweise) warn(`neuheiten: ${h}`);
     return 0;
@@ -529,12 +536,21 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
     await fetch('http://127.0.0.1:18789/api/internal/notify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ message: t.titel, severity: 'info', lage: 'hinweis', titel: t.titel, zeilen: t.zeilen,
-        fuss: [hochgeladen ? `Report ${name} (Dropbox)` : `Report ${name} nur lokal`, 'Freigabe: Freigabe Vorgang <Kennung>'] }),
+        fuss: [hochgeladen ? `Report ${name} (Dropbox)` : `Report ${name} nur lokal`, 'Freigabe: Freigabe Vorgang <Kennung>',
+          ...(spiegel.erzwingen ? spiegel.zeilen.map((z) => `⚠️ ${z}`) : [])] }),
     }).then((r) => { if (!r.ok) hinweise.push(`Telegram ${r.status}`); }).catch((e: any) => hinweise.push(`Telegram-Hinweis fehlgeschlagen: ${e?.message ?? e}`));
-  }
+  } else if (spiegel.erzwingen) await meldeSpiegel(spiegel.zeilen, hinweise);
   for (const h of hinweise) warn(`neuheiten: ${h}`);
   log(`Report ${name}`);
   return hinweise.some((h) => /fehlgeschlagen|Abbruch|nicht lesbar \(/.test(h)) ? 1 : 0;
+}
+
+/** iCloud-Frühwarnung als eigene kurze Owner-Meldung (höchstens einmal je 24 h, siehe spiegelHinweise). */
+async function meldeSpiegel(zeilen: string[], hinweise: string[]): Promise<void> {
+  await fetch('http://127.0.0.1:18789/api/internal/notify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({ message: 'iCloud-Spiegel', severity: 'warn', lage: 'hinweis', titel: 'iCloud-Spiegel', zeilen }),
+  }).then((r) => { if (!r.ok) hinweise.push(`Telegram ${r.status}`); }).catch((e: any) => hinweise.push(`Telegram-Hinweis fehlgeschlagen: ${e?.message ?? e}`));
 }
 
 /** Nachlauf-Report: Vorgangsliste, Vergleich Regeln vs. KI, Kosten. */

@@ -4,6 +4,22 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-30 (3) — iCloud-Frühwarnung wieder im Stundenlauf
+
+Befund bei der Fortsetzung des Auftrags „Dokumentenablagen stündlich" (27.10.): Der
+iCloud-Spiegel `~/icloud-spiegel/` ist seit 27.10. 09:49 UTC leer, die zugesagte
+Frühwarnung (ab 26 h) kam nie. Ursache: Seit dem Sekretariat (`modus: ki`) läuft
+nur `sekretariatLauf`; `spiegelHinweise` stand nur im alten Regel-Zweig.
+
+- `scripts/neuheiten-stunde.ts`: `sekretariatLauf` ruft `spiegelHinweise` (nicht im
+  Nachlauf), Zeilen in die Report-Hinweise; mit Vorgang als ⚠️-Fußzeile der
+  Telegram-Meldung, ohne Vorgang eigene kurze Meldung `meldeSpiegel`. Höchstens
+  einmal je 24 h wie bisher (`neuheiten/spiegel-warnung.json`). Leerer Spiegel ohne
+  Marker heißt jetzt „noch nicht eingerichtet" statt „steht seit".
+- Test `neuheiten.test.ts` +1 (statisch: Aufruf und beide Meldewege im Sekretariat-Lauf).
+
+---
+
 ## Stand 2026-10-30 (2) — data@: verschobene Proton-Mails wieder lesbar
 
 Befund 29.10.2026 (report-mail-register-abdeckung-nachpruefung), am 30.10. wieder
