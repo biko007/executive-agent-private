@@ -31,6 +31,11 @@ export interface LeseQuelle {
   text(id: string): Promise<string>;
   /** Message-IDs gesendeter Mails — um Antworten darauf zu erkennen. */
   gesendeteIds(seitIso: string): Promise<string[]>;
+  /**
+   * Aktuelle ID einer Mail ueber ihre Message-ID (nur Graph). Graph vergibt beim
+   * Verschieben eine neue ID; gespeicherte IDs laufen dann ins 404.
+   */
+  idPerMessageId?(messageId: string): Promise<string | null>;
   /** Verbindung schliessen (IMAP); bei Graph ohne Wirkung. */
   schliessen(): Promise<void>;
 }
@@ -42,6 +47,21 @@ const GESENDET = /^(sent items|gesendete elemente|gesendet|sent)$/i;
 export function ordnerAusgeschlossen(name: string): boolean {
   const blatt = name.split('/').pop() ?? name;
   return ordnerUebergehen(blatt) || GESENDET.test(blatt.trim());
+}
+
+/**
+ * Text einer data@-Mail. Das Register speichert die Graph-ID beim Eingang; die
+ * Proton-Weiterleitungen wandern danach in den Ordner „Proton", und Graph vergibt
+ * dabei eine neue ID (alte ID → 404). Dann einmal über die Message-ID nachschlagen.
+ */
+export async function dataText(q: Pick<LeseQuelle, 'text' | 'idPerMessageId'>, e: { graphId: string; messageId: string }): Promise<string> {
+  try {
+    return await q.text(e.graphId);
+  } catch (erst) {
+    const neueId = q.idPerMessageId ? await q.idPerMessageId(String(e.messageId)) : null;
+    if (!neueId || neueId === e.graphId) throw erst;
+    return q.text(neueId);
+  }
 }
 
 // ── Graph ──────────────────────────────────────────────────────────────────
@@ -70,6 +90,14 @@ export function nurLesendGraph(
         url = typeof seite?.['@odata.nextLink'] === 'string' ? seite['@odata.nextLink'] : null;
       }
       return raus;
+    },
+    async idPerMessageId(messageId) {
+      /* OData-Literal: einfache Anfuehrungszeichen werden verdoppelt. */
+      const wert = messageId.trim().replace(/'/g, "''");
+      const seite: any = await hole(`${basis}/messages?$select=id&$top=1`
+        + `&$filter=${encodeURIComponent(`internetMessageId eq '${wert}'`)}`);
+      const id = seite?.value?.[0]?.id;
+      return typeof id === 'string' && id ? id : null;
     },
     async schliessen() { /* zustandslos */ },
   };

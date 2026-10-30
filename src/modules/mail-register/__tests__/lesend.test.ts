@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  registriereLesend, nurLesendGraph, bekannteIdsAus, ordnerAusgeschlossen, kopfAusRoh, textTeil,
+  registriereLesend, nurLesendGraph, dataText, bekannteIdsAus, ordnerAusgeschlossen, kopfAusRoh, textTeil,
   type LeseQuelle,
 } from '../lesend.js';
 import { ladeRegister, haengeAnRegister, eintragAus } from '../index.js';
@@ -114,7 +114,7 @@ describe('nur lesend — Graph', () => {
 
   test('der Wrapper hat keine Methode zum Verschieben oder Ablegen', () => {
     const q = nurLesendGraph(graphFake(), z, async () => ({ value: [] }));
-    expect(Object.keys(q).sort()).toEqual(['anhangsnamen', 'gesendeteIds', 'mails', 'ordner', 'schliessen', 'text']);
+    expect(Object.keys(q).sort()).toEqual(['anhangsnamen', 'gesendeteIds', 'idPerMessageId', 'mails', 'ordner', 'schliessen', 'text']);
     expect((q as any).verschiebe).toBeUndefined();
     expect((q as any).mime).toBeUndefined();
     expect((q as any).anhaenge).toBeUndefined();
@@ -141,6 +141,41 @@ describe('nur lesend — Graph', () => {
     expect(await q.gesendeteIds('2026-08-01T00:00:00Z')).toEqual(['<a@b>', '<c@d>']);
     expect(urls[0]).toContain('/mailFolders/sentitems/messages');
     expect(urls[0]).toContain('juergen.bickel%40bikolino.com');
+  });
+
+  test('ID per Message-ID: nur GET mit internetMessageId-Filter, Anführungszeichen maskiert', async () => {
+    const urls: string[] = [];
+    const q = nurLesendGraph(graphFake(), z, async (u) => { urls.push(u); return { value: [{ id: 'NEU' }] }; });
+    expect(await q.idPerMessageId!("<o'k@b>")).toBe('NEU');
+    expect(decodeURIComponent(urls[0])).toContain("internetMessageId eq '<o''k@b>'");
+    const leer = nurLesendGraph(graphFake(), z, async () => ({ value: [] }));
+    expect(await leer.idPerMessageId!('<x@y>')).toBeNull();
+  });
+});
+
+describe('dataText — verschobene data@-Mail (Graph-ID veraltet)', () => {
+  const e = { graphId: 'ALT', messageId: '<m@proton>' };
+
+  test('alte ID lesbar: kein Nachschlagen', async () => {
+    let gesucht = 0;
+    const t = await dataText({ text: async (id) => `T:${id}`, idPerMessageId: async () => { gesucht++; return 'NEU'; } }, e);
+    expect(t).toBe('T:ALT');
+    expect(gesucht).toBe(0);
+  });
+
+  test('alte ID 404: Text über die neue ID aus der Message-ID', async () => {
+    const t = await dataText({
+      text: async (id) => { if (id === 'ALT') throw new Error('graph_get_error: status=404'); return `T:${id}`; },
+      idPerMessageId: async (mid) => (mid === '<m@proton>' ? 'NEU' : null),
+    }, e);
+    expect(t).toBe('T:NEU');
+  });
+
+  test('nicht auffindbar oder gleiche ID: ursprünglicher Fehler bleibt', async () => {
+    const wirf = async () => { throw new Error('404'); };
+    await expect(dataText({ text: wirf, idPerMessageId: async () => null }, e)).rejects.toThrow('404');
+    await expect(dataText({ text: wirf, idPerMessageId: async () => 'ALT' }, e)).rejects.toThrow('404');
+    await expect(dataText({ text: wirf }, e)).rejects.toThrow('404');
   });
 });
 

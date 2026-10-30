@@ -4,6 +4,25 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-30 (2) — data@: verschobene Proton-Mails wieder lesbar
+
+Befund 29.10.2026 (report-mail-register-abdeckung-nachpruefung), am 30.10. wieder
+sichtbar: Der Stundenlauf `neuheiten-stunde` endete um 08:07 und 09:07 UTC mit Exit 1,
+weil neun Proton-Weiterleitungen an data@ „Text nicht lesbar" meldeten. Ursache: Das
+Register speichert die Graph-ID beim Eingang; danach wandern die Mails in den Ordner
+„Proton", Graph vergibt eine neue ID, die alte liefert 404. Die Mails erreichten das
+Sekretariat nie (Fenster 3 Tage, danach still verloren).
+
+- `mail-register/lesend.ts`: `nurLesendGraph` bekommt `idPerMessageId` (nur GET,
+  Filter `internetMessageId eq '…'`); `dataText` liest erst über die gespeicherte ID,
+  bei Fehler einmal über die Message-ID nachgeschlagen. Keine Schreibmethode dazu.
+- `scripts/neuheiten-stunde.ts`: `dataElemente` nutzt `dataText`.
+- Tests `lesend.test.ts`: +4 (GET mit maskiertem Filter, kein Nachschlagen bei
+  lesbarer ID, Rückfall bei 404, Fehler bleibt ohne Treffer). Live nur lesend: 12/12
+  data@-Einträge lesbar (vorher 2/12).
+
+---
+
 ## Stand 2026-10-30 (1) — Fristen-Abgleich gegen Gesendete Elemente; Briefing ohne erledigte Fristen
 
 Owner-Rüge 30.10.2026 07:31 („Schon wieder???“): „energiekonzept: finale Jahresabrechnungen 2025 anmahnen“ stand im Morgenbriefing acht Tage überfällig, obwohl die Mahnung am 27.10. 19:31 UTC gesendet war.

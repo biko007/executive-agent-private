@@ -37,7 +37,7 @@ import { ladeDokRegeln, dokRegelnErgaenzen } from '../src/modules/doc-register/r
 import { dokLauf, dokZeile, ABLAGE, pdfErsteSeite, ladeDokRegister, type DokLaufErgebnis } from '../src/modules/doc-register/lauf.js';
 import { dokKennung } from '../src/modules/doc-register/relevanz.js';
 import { erstelleMailboxZugang } from '../src/modules/mail-register/index.js';
-import { nurLesendGraph } from '../src/modules/mail-register/lesend.js';
+import { nurLesendGraph, dataText } from '../src/modules/mail-register/lesend.js';
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
   anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, ladeKorrekturen, korrekturZeilen, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
@@ -349,7 +349,7 @@ async function dataElemente(bekannt: (k: string) => boolean, seit: string): Prom
   const elemente: Element[] = [];
   for (const e of offen) {
     let text = '';
-    try { text = (await q.text(e.graphId)).slice(0, 3000); } catch { fehler.push(`data@: Text nicht lesbar (${String(e.betreff).slice(0, 40)})`); continue; }
+    try { text = (await dataText(q, e)).slice(0, 3000); } catch { fehler.push(`data@: Text nicht lesbar (${String(e.betreff).slice(0, 40)})`); continue; }
     elemente.push({ typ: 'mail', kennung: kurzId(String(e.messageId).trim()), quelle: 'data', datum: e.empfangenIso, titel: e.betreff,
       von: e.absender, vonName: e.absenderName, text, anhaenge: e.anhaenge, messageId: String(e.messageId).trim(), threadIds: [],
       ordner: e.ordner, kopf: {} });
