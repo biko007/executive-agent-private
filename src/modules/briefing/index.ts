@@ -16,13 +16,13 @@
 export {
   RUBRIK, tagMonat, tageZwischen, euro, ausfallZeile, alsTelegramHtml,
   ccEinordnung, ccAbschnittMorgen, ccAbschnittAbend,
-  nkFristZeile, nkFristZeilen, nkAbschnitt,
+  nkFristZeile, nkFristZeilen, nkAbschnitt, fristErledigtZeilen, VERALTET_TAGE,
   bankingAbschnitt, SALDO_ALT_STUNDEN,
   tradingZeilen, reisenAbschnitt, gewichtAlterZusatz,
   abendZeilen, ABEND_FRISTEN_TAGE,
 } from './abschnitte.js';
 export type {
-  CcReport, NkFrist, KontoStand, TradingStatus, TradingTag, ReiseKurz, AbendDaten,
+  CcReport, NkFrist, FristErledigt, KontoStand, TradingStatus, TradingTag, ReiseKurz, AbendDaten,
 } from './abschnitte.js';
 
 export { naechsteAktion, minutenVon, NACHHOL_MINUTEN, NACHHOL_FENSTER_MINUTEN, MAX_VERSUCHE } from './planer.js';
@@ -38,7 +38,7 @@ export {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   REPORT_ABLAGEN,
   ERLEDIGT_DATEI, ladeErledigt, vermerkeErledigt, leseOffeneCcReports, pruefeOffeneAktionen,
-  leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE,
+  leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE, leseFristenErledigt,
 } from './quellen.js';
 export type { ErledigtEintrag, PostfachStand } from './quellen.js';
 

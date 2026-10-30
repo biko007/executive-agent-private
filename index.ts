@@ -99,7 +99,7 @@ import {
   gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE,
   naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet,
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
-  registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen,
+  registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt,
 } from "./src/modules/briefing/index.js";
 import type { PostfachStand } from "./src/modules/briefing/index.js";
 import type { BriefingArt } from "./src/modules/briefing/index.js";
@@ -1731,7 +1731,7 @@ export default function (api: any) {
       timeZone: 'Europe/Berlin', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     }).format(jetzt);
     const heute = berlinDate(0);
-    const [rCc, rTermine, rFuhrpark, rNk, rOffen, rSek] = await Promise.allSettled([
+    const [rCc, rTermine, rFuhrpark, rNk, rOffen, rSek, rErl] = await Promise.allSettled([
       Promise.resolve().then(() => leseCcReports(berlinerTagesbeginn(jetzt))),
       termineMorgenZeilen(),
       fuhrparkFristZeilen(ABEND_FRISTEN_TAGE),
@@ -1739,6 +1739,8 @@ export default function (api: any) {
       // Offene Aktionen: heute einzeln, gesendete Entwürfe herausgeprüft (29.10.2026)
       pruefeOffeneAktionen({ heute, abTag: heute, holePostfach: holePostfachStand }),
       Promise.resolve().then(() => leseSekretariatFristen(heute)),
+      // Vom Fristen-Abgleich heute erledigt (Owner-Auftrag 30.10.2026)
+      leseFristenErledigt(berlinerTagesbeginn(jetzt).toISOString()),
     ]);
     const wert = <T,>(r: PromiseSettledResult<T>): T | null => (r.status === 'fulfilled' ? r.value : null);
     const offen = wert(rOffen);
@@ -1750,6 +1752,7 @@ export default function (api: any) {
       offen: offen?.offen,
       postfachAusfall: offen?.postfachAusfall,
       sekretariatFristen: wert(rSek),
+      fristenErledigt: wert(rErl),
       termineMorgen: wert(rTermine),
       fuhrpark: wert(rFuhrpark),
       nkFristen: wert(rNk),

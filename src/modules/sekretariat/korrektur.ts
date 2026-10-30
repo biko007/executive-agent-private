@@ -31,7 +31,8 @@ export interface Korrektur {
     naechsterSchritt?: string;
     begruendung?: string;
     /** Fristen ohne Objekt (z. B. Steuer, ELSTER), die das Abendbriefing ab ihrem Vorlauf zeigt. */
-    fristen?: Array<{ termin: string; was: string; vorlaufTage?: number }>;
+    /** `angelegt` (ISO) setzt wendeAn, falls es fehlt — der Fristen-Abgleich prüft nur ab dort. */
+    fristen?: Array<{ termin: string; was: string; vorlaufTage?: number; an?: string[]; angelegt?: string }>;
   };
 }
 
@@ -64,6 +65,7 @@ export function wendeAn(vorgaenge: Array<Record<string, any>>, k: Korrektur, zei
   if (!v) return false;
   const { vorgang: _v, ...felder } = k.aenderung;
   for (const [feld, wert] of Object.entries(felder)) if (wert !== undefined) v[feld] = wert;
+  if (Array.isArray(v.fristen)) for (const f of v.fristen) if (f && !f.angelegt) f.angelegt = zeit;
   if (k.aenderung.status && k.aenderung.status !== 'wartet') delete v.wartetAuf;
   v.aktualisiert = zeit;
   return true;

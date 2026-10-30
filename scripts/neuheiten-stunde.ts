@@ -43,6 +43,7 @@ import {
   anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, ladeKorrekturen, korrekturZeilen, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
   vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
+import { fristAbgleich, type GesendeteMail } from '../src/modules/sekretariat/fristabgleich.js';
 
 const HOME = process.env.HOME || os.homedir();
 const PERSONAL = path.join(HOME, '.openclaw', 'workspace', 'artifacts', 'personal');
@@ -387,6 +388,31 @@ function dokElemente(dok: DokLaufErgebnis): Element[] {
   }));
 }
 
+/** Gesendete Elemente juergen.bickel@ seit `seitIso`, nur lesend (Fristen-Abgleich). */
+async function gesendeteMails(seitIso: string): Promise<GesendeteMail[]> {
+  const out: GesendeteMail[] = [];
+  let url: string | null = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(OWNER)}/mailFolders/sentitems/messages`
+    + `?$select=id,internetMessageId,subject,toRecipients,ccRecipients,sentDateTime,bodyPreview&$top=100&$orderby=sentDateTime desc`
+    + `&$filter=${encodeURIComponent(`sentDateTime ge ${seitIso}`)}`;
+  for (let seite = 0; url && seite < 10; seite++) {
+    const j: any = await graphGet(env('M365_TENANT_ID'), env('M365_CLIENT_ID'), env('M365_CLIENT_SECRET'), url);
+    for (const m of j?.value ?? []) out.push({
+      id: m.id, mailId: String(m.internetMessageId || m.id), betreff: String(m.subject || ''),
+      an: [...(m.toRecipients ?? []), ...(m.ccRecipients ?? [])].map((r: any) => String(r?.emailAddress?.address || '').toLowerCase()).filter(Boolean),
+      zeit: String(m.sentDateTime || '').replace(/Z$/, '.000Z'), text: String(m.bodyPreview || ''),
+    });
+    url = j?.['@odata.nextLink'] ?? null;
+  }
+  return out;
+}
+
+/** Eigener Text einer gesendeten Mail (ohne Zitat), HTML entfernt. */
+async function mailText(m: GesendeteMail): Promise<string> {
+  const j: any = await graphGet(env('M365_TENANT_ID'), env('M365_CLIENT_ID'), env('M365_CLIENT_SECRET'),
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(OWNER)}/messages/${encodeURIComponent(m.id)}?$select=uniqueBody`);
+  return String(j?.uniqueBody?.content || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+}
+
 async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
   const beginn = Date.now();
   const jetzt = new Date();
@@ -451,6 +477,15 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
       deckelProStunde: nachlaufModus ? null : einst.deckelProStunde, jetzt, log,
       bankVersicherer: /@([a-z0-9.-]*\.)?(ksk-tut\.de|vbsdn\.de|volksbank[a-z-]*\.de|vr-?bank[a-z-]*\.de|dzprivatbank\.com|comdirect\.de|revolut\.com|ubs\.com|gothaer\.(de|info)|allianz\.de|alte-leipziger\.de|standardlife\.de|ruv\.de|helvetia\.(de|ch)|pantaenius\.(de|com)|vohrer\.de|swisslife\.de|nuernberger\.de|debeka\.de|ergo\.de|axa\.de|hdi\.de)$/i,
     });
+
+    /* Fristen-Abgleich (Owner-Auftrag 30.10.2026): offene Fristen mit Mail-Bezug
+       gegen Gesendete Elemente — Treffer erledigt, Folgefrist nur als Vorschlag.
+       Ein Fehler hier hält den Lauf nicht an. */
+    try {
+      const ab = await fristAbgleich({ query: (s, p) => query(s, p as any[]), holeGesendet: gesendeteMails, holeText: mailText,
+        sekDatei: path.join(SEK_ZUSTAND, 'vorgaenge.json'), probe: probe || nachlaufModus, jetzt });
+      log(`fristen-abgleich: ${ab.geprueft} geprüft, ${ab.erledigt.length} erledigt${ab.erledigt.map((e) => ` · ${e.frist.objekt} ${e.frist.schluessel}`).join('')}`);
+    } catch (e: any) { warn(`neuheiten: Fristen-Abgleich nicht möglich: ${String(e?.message ?? e).slice(0, 200)}`); }
   } finally { await closePool(); }
   const stand = ladeSpeicher(SEK_ZUSTAND);
   log(`sekretariat: ${JSON.stringify(ergebnis.zaehler)}; ${ergebnis.tokensEin}/${ergebnis.tokensAus} Tokens ≈ ${ergebnis.kostenUsd} $`);

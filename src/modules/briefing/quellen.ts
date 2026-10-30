@@ -10,8 +10,8 @@ import { query as dbQuery } from '../../shared/db/index.js';
 import { listAccounts } from '../banking/index.js';
 import { listTrips } from '../travel/index.js';
 import { kopfblockLesen } from '../report-telegram/index.js';
-import { ccEinordnung } from './abschnitte.js';
-import type { CcReport, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
+import { ccEinordnung, VERALTET_TAGE } from './abschnitte.js';
+import type { CcReport, FristErledigt, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
 import { AKTION_TAGE, berichtTag, entwurfStand, istSendeAktion, mailZiele, offeneAktionen } from './aktionen.js';
 import type { MailKurz, MailZiel, OffeneAktionen } from './aktionen.js';
 
@@ -183,12 +183,15 @@ export function leseSekretariatFristen(heute: string, datei = SEKRETARIAT_VORGAE
   for (const v of Array.isArray(d?.vorgaenge) ? d.vorgaenge : []) {
     if (v?.status === 'erledigt' || !Array.isArray(v?.fristen)) continue;
     for (const f of v.fristen) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(f?.termin))) continue;
+      // Einzeln erledigt (Fristen-Abgleich 30.10.2026) — nie mehr überfällig zeigen
+      if (f?.erledigt || !/^\d{4}-\d{2}-\d{2}$/.test(String(f?.termin))) continue;
       const tage = Math.round((Date.parse(`${f.termin}T00:00:00Z`) - Date.parse(`${heute}T00:00:00Z`)) / 86_400_000);
       const roh = f.vorlaufTage;
       const vorlauf = roh !== null && roh !== '' && Number.isFinite(Number(roh)) ? Number(roh) : SEKRETARIAT_VORLAUF_TAGE;
       if (tage > vorlauf) continue;
-      liste.push({ objekt: String(v.objekt || 'Sekretariat'), bezeichnung: String(f.was || v.titel), termin: f.termin, tage });
+      const unberuehrt = String(v.aktualisiert || '').slice(0, 10) <= f.termin;
+      liste.push({ objekt: String(v.objekt || 'Sekretariat'), bezeichnung: String(f.was || v.titel), termin: f.termin, tage,
+        ...(tage < -VERALTET_TAGE && unberuehrt ? { veraltet: true } : {}) });
     }
   }
   return liste;
@@ -213,7 +216,8 @@ export async function leseNkFristen(grenzeTage: number): Promise<NkFrist[]> {
   const { rows: fristen } = await dbQuery<any>(
     `SELECT upper(p.code) AS objekt, f.bezeichnung,
             to_char(f.termin, 'YYYY-MM-DD') AS termin,
-            (f.termin - CURRENT_DATE)::int AS tage, f.vorlauf_tage
+            (f.termin - CURRENT_DATE)::int AS tage, f.vorlauf_tage,
+            (f.updated_at::date <= f.termin) AS unberuehrt
        FROM objekt_fristen f
        JOIN properties p ON p.id = f.property_id
       WHERE f.erledigt_am IS NULL
@@ -227,8 +231,21 @@ export async function leseNkFristen(grenzeTage: number): Promise<NkFrist[]> {
     ...fristen.map((r: any) => ({
       objekt: r.objekt, bezeichnung: r.bezeichnung, termin: r.termin, tage: Number(r.tage),
       vorlaufHeute: Number(r.vorlauf_tage) > 0 && Number(r.tage) === Number(r.vorlauf_tage),
+      veraltet: Number(r.tage) < -VERALTET_TAGE && r.unberuehrt === true,
     })),
   ];
+}
+
+/** Heute (ab `seitIso`) vom Fristen-Abgleich erledigte Fristen, aus dem Audit. */
+export async function leseFristenErledigt(seitIso: string): Promise<FristErledigt[]> {
+  const { rows } = await dbQuery<any>(
+    `SELECT after_jsonb AS a FROM audit_log
+      WHERE action = 'frist.auto-erledigt' AND ts >= $1 ORDER BY ts`, [seitIso]);
+  return rows.map((r: any) => ({
+    objekt: String(r.a?.objekt || ''), text: String(r.a?.text || ''), erledigtAm: String(r.a?.erledigt_am || ''),
+    // Keine Adresse und keine Domain: sie kann einen Mieternamen tragen (C5). Gegenseite aus dem Fristtext.
+    an: /^\s*([^:]{2,40}):/.exec(String(r.a?.text || ''))?.[1]?.trim() || 'Gegenseite', vorschlag: r.a?.vorschlag_folgefrist,
+  }));
 }
 
 export async function leseKonten(): Promise<KontoStand[]> {

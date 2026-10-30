@@ -36,7 +36,7 @@ import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
-import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, } from "./src/modules/briefing/index.js";
+import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt, } from "./src/modules/briefing/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
@@ -1520,7 +1520,7 @@ export default function (api) {
             timeZone: 'Europe/Berlin', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
         }).format(jetzt);
         const heute = berlinDate(0);
-        const [rCc, rTermine, rFuhrpark, rNk, rOffen, rSek] = await Promise.allSettled([
+        const [rCc, rTermine, rFuhrpark, rNk, rOffen, rSek, rErl] = await Promise.allSettled([
             Promise.resolve().then(() => leseCcReports(berlinerTagesbeginn(jetzt))),
             termineMorgenZeilen(),
             fuhrparkFristZeilen(ABEND_FRISTEN_TAGE),
@@ -1528,6 +1528,8 @@ export default function (api) {
             // Offene Aktionen: heute einzeln, gesendete Entwürfe herausgeprüft (29.10.2026)
             pruefeOffeneAktionen({ heute, abTag: heute, holePostfach: holePostfachStand }),
             Promise.resolve().then(() => leseSekretariatFristen(heute)),
+            // Vom Fristen-Abgleich heute erledigt (Owner-Auftrag 30.10.2026)
+            leseFristenErledigt(berlinerTagesbeginn(jetzt).toISOString()),
         ]);
         const wert = (r) => (r.status === 'fulfilled' ? r.value : null);
         const offen = wert(rOffen);
@@ -1540,6 +1542,7 @@ export default function (api) {
             offen: offen?.offen,
             postfachAusfall: offen?.postfachAusfall,
             sekretariatFristen: wert(rSek),
+            fristenErledigt: wert(rErl),
             termineMorgen: wert(rTermine),
             fuhrpark: wert(rFuhrpark),
             nkFristen: wert(rNk),

@@ -181,12 +181,25 @@ export interface NkFrist {
   tage: number;
   /** Vorlauf der Objektfrist heute erreicht (kann jenseits der Grenze liegen) */
   vorlaufHeute?: boolean;
+  /** über VERALTET_TAGE überfällig und seit dem Termin nicht bearbeitet */
+  veraltet?: boolean;
 }
+
+/**
+ * Ab so vielen Tagen Überfälligkeit ohne Bearbeitung steht eine Frist nicht
+ * mehr einzeln rot da, sondern in der Sammelzeile „⚠️ veraltet? n“
+ * (Owner-Auftrag 30.10.2026).
+ */
+export const VERALTET_TAGE = 14;
+
+/** Wartet die Frist auf eine Antwort der Gegenseite? Dann ist sie überfällig ein Nachfass-Fall. */
+const WARTET_AUF_ANTWORT = /\bantwort\b/i;
 
 export function nkFristZeile(f: NkFrist): string {
   if (f.tage < 0) {
     const t = Math.abs(f.tage);
-    return `• ${f.objekt} — ${f.bezeichnung}: überfällig seit ${t} Tag${t === 1 ? '' : 'en'} (${tagMonat(f.termin)}) 🔴`;
+    const nachfass = WARTET_AUF_ANTWORT.test(f.bezeichnung) ? ' → Nachfass vorschlagen' : '';
+    return `• ${f.objekt} — ${f.bezeichnung}: überfällig seit ${t} Tag${t === 1 ? '' : 'en'} (${tagMonat(f.termin)}) 🔴${nachfass}`;
   }
   if (f.tage === 0) return `• ${f.objekt} — ${f.bezeichnung}: heute fällig ⚠️`;
   return `• ${f.objekt} — ${f.bezeichnung}: in ${f.tage} Tag${f.tage === 1 ? '' : 'en'} (${tagMonat(f.termin)})`;
@@ -198,10 +211,30 @@ export function nkFristZeile(f: NkFrist): string {
  * getrennte NK-Meldung, die das bisher tat, entfällt (Owner-Auftrag 26.10.2026).
  */
 export function nkFristZeilen(fristen: NkFrist[], grenzeTage: number): string[] {
-  return fristen
-    .filter(f => f.tage <= grenzeTage || f.vorlaufHeute)
+  const veraltet = fristen.filter(f => f.veraltet).length;
+  const zeilen = fristen
+    .filter(f => !f.veraltet && (f.tage <= grenzeTage || f.vorlaufHeute))
     .sort((a, b) => a.objekt.localeCompare(b.objekt) || a.termin.localeCompare(b.termin))
     .map(nkFristZeile);
+  if (veraltet) zeilen.push(`• ⚠️ veraltet? ${veraltet} (über ${VERALTET_TAGE} Tage überfällig, seither nicht bearbeitet)`);
+  return zeilen;
+}
+
+/** Durch den Fristen-Abgleich heute erledigt (Audit „frist.auto-erledigt“). */
+export interface FristErledigt {
+  objekt: string;
+  text: string;
+  /** Versandtag der Belegmail, YYYY-MM-DD */
+  erledigtAm: string;
+  an: string;
+  vorschlag?: { was: string; termin: string };
+}
+
+export function fristErledigtZeilen(liste: FristErledigt[]): string[] {
+  return liste.flatMap(e => [
+    `• ${e.objekt} — ${e.text}: erledigt, Mail an ${e.an} am ${tagMonat(e.erledigtAm)}`,
+    ...(e.vorschlag ? [`  Vorschlag Folgefrist: ${e.vorschlag.was} bis ${tagMonat(e.vorschlag.termin)}`] : []),
+  ]);
 }
 
 export function nkAbschnitt(fristen: NkFrist[], grenzeTage: number, titel: string): string[] {
@@ -341,6 +374,8 @@ export interface AbendDaten {
   postfachAusfall?: boolean;
   /** Fristen an Sekretariat-Vorgängen ab ihrem Vorlauf; null = nicht abrufbar */
   sekretariatFristen?: NkFrist[] | null;
+  /** Heute vom Fristen-Abgleich erledigt; null = nicht abrufbar */
+  fristenErledigt?: FristErledigt[] | null;
   /** Fertig formatierte Terminzeilen für morgen; null = Kalender nicht abrufbar */
   termineMorgen: string[] | null;
   /** Fertig formatierte Fuhrparkzeilen (≤ 14 Tage); null = nicht abrufbar */
@@ -372,6 +407,9 @@ export function abendZeilen(d: AbendDaten): string[] {
   if (d.sekretariatFristen === null) fristZeilen.push(ausfallZeile('Sekretariat-Fristen'));
   else if (d.sekretariatFristen) fristZeilen.push(...nkFristZeilen(d.sekretariatFristen, Number.POSITIVE_INFINITY));
   zeilen.push(...(fristZeilen.length ? fristZeilen : ['• keine']));
+
+  if (d.fristenErledigt === null) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ausfallZeile('Fristen-Abgleich'));
+  else if (d.fristenErledigt?.length) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ...fristErledigtZeilen(d.fristenErledigt));
 
   return zeilen;
 }
