@@ -4,6 +4,23 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-30 (1) — Fristen-Abgleich gegen Gesendete Elemente; Briefing ohne erledigte Fristen
+
+Owner-Rüge 30.10.2026 07:31 („Schon wieder???“): „energiekonzept: finale Jahresabrechnungen 2025 anmahnen“ stand im Morgenbriefing acht Tage überfällig, obwohl die Mahnung am 27.10. 19:31 UTC gesendet war.
+
+- **Teil A (Daten, `scripts/fristen-abgleich-20261030.ts`, Audit 3463–3465):** Frist #2 erledigt am 27.10.2026. Neue Frist #31 N24 „energiekonzept: Antwort auf Mail vom 27.10. …“, 10.11.2026, Vorlauf 3. Sekretariat v-772abaee wartet auf Maurer, Folgefrist 11.11.2026.
+- **Neu, `src/modules/sekretariat/fristabgleich.ts`, im Stundenlauf `neuheiten-stunde`:**
+  - Geprüft werden offene Fristen, deren Text eine eigene Mail verlangt (anmahnen, nachfassen, anfragen, anfordern …). Fristen, die auf Antwort, Bestätigung oder Lieferung warten, nie.
+  - Treffer: gesendet seit Anlage der Frist (Sekretariat nur mit `angelegt`), an Adresse oder Firmendomain aus Bezeichnung, Notiz oder `an`. Keine eigenen Adressen, keine Weiterleitung. Das Thema muss im eigenen Text stehen (uniqueBody, ohne Zitat) oder im Betreff einer neuen Mail: zwei Stämme oder einer aus einem Wort ab 12 Buchstaben.
+  - Bei Treffer: `erledigt_am` = Versandtag Berlin bzw. `fristen[i].erledigt`, Audit `frist.auto-erledigt` mit Mail-ID. Folgefrist nur als Vorschlag (Termin aus dem Mailtext, sonst +14 Tage).
+  - Fehler hält den Stundenlauf nicht an.
+- **Briefing:**
+  - Erledigte Sekretariat-Fristen nie mehr überfällig.
+  - Über 14 Tage überfällig und seit dem Termin unbearbeitet: Sammelzeile „⚠️ veraltet? n“. NK-Zustellpflichten (§ 556) bleiben einzeln rot.
+  - Überfällige Antwort-Fristen tragen „→ Nachfass vorschlagen“.
+  - Abend neu „✅ Fristen heute erledigt“ aus dem Audit, ohne Adressen (C5).
+- Tests `sekretariat/__tests__/fristabgleich.test.ts` (12), Review C7 mit sieben Befunden, alle behoben.
+
 ## Stand 2026-10-29 (6) — Briefing: offene Aktionen gegen das Postfach geprüft, Sekretariat-Fristen
 
 Owner-Rüge 29.10.2026 21:43 („Hier sind mails erwähnt, die ich längst versendet habe“).
