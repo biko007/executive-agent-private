@@ -4,6 +4,14 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-10-30 (5) — N24 Liegenschaftszähler 02: Notiz WP-Tausch
+
+Owner-Feststellung 27.10.2026 14:18: Der Gesamt-WMZ N24 (meters 55, Casameta LS 02) sitzt in der
+Wärmepumpe, WP-Tausch 05.03.2025, kein verlässlicher Stand 2025 → Annahme Summe Wohnungszähler ab 2025.
+Nur Notizfeld, Datenskript `scripts/n24-ls02-notiz-20261030.ts` (Probe/Ausführen/Rückweg), Audit 3490.
+
+---
+
 ## Stand 2026-10-30 (4) — MG24 Grundsteuer Flst. 239/4, NK MG24 v1
 
 Owner-Freigabe 30.10.2026 11:52 („Freigabe MG24 Grundsteuer 239/4“): Buchung 80 Grundsteuer MG24 2025
