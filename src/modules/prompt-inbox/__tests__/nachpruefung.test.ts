@@ -76,7 +76,8 @@ describe('Erkennung im Pane', () => {
     expect(bewerteAnnahme(BEREIT, ARBEITET)).toEqual({ angenommen: true });
     expect(bewerteAnnahme(BEREIT, FERTIG)).toEqual({ angenommen: true });
     expect(bewerteAnnahme(BEREIT, LOGIN)).toMatchObject({ angenommen: false, grund: 'login_abgelaufen' });
-    expect(bewerteAnnahme(BEREIT, TEACH)).toMatchObject({ angenommen: false, grund: 'dialog_offen' });
+    // Dialog erst nach dem Eintippen: vom Auftrag ausgelöst → angenommen (kein Doppellauf)
+    expect(bewerteAnnahme(BEREIT, TEACH)).toMatchObject({ angenommen: true });
     expect(bewerteAnnahme(BEREIT, BEREIT + '\n\n')).toEqual({ angenommen: false, grund: 'kein_fortschritt' });
   });
 });
@@ -177,5 +178,35 @@ describe('Zustellung mit Nachprüfung', () => {
     const u = umgebung({ 'prompt-a.txt': 'A' });
     const lauf = processPromptInboxOnce({ homeDir: u.homeDir, now, runner: u.runner, paneText: BEREIT });
     expect(lauf.zugestellt.length).toBe(1);
+  });
+});
+
+describe('Review 02.11.2026', () => {
+  test('NEGATIV: Dialog nach dem Eintippen → angenommen, Datei verschoben, kein zweites Eintippen', () => {
+    const u = umgebung({ 'prompt-a.txt': 'Auftrag A' });
+    const lauf = processPromptInboxOnce({
+      homeDir: u.homeDir, now, runner: u.runner, paneText: BEREIT, nachpruefung: ohneWarten(TEACH),
+    });
+    expect(lauf.zugestellt.length).toBe(1);
+    expect(fs.existsSync(path.join(u.inboxDir, 'prompt-a.txt'))).toBe(false);
+  });
+
+  test('nach erfolgreichem /login hängt die Inbox nicht an der alten Meldung', () => {
+    const nachLogin = '  ⎿  Login expired · Please run /login\n> /login\n  ⎿  Login successful\n\n╭────╮\n│ >  │\n╰────╯\n';
+    expect(erkenneBlockade(nachLogin)).toBeNull();
+    const mitAusgabe = '  ⎿  Login expired · Please run /login\n● Weiter geht es.\n> \n';
+    expect(erkenneBlockade(mitAusgabe)).toBeNull();
+    // ohne neuere Ausgabe bleibt es eine Blockade
+    expect(erkenneBlockade(LOGIN)?.grund).toBe('login_abgelaufen');
+  });
+
+  test('Testvariante ohne paneText liest das Ersatz-Pane, nicht tmux', () => {
+    const u = umgebung({ 'prompt-a.txt': 'A' });
+    const gelesen: (string | undefined)[] = [];
+    processPromptInboxOnce({
+      homeDir: u.homeDir, now, runner: u.runner, ohneBereitschaftspruefung: true,
+      nachpruefung: { warteMs: 0, lesePane: (t) => { gelesen.push(t); return ARBEITET; } },
+    });
+    expect(gelesen.length).toBe(2); // vorher und nachher, beides über lesePane
   });
 });

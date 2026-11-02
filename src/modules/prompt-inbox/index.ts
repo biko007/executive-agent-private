@@ -92,7 +92,6 @@ function aktionFuer(a: Annahme): string {
   if (a.angenommen) return 'keine';
   switch (a.grund) {
     case 'login_abgelaufen': return 'In tmux bikosoc /login ausführen oder Claude Code mit ~/bin/cc-start.sh neu starten; die Datei wird danach selbst erneut zugestellt.';
-    case 'dialog_offen': return 'Den offenen Dialog in tmux bikosoc beantworten; die Datei wird danach selbst erneut zugestellt.';
     case 'kein_fortschritt': return 'tmux bikosoc ansehen, ob Claude Code reagiert; die Datei wird in 10 Minuten erneut versucht.';
   }
 }
@@ -341,7 +340,8 @@ export function processPromptInboxOnce(opts: {
   const admin = kandidaten.filter(k => istAdminAuftrag(k.name));
 
   if (fach.length > 0) {
-    const paneVorher = opts.paneText ?? (opts.ohneBereitschaftspruefung && !opts.nachpruefung ? '' : lesePaneInhalt());
+    const paneVorher = opts.paneText
+      ?? (opts.ohneBereitschaftspruefung && !opts.nachpruefung ? '' : (opts.nachpruefung?.lesePane ?? lesePaneInhalt)());
     const bereitschaft: Bereitschaft = opts.ohneBereitschaftspruefung
       ? { bereit: true }
       : pruefeBereitschaft(paneVorher);

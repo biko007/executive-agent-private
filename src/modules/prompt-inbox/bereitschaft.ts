@@ -324,10 +324,15 @@ export function erkenneBlockade(paneText: string): Blockade | null {
   // Leere Zeilen am Ende zählen nicht: tmux füllt das Pane bis unten auf.
   while (zeilen.length && !zeilen[zeilen.length - 1].trim()) zeilen.pop();
   const fenster = zeilen.slice(-BLOCKADE_FENSTER);
-  for (const zeile of fenster) {
-    if (LOGIN_MUSTER.some((m) => m.test(zeile))) {
-      return { grund: 'login_abgelaufen', beleg: zeile.trim().slice(0, 120) };
-    }
+  /* Nur die LETZTE Login-Meldung zählt, und nur, wenn darunter nichts Neueres
+     steht (Review 02.11.2026): Nach erfolgreichem /login kann die alte
+     Meldung noch im Fenster stehen — dann hinge die Inbox sonst stumm. */
+  let loginIndex = -1;
+  fenster.forEach((zeile, i) => { if (LOGIN_MUSTER.some((m) => m.test(zeile))) loginIndex = i; });
+  if (loginIndex >= 0) {
+    const danach = fenster.slice(loginIndex + 1);
+    const neuer = danach.some((z) => /Login successful|Logged in as/i.test(z) || /^\s*●/.test(z));
+    if (!neuer) return { grund: 'login_abgelaufen', beleg: fenster[loginIndex].trim().slice(0, 120) };
   }
   for (const zeile of fenster) {
     if (DIALOG_MUSTER.some((m) => m.test(zeile))) {
@@ -338,14 +343,19 @@ export function erkenneBlockade(paneText: string): Blockade | null {
 }
 
 export type Annahme =
-  | { angenommen: true }
-  | { angenommen: false; grund: 'login_abgelaufen' | 'dialog_offen' | 'kein_fortschritt'; beleg?: string };
+  | { angenommen: true; hinweis?: string }
+  | { angenommen: false; grund: 'login_abgelaufen' | 'kein_fortschritt'; beleg?: string };
 
 /**
  * Hat Claude Code den eingetippten Auftrag angenommen? Verglichen wird das
  * Pane vor dem Eintippen mit dem Pane 10–20 s danach.
  *
- *   Blockade unten (Login, Dialog) → nicht angenommen, mit Grund
+ *   Login abgelaufen               → nicht angenommen, mit Grund
+ *   Dialog unten                   → ANGENOMMEN (Review 02.11.2026): Vor dem
+ *                                    Eintippen war keiner offen, also hat ihn
+ *                                    der Auftrag selbst ausgelöst (z. B. eine
+ *                                    Freigabefrage). Ein erneutes Eintippen
+ *                                    liesse den Auftrag zweimal laufen.
  *   laufender Durchgang            → angenommen
  *   Pane unverändert               → nicht angenommen („kein Fortschritt")
  *   sonst                          → angenommen (kurzer Auftrag schon fertig)
@@ -356,7 +366,8 @@ export type Annahme =
  */
 export function bewerteAnnahme(vorher: string, nachher: string): Annahme {
   const blockade = erkenneBlockade(nachher);
-  if (blockade) return { angenommen: false, grund: blockade.grund, beleg: blockade.beleg };
+  if (blockade?.grund === 'login_abgelaufen') return { angenommen: false, grund: 'login_abgelaufen', beleg: blockade.beleg };
+  if (blockade?.grund === 'dialog_offen') return { angenommen: true, hinweis: `Dialog offen: ${blockade.beleg}` };
   const fenster = (nachher || '').replace(/\r/g, '').split('\n').slice(-ZEILEN_FENSTER);
   if (fenster.some((z) => LAEUFT.some((m) => m.test(z)))) return { angenommen: true };
   const norm = (t: string) => (t || '').replace(/\r/g, '').split('\n').map((z) => z.trimEnd()).join('\n').trim();
@@ -368,7 +379,6 @@ export function annahmeText(a: Annahme): string {
   if (a.angenommen) return 'angenommen';
   switch (a.grund) {
     case 'login_abgelaufen': return 'Anmeldung abgelaufen (Login expired, /login nötig)';
-    case 'dialog_offen': return 'ein Dialog wartet auf eine Antwort';
     case 'kein_fortschritt': return 'kein Fortschritt im Pane nach dem Eintippen';
   }
 }
