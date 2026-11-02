@@ -4,6 +4,18 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-11-02 (1) — Smoke: dienstgebundene Prüfungen, Rückfall-Alarm nur bei krankem Dienst
+
+Anlass: Am 02.11. fehlte `~/.codex/auth.json`, die Smoke-Prüfung „Codex-Anmeldung“ brach die
+Auslieferung des Dashboards ab, der Rückfall-Smoke ebenso → Fehlalarm „ROLLBACK FAILED“.
+`scripts/smoke-bewertung.ts`: „Codex-Anmeldung“ und „Agentenpfad (Modellroute)“ blockieren nur
+Deploys von `openclaw-gateway`, für andere Dienste ⚠️ Warnung (Zählweise „36/36 + 1 Warnung“);
+`cc-Login` blockiert nie. Ohne `--dienste` (Handlauf) bleibt alles Fehler. `deploy.sh` übergibt
+`--dienste`, nennt Warnungen in der OK-Meldung; nach dem Rückfall entscheidet nur `health_check_all`
+über ALARM, roter Smoke wird gemeldet. Tests `__tests__/smoke-bewertung.test.ts`.
+
+---
+
 ## Stand 2026-10-30 (5) — N24 Liegenschaftszähler 02: Notiz WP-Tausch
 
 Owner-Feststellung 27.10.2026 14:18: Der Gesamt-WMZ N24 (meters 55, Casameta LS 02) sitzt in der

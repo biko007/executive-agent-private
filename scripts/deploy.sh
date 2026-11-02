@@ -210,8 +210,21 @@ run_smoke() {
   fi
 
   log "--- Smoke test ---"
-  (cd "$AGENT_DIR" && bun run scripts/smoke-test.ts)
+  # Dienstliste an den Smoke-Test (02.11.2026): Eine Pruefung, die nur einen
+  # anderen Dienst betrifft (Codex → Gateway), ist dann nur eine Warnung und
+  # blockiert diesen Deploy nicht. Regel: scripts/smoke-bewertung.ts.
+  local dienste ausgabe rc
+  dienste="$(IFS=,; echo "${SERVICES[*]}")"
+  ausgabe="$(cd "$AGENT_DIR" && bun run scripts/smoke-test.ts --dienste="$dienste" 2>&1)"
+  rc=$?
+  echo "$ausgabe"
+  # Fuer die Meldung: Warnungen und rote Pruefungen in Kurzform
+  SMOKE_WARNUNGEN="$(echo "$ausgabe" | grep '^SMOKE_WARNUNG: ' | sed 's/^SMOKE_WARNUNG: //' | cut -c1-160 | paste -sd ';' -)"
+  SMOKE_ROT="$(echo "$ausgabe" | grep '^❌ ' | sed 's/^❌ //' | cut -c1-160 | paste -sd ';' -)"
+  return $rc
 }
+SMOKE_WARNUNGEN=""
+SMOKE_ROT=""
 
 # ── Main ───────────────────────────────────────────────────────────────────
 # Der ganze Ablauf steht in einer Funktion (23.10.2026): bash liest sie
@@ -291,7 +304,11 @@ fi
 
 if [[ "$DEPLOY_OK" -eq 1 ]]; then
   echo "$DEPLOY_SHA" > "$MARKER"
-  notify "DEPLOY OK ${DEPLOY_SHORT} — Smoke: ALL PASS" info
+  if [[ -n "$SMOKE_WARNUNGEN" ]]; then
+    notify "DEPLOY OK ${DEPLOY_SHORT} — Smoke grün, Warnung: ${SMOKE_WARNUNGEN}" warn
+  else
+    notify "DEPLOY OK ${DEPLOY_SHORT} — Smoke: ALL PASS" info
+  fi
   log "=== DEPLOY OK ==="
   exit 0
 fi
@@ -331,20 +348,24 @@ fi
 # Health + smoke on rollback state (no injection — always run real smoke here)
 unset DEPLOY_SMOKE_INJECT_FAIL 2>/dev/null || true
 
-RB_OK=0
-if health_check_all "${SERVICES[@]}" && run_smoke; then
-  RB_OK=1
-fi
-
-if [[ "$RB_OK" -eq 1 ]]; then
-  notify "ROLLBACK auf ${LAST_GOOD_SHORT} — Service stabil, Smoke grün" warn
-  log "=== ROLLBACK OK ==="
-  exit 1
-else
-  notify "ROLLBACK FAILED [${PRIMARY}] ${LAST_GOOD_SHORT} — Health/Smoke rot — ALARM, manueller Eingriff erforderlich!" error
+# Ueber den Alarm entscheidet allein die Gesundheit der zurueckgesetzten
+# Dienste (02.11.2026). Am 02.11. meldete Telegram „ROLLBACK FAILED — ALARM",
+# weil der Smoke-Test nach dem Rueckfall an einer dienstfremden Pruefung
+# (Codex-Anmeldung) scheiterte — das Dashboard war gesund. Ein roter Smoke
+# nach gesundem Rueckfall wird gemeldet, ist aber kein Alarm.
+if ! health_check_all "${SERVICES[@]}"; then
+  notify "ROLLBACK FAILED [${PRIMARY}] ${LAST_GOOD_SHORT} — Dienst nach Rückfall nicht gesund — ALARM, manueller Eingriff erforderlich!" error
   log "=== ROLLBACK FAILED ==="
   exit 2
 fi
+
+if run_smoke; then
+  notify "ROLLBACK auf ${LAST_GOOD_SHORT} — Service stabil, Smoke grün" warn
+else
+  notify "ROLLBACK auf ${LAST_GOOD_SHORT} — Dienst gesund, Smoke weiterhin rot: ${SMOKE_ROT:-siehe Log}" warn
+fi
+log "=== ROLLBACK OK (Dienst gesund) ==="
+exit 1
 }
 
 hauptablauf "$@"

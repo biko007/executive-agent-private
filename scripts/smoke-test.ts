@@ -13,6 +13,7 @@ import { execSync } from 'child_process';
 import pg from 'pg';
 import { ANTHROPIC_MODEL } from '../src/shared/utils/index.js';
 import { listActiveTelegramBindings } from '../src/modules/telegram-binding/index.js';
+import { einstufung, diensteAusArgumenten, ergebnisZeile } from './smoke-bewertung.ts';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ const ARTIFACTS = path.join(HOME, '.openclaw/workspace/artifacts/personal');
 const INSTA_DIR = path.join(ARTIFACTS, 'instagram');
 const ENV_FILE = path.join(HOME, '.config/openclaw/env');
 const NOTIFY = process.argv.includes('--notify');
+/* Dienste des laufenden Deploys (deploy.sh setzt --dienste=…). Ohne Angabe
+   gilt jede rote Pruefung als Fehler wie bisher. Bewertung: smoke-bewertung.ts */
+const DIENSTE = diensteAusArgumenten(process.argv);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1008,17 +1012,24 @@ async function main() {
 
   // ── Report ──────────────────────────────────────────────────────────────
 
-  const passed = results.filter(r => r.pass).length;
-  const total = results.length;
-  const allPass = passed === total;
+  /* Rot heisst nicht immer Abbruch: Eine dienstgebundene Pruefung ist fuer
+     fremde Dienste nur eine Warnung (smoke-bewertung.ts, 02.11.2026). */
+  const bewertet = results.map(r => ({ ...r, stufe: einstufung(r.name, r.pass, DIENSTE) }));
+  const ok = bewertet.filter(r => r.stufe === 'ok').length;
+  const warnungen = bewertet.filter(r => r.stufe === 'warnung');
+  const blockiert = bewertet.filter(r => r.stufe === 'blockiert').length;
+  const allPass = blockiert === 0;
 
   const lines: string[] = [`🔥 Smoke Test — ${now()}`, ''];
-  for (const r of results) {
-    const icon = r.pass ? '✅' : '❌';
-    lines.push(`${icon} ${r.name}: ${r.detail}`);
+  if (DIENSTE) lines.push(`Dienste: ${DIENSTE.join(', ')}`, '');
+  for (const r of bewertet) {
+    const icon = r.stufe === 'ok' ? '✅' : r.stufe === 'warnung' ? '⚠️' : '❌';
+    lines.push(`${icon} ${r.name}: ${r.detail}${r.stufe === 'warnung' ? ' (Warnung, blockiert diesen Deploy nicht)' : ''}`);
   }
   lines.push('');
-  lines.push(allPass ? `RESULT: ALL PASS (${total}/${total})` : `RESULT: FAIL (${passed}/${total} passed)`);
+  lines.push(ergebnisZeile({ ok, warnungen: warnungen.length, blockiert }));
+  // Maschinenlesbar fuer deploy.sh: je Warnung eine Zeile
+  for (const w of warnungen) lines.push(`SMOKE_WARNUNG: ${w.name}: ${w.detail}`);
 
   const report = lines.join('\n');
   console.log(report);
