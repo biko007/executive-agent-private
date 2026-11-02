@@ -4,6 +4,15 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-11-02 (3) — Reise-Schema: optionale Felder (bleibt bikosoc.reise/1)
+
+Owner-Freigabe 02.11.2026 07:13. `buchungen[].von/bis` (ISO), `zeit_von/zeit_bis` (HH:MM), `art`
+(flug|hotel|termin|sonstiges), `ort`; `fristen[].art` (aufgabe|termin). Validator prüft Format und
+Werte, falsche Werte → Datei abgewiesen mit Feldangabe; alte Dateien unverändert gültig. Keine
+Migration. Dashboard nutzt die Felder vorrangig, Textparser bleibt Rückfallweg.
+
+---
+
 ## Stand 2026-11-02 (2) — cc-Login: Startskript, Frühwarnung, ehrliche Inbox-Quittung
 
 Anlass: Auftrag 01.11. 21:11 eingetippt, Claude Code antwortete „Login expired“, die Inbox quittierte

@@ -29,7 +29,7 @@
  */
 
 import path from 'node:path';
-import { SCHEMA } from './types.js';
+import { SCHEMA, BUCHUNGS_ARTEN, FRIST_ARTEN } from './types.js';
 import type {
   ReiseDatei, Pruefbefund, Dokument, Flug, Frist,
 } from './types.js';
@@ -56,6 +56,8 @@ export const DOKUMENTE_KATEGORIE = 'reise';
 const VERBOTEN = /(pass(nummer|nr|port)|ausweisnummer|kartennummer|card_?number|iban|cvv|pin)/i;
 
 const ISO_DATUM = /^\d{4}-\d{2}-\d{2}$/;
+/** HH:MM, 00:00–23:59 (Buchungsfelder zeit_von/zeit_bis, 02.11.2026). */
+const UHRZEIT = /^([01]\d|2[0-3]):[0-5]\d$/;
 const KENNUNG = /^\d{6}-trip-[a-z0-9-]{2,30}$/;
 
 /** Rekursiv nach verbotenen Feldnamen suchen. */
@@ -137,6 +139,36 @@ export function pruefeReise(roh: unknown): Pruefbefund {
       fehler.push(`fristen[${i}]: "faellig" fehlt oder ist kein Datum der Form JJJJ-MM-TT.`);
     }
     if (!f?.titel) fehler.push(`fristen[${i}]: "titel" fehlt.`);
+    if (f?.art !== undefined && !(FRIST_ARTEN as readonly string[]).includes(String(f.art))) {
+      fehler.push(`fristen[${i}]: "art" muss ${FRIST_ARTEN.join(' oder ')} sein (gefunden: ${JSON.stringify(f.art)}).`);
+    }
+  }
+  /* Optionale Buchungsfelder (02.11.2026). Fehlen sie, bleibt alles wie
+     bisher; sind sie gesetzt, müssen sie stimmen — ein falsches Datum würde
+     im Dashboard still an der falschen Stelle erscheinen. */
+  for (const [i, b] of (r.buchungen ?? []).entries()) {
+    for (const feld of ['von', 'bis'] as const) {
+      if (b?.[feld] !== undefined && !ISO_DATUM.test(String(b[feld]))) {
+        fehler.push(`buchungen[${i}]: "${feld}" ist kein Datum der Form JJJJ-MM-TT.`);
+      }
+    }
+    if (b?.bis !== undefined && b?.von === undefined) {
+      fehler.push(`buchungen[${i}]: "bis" ohne "von".`);
+    }
+    if (b?.von && b?.bis && ISO_DATUM.test(String(b.von)) && ISO_DATUM.test(String(b.bis)) && String(b.bis) < String(b.von)) {
+      fehler.push(`buchungen[${i}]: "bis" liegt vor "von".`);
+    }
+    for (const feld of ['zeit_von', 'zeit_bis'] as const) {
+      if (b?.[feld] !== undefined && !UHRZEIT.test(String(b[feld]))) {
+        fehler.push(`buchungen[${i}]: "${feld}" ist keine Uhrzeit der Form HH:MM.`);
+      }
+    }
+    if (b?.art !== undefined && !(BUCHUNGS_ARTEN as readonly string[]).includes(String(b.art))) {
+      fehler.push(`buchungen[${i}]: "art" muss ${BUCHUNGS_ARTEN.join(', ')} sein (gefunden: ${JSON.stringify(b.art)}).`);
+    }
+    if (b?.ort !== undefined && (typeof b.ort !== 'string' || !b.ort.trim())) {
+      fehler.push(`buchungen[${i}]: "ort" muss ein Stadtname sein.`);
+    }
   }
 
   if (!(r.fluege ?? []).length) warnungen.push('Keine Flüge angegeben.');

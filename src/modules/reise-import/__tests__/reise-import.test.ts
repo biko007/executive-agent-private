@@ -332,3 +332,40 @@ describe('Pfade und Protokoll', () => {
     expect(ergebnisText(e)).toContain('Feld "titel" fehlt.');
   });
 });
+
+describe('optionale Felder seit 02.11.2026 (Schema bleibt bikosoc.reise/1)', () => {
+  const mit = (buchung: Record<string, unknown>, frist?: Record<string, unknown>) => ({
+    ...minimal(),
+    buchungen: [{ anbieter: 'Hyatt Regency San Francisco', ...buchung }],
+    fristen: frist ? [{ faellig: '2026-11-10', titel: 'Hotel entscheiden', ...frist }] : [],
+  });
+
+  test('gültige neue Felder werden angenommen und unverändert übernommen', () => {
+    const r = mit(
+      { von: '2026-11-15', bis: '2026-11-19', zeit_von: '16:00', zeit_bis: '12:00', art: 'hotel', ort: 'San Francisco' },
+      { art: 'aufgabe' },
+    );
+    expect(pruefeReise(r)).toMatchObject({ ok: true, fehler: [] });
+    const trip = nachTrip(r as ReiseDatei, null, 'jetzt') as any;
+    expect(trip.reise.buchungen[0]).toMatchObject({ von: '2026-11-15', art: 'hotel', ort: 'San Francisco', zeit_bis: '12:00' });
+    expect(trip.reise.fristen[0].art).toBe('aufgabe');
+  });
+
+  test('alte Dateien ohne neue Felder bleiben gültig', () => {
+    expect(pruefeReise(mit({})).ok).toBe(true);
+    expect(pruefeReise(mit({ von: '2026-11-23' })).ok).toBe(true);
+  });
+
+  test('falsche Werte weisen die Datei mit klarer Meldung ab', () => {
+    const fall = (b: Record<string, unknown>, f?: Record<string, unknown>) => pruefeReise(mit(b, f)).fehler.join(' | ');
+    expect(fall({ von: '15.11.2026' })).toContain('buchungen[0]: "von" ist kein Datum der Form JJJJ-MM-TT.');
+    expect(fall({ bis: '2026-11-19' })).toContain('buchungen[0]: "bis" ohne "von".');
+    expect(fall({ von: '2026-11-19', bis: '2026-11-15' })).toContain('buchungen[0]: "bis" liegt vor "von".');
+    expect(fall({ von: '2026-11-15', zeit_von: '9:00' })).toContain('"zeit_von" ist keine Uhrzeit der Form HH:MM');
+    expect(fall({ von: '2026-11-15', zeit_bis: '24:00' })).toContain('"zeit_bis" ist keine Uhrzeit');
+    expect(fall({ art: 'Hotel' })).toContain('buchungen[0]: "art" muss flug, hotel, termin, sonstiges sein (gefunden: "Hotel").');
+    expect(fall({ ort: '' })).toContain('"ort" muss ein Stadtname sein');
+    expect(fall({ ort: 42 })).toContain('"ort" muss ein Stadtname sein');
+    expect(fall({}, { art: 'erinnerung' })).toContain('fristen[0]: "art" muss aufgabe oder termin sein (gefunden: "erinnerung").');
+  });
+});

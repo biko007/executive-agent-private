@@ -38,7 +38,28 @@ export interface Buchung {
   status?: string;
   verwalten_url?: string;
   notiz?: string;
+  /* Optional seit 02.11.2026 (Owner-Freigabe „Schema Reise v1-Erweiterung").
+     Schema bleibt bikosoc.reise/1. Fehlen sie, liest das Dashboard Datum und
+     Art wie bisher aus anbieter/tarif/notiz. */
+  /** Beginn, ISO (JJJJ-MM-TT); bei Hotels der Check-in-Tag. */
+  von?: string;
+  /** Ende, ISO; bei Hotels der Check-out-Tag. Ohne `von` nicht erlaubt. */
+  bis?: string;
+  /** Uhrzeit am ersten Tag, HH:MM (z. B. Check-in, Einlass). */
+  zeit_von?: string;
+  /** Uhrzeit am letzten Tag, HH:MM (z. B. Check-out, Ende). */
+  zeit_bis?: string;
+  art?: BuchungsArt;
+  /** Stadt, in der die Buchung liegt, z. B. „Los Angeles". */
+  ort?: string;
 }
+
+export type BuchungsArt = 'flug' | 'hotel' | 'termin' | 'sonstiges';
+export const BUCHUNGS_ARTEN: readonly BuchungsArt[] = ['flug', 'hotel', 'termin', 'sonstiges'];
+
+/** `aufgabe` = etwas zu erledigen (nur Fristenliste), `termin` = Ereignis am Tag (auch Tagesleiste). */
+export type FristArt = 'aufgabe' | 'termin';
+export const FRIST_ARTEN: readonly FristArt[] = ['aufgabe', 'termin'];
 
 export interface Flug {
   /** Datum des Abflugs, ISO (JJJJ-MM-TT). */
@@ -105,6 +126,9 @@ export interface Frist {
   titel: string;
   status?: 'offen' | 'erledigt';
   notiz?: string;
+  /** Optional seit 02.11.2026. Fehlt es, gilt das bisherige Verhalten:
+   *  jede offene Frist im Reisezeitraum erscheint als Termin in der Tagesleiste. */
+  art?: FristArt;
 }
 
 export interface Einreise {
