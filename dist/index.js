@@ -36,7 +36,7 @@ import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
 import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
-import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt, } from "./src/modules/briefing/index.js";
+import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt, leseCcLoginStand, ccLoginZeile, } from "./src/modules/briefing/index.js";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
 import { activateTelegramBinding, createPendingTelegramBinding, extractTelegramIdentity, isBoundTelegramOwner, listActiveTelegramBindings, listActiveTelegramOwnerUserIds, } from './src/modules/telegram-binding/index.js';
@@ -1546,6 +1546,13 @@ export default function (api) {
             termineMorgen: wert(rTermine),
             fuhrpark: wert(rFuhrpark),
             nkFristen: wert(rNk),
+            // Anmeldung von Claude Code (02.11.2026); nur Existenz, Rechte, Ablaufdatei
+            ccLogin: (() => { try {
+                return ccLoginZeile(leseCcLoginStand(), heute);
+            }
+            catch {
+                return null;
+            } })(),
         });
     }
     async function generateBriefingText() {
