@@ -11,7 +11,7 @@ import {
   ccEinordnung, ccAbschnittMorgen, ccAbschnittAbend,
   nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz,
   abendZeilen, naechsteAktion,
-  leseCcReports,
+  leseCcReports, ccLoginZeile, leseCcLoginStand,
 } from '../index.js';
 import type { CcReport, KontoStand } from '../index.js';
 
@@ -463,5 +463,38 @@ describe('Sekretariat-Fristen im Abendbriefing', () => {
     expect(t).toContain('• privat — ELSTER: Bekanntgabe annehmen oder widersprechen: in 14 Tagen (31.12.)');
     const aus = abendZeilen({ datumLang: 'x', ccReports: [], termineMorgen: [], fuhrpark: [], nkFristen: [], sekretariatFristen: null }).join('\n');
     expect(aus).toContain('⚠️ Sekretariat-Fristen nicht abrufbar');
+  });
+});
+
+
+describe('cc-Login im Abendbriefing (02.11.2026)', () => {
+  const ok = { tokenDa: true, rechte: '600', ablauf: '2027-10-25' };
+  test('Schwellen wie die Smoke-Prüfung', () => {
+    expect(ccLoginZeile(ok, '2026-11-02')).toBe('🔑 cc-Login: ok (bis 25.10.2027)');
+    expect(ccLoginZeile(ok, '2027-10-05')).toBe('⚠️ cc-Login: läuft ab in 20 Tagen (25.10.2027)');
+    expect(ccLoginZeile(ok, '2027-10-24')).toBe('❌ cc-Login: läuft ab in 1 Tag (25.10.2027)');
+    expect(ccLoginZeile(ok, '2027-10-26')).toBe('❌ cc-Login: abgelaufen am 25.10.2027');
+    expect(ccLoginZeile({ ...ok, tokenDa: false }, '2026-11-02')).toBe('❌ cc-Login: Token-Datei fehlt');
+    expect(ccLoginZeile({ ...ok, rechte: '644' }, '2026-11-02')).toMatch(/Rechte 644 statt 600/);
+    expect(ccLoginZeile({ ...ok, ablauf: null }, '2026-11-02')).toBe('⚠️ cc-Login: Ablaufdatum unbekannt');
+  });
+
+  test('Zeile am Ende des Abendbriefings, Ausfall sichtbar, ohne Angabe nichts', () => {
+    const basis = { datumLang: 'x', ccReports: [], termineMorgen: [], fuhrpark: [], nkFristen: [] };
+    const z = abendZeilen({ ...basis, ccLogin: '🔑 cc-Login: ok (bis 25.10.2027)' });
+    expect(z[z.length - 1]).toBe('🔑 cc-Login: ok (bis 25.10.2027)');
+    expect(abendZeilen({ ...basis, ccLogin: null }).join('\n')).toContain('cc-Login nicht abrufbar');
+    expect(abendZeilen(basis).join('\n')).not.toContain('cc-Login');
+  });
+
+  test('leseCcLoginStand liest nur Rechte und Ablaufdatei', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cclogin-'));
+    expect(leseCcLoginStand(home)).toEqual({ tokenDa: false, rechte: null, ablauf: null });
+    fs.writeFileSync(path.join(home, '.claude-oauth-token'), 'geheim', { mode: 0o600 });
+    fs.writeFileSync(path.join(home, '.claude-oauth-token.expires'), '2027-10-25\n');
+    const stand = leseCcLoginStand(home);
+    expect(stand).toEqual({ tokenDa: true, rechte: '600', ablauf: '2027-10-25' });
+    expect(JSON.stringify(stand)).not.toContain('geheim');
+    fs.rmSync(home, { recursive: true, force: true });
   });
 });

@@ -19,10 +19,11 @@ export {
   nkFristZeile, nkFristZeilen, nkAbschnitt, fristErledigtZeilen, VERALTET_TAGE,
   bankingAbschnitt, SALDO_ALT_STUNDEN,
   tradingZeilen, reisenAbschnitt, gewichtAlterZusatz,
-  abendZeilen, ABEND_FRISTEN_TAGE,
+  abendZeilen, ABEND_FRISTEN_TAGE, ccLoginZeile,
 } from './abschnitte.js';
 export type {
   CcReport, NkFrist, FristErledigt, KontoStand, TradingStatus, TradingTag, ReiseKurz, AbendDaten,
+  CcLoginStand,
 } from './abschnitte.js';
 
 export { naechsteAktion, minutenVon, NACHHOL_MINUTEN, NACHHOL_FENSTER_MINUTEN, MAX_VERSUCHE } from './planer.js';
@@ -39,6 +40,7 @@ export {
   REPORT_ABLAGEN,
   ERLEDIGT_DATEI, ladeErledigt, vermerkeErledigt, leseOffeneCcReports, pruefeOffeneAktionen,
   leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE, leseFristenErledigt,
+  leseCcLoginStand,
 } from './quellen.js';
 export type { ErledigtEintrag, PostfachStand } from './quellen.js';
 

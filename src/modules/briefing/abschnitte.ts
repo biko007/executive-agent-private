@@ -381,6 +381,8 @@ export interface AbendDaten {
   /** Fertig formatierte Fuhrparkzeilen (≤ 14 Tage); null = nicht abrufbar */
   fuhrpark: string[] | null;
   nkFristen: NkFrist[] | null;
+  /** Fertige Zeile zur Anmeldung von Claude Code; null = nicht prüfbar, fehlt = weglassen */
+  ccLogin?: string | null;
 }
 
 export const ABEND_FRISTEN_TAGE = 14;
@@ -411,5 +413,33 @@ export function abendZeilen(d: AbendDaten): string[] {
   if (d.fristenErledigt === null) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ausfallZeile('Fristen-Abgleich'));
   else if (d.fristenErledigt?.length) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ...fristErledigtZeilen(d.fristenErledigt));
 
+  if (d.ccLogin === null) zeilen.push('', ausfallZeile('cc-Login'));
+  else if (d.ccLogin) zeilen.push('', d.ccLogin);
+
   return zeilen;
+}
+
+/** Stand der Anmeldung von Claude Code — nur Existenz, Rechte und Ablaufdatum. */
+export interface CcLoginStand {
+  tokenDa: boolean;
+  /** Rechte der Token-Datei, oktal ('600') */
+  rechte: string | null;
+  /** ISO-Datum aus ~/.claude-oauth-token.expires; null = fehlt/unlesbar */
+  ablauf: string | null;
+}
+
+/**
+ * Eine Zeile fürs Abendbriefing (Owner-Auftrag 02.11.2026). Gleiche Schwellen
+ * wie die Smoke-Prüfung „cc-Login": ab 21 Tagen vor Ablauf ⚠️, ab 3 Tagen ❌.
+ */
+export function ccLoginZeile(s: CcLoginStand, heute: string): string {
+  if (!s.tokenDa) return '❌ cc-Login: Token-Datei fehlt';
+  if (s.rechte !== '600') return `⚠️ cc-Login: Token-Datei hat Rechte ${s.rechte} statt 600`;
+  if (!s.ablauf || !/^\d{4}-\d{2}-\d{2}$/.test(s.ablauf)) return '⚠️ cc-Login: Ablaufdatum unbekannt';
+  const tage = tageZwischen(heute, s.ablauf);
+  const datum = s.ablauf.split('-').reverse().join('.');
+  if (tage < 0) return `❌ cc-Login: abgelaufen am ${datum}`;
+  if (tage < 3) return `❌ cc-Login: läuft ab in ${tage} ${tage === 1 ? 'Tag' : 'Tagen'} (${datum})`;
+  if (tage < 21) return `⚠️ cc-Login: läuft ab in ${tage} Tagen (${datum})`;
+  return `🔑 cc-Login: ok (bis ${datum})`;
 }

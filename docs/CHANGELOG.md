@@ -4,6 +4,18 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-11-02 (2) — cc-Login: Startskript, Frühwarnung, ehrliche Inbox-Quittung
+
+Anlass: Auftrag 01.11. 21:11 eingetippt, Claude Code antwortete „Login expired“, die Inbox quittierte
+„übergeben“. `ops/bin/cc-start.sh` setzt das OAuth-Token aus `~/.claude-oauth-token` (600) und startet
+`claude --permission-mode auto`; Ablauf `~/.claude-oauth-token.expires` (2027-10-25). Smoke „cc-Login“
+(nur Warnung), Abendbriefing-Zeile. Prompt-Inbox: Blockaden (Login, „Enter to confirm · Esc to cancel“,
+„Teach auto mode“) verhindern das Eintippen; Nachprüfung 15 s danach (`bewerteAnnahme`), sonst Datei
+bleibt + Quittung „NICHT übergeben“ (Status fehler) + Sperrfrist 10 min. Tests
+`prompt-inbox/__tests__/nachpruefung.test.ts`, `briefing.test.ts`.
+
+---
+
 ## Stand 2026-11-02 (1) — Smoke: dienstgebundene Prüfungen, Rückfall-Alarm nur bei krankem Dienst
 
 Anlass: Am 02.11. fehlte `~/.codex/auth.json`, die Smoke-Prüfung „Codex-Anmeldung“ brach die

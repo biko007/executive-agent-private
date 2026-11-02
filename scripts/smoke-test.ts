@@ -844,6 +844,55 @@ function checkCodexAuth() {
   }
 }
 
+// ── 18b. CC-LOGIN: läuft das OAuth-Token von Claude Code bald ab? ─────────
+
+/**
+ * ANLASS (01./02.11.2026): Die Anmeldung von Claude Code lief ab, der Auftrag
+ * vom Abend blieb über Nacht liegen. Seit 02.11. startet ~/bin/cc-start.sh
+ * Claude Code mit einem langlebigen Token aus ~/.claude-oauth-token; das
+ * Ablaufdatum steht in ~/.claude-oauth-token.expires (das Token selbst trägt
+ * keins, das sich lesen ließe).
+ *
+ * Gelesen werden nur Existenz und Rechte der Token-Datei sowie die
+ * Ablaufdatei — NIE der Token-Inhalt.
+ *
+ *   fehlt / Rechte ≠ 600 / Ablauf unbekannt → rot
+ *   abgelaufen oder < 3 Tage               → rot („Fehler")
+ *   < 21 Tage                              → rot („Warnung")
+ *   sonst                                  → grün
+ *
+ * Rot ist hier immer nur eine WARNUNG (smoke-bewertung.ts, NIE_BLOCKIEREND):
+ * Kein Dienst-Deploy hängt an der Anmeldung von Claude Code.
+ */
+function checkCcLogin() {
+  const label = 'cc-Login';
+  const tokenDatei = path.join(HOME, '.claude-oauth-token');
+  const ablaufDatei = path.join(HOME, '.claude-oauth-token.expires');
+  let st: fs.Stats;
+  try { st = fs.statSync(tokenDatei); } catch {
+    fail(label, 'Token-Datei ~/.claude-oauth-token fehlt — claude setup-token');
+    return;
+  }
+  const rechte = (st.mode & 0o777).toString(8);
+  if (rechte !== '600') {
+    fail(label, `Token-Datei hat Rechte ${rechte} statt 600`);
+    return;
+  }
+  let ablauf = '';
+  try { ablauf = fs.readFileSync(ablaufDatei, 'utf-8').trim().split('\n')[0]; } catch { /* unten */ }
+  const ms = /^\d{4}-\d{2}-\d{2}$/.test(ablauf) ? Date.parse(ablauf + 'T00:00:00Z') : NaN;
+  if (!Number.isFinite(ms)) {
+    fail(label, 'Ablaufdatum unbekannt (~/.claude-oauth-token.expires fehlt oder unlesbar)');
+    return;
+  }
+  const tage = Math.floor((ms - Date.now()) / 86_400_000);
+  const datum = ablauf.split('-').reverse().join('.');
+  if (tage < 0) fail(label, `FEHLER: Token abgelaufen am ${datum} — claude setup-token`);
+  else if (tage < 3) fail(label, `FEHLER: Token läuft am ${datum} ab (in ${tage} Tagen) — claude setup-token`);
+  else if (tage < 21) fail(label, `Token läuft am ${datum} ab (in ${tage} Tagen) — Erneuerung einplanen`);
+  else pass(label, `Token gültig bis ${datum} (${tage} Tage)`);
+}
+
 // ── 19. AGENTENPFAD: ist das konfigurierte Modell erreichbar? ──────────────
 
 /**
@@ -1007,6 +1056,7 @@ async function main() {
   checkClaudeHooks();
   checkRedZoneConf();
   checkCodexAuth();
+  checkCcLogin();
   checkAgentenpfad();
   checkOpsBin();
 

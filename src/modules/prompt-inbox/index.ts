@@ -6,8 +6,8 @@ import {
 } from '../cc-prompt-dispatch/index.js';
 import {
   pruefeBereitschaft, grundText, auftragsKennung, auftragsStamm,
-  erkenneArmWartung, armMeldung,
-  type Bereitschaft,
+  erkenneArmWartung, armMeldung, bewerteAnnahme, annahmeText,
+  type Bereitschaft, type Annahme,
 } from './bereitschaft.js';
 import { pruefeArmBedarf } from '../arm-status/index.js';
 import { query as dbAbfrageStandard } from '../../shared/db/index.js';
@@ -30,6 +30,71 @@ export interface PromptInboxLauf {
   zurueckgestellt: ZurueckgestelltResult[];
   /** Stups des Leerlauf-Wächters, falls einer ausgelöst wurde. */
   stups?: { kennung: string; versuch: number; gemeldet: boolean };
+  /** Eingetippt, aber von Claude Code nicht angenommen (Nachprüfung, 02.11.2026). */
+  nichtUebergeben?: NichtUebergebenResult[];
+}
+
+export interface NichtUebergebenResult {
+  sourcePath: string;
+  grund: string;
+  beleg?: string;
+  /** Quittung geschrieben (= Telegram über den Report-Watcher)? Nur beim ersten
+   *  Fehlschlag je Datei und Grund — sonst meldete jeder Versuch erneut. */
+  gemeldet: boolean;
+  reportPath?: string;
+}
+
+/**
+ * Nachprüfung nach dem Eintippen (02.11.2026).
+ *
+ * ANLASS: Am 01.11.2026 21:11 wurde ein Auftrag eingetippt, Claude Code
+ * antwortete „Login expired". Die Inbox quittierte „übergeben", verschob die
+ * Datei nach done/ — der Auftrag lag unbearbeitet bis zum nächsten Morgen.
+ *
+ * Mit Nachprüfung wartet die Inbox nach dem Eintippen `warteMs` und liest das
+ * Pane erneut (bewerteAnnahme). Erst dann wird die Datei verschoben und
+ * quittiert. Nimmt Claude Code nicht an, bleibt die Datei in der
+ * Warteschlange, die Quittung heißt „NICHT übergeben: <Grund>" (Status
+ * fehler → Telegram dev über den Report-Watcher), und dieselbe Datei wird
+ * frühestens nach `sperrMinuten` erneut versucht.
+ */
+export interface Nachpruefung {
+  warteMs: number;
+  /** Pane lesen; Standard: tmux capture-pane. Für Tests ersetzbar. */
+  lesePane?: (target?: string) => string;
+  /** Sperrfrist nach gescheiterter Übergabe (Standard 10 min). */
+  sperrMinuten?: number;
+}
+
+/** Merkdatei der gescheiterten Übergaben, je Dateiname. */
+interface FehlUebergabe { grund: string; seit: string; versuche: number; sperreBis: string }
+
+function ladeFehlUebergaben(pfad: string): Record<string, FehlUebergabe> {
+  try { return JSON.parse(fs.readFileSync(pfad, 'utf-8')) ?? {}; } catch { return {}; }
+}
+
+function speichereFehlUebergaben(pfad: string, z: Record<string, FehlUebergabe>): void {
+  try {
+    if (Object.keys(z).length === 0) { if (fs.existsSync(pfad)) fs.unlinkSync(pfad); return; }
+    fs.writeFileSync(pfad, JSON.stringify(z, null, 2));
+  } catch (e: any) {
+    process.stderr.write(`Prompt-Inbox: Merkdatei nicht schreibbar: ${e.message}\n`);
+  }
+}
+
+/** Synchrones Warten — der Lauf ist ein kurzer Einzelprozess (systemd oneshot). */
+function warteSync(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Was der Owner bei welchem Grund tun muss — ein Satz für den Kopfblock. */
+function aktionFuer(a: Annahme): string {
+  if (a.angenommen) return 'keine';
+  switch (a.grund) {
+    case 'login_abgelaufen': return 'In tmux bikosoc /login ausführen oder Claude Code mit ~/bin/cc-start.sh neu starten; die Datei wird danach selbst erneut zugestellt.';
+    case 'dialog_offen': return 'Den offenen Dialog in tmux bikosoc beantworten; die Datei wird danach selbst erneut zugestellt.';
+    case 'kein_fortschritt': return 'tmux bikosoc ansehen, ob Claude Code reagiert; die Datei wird in 10 Minuten erneut versucht.';
+  }
 }
 
 // ── Admin-Kanal (Owner-Auftrag 26.10.2026) ────────────────────────────────
@@ -239,6 +304,8 @@ export function processPromptInboxOnce(opts: {
   adminPaneText?: string;
   /** Prüfung abschalten. Nur für Tests der alten Reihenfolge. */
   ohneBereitschaftspruefung?: boolean;
+  /** Nachprüfung nach dem Eintippen; ohne Angabe wie bisher sofort quittiert. */
+  nachpruefung?: Nachpruefung;
 }): PromptInboxLauf {
   const homeDir = opts.homeDir;
   const inboxDir = opts.inboxDir ?? path.join(homeDir, 'inbox');
@@ -274,11 +341,13 @@ export function processPromptInboxOnce(opts: {
   const admin = kandidaten.filter(k => istAdminAuftrag(k.name));
 
   if (fach.length > 0) {
+    const paneVorher = opts.paneText ?? (opts.ohneBereitschaftspruefung && !opts.nachpruefung ? '' : lesePaneInhalt());
     const bereitschaft: Bereitschaft = opts.ohneBereitschaftspruefung
       ? { bereit: true }
-      : pruefeBereitschaft(opts.paneText ?? lesePaneInhalt());
+      : pruefeBereitschaft(paneVorher);
     kanalZustellen(lauf, fach, bereitschaft, {
       target: undefined, runner: opts.runner, doneDir, reportDir, now, kanal: 'fach',
+      nachpruefung: opts.nachpruefung, paneVorher,
     });
   }
 
@@ -293,6 +362,7 @@ export function processPromptInboxOnce(opts: {
     kanalZustellen(lauf, admin, bereitschaft, {
       target: ADMIN_TMUX_TARGET, runner: opts.runner, doneDir, reportDir, now, kanal: 'admin',
       grundAnders: sitzungFehlt ? 'Admin-Sitzung läuft nicht — Start: ~/admin/start-admin.sh' : undefined,
+      nachpruefung: opts.nachpruefung, paneVorher: adminText,
     });
   }
   return lauf;
@@ -308,6 +378,9 @@ function kanalZustellen(
     now: Date; kanal: 'fach' | 'admin';
     /** Eigener Grund statt des Standardtexts (fehlende Admin-Sitzung). */
     grundAnders?: string;
+    nachpruefung?: Nachpruefung;
+    /** Pane vor dem Eintippen — Vergleichsbasis der Nachprüfung. */
+    paneVorher?: string;
   },
 ): void {
   if (!bereitschaft.bereit) {
@@ -321,10 +394,53 @@ function kanalZustellen(
     return;
   }
 
+  /* Nach einer gescheiterten Übergabe ruht dieselbe Datei für die Sperrfrist —
+     sonst tippte die Inbox sie alle zehn Sekunden erneut in ein Pane, das
+     nicht reagiert. Andere Dateien des Kanals warten dahinter (FIFO bleibt). */
+  const merkPfad = path.join(path.dirname(k.doneDir), '.nicht-uebergeben.json');
+  const fehl = k.nachpruefung ? ladeFehlUebergaben(merkPfad) : {};
+  const gesperrt = kandidaten[0] && fehl[kandidaten[0].name]
+    && Date.parse(fehl[kandidaten[0].name].sperreBis) > k.now.getTime();
+  if (gesperrt) {
+    const f = fehl[kandidaten[0].name];
+    for (const x of kandidaten) {
+      lauf.zurueckgestellt.push({
+        sourcePath: x.p,
+        grund: `wartet nach gescheiterter Übergabe (${f.grund}) bis ${f.sperreBis}`,
+      });
+    }
+    return;
+  }
+
   // Genau eine Datei zustellen.
   const [erste, ...rest] = kandidaten;
   const text = fs.readFileSync(erste.p, 'utf-8');
   sendPromptToBikosocTmux(text, { runner: k.runner, target: k.target });
+
+  if (k.nachpruefung) {
+    warteSync(k.nachpruefung.warteMs);
+    const lese = k.nachpruefung.lesePane ?? lesePaneInhalt;
+    const annahme = bewerteAnnahme(k.paneVorher ?? '', k.target ? lese(k.target) : lese());
+    if (!annahme.angenommen) {
+      const alt = fehl[erste.name];
+      const melden = !alt || alt.grund !== annahme.grund;
+      const sperre = new Date(k.now.getTime() + (k.nachpruefung.sperrMinuten ?? 10) * 60_000);
+      fehl[erste.name] = {
+        grund: annahme.grund, seit: alt?.seit ?? k.now.toISOString(),
+        versuche: (alt?.versuche ?? 0) + 1, sperreBis: sperre.toISOString(),
+      };
+      speichereFehlUebergaben(merkPfad, fehl);
+      const reportPath = melden ? schreibeFehlQuittung(erste.name, text, annahme, rest.length, sperre, k) : undefined;
+      (lauf.nichtUebergeben ??= []).push({
+        sourcePath: erste.p, grund: annahmeText(annahme), beleg: annahme.beleg, gemeldet: melden, reportPath,
+      });
+      for (const r of rest) {
+        lauf.zurueckgestellt.push({ sourcePath: r.p, grund: 'wartet hinter einer nicht übergebenen Datei' });
+      }
+      return;
+    }
+    if (fehl[erste.name]) { delete fehl[erste.name]; speichereFehlUebergaben(merkPfad, fehl); }
+  }
 
   const now = k.now;
   const stamp = now.toISOString().replace(/[:.]/g, '-');
@@ -570,4 +686,44 @@ export async function leerlaufWaechter(opts: {
   delete zustand.bereitSeit;
   speichereZustand(zustandPfad, zustand);
   return { kennung: ziel.kennung, versuch, gemeldet: false };
+}
+
+
+/**
+ * Quittung einer gescheiterten Übergabe. Ein Ergebnisbericht mit Status
+ * `fehler` — der Report-Watcher stellt ihn der dev-Gruppe zu. Keine
+ * `uebernahme`: Die würde als „Aufgabe übernommen" erscheinen.
+ */
+function schreibeFehlQuittung(
+  dateiname: string, text: string, annahme: Annahme, wartend: number, sperre: Date,
+  k: { reportDir: string; now: Date; kanal: 'fach' | 'admin' },
+): string {
+  const ohneAnf = (t: string) => t.replace(/["\n\r]/g, ' ').trim();
+  const grund = annahmeText(annahme);
+  const titel = ohneAnf(`NICHT übergeben: ${titelAusAuftrag(text) ?? dateiname}`).slice(0, 90);
+  const bis = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(sperre);
+  const name = `report-prompt-inbox-nicht-uebergeben${k.kanal === 'admin' ? '-admin' : ''}-${formatReportTimestamp(k.now)}.md`;
+  const pfad = path.join(k.reportDir, name);
+  const sitzung = k.kanal === 'admin' ? 'admin' : 'bikosoc';
+  const body = [
+    '---',
+    `titel: ${titel}`,
+    'status: fehler',
+    `aufgabe: Prompt-Inbox – NICHT übergeben: ${ohneAnf(grund)}`,
+    `ergebnis: [ "Datei ${ohneAnf(dateiname)} bleibt in der Warteschlange", "Grund: ${ohneAnf(grund)}${annahme.angenommen ? '' : annahme.beleg ? ` – ${ohneAnf(annahme.beleg)}` : ''}", "neuer Versuch frühestens ${bis}, danach sobald tmux ${sitzung} bereit ist" ]`,
+    `aktion: "${ohneAnf(aktionFuer(annahme))}"`,
+    'tests: n/a',
+    'rote_zone: nein',
+    '---',
+    '',
+    `# Prompt-Inbox ${formatBerlinDate(k.now)} – NICHT übergeben`,
+    '',
+    `- Datei: ${dateiname} (bleibt in der Warteschlange)`,
+    `- Grund: ${grund}`,
+    annahme.angenommen || !annahme.beleg ? '' : `- Beleg (Pane): ${annahme.beleg}`,
+    `- Noch dahinter in der Warteschlange: ${wartend}`,
+    '',
+  ].filter((z, i, a) => z !== '' || a[i - 1] !== '').join('\n');
+  fs.writeFileSync(pfad, body);
+  return pfad;
 }

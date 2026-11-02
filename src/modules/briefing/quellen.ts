@@ -11,7 +11,7 @@ import { listAccounts } from '../banking/index.js';
 import { listTrips } from '../travel/index.js';
 import { kopfblockLesen } from '../report-telegram/index.js';
 import { ccEinordnung, VERALTET_TAGE } from './abschnitte.js';
-import type { CcReport, FristErledigt, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
+import type { CcLoginStand, CcReport, FristErledigt, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
 import { AKTION_TAGE, berichtTag, entwurfStand, istSendeAktion, mailZiele, offeneAktionen } from './aktionen.js';
 import type { MailKurz, MailZiel, OffeneAktionen } from './aktionen.js';
 
@@ -274,4 +274,25 @@ export function leseTradingTagesbuch(): TradingTag[] {
 
 export function leseReisen(): ReiseKurz[] {
   return listTrips().map(t => ({ name: t.name, start_date: t.start_date, end_date: t.end_date }));
+}
+
+
+/**
+ * Stand der Anmeldung von Claude Code (02.11.2026). Liest NUR Existenz und
+ * Rechte von ~/.claude-oauth-token und die Ablaufdatei daneben — nie den
+ * Token-Inhalt.
+ */
+export function leseCcLoginStand(home = process.env.HOME || '/home/biko'): CcLoginStand {
+  const tokenDatei = path.join(home, '.claude-oauth-token');
+  let rechte: string | null = null;
+  let tokenDa = false;
+  try {
+    rechte = (fs.statSync(tokenDatei).mode & 0o777).toString(8);
+    tokenDa = true;
+  } catch { /* fehlt */ }
+  let ablauf: string | null = null;
+  try {
+    ablauf = fs.readFileSync(path.join(home, '.claude-oauth-token.expires'), 'utf-8').trim().split('\n')[0] || null;
+  } catch { /* fehlt */ }
+  return { tokenDa, rechte, ablauf };
 }

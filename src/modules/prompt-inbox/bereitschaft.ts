@@ -35,6 +35,7 @@ export const ZEILEN_FENSTER = 25;
 export type NichtBereitGrund =
   | 'laufender_durchgang'
   | 'dialog_offen'
+  | 'login_abgelaufen'
   | 'pane_leer';
 
 export interface Bereitschaft {
@@ -85,6 +86,12 @@ export function pruefeBereitschaft(paneText: string): Bereitschaft {
     return { bereit: false, grund: 'pane_leer' };
   }
 
+  /* Abgelaufene Anmeldung und Bestätigungsdialoge zuerst (02.11.2026): In
+     diesem Zustand nimmt Claude Code nichts an — getippter Text ginge ins
+     Leere oder beantwortete den Dialog. */
+  const blockade = erkenneBlockade(text);
+  if (blockade) return { bereit: false, grund: blockade.grund, beleg: blockade.beleg };
+
   const zeilen = text.split('\n');
   const fenster = zeilen.slice(-ZEILEN_FENSTER);
 
@@ -111,6 +118,7 @@ export function grundText(grund: NichtBereitGrund | undefined): string {
     case 'laufender_durchgang': return 'Claude Code arbeitet gerade';
     case 'dialog_offen': return 'ein Dialog wartet auf eine Antwort';
     case 'pane_leer': return 'das tmux-Pane ist leer oder nicht erreichbar';
+    case 'login_abgelaufen': return 'die Anmeldung von Claude Code ist abgelaufen (/login nötig)';
     default: return 'aufnahmebereit';
   }
 }
@@ -273,3 +281,94 @@ export function armMeldung(w: ArmWartung): string {
  * „liegt in den noch nicht gepushten Commits ein roter Pfad?" und „liegt eine
  * Migrationsdatei vor, deren Version nicht in schema_version steht?". Beides
  * ist eindeutig prüfbar. Als Vorschlag im Report, nicht gebaut. */
+
+/* ── Blockaden und Nachprüfung der Übergabe (02.11.2026) ───────────────────
+ *
+ * ANLASS: Der Auftrag vom 01.11.2026 21:09 wurde eingetippt, Claude Code
+ * antwortete „Login expired" — die Inbox quittierte trotzdem „übergeben" und
+ * verschob die Datei. Der Auftrag lag über Nacht unbearbeitet.
+ *
+ * Bewusst nur die UNTERSTEN Zeilen und nur Zeilen, die wie eine Ausgabe von
+ * Claude Code beginnen: Ein Report oder Auftragstext im Scrollback darf
+ * „Login expired" zitieren, ohne die Inbox anzuhalten (genau der Auftrag zu
+ * dieser Änderung tut das).
+ */
+
+/** Wie viele Zeilen (ohne Leerzeilen am Ende) auf Blockaden geprüft werden. */
+export const BLOCKADE_FENSTER = 10;
+
+/** Zeilenanfang einer Ausgabe von Claude Code: Einrückung, optional ⎿ oder ●. */
+const AUSGABE = '^\\s*(?:[⎿●]\\s*)?';
+
+const LOGIN_MUSTER: RegExp[] = [
+  new RegExp(AUSGABE + '(?:API Error:\\s*\\d*\\s*)?Login expired', 'i'),
+  new RegExp(AUSGABE + '(?:API Error:.*)?OAuth token (?:has )?expired', 'i'),
+  new RegExp(AUSGABE + '(?:API Error:.*)?Invalid API key', 'i'),
+  /·\s*Please run \/login/i,
+  new RegExp(AUSGABE + 'Please run /login', 'i'),
+];
+
+/** Dialoge ohne numerierte Ja/Nein-Optionen, die DIALOG_ZEILE nicht fängt. */
+const DIALOG_MUSTER: RegExp[] = [
+  /Enter to confirm\s*·\s*Esc to cancel/i,
+  new RegExp(AUSGABE + '[│|]?\\s*Teach auto mode', 'i'),
+];
+
+export interface Blockade {
+  grund: 'login_abgelaufen' | 'dialog_offen';
+  beleg: string;
+}
+
+export function erkenneBlockade(paneText: string): Blockade | null {
+  const zeilen = (paneText || '').replace(/\r/g, '').split('\n');
+  // Leere Zeilen am Ende zählen nicht: tmux füllt das Pane bis unten auf.
+  while (zeilen.length && !zeilen[zeilen.length - 1].trim()) zeilen.pop();
+  const fenster = zeilen.slice(-BLOCKADE_FENSTER);
+  for (const zeile of fenster) {
+    if (LOGIN_MUSTER.some((m) => m.test(zeile))) {
+      return { grund: 'login_abgelaufen', beleg: zeile.trim().slice(0, 120) };
+    }
+  }
+  for (const zeile of fenster) {
+    if (DIALOG_MUSTER.some((m) => m.test(zeile))) {
+      return { grund: 'dialog_offen', beleg: zeile.trim().slice(0, 120) };
+    }
+  }
+  return null;
+}
+
+export type Annahme =
+  | { angenommen: true }
+  | { angenommen: false; grund: 'login_abgelaufen' | 'dialog_offen' | 'kein_fortschritt'; beleg?: string };
+
+/**
+ * Hat Claude Code den eingetippten Auftrag angenommen? Verglichen wird das
+ * Pane vor dem Eintippen mit dem Pane 10–20 s danach.
+ *
+ *   Blockade unten (Login, Dialog) → nicht angenommen, mit Grund
+ *   laufender Durchgang            → angenommen
+ *   Pane unverändert               → nicht angenommen („kein Fortschritt")
+ *   sonst                          → angenommen (kurzer Auftrag schon fertig)
+ *
+ * Grenze: Bliebe der Text ungesendet in der Eingabezeile stehen, hätte sich
+ * das Pane verändert und gälte als angenommen. Die Inbox sendet Enter getrennt
+ * und verzögert; beobachtet wurde das bisher nicht.
+ */
+export function bewerteAnnahme(vorher: string, nachher: string): Annahme {
+  const blockade = erkenneBlockade(nachher);
+  if (blockade) return { angenommen: false, grund: blockade.grund, beleg: blockade.beleg };
+  const fenster = (nachher || '').replace(/\r/g, '').split('\n').slice(-ZEILEN_FENSTER);
+  if (fenster.some((z) => LAEUFT.some((m) => m.test(z)))) return { angenommen: true };
+  const norm = (t: string) => (t || '').replace(/\r/g, '').split('\n').map((z) => z.trimEnd()).join('\n').trim();
+  if (norm(vorher) === norm(nachher)) return { angenommen: false, grund: 'kein_fortschritt' };
+  return { angenommen: true };
+}
+
+export function annahmeText(a: Annahme): string {
+  if (a.angenommen) return 'angenommen';
+  switch (a.grund) {
+    case 'login_abgelaufen': return 'Anmeldung abgelaufen (Login expired, /login nötig)';
+    case 'dialog_offen': return 'ein Dialog wartet auf eine Antwort';
+    case 'kein_fortschritt': return 'kein Fortschritt im Pane nach dem Eintippen';
+  }
+}

@@ -100,6 +100,7 @@ import {
   naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet,
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt,
+  leseCcLoginStand, ccLoginZeile,
 } from "./src/modules/briefing/index.js";
 import type { PostfachStand } from "./src/modules/briefing/index.js";
 import type { BriefingArt } from "./src/modules/briefing/index.js";
@@ -1756,6 +1757,8 @@ export default function (api: any) {
       termineMorgen: wert(rTermine),
       fuhrpark: wert(rFuhrpark),
       nkFristen: wert(rNk),
+      // Anmeldung von Claude Code (02.11.2026); nur Existenz, Rechte, Ablaufdatei
+      ccLogin: (() => { try { return ccLoginZeile(leseCcLoginStand(), heute); } catch { return null; } })(),
     });
   }
 

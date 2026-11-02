@@ -148,6 +148,20 @@ Body: `{ "message": "...", "severity": "info"|"warn"|"error" }`
 
 ---
 
+## Claude Code starten (bikosoc) — Stand 02.11.2026
+
+Einziger Startweg: `~/bin/cc-start.sh` (Quelle `ops/bin/cc-start.sh`, ausgespielt mit
+`scripts/install-ops-bin.sh`, Drift prüft der Smoke-Test).
+
+- `~/bin/cc-start.sh` — im aktuellen Terminal: liest `~/.claude-oauth-token` (muss `600` sein) in
+  `CLAUDE_CODE_OAUTH_TOKEN`, `cd ~/.openclaw/workspace`, `exec claude --permission-mode auto`.
+- `~/bin/cc-start.sh --tmux` — legt tmux `bikosoc:claude` an, falls nötig, und startet dort; eine
+  laufende Instanz wird nie beendet.
+- `~/bin/cc-start.sh --status` — Token-Datei, Rechte, Ablauf, Sitzung (ohne Token-Inhalt).
+- Ablaufdatum: `~/.claude-oauth-token.expires` (ISO-Datum). Smoke-Prüfung „cc-Login" warnt ab 21 Tagen,
+  „FEHLER" ab 3 Tagen — immer nur Warnung, blockiert keinen Deploy. Abendbriefing: Zeile „cc-Login".
+- Das Token erscheint nie auf der Befehlszeile, in Logs, Reports oder Telegram.
+
 ## Claude Code Hooks
 
 Versioniert in `hooks/` (executive-agent-Repo). Live-Pfad: `~/.claude/hooks/`.

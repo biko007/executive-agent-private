@@ -54,7 +54,9 @@ function leseToken(): string {
 }
 
 async function main() {
-  const lauf = processPromptInboxOnce({ homeDir });
+  /* Nachprüfung (02.11.2026): 15 s nach dem Eintippen das Pane lesen; erst
+     wenn Claude Code angenommen hat, wird quittiert und verschoben. */
+  const lauf = processPromptInboxOnce({ homeDir, nachpruefung: { warteMs: 15_000 } });
 
   if (lauf.zugestellt.length > 0) {
     process.stdout.write(`Prompt-Inbox: ${lauf.zugestellt.length} Datei(en) uebergeben.\n`);
@@ -63,9 +65,14 @@ async function main() {
     process.stdout.write(`Prompt-Inbox: zurueckgestellt (${z.grund}): ${z.sourcePath}\n`);
   }
 
+  for (const n of lauf.nichtUebergeben ?? []) {
+    process.stdout.write(`Prompt-Inbox: NICHT uebergeben (${n.grund})${n.gemeldet ? ' — gemeldet' : ''}: ${n.sourcePath}\n`);
+  }
+
   // Der Waechter laeuft nur, wenn nichts zugestellt wurde — sonst arbeitet
-  // Claude Code ohnehin gerade an der gerade uebergebenen Datei.
-  if (lauf.zugestellt.length === 0) {
+  // Claude Code ohnehin gerade an der gerade uebergebenen Datei. Nach einer
+  // gescheiterten Uebergabe auch nicht: Ein Stups ginge in dasselbe Pane.
+  if (lauf.zugestellt.length === 0 && !(lauf.nichtUebergeben ?? []).length) {
     const w = await leerlaufWaechter({ homeDir, melde, meldeArm });
     if (w && 'armWartung' in w) {
       process.stdout.write(`Prompt-Inbox: wartet auf /arm (${w.armWartung}) — gemeldet.\n`);
