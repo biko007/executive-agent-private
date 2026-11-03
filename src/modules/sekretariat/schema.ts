@@ -38,6 +38,8 @@ export interface Bewertung {
     bestehend: string | null;
     /** Titel, kurz: „MG24 EWärmeG-Erfüllungsnachweis". */
     titel: string;
+    /** Kurzbezeichnung `<Objekt>-<Thema>-<Gegenüber>` für einen NEUEN Vorgang (kurz.ts), sonst null. */
+    kurz?: string | null;
   };
   art: Art;
   fakten: {
@@ -92,7 +94,7 @@ export function pruefeBewertung(roh: unknown): { ok: true; wert: Bewertung } | {
       relevant: o.relevant,
       begruendung: text(o.begruendung, 400),
       objekt: o.objekt ? text(o.objekt, 40) : null,
-      vorgang: { bestehend: o.vorgang?.bestehend ?? null, titel: text(o.vorgang?.titel, 120) },
+      vorgang: { bestehend: o.vorgang?.bestehend ?? null, titel: text(o.vorgang?.titel, 120), kurz: text(o.vorgang?.kurz, 60) || null },
       art: o.art,
       fakten: {
         betraege: liste(fk.betraege).filter((x: any) => typeof x?.betrag === 'number')
@@ -115,7 +117,7 @@ export const SCHEMA_TEXT = `{
   "relevant": true | false,
   "begruendung": "ein Satz, warum relevant oder nicht",
   "objekt": "Kürzel aus der Objektliste (z. B. MG24) | \\"privat\\" | null",
-  "vorgang": { "bestehend": "v-xxxxxxxx aus der Liste offener Vorgänge | null", "titel": "<Objekt> <Thema>, kurz" },
+  "vorgang": { "bestehend": "v-xxxxxxxx aus der Liste offener Vorgänge | null", "titel": "<Objekt> <Thema>, kurz", "kurz": "nur bei neuem Vorgang: <Objekt>-<Thema>-<Gegenüber>, ohne Umlaute/Leerzeichen, max. 40 Zeichen, z. B. S28-Zaehlerstand-SWT, Privat-Abo-DAZN, Anker-51854-Klimek; keine Mieternamen (Wohnung W1 …) | null" },
   "art": "${ARTEN.join(' | ')}",
   "fakten": {
     "betraege": [ { "betrag": 123.45, "bezeichnung": "…" } ],

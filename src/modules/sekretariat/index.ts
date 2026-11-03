@@ -21,4 +21,9 @@ export type { ElementStand, Vorgang, LaufErgebnis, Zaehler, SekretariatDeps } fr
 export { vorgangsFrist } from './lauf.js';
 export { ladeKorrekturen, speichereKorrektur, korrekturZeilen, wendeAn } from './korrektur.js';
 export type { Korrektur } from './korrektur.js';
-export { stundenReportSekretariat, telegramZeilen, vorgangsZeilen, vorgangsTabelle, einzelTabelle, elementKurz } from './bericht.js';
+export { stundenReportSekretariat, telegramZeilen, vorgangsZeilen, vorgangsTabelle, vorgangZelle, freigabeZeilen, einzelTabelle, elementKurz } from './bericht.js';
+export {
+  KURZ_MAX, ohneUmlaute, vergleichsSchluessel, kurzAusTitel, kurzGeglaettet, eindeutigeKurz, vergibKurz, anzeigeName,
+  loeseFreigabe, freigabeRueckmeldung,
+} from './kurz.js';
+export type { FreigabeErgebnis } from './kurz.js';

@@ -78,7 +78,7 @@ export function systemPrompt(k: Kontext): string {
     '## Laufende Fristen',
     ...(k.fristen.length ? k.fristen.slice(0, 40).map((f) => `- ${f}`) : ['- keine']),
     '',
-    '## Offene Vorgänge (letzte 90 Tage)',
+    '## Offene Vorgänge (letzte 90 Tage) — Kennung | Kurzbezeichnung | Titel | Objekt | Elemente',
     ...(k.vorgaenge.length ? k.vorgaenge.slice(0, 120).map((v) => `- ${v}`) : ['- keine']),
     '',
     '## Owner-Vorgaben',
@@ -138,7 +138,7 @@ export function maskiereBewertung(b: Bewertung): Bewertung {
   return {
     ...b,
     begruendung: maskiere(b.begruendung),
-    vorgang: { ...b.vorgang, titel: maskiere(b.vorgang.titel) },
+    vorgang: { ...b.vorgang, titel: maskiere(b.vorgang.titel), kurz: b.vorgang.kurz ? maskiere(b.vorgang.kurz) : null },
     fakten: { ...b.fakten, nummern: b.fakten.nummern.map(maskiere), betraege: b.fakten.betraege.map((x) => ({ ...x, bezeichnung: maskiere(x.bezeichnung) })) },
     erwartet: b.erwartet ? maskiere(b.erwartet) : null,
     naechsterSchritt: maskiere(b.naechsterSchritt),

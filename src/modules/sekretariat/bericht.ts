@@ -2,7 +2,8 @@
  * sekretariat/bericht — Stundenreport und Telegram je VORGANG (Spec v1).
  *
  * Je Vorgang eine Zeile: Titel, Objekt, Begründung in einem Satz, nächster
- * Schritt, Frist, Freigabezeile `Freigabe Vorgang <Kennung>`. Einzelzeilen nur
+ * Schritt, Frist, Freigabezeile `Freigabe Vorgang <Kurzbezeichnung>` (Kennung nur
+ * in Klammern, Owner-Anweisung 03.11.2026). Einzelzeilen nur
  * für Netz-Treffer ohne Vorgang. „nur zur Kenntnis" (f) bleibt ein Zähler.
  * In Stufe 1 löst die Freigabe einen cc-Auftrag über den Chat aus — hier wird
  * nichts ausgeführt.
@@ -10,6 +11,7 @@
 
 import { zelle, datumKurz } from '../neuheiten/bericht.js';
 import { VORSCHLAG_TEXT } from './schema.js';
+import { anzeigeName } from './kurz.js';
 import { vorgangsFrist, type ElementStand, type LaufErgebnis, type Vorgang } from './lauf.js';
 
 const tag = (iso: string | null) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : '–');
@@ -28,10 +30,20 @@ export function vorgangsZeilen(vorgaenge: Vorgang[], elemente: Record<string, El
   return { zeilen, kenntnis: vorgaenge.filter((v) => v.vorschlag === 'f' && v.status !== 'erledigt').length };
 }
 
+/** Spalte „Vorgang": Kurzbezeichnung zuerst, Titel, Kennung in Klammern am Ende. */
+export function vorgangZelle(v: Pick<Vorgang, 'kennung' | 'kurz' | 'titel'>): string {
+  return v.kurz ? `**${v.kurz}** ${zelle(v.titel)} (\`${v.kennung}\`)` : `${zelle(v.titel)} (\`${v.kennung}\`)`;
+}
+
+/** Freigabezeilen für alle nicht wartenden Vorgänge. */
+export function freigabeZeilen(z: Array<{ v: Vorgang }>): string[] {
+  return z.filter(({ v }) => v.status !== 'wartet').map(({ v }) => `- \`Freigabe Vorgang ${anzeigeName(v)}\``);
+}
+
 export function vorgangsTabelle(z: Array<{ v: Vorgang; el: ElementStand[] }>): string[] {
-  const t = ['| Kennung | Vorgang | Objekt | Elemente | Begründung | Nächster Schritt | Frist |', '|---|---|---|---|---|---|---|'];
+  const t = ['| Vorgang | Objekt | Elemente | Begründung | Nächster Schritt | Frist |', '|---|---|---|---|---|---|'];
   for (const { v, el } of z) {
-    t.push(`| \`${v.kennung}\` | ${zelle(v.titel)} | ${v.objekt ?? '–'} | ${el.map(elementKurz).join('<br>')} | ${zelle(v.begruendung)} `
+    t.push(`| ${vorgangZelle(v)} | ${v.objekt ?? '–'} | ${el.map(elementKurz).join('<br>')} | ${zelle(v.begruendung)} `
       + `| ${v.status === 'wartet' ? `⏸ wartet auf Owner${v.wartetAuf ? ` (${zelle(v.wartetAuf)})` : ''} — ` : ''}**${v.vorschlag})** ${zelle(v.naechsterSchritt).slice(0, 400)} `
       + `| ${v.frist ? tag(v.frist) : v.fristAbgelaufen ? `abgelaufen ${tag(v.fristAbgelaufen)} – prüfen` : '–'} |`);
   }
@@ -61,7 +73,7 @@ export function stundenReportSekretariat(p: {
     '',
   ];
   if (zeilen.length) {
-    out.push('## Vorgänge', '', ...vorgangsTabelle(zeilen), '', ...zeilen.filter(({ v }) => v.status !== 'wartet').map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``), '');
+    out.push('## Vorgänge', '', ...vorgangsTabelle(zeilen), '', ...freigabeZeilen(zeilen), '');
   }
   if (p.ergebnis.einzeln.length) {
     out.push('## Netz-Treffer ohne Vorgang (KI: nicht relevant — zur Prüfung)', '', ...einzelTabelle(p.ergebnis.einzeln), '');
@@ -70,7 +82,7 @@ export function stundenReportSekretariat(p: {
     `erfasst ${z.erfasst} · vorgefiltert ${z.vorgefiltert} · KI bewertet ${z.bewertet} (nicht relevant ${z.abgelegtKi}, Vorschlag ${z.vorschlag}, Netz ${z.netzEinzeln}) · wartet ${z.wartet} · Fehler ${z.fehler}`,
     '', `KI: ${p.ergebnis.tokensEin} Tokens ein / ${p.ergebnis.tokensAus} aus, ≈ ${p.ergebnis.kostenUsd.toFixed(3)} $ (claude-sonnet-4-6).`, '');
   if (p.ergebnis.alarm.length || p.hinweise.length) out.push('## Hinweis', '', ...[...p.ergebnis.alarm, ...p.hinweise].map((h) => `- ${h}`), '');
-  out.push('Freigabe in Stufe 1: `Freigabe Vorgang <Kennung>` im Chat — cc führt den Schritt als Auftrag aus (Entwurf, Buchungs- oder Fristvorschlag; nie senden, nie löschen).',
+  out.push('Freigabe in Stufe 1: `Freigabe Vorgang <Kurzbezeichnung>` im Chat (mehrere durch Leerzeichen; die Kennung geht weiterhin) — cc führt den Schritt als Auftrag aus (Entwurf, Buchungs- oder Fristvorschlag; nie senden, nie löschen).',
     'Nicht relevant Bewertetes liegt mit Begründung in `artifacts/personal/sekretariat/nicht-relevant.jsonl`.', '');
   return out.join('\n');
 }
@@ -78,7 +90,7 @@ export function stundenReportSekretariat(p: {
 export function telegramZeilen(p: { ergebnis: LaufErgebnis; elemente: Record<string, ElementStand> }): { titel: string; zeilen: string[] } {
   const { zeilen, kenntnis } = vorgangsZeilen(p.ergebnis.vorgaenge, p.elemente);
   const out = zeilen.slice(0, 10).map(({ v }) =>
-    `📁 ${zelle(v.titel).slice(0, 50)}${v.frist ? ` (bis ${tag(v.frist).slice(0, 6)})` : ''} → ${v.vorschlag}) ${VORSCHLAG_TEXT[v.vorschlag]}: ${zelle(v.begruendung).slice(0, 90)}`);
+    `📁 ${v.kurz ? `${v.kurz}: ` : ''}${zelle(v.titel).slice(0, 50)}${v.frist ? ` (bis ${tag(v.frist).slice(0, 6)})` : ''} → ${v.vorschlag}) ${VORSCHLAG_TEXT[v.vorschlag]}: ${zelle(v.begruendung).slice(0, 90)} (${v.kennung})`);
   if (zeilen.length > 10) out.push(`… und ${zeilen.length - 10} weitere`);
   for (const e of p.ergebnis.einzeln.slice(0, 3)) out.push(`🔎 Netz: ${zelle(e.titel).slice(0, 50)} (${e.netz.map((n) => n.grund).join(', ')})`);
   if (kenntnis) out.push(`+ ${kenntnis} zur Kenntnis`);

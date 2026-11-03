@@ -334,7 +334,12 @@ describe('Bericht je Vorgang', () => {
     const s = ladeSpeicher(z);
     expect(vorgangsZeilen(e.vorgaenge, s.elemente).kenntnis).toBe(1);
     const r = stundenReportSekretariat({ ergebnis: e, elemente: s.elemente, jetzt: new Date('2026-10-27T12:07:00Z'), hinweise: [] });
-    expect(r).toContain(`Freigabe Vorgang ${s.vorgaenge[0].kennung}`);
+    /* Owner-Anweisung 03.11.2026: Freigabe mit Kurzbezeichnung, Kennung nur in Klammern. */
+    expect(s.vorgaenge[0].kurz).toBeTruthy();
+    expect(r).toContain(`Freigabe Vorgang ${s.vorgaenge[0].kurz}`);
+    expect(r).not.toContain(`Freigabe Vorgang ${s.vorgaenge[0].kennung}`);
+    expect(r).toContain(`**${s.vorgaenge[0].kurz}**`);
+    expect(r).toContain(`(\`${s.vorgaenge[0].kennung}\`)`);
     expect(r).toContain('+ 1 zur Kenntnis');
     expect(r).not.toContain('Info Firma');
     const t = telegramZeilen({ ergebnis: e, elemente: s.elemente });
@@ -394,6 +399,7 @@ describe('Fristen, Wartestatus, Netz-Ablage, Korrekturen (Chat-Review 27.10.2026
     const r = stundenReportSekretariat({ ergebnis: { zaehler: { erfasst: 0, vorgefiltert: 0, bewertet: 0, abgelegtKi: 0, vorschlag: 0, netzEinzeln: 0, wartet: 0, fehler: 0 },
       vorgaenge: s.vorgaenge, einzeln: [], tokensEin: 0, tokensAus: 0, kostenUsd: 0, alarm: [], elemente: [] }, elemente: s.elemente, jetzt: new Date('2026-10-27T14:00:00Z'), hinweise: [] });
     expect(r).toContain('⏸ wartet auf Owner (Bauser-Termin 27.10.)');
+    expect(r).not.toContain(`Freigabe Vorgang ${a.kurz}`);
     expect(r).not.toContain(`Freigabe Vorgang ${a.kennung}`);
     expect(r).not.toContain(b.kennung);
   });

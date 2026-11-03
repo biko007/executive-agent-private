@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Vorschlag } from './schema.js';
+import { eindeutigeKurz, kurzGeglaettet, vergleichsSchluessel } from './kurz.js';
 
 export interface Korrektur {
   zeit: string;
@@ -25,6 +26,8 @@ export interface Korrektur {
   aenderung?: {
     vorgang: string;
     status?: 'offen' | 'wartet' | 'erledigt';
+    /** Kurzbezeichnung umbenennen (Owner-Wunsch); Eindeutigkeit prüft das Korrekturskript. */
+    kurz?: string;
     wartetAuf?: string;
     verweis?: string;
     vorschlag?: Vorschlag;
@@ -61,9 +64,17 @@ export function korrekturZeilen(alle: Korrektur[]): string[] {
 /** Änderung am Vorgang anwenden; liefert false, wenn der Vorgang fehlt. */
 export function wendeAn(vorgaenge: Array<Record<string, any>>, k: Korrektur, zeit: string): boolean {
   if (!k.aenderung) return true;
-  const v = vorgaenge.find((x) => x.kennung === k.aenderung!.vorgang);
+  /* Vorgang per Kennung oder Kurzbezeichnung (tolerant wie die Freigabe). */
+  const ziel = k.aenderung.vorgang;
+  const v = vorgaenge.find((x) => x.kennung === ziel)
+    ?? vorgaenge.find((x) => x.kurz && vergleichsSchluessel(x.kurz) === vergleichsSchluessel(ziel));
   if (!v) return false;
   const { vorgang: _v, ...felder } = k.aenderung;
+  if (felder.kurz !== undefined) {
+    const g = kurzGeglaettet(felder.kurz);
+    if (g) felder.kurz = eindeutigeKurz(g, vorgaenge.filter((x) => x !== v).map((x) => x.kurz).filter(Boolean));
+    else delete felder.kurz;
+  }
   for (const [feld, wert] of Object.entries(felder)) if (wert !== undefined) v[feld] = wert;
   if (Array.isArray(v.fristen)) for (const f of v.fristen) if (f && !f.angelegt) f.angelegt = zeit;
   if (k.aenderung.status && k.aenderung.status !== 'wartet') delete v.wartetAuf;

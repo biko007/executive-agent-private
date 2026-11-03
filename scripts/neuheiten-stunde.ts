@@ -41,7 +41,7 @@ import { nurLesendGraph, dataText } from '../src/modules/mail-register/lesend.js
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
   anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, ladeKorrekturen, korrekturZeilen, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
-  vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
+  vorgangsZeilen, vorgangsTabelle, freigabeZeilen, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
 import { fristAbgleich, type GesendeteMail } from '../src/modules/sekretariat/fristabgleich.js';
 
@@ -536,7 +536,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
     await fetch('http://127.0.0.1:18789/api/internal/notify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ message: t.titel, severity: 'info', lage: 'hinweis', titel: t.titel, zeilen: t.zeilen,
-        fuss: [hochgeladen ? `Report ${name} (Dropbox)` : `Report ${name} nur lokal`, 'Freigabe: Freigabe Vorgang <Kennung>',
+        fuss: [hochgeladen ? `Report ${name} (Dropbox)` : `Report ${name} nur lokal`, 'Freigabe: Freigabe Vorgang <Kurzbezeichnung>',
           ...(spiegel.erzwingen ? spiegel.zeilen.map((z) => `⚠️ ${z}`) : [])] }),
     }).then((r) => { if (!r.ok) hinweise.push(`Telegram ${r.status}`); }).catch((e: any) => hinweise.push(`Telegram-Hinweis fehlgeschlagen: ${e?.message ?? e}`));
   } else if (spiegel.erzwingen) await meldeSpiegel(spiegel.zeilen, hinweise);
@@ -613,7 +613,7 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
     '',
     ...vorgangsTabelle(zeilen),
     '',
-    ...zeilen.filter(({ v }) => v.status !== 'wartet').map(({ v }) => `- \`Freigabe Vorgang ${v.kennung}\``),
+    ...freigabeZeilen(zeilen),
     '',
     `+ ${kenntnis} Vorgänge nur zur Kenntnis (im Speicher, ohne Freigabe).`,
     '',

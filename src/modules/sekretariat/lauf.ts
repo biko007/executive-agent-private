@@ -22,6 +22,7 @@ import { ladeJson, schreibeJson } from '../neuheiten/bericht.js';
 import { vorfilter, zweitesNetz, type Element, type NetzTreffer } from './element.js';
 import { bewerteMitKi, kostenUsd, type Kontext, type KiClient } from './ki.js';
 import { VORSCHLAG_TEXT, type Bewertung, type Vorschlag } from './schema.js';
+import { vergibKurz } from './kurz.js';
 import type { Regelwerk } from '../mail-register/relevanz.js';
 import type { DokRegeln } from '../doc-register/relevanz.js';
 
@@ -56,6 +57,8 @@ export interface ElementStand {
 
 export interface Vorgang {
   kennung: string;
+  /** Sprechende Kurzbezeichnung (kurz.ts), stabil ab Anlage; fehlt nur bei alten, erledigten Vorgängen. */
+  kurz?: string;
   titel: string;
   objekt: string | null;
   /** `wartet`: auf den Owner (z. B. Termin), Grund in `wartetAuf`; `erledigt`: Verweis in `verweis`. */
@@ -144,7 +147,7 @@ export function vorgangsListe(s: Speicher, jetzt: Date): string[] {
   return s.vorgaenge.filter((v) => v.aktualisiert >= grenze && v.status !== 'abgelegt').map((v) => {
     const el = v.elemente.slice(-4).map((k) => s.elemente[k]).filter(Boolean)
       .map((e) => `${e.datum.slice(0, 10)} ${e.typ === 'mail' ? 'Mail' : 'Dok'} „${e.titel.slice(0, 60)}"`).join('; ');
-    return `${v.kennung} | ${v.titel} | ${v.objekt ?? '–'} | ${el}`;
+    return `${v.kennung} | ${v.kurz ?? '–'} | ${v.titel} | ${v.objekt ?? '–'} | ${el}`;
   });
 }
 
@@ -332,7 +335,8 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
       && (v.objekt ?? '') === (b.objekt ?? ''))?.kennung ?? null;
     let v = s.vorgaenge.find((x) => x.kennung === (perThread ?? perKi ?? perTitel));
     if (!v) {
-      v = { kennung: vorgangKennung(b.vorgang.titel, `${zeit}|${e.kennung}`), titel: b.vorgang.titel, objekt: b.objekt,
+      v = { kennung: vorgangKennung(b.vorgang.titel, `${zeit}|${e.kennung}`),
+        kurz: vergibKurz({ titel: b.vorgang.titel, objekt: b.objekt }, b.vorgang.kurz, s.vorgaenge), titel: b.vorgang.titel, objekt: b.objekt,
         status: 'offen', erstellt: zeit, aktualisiert: zeit, frist: null, vorschlag: b.vorschlag,
         naechsterSchritt: b.naechsterSchritt, begruendung: b.begruendung, elemente: [] };
       s.vorgaenge.push(v);

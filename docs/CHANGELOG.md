@@ -4,6 +4,19 @@ Sprint-Historie und Feature-Narrative. Aktuelle Regeln und Betriebsstatus: CLAUD
 
 ---
 
+## Stand 2026-11-03 — Sekretariat: sprechende Kurzbezeichnungen statt v-Kennungen
+
+Owner-Anweisung 03.11.2026 21:53. Jeder Vorgang trägt `kurz` (`<Objekt>-<Thema>-<Gegenüber>`, ohne
+Umlaute/Leerzeichen, ≤ 40 Zeichen, eindeutig mit `-2`): KI-Vorschlag (`vorgang.kurz`, optional im
+Schema) oder Rückfall aus Objekt und Titel, stabil ab Anlage. Stundenreport und Telegram führen die
+Kurzbezeichnung zuerst, die Kennung in Klammern; Freigabezeilen `Freigabe Vorgang <Kurzbezeichnung>`.
+Parser `loeseFreigabe` (Kurz + Kennung, mehrere je Zeile, tolerant; Unbekanntes → drei ähnlichste),
+CLI `scripts/sekretariat-freigabe.ts`; Korrekturskript findet Vorgänge auch per Kurzbezeichnung und
+kann umbenennen. 79 offene/wartende Vorgänge einmalig nachgezogen (`scripts/sekretariat-kurz-nachziehen.ts`).
+Keine DB, kein Gateway-Neustart (Gateway-Code unverändert). Tests +16.
+
+---
+
 ## Stand 2026-11-02 (3) — Reise-Schema: optionale Felder (bleibt bikosoc.reise/1)
 
 Owner-Freigabe 02.11.2026 07:13. `buchungen[].von/bis` (ISO), `zeit_von/zeit_bis` (HH:MM), `art`
