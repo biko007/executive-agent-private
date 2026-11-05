@@ -219,3 +219,12 @@ describe('Leerlauf-Wächter', () => {
     expect(offen.map(o => o.kennung)).toEqual(['fach-smoketest']);
   });
 });
+
+describe('Report-Zuordnung bei Freigabeaufträgen', () => {
+  test('freigabe-<stamm> findet report-<stamm>-…', async () => {
+    const { hatReport } = await import('../index.js');
+    expect(hatReport(['report-revolut-qcon-agi-20261103.md'], 'freigabe-revolut-qcon-agi')).toBe(true);
+    expect(hatReport(['report-buchung-swt-n24-2026-20261105.md'], 'freigabe-buchung-swt-n24')).toBe(true);
+    expect(hatReport(['report-anderes-20261105.md'], 'freigabe-revolut-qcon-agi')).toBe(false);
+  });
+});

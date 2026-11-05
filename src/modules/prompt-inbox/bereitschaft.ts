@@ -171,7 +171,10 @@ export function auftragsKennung(dateiname: string): string | null {
  * Report so.
  */
 export function auftragsStamm(kennung: string): string {
-  return kennung.replace(/^prompt-/, '');
+  /* `freigabe-` ebenso (05.11.2026): Freigabeaufträge heißen
+     `…-freigabe-buchung-swt-n24.txt`, ihr Report `report-buchung-swt-n24-…`.
+     Ohne diesen Schnitt galten sie als offen und wurden angestoßen. */
+  return kennung.replace(/^prompt-/, '').replace(/^freigabe-/, '');
 }
 
 // ── Wartet cc auf eine Armierung? ──────────────────────────────────────────
