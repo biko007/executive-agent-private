@@ -167,6 +167,42 @@ oder `~/.config/openclaw/env`. MinIO ist **ausschließlich HDCC**.
 
 ---
 
+## 8a. cc-Sitzungen und Inbox-Routing (bikosoc, 2026-11-05)
+
+**Status:** ✅ verifiziert 2026-11-05 (Routing-Tests 3/3, `report-inbox-routing-20261105.md`)
+
+Spec: Cowork-Platform.md §13.1 „Session-Routing und Autostart".
+
+- **Routing:** Die Prompt-Inbox (`prompt-inbox.timer`, `~/inbox/*.txt`) wählt die
+  tmux-Sitzung nach dem Präfix im Dateinamen `JJJJMMTT-HHMM-<präfix>-<thema>.txt`
+  (auch hinter `dropbox-<stempel>-`, `auftrag-mail-<stempel>-` und dem
+  Poller-Zeitstempel). Regeln in `~/.config/openclaw/inbox-sessions.conf`, eine je Zeile:
+  `<präfix>=<sitzung>:<arbeitsverzeichnis>` (`~` erlaubt, `#` Kommentar). Präfix
+  `[a-z0-9]{2,20}`, Sitzungsname ohne `:`/`.`/führendes `-`. Ungültige Zeilen werden
+  übersprungen und im Journal gemeldet, nie ein Absturz. Ohne Treffer: Sitzung `bikosoc`
+  wie bisher. Erste Belegung: `design=design:~/.openclaw/workspace/.openclaw/extensions/executive-dashboard`.
+  `prompt-admin-*.txt` geht unverändert an `admin` (Vorrang vor dem Routing).
+- **Übergabe:** wie bisher (Bereitschaftsprüfung, `send-keys` Text + Enter getrennt,
+  Nachprüfung 15 s), Ziel exakt `=<sitzung>:` — kein Präfixtreffer auf eine fremde Sitzung.
+- **Autostart:** Fehlt die Zielsitzung, `tmux new-session -d -s <sitzung> -c <verzeichnis>
+  scripts/cc-sitzung-start.sh`; das Skript startet `~/.npm-global/bin/claude
+  --dangerously-skip-permissions` (dieselbe Installation wie bikosoc). Eingefügt wird erst,
+  wenn der Prompt steht (Textabgleich `❯`/Statuszeile, max. 60 s). Scheitert der Start:
+  Datei bleibt in der Inbox, Quittung `report-prompt-inbox-nicht-uebergeben-<sitzung>-*.md`
+  (Status fehler), Sperrfrist 10 min.
+- **Anmeldung (Env-Quelle):** `scripts/cc-anmeldung.sh`, wird vom Startskript gesourct.
+  Setzt `CLAUDE_CODE_OAUTH_TOKEN` aus der Token-Datei `~/.claude-oauth-token` (600,
+  Ablauf in `~/.claude-oauth-token.expires`) — dieselbe Quelle wie `~/bin/cc-start.sh`
+  für bikosoc. Die Datei enthält kein Geheimnis, nur den Verweis.
+- **Quittung:** `report-prompt-inbox-<sitzung>-*.md`, Titel und Feld `ziel:` nennen die
+  Sitzung, z. B. „übergeben an design (neu gestartet)". bikosoc-Quittungen tragen
+  „übergeben an bikosoc". Der Leerlauf-Wächter stupst geroutete Aufträge nie in bikosoc.
+- **Rückweg:** `git revert <sha>` im executive-agent-Repo, dann
+  `systemctl --user daemon-reload && systemctl --user restart prompt-inbox.timer`.
+  `inbox-sessions.conf` bleibt liegen und ist ohne den Code wirkungslos.
+
+---
+
 ## 9. Backup / Restore / Migration
 
 **Status:** ✅ verifiziert 2026-06-26 (Timer aktiv) — ⏳ nur letzter Restore-Drill (operativ)

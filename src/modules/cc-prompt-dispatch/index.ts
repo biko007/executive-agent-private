@@ -111,3 +111,50 @@ export function sendPromptToBikosocTmux(
   sleepSync(enterDelay);
   runner('tmux', ['send-keys', '-t', target, 'Enter'], { timeout });
 }
+
+// ── Sitzungen für das Inbox-Routing (Spec Cowork-Platform §13.1, 05.11.2026) ──
+//
+// Auch diese tmux-Aufrufe stehen hier und nicht in der Inbox: Aller
+// tmux-Zugriff liegt in diesem Modul (statischer Guard kontrollflaeche.test.ts).
+
+/** Erlaubte Sitzungsnamen: kein `:` und kein `.` — beides deutet tmux als
+ *  Fenster-/Pane-Trenner —, kein führendes `-` (Option), kein Leerraum. */
+export const SITZUNGSNAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}$/;
+
+/**
+ * tmux-Ziel für genau diese Sitzung. Das `=` erzwingt den exakten Namen: Ohne
+ * es nähme tmux bei fehlender Sitzung „inbox" auch eine Sitzung „inboxtest"
+ * (Präfixtreffer) — ein Auftrag landete in einer fremden Sitzung.
+ */
+export function sitzungsZiel(sitzung: string): string {
+  if (!SITZUNGSNAME.test(sitzung)) throw new Error(`ungültiger Sitzungsname: ${sitzung}`);
+  return `=${sitzung}:`;
+}
+
+/** Läuft die tmux-Sitzung mit genau diesem Namen? */
+export function sitzungLaeuft(sitzung: string, runner: TmuxRunner = defaultRunner): boolean {
+  try {
+    runner('tmux', ['has-session', '-t', `=${sitzung}`], { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Neue tmux-Sitzung anlegen und darin das Startskript ausführen
+ * (`tmux new-session -d -s <sitzung> -c <verzeichnis> <skript>`).
+ *
+ * Das Skript setzt die Anmeldung selbst (scripts/cc-sitzung-start.sh). Über
+ * tmux läuft nur der Skriptpfad, nie ein Token — sonst stünde es in `ps` und
+ * im Pane.
+ */
+export function starteCcSitzung(
+  sitzung: string, verzeichnis: string, startSkript: string,
+  runner: TmuxRunner = defaultRunner,
+): void {
+  sitzungsZiel(sitzung); // prüft den Namen
+  if (!verzeichnis.startsWith('/')) throw new Error(`Arbeitsverzeichnis nicht absolut: ${verzeichnis}`);
+  if (!startSkript.startsWith('/')) throw new Error(`Startskript nicht absolut: ${startSkript}`);
+  runner('tmux', ['new-session', '-d', '-s', sitzung, '-c', verzeichnis, startSkript], { timeout: 10000 });
+}

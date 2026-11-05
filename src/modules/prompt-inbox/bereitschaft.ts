@@ -145,6 +145,10 @@ export function auftragsKennung(dateiname: string): string | null {
      hiesse die Kennung „auftrag-mail-20261018-1640-testlauf" und der Report
      muesste denselben Vorsatz tragen, damit der Waechter ihn findet. */
   name = name.replace(/^auftrag-mail-\d{8}-\d{4}-/, '');
+  /* Führender Stempel des Inbox-Schemas JJJJMMTT-HHMM-<präfix>-<thema>
+     (Spec §13.1, 05.11.2026). Der Report heißt report-<präfix>-<thema>-…;
+     mit dem Stempel in der Kennung fände der Wächter ihn nie. */
+  name = name.replace(/^\d{8}-\d{4}-/, '');
   // Angehängtes Datum.
   name = name.replace(/-\d{8}$/, '');
   name = name.replace(/-\d{4}$/, '');

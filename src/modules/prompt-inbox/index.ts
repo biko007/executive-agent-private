@@ -2,8 +2,12 @@ import fs from 'node:fs';
 import { titelAusAuftrag } from '../report-telegram/index.js';
 import path from 'node:path';
 import {
-  sendPromptToBikosocTmux, lesePaneInhalt, type TmuxRunner,
+  sendPromptToBikosocTmux, lesePaneInhalt, sitzungLaeuft, starteCcSitzung, sitzungsZiel,
+  type TmuxRunner,
 } from '../cc-prompt-dispatch/index.js';
+import {
+  ladeRouting, regelFuer, type RoutingTabelle, type SitzungsRegel,
+} from './routing.js';
 import {
   pruefeBereitschaft, grundText, auftragsKennung, auftragsStamm,
   erkenneArmWartung, armMeldung, bewerteAnnahme, annahmeText,
@@ -211,6 +215,8 @@ export function offeneAuftraege(opts: {
    * deshalb nicht für offen halten.
    */
   nichtVor?: Date;
+  /** Routing-Tabelle: Dateien anderer Sitzungen stupst der Wächter nicht. */
+  routing?: RoutingTabelle;
 }): { datei: string; kennung: string; uebergabe: Date }[] {
   const maxAlter = (opts.maxAlterTage ?? 3) * 86400000;
   let dateien: string[] = [];
@@ -234,6 +240,9 @@ export function offeneAuftraege(opts: {
        bikosoc — einen Admin-Auftrag dort als „offen" zu führen, hieße, ein
        „weiter mit prompt-admin-…" in den Fachstrang zu tippen. */
     if (istAdminAuftrag(datei)) continue;
+    /* Dasselbe für geroutete Aufträge (§13.1): Sie laufen in ihrer eigenen
+       Sitzung; ein Stups in bikosoc wäre dort falsch. */
+    if (opts.routing && regelFuer(datei, opts.routing)) continue;
 
     if (!hatReport(berichte, kennung)) {
       offen.push({ datei, kennung, uebergabe: new Date(st.mtimeMs) });
@@ -305,6 +314,10 @@ export function processPromptInboxOnce(opts: {
   ohneBereitschaftspruefung?: boolean;
   /** Nachprüfung nach dem Eintippen; ohne Angabe wie bisher sofort quittiert. */
   nachpruefung?: Nachpruefung;
+  /** Routing-Tabelle; ohne Angabe aus ~/.config/openclaw/inbox-sessions.conf. */
+  routing?: RoutingTabelle;
+  /** Zugriff auf Routing-Sitzungen. Nur für Tests ersetzbar. */
+  sitzungen?: SitzungsZugriff;
 }): PromptInboxLauf {
   const homeDir = opts.homeDir;
   const inboxDir = opts.inboxDir ?? path.join(homeDir, 'inbox');
@@ -336,8 +349,24 @@ export function processPromptInboxOnce(opts: {
   /* Zwei Kanäle, getrennt geprüft und getrennt zugestellt (26.10.2026). Der
      Fachkanal bikosoc arbeitet exakt wie bisher, nur ohne die Admin-Dateien;
      der Admin-Kanal hat eigene Bereitschaft und eigene „eine Datei pro Lauf". */
-  const fach = kandidaten.filter(k => !istAdminAuftrag(k.name));
+  /* Session-Routing nach Präfix (Spec §13.1, 05.11.2026). Admin-Dateien
+     zuerst und unverändert; danach entscheidet die Regel zum Präfix. Ohne
+     Regel bleibt die Datei im Fachkanal bikosoc. */
+  const routing = opts.routing ?? ladeRouting(homeDir);
+  for (const f of routing.fehler) {
+    process.stderr.write(`Prompt-Inbox: inbox-sessions.conf Zeile ${f.zeile} übersprungen (${f.grund})\n`);
+  }
   const admin = kandidaten.filter(k => istAdminAuftrag(k.name));
+  const ohneAdmin = kandidaten.filter(k => !istAdminAuftrag(k.name));
+  const fach = ohneAdmin.filter(k => !regelFuer(k.name, routing));
+  const geroutet = new Map<string, { regel: SitzungsRegel; dateien: typeof kandidaten }>();
+  for (const k of ohneAdmin) {
+    const regel = regelFuer(k.name, routing);
+    if (!regel) continue;
+    const g = geroutet.get(regel.sitzung) ?? { regel, dateien: [] };
+    g.dateien.push(k);
+    geroutet.set(regel.sitzung, g);
+  }
 
   if (fach.length > 0) {
     const paneVorher = opts.paneText
@@ -365,7 +394,125 @@ export function processPromptInboxOnce(opts: {
       nachpruefung: opts.nachpruefung, paneVorher: adminText,
     });
   }
+
+  for (const { regel, dateien } of geroutet.values()) {
+    sitzungZustellen(lauf, regel, dateien, {
+      homeDir, runner: opts.runner, doneDir, reportDir, now, nachpruefung: opts.nachpruefung,
+      ohneBereitschaftspruefung: opts.ohneBereitschaftspruefung, zugriff: opts.sitzungen,
+    });
+  }
   return lauf;
+}
+
+/** tmux-Zugriff für Routing-Sitzungen; in Produktion echte tmux-Aufrufe. */
+export interface SitzungsZugriff {
+  pane?: (ziel: string) => string;
+  laeuft?: (sitzung: string) => boolean;
+  starte?: (regel: SitzungsRegel) => void;
+  /** Höchstwartezeit auf den Prompt nach dem Autostart (Standard 60 s). */
+  startWarteMs?: number;
+  /** Abstand der Pane-Abfragen beim Warten (Standard 2 s). */
+  startIntervallMs?: number;
+}
+
+/** Startskript des Autostarts — setzt die Anmeldung und startet claude.
+ *  Fester Pfad im Repo (nicht relativ zur Quelldatei: dist/ liegt anders). */
+export function startSkriptPfad(homeDir: string): string {
+  return path.join(homeDir, '.openclaw', 'workspace', '.openclaw', 'extensions', 'executive-agent',
+    'scripts', 'cc-sitzung-start.sh');
+}
+
+/**
+ * Zeigt das Pane einen fertigen Claude-Code-Prompt? Textabgleich wie bei
+ * /ccgo: Eingabezeiger `❯` bzw. `>` am Zeilenanfang oder die Statuszeile der
+ * Rechtestufe — UND kein Durchgang/Dialog (pruefeBereitschaft). Eine nackte
+ * Shell oder ein halb gezeichneter Startbildschirm zählt nicht.
+ */
+export function ccPromptBereit(pane: string): boolean {
+  if (!pruefeBereitschaft(pane).bereit) return false;
+  return /^\s*[❯>]\s*$/m.test(pane.replace(/\r/g, '')) || /bypass permissions on|for shortcuts/.test(pane);
+}
+
+/**
+ * Zustellung in eine geroutete Sitzung, bei Bedarf mit Autostart.
+ *
+ * Fehlt die Sitzung, wird sie angelegt und bis zu 60 s auf den Prompt
+ * gewartet. Scheitert das, bleibt der Auftrag in der Inbox und die Quittung
+ * meldet den Fehler (einmal je Datei; neuer Versuch nach der Sperrfrist).
+ */
+function sitzungZustellen(
+  lauf: PromptInboxLauf,
+  regel: SitzungsRegel,
+  dateien: { name: string; p: string }[],
+  k: {
+    homeDir: string; runner?: TmuxRunner; doneDir: string; reportDir: string; now: Date;
+    nachpruefung?: Nachpruefung; ohneBereitschaftspruefung?: boolean; zugriff?: SitzungsZugriff;
+  },
+): void {
+  const ziel = sitzungsZiel(regel.sitzung);
+  const z = k.zugriff ?? {};
+  const lese = z.pane ?? ((t: string) => lesePaneInhalt(t));
+  const laeuft = z.laeuft ?? ((s: string) => sitzungLaeuft(s));
+  let neuGestartet = false;
+  let pane = '';
+
+  if (!laeuft(regel.sitzung)) {
+    /* Sperrfrist auch für den Autostart: Ein gescheiterter Start darf nicht
+       alle zehn Sekunden wiederholt werden. */
+    const merkPfad = path.join(path.dirname(k.doneDir), '.nicht-uebergeben.json');
+    const fehl = ladeFehlUebergaben(merkPfad);
+    const erste = dateien[0];
+    const alt = fehl[erste.name];
+    if (alt && Date.parse(alt.sperreBis) > k.now.getTime()) {
+      for (const x of dateien) {
+        lauf.zurueckgestellt.push({ sourcePath: x.p, grund: `wartet nach gescheitertem Autostart von ${regel.sitzung} bis ${alt.sperreBis}` });
+      }
+      return;
+    }
+    let startFehler: string | null = null;
+    try {
+      (z.starte ?? ((r: SitzungsRegel) => starteCcSitzung(r.sitzung, r.verzeichnis, startSkriptPfad(k.homeDir), k.runner)))(regel);
+      neuGestartet = true;
+      const bis = Date.now() + (z.startWarteMs ?? 60_000);
+      for (;;) {
+        pane = lese(ziel);
+        if (ccPromptBereit(pane)) break;
+        if (Date.now() >= bis) {
+          const b = pruefeBereitschaft(pane);
+          startFehler = `Claude Code in ${regel.sitzung} nach ${Math.round((z.startWarteMs ?? 60_000) / 1000)} s nicht bereit`
+            + (b.bereit ? '' : ` (${grundText(b.grund)})`);
+          break;
+        }
+        warteSync(z.startIntervallMs ?? 2_000);
+      }
+    } catch (e: any) {
+      startFehler = `tmux-Sitzung ${regel.sitzung} nicht startbar: ${String(e?.message ?? e).slice(0, 160)}`;
+    }
+    if (startFehler) {
+      const melden = !alt || alt.grund !== 'autostart';
+      const sperre = new Date(k.now.getTime() + (k.nachpruefung?.sperrMinuten ?? 10) * 60_000);
+      fehl[erste.name] = { grund: 'autostart', seit: alt?.seit ?? k.now.toISOString(), versuche: (alt?.versuche ?? 0) + 1, sperreBis: sperre.toISOString() };
+      speichereFehlUebergaben(merkPfad, fehl);
+      const reportPath = melden
+        ? schreibeStartFehlQuittung(erste.name, regel, startFehler, dateien.length - 1, sperre, k)
+        : undefined;
+      (lauf.nichtUebergeben ??= []).push({ sourcePath: erste.p, grund: startFehler, gemeldet: melden, reportPath });
+      for (const r of dateien.slice(1)) {
+        lauf.zurueckgestellt.push({ sourcePath: r.p, grund: 'wartet hinter einer nicht übergebenen Datei' });
+      }
+      return;
+    }
+  } else {
+    pane = lese(ziel);
+  }
+
+  const bereitschaft: Bereitschaft = k.ohneBereitschaftspruefung ? { bereit: true } : pruefeBereitschaft(pane);
+  kanalZustellen(lauf, dateien, bereitschaft, {
+    target: ziel, runner: k.runner, doneDir: k.doneDir, reportDir: k.reportDir, now: k.now,
+    kanal: 'sitzung', sitzung: regel.sitzung, neuGestartet,
+    nachpruefung: k.nachpruefung ? { ...k.nachpruefung, lesePane: k.nachpruefung.lesePane ?? ((t?: string) => lese(t ?? ziel)) } : undefined,
+    paneVorher: pane,
+  });
 }
 
 /** Eine Datei eines Kanals zustellen, die übrigen zurückstellen. */
@@ -375,7 +522,11 @@ function kanalZustellen(
   bereitschaft: Bereitschaft,
   k: {
     target: string | undefined; runner?: TmuxRunner; doneDir: string; reportDir: string;
-    now: Date; kanal: 'fach' | 'admin';
+    now: Date; kanal: 'fach' | 'admin' | 'sitzung';
+    /** Name der gerouteten Sitzung (nur kanal 'sitzung'). */
+    sitzung?: string;
+    /** In diesem Lauf per Autostart angelegt? */
+    neuGestartet?: boolean;
     /** Eigener Grund statt des Standardtexts (fehlende Admin-Sitzung). */
     grundAnders?: string;
     nachpruefung?: Nachpruefung;
@@ -453,7 +604,9 @@ function kanalZustellen(
   // zustellen, und ihre Quittungen dürfen sich nicht überschreiben.
   const reportName = k.kanal === 'admin'
     ? `report-prompt-inbox-admin-${reportStamp}.md`
-    : `report-prompt-inbox-${reportStamp}.md`;
+    : k.kanal === 'sitzung'
+      ? `report-prompt-inbox-${sanitizeDoneName(k.sitzung ?? 'sitzung')}-${reportStamp}.md`
+      : `report-prompt-inbox-${reportStamp}.md`;
   const reportPath = path.join(k.reportDir, reportName);
   /* KOPFBLOCK ZUERST (Owner-Vorgabe 14.10.2026). Der Report-Watcher liest ihn
      und formt daraus die Telegram-Nachricht „Aufgabe uebernommen". Vorher las er
@@ -467,7 +620,12 @@ function kanalZustellen(
      Dateinamen — der steht ohnehin eine Zeile darunter. Liefert der Text
      nichts Brauchbares, bleibt der Titel leer und die Meldung zeigt nur die
      Dateizeile. */
-  const titel = (k.kanal === 'admin' ? '[ADMIN] ' : '') + (titelAusAuftrag(text) ?? '');
+  /* Quittung nennt die Ziel-Sitzung (Spec §13.1 Punkt 4). */
+  const zielSitzung = k.kanal === 'admin' ? 'admin' : k.kanal === 'sitzung' ? (k.sitzung ?? '?') : 'bikosoc';
+  const uebergabeText = `übergeben an ${zielSitzung}${k.neuGestartet ? ' (neu gestartet)' : ''}`;
+  const titel = (k.kanal === 'admin' ? '[ADMIN] ' : '')
+    + (k.kanal === 'sitzung' ? `[${uebergabeText}] ` : '')
+    + (titelAusAuftrag(text) ?? '');
   const uhrzeit = new Intl.DateTimeFormat('de-DE', {
     hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin',
   }).format(now);
@@ -477,6 +635,7 @@ function kanalZustellen(
     `titel: ${titel}`,
     'status: ok',
     `datei: ${erste.name}`,
+    `ziel: ${zielSitzung}${k.neuGestartet ? ' (neu gestartet)' : ''}`,
     `zeit: "${uhrzeit}"`,
     `warteschlange: ${rest.length > 0 ? `${rest.length} wartend` : 'leer'}`,
     '---',
@@ -487,6 +646,7 @@ function kanalZustellen(
     '',
     `- Datei: ${erste.name}`,
     `- Verschoben nach: ${donePath}`,
+    `- Ziel: ${uebergabeText}`,
     '- Status: Prompt uebergeben (Claude Code war aufnahmebereit).',
     rest.length > 0
       ? `- Noch in der Warteschlange: ${rest.length} (${rest.map(r => r.name).join(', ')})`
@@ -658,6 +818,7 @@ export async function leerlaufWaechter(opts: {
 
   const offen = offeneAuftraege({
     doneDir, reportDir, now, nichtVor: new Date(zustand.beobachtetSeit),
+    routing: ladeRouting(homeDir),
   });
   if (offen.length === 0) return { ruht: 'kein offener Auftrag' };
 
@@ -696,15 +857,15 @@ export async function leerlaufWaechter(opts: {
  */
 function schreibeFehlQuittung(
   dateiname: string, text: string, annahme: Annahme, wartend: number, sperre: Date,
-  k: { reportDir: string; now: Date; kanal: 'fach' | 'admin' },
+  k: { reportDir: string; now: Date; kanal: 'fach' | 'admin' | 'sitzung'; sitzung?: string },
 ): string {
   const ohneAnf = (t: string) => t.replace(/["\n\r]/g, ' ').trim();
   const grund = annahmeText(annahme);
   const titel = ohneAnf(`NICHT übergeben: ${titelAusAuftrag(text) ?? dateiname}`).slice(0, 90);
   const bis = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(sperre);
-  const name = `report-prompt-inbox-nicht-uebergeben${k.kanal === 'admin' ? '-admin' : ''}-${formatReportTimestamp(k.now)}.md`;
+  const sitzung = k.kanal === 'admin' ? 'admin' : k.kanal === 'sitzung' ? (k.sitzung ?? '?') : 'bikosoc';
+  const name = `report-prompt-inbox-nicht-uebergeben${k.kanal === 'fach' ? '' : `-${sanitizeDoneName(sitzung)}`}-${formatReportTimestamp(k.now)}.md`;
   const pfad = path.join(k.reportDir, name);
-  const sitzung = k.kanal === 'admin' ? 'admin' : 'bikosoc';
   const body = [
     '---',
     `titel: ${titel}`,
@@ -724,6 +885,39 @@ function schreibeFehlQuittung(
     `- Noch dahinter in der Warteschlange: ${wartend}`,
     '',
   ].filter((z, i, a) => z !== '' || a[i - 1] !== '').join('\n');
+  fs.writeFileSync(pfad, body);
+  return pfad;
+}
+
+
+/** Quittung eines gescheiterten Autostarts (Status fehler → dev). */
+function schreibeStartFehlQuittung(
+  dateiname: string, regel: SitzungsRegel, grund: string, wartend: number, sperre: Date,
+  k: { reportDir: string; now: Date },
+): string {
+  const ohneAnf = (t: string) => t.replace(/["\n\r]/g, ' ').trim();
+  const bis = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(sperre);
+  const name = `report-prompt-inbox-nicht-uebergeben-${sanitizeDoneName(regel.sitzung)}-${formatReportTimestamp(k.now)}.md`;
+  const pfad = path.join(k.reportDir, name);
+  const body = [
+    '---',
+    `titel: ${ohneAnf(`NICHT übergeben an ${regel.sitzung}: Autostart gescheitert`).slice(0, 90)}`,
+    'status: fehler',
+    `aufgabe: Prompt-Inbox – Autostart der Sitzung ${regel.sitzung} gescheitert`,
+    `ergebnis: [ "Datei ${ohneAnf(dateiname)} bleibt in der Warteschlange", "Grund: ${ohneAnf(grund)}", "neuer Versuch frühestens ${bis}" ]`,
+    `aktion: "tmux-Sitzung ${regel.sitzung} prüfen (tmux attach -t ${regel.sitzung}); die Datei wird danach selbst erneut zugestellt."`,
+    'tests: n/a',
+    'rote_zone: nein',
+    '---',
+    '',
+    `# Prompt-Inbox ${formatBerlinDate(k.now)} – Autostart ${regel.sitzung} gescheitert`,
+    '',
+    `- Datei: ${dateiname} (bleibt in der Warteschlange)`,
+    `- Ziel: ${regel.sitzung} in ${regel.verzeichnis}`,
+    `- Grund: ${grund}`,
+    `- Noch dahinter in der Warteschlange: ${wartend}`,
+    '',
+  ].join('\n');
   fs.writeFileSync(pfad, body);
   return pfad;
 }
