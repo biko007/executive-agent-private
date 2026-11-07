@@ -33,6 +33,8 @@ export interface Kopfblock {
   warteschlange?: string;
   /** true, wenn kein Kopfblock gefunden wurde und Vorgabewerte gelten. */
   fehlt?: boolean;
+  /** Betreff des Entwurfs; Pflicht, wenn `aktion` „Entwurf … senden“ verlangt (07.11.2026, Vorschlag 4b). */
+  betreff?: string;
 }
 
 const SYMBOLE: Record<Status, string> = {
@@ -162,7 +164,19 @@ export function kopfblockLesen(markdown: string): Kopfblock | null {
     datei: felder.get('datei'),
     zeit: felder.get('zeit'),
     warteschlange: felder.get('warteschlange'),
+    betreff: felder.get('betreff') || undefined,
   };
+}
+
+/**
+ * Fehlt die Kopfzeile `betreff:`, obwohl die Aktion einen Entwurf senden lässt?
+ * Dann kann das Briefing den Versand nur über die Empfänger erkennen
+ * (Vorschlag 4b, 07.11.2026). Nur Warnung, die Zustellung läuft weiter.
+ */
+export function betreffFehlt(k: Kopfblock): boolean {
+  if (k.fehlt || k.typ !== 'ergebnis') return false;
+  const a = String(k.aktion || '');
+  return /entw(u|ü)rf/i.test(a) && /send/i.test(a) && !String(k.betreff || '').trim();
 }
 
 /* ── Nachricht 1: Abholen ────────────────────────────────────────────────── */
@@ -310,6 +324,7 @@ export function ergebnisNachricht(k: Kopfblock, dateiname: string): string {
   const fuss = [tests, `Rote Zone: ${k.roteZone ? 'ja' : 'nein'}`];
   if (k.dauerMin !== null) fuss.push(`${k.dauerMin} Min.`);
   zeilen.push(`⚙️ ${fuss.join(' · ')}`);
+  if (betreffFehlt(k)) zeilen.push('⚠️ Kopfzeile „betreff:“ fehlt – Versandprüfung im Briefing nur über die Empfänger');
 
   /* Der Link als blanke URL in eigener Zeile — nicht als Knopf und nicht als
      Anker: Beides laesst Telegram vorher nachfragen. Er steht nach der

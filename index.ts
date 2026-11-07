@@ -100,8 +100,9 @@ import {
   naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet,
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt,
-  leseCcLoginStand, ccLoginZeile,
+  leseCcLoginStand, ccLoginZeile, yahooPostfachStand, postfaecherVereint,
 } from "./src/modules/briefing/index.js";
+import { ImapFlow } from "imapflow";
 import type { PostfachStand } from "./src/modules/briefing/index.js";
 import type { BriefingArt } from "./src/modules/briefing/index.js";
 import type { Settings, LocationSetting } from "./src/shared/settings/index.js";
@@ -125,7 +126,7 @@ import {
 import { dropboxZugang } from './src/adapters/dropbox-zugang.js';
 import type { DropboxAdapter } from './src/adapters/dropbox.js';
 import {
-  kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht,
+  kopfblockLesen, kopfblockFallback, uebernahmeNachricht, ergebnisNachricht, betreffFehlt,
   ergebnisKnoepfe, erzeugeNachlauf,
 } from './src/modules/report-telegram/index.js';
 import {
@@ -1696,9 +1697,34 @@ export default function (api: any) {
   /**
    * Gesendete Elemente und Entwürfe des Geschäftspostfachs, nur lesend — für die
    * Prüfung „Entwurf … senden" in den Briefings (Owner-Auftrag 29.10.2026).
-   * Entwürfe legt cc nur in juergen.bickel@ an; nur dort wird geprüft.
+   * Seit 07.11.2026 (Vorschlag 4b) zusätzlich Yahoo Sent + Draft, nur lesend:
+   * Anker-Entwürfe lagen in Yahoo. Fällt Yahoo aus oder braucht es länger als
+   * YAHOO_PRUEF_MS, zählt nur M365 — das Briefing wartet nicht.
    */
   async function holePostfachStand(seitIso: string): Promise<PostfachStand> {
+    const [m365Stand, yahooStand] = await Promise.all([holeM365PostfachStand(seitIso), holeYahooPostfachStand(seitIso)]);
+    return yahooStand ? postfaecherVereint(m365Stand, yahooStand) : m365Stand;
+  }
+
+  const YAHOO_PRUEF_MS = 7_000;
+  async function holeYahooPostfachStand(seitIso: string): Promise<PostfachStand | null> {
+    if (!yahooEnabled || !yahooUser || !yahooPass || !yahooImapHost) return null;
+    const c = new ImapFlow({ host: yahooImapHost, port: yahooImapPort, secure: true, auth: { user: yahooUser, pass: yahooPass }, logger: false, socketTimeout: YAHOO_PRUEF_MS });
+    c.on('error', () => { /* der laufende Befehl wirft selbst */ });
+    let uhr: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const limit = new Promise<never>((_, nein) => { uhr = setTimeout(() => nein(new Error('yahoo_zeitlimit')), YAHOO_PRUEF_MS); });
+      return await Promise.race([(async () => { await c.connect(); return yahooPostfachStand(c as any, seitIso); })(), limit]);
+    } catch (e) {
+      api.logger.warn(`[briefing] Yahoo-Postfachprüfung nicht möglich: ${String((e as Error)?.message || e).slice(0, 120)}`);
+      return null;
+    } finally {
+      clearTimeout(uhr);
+      c.logout().catch(() => c.close());
+    }
+  }
+
+  async function holeM365PostfachStand(seitIso: string): Promise<PostfachStand> {
     if (!m365Enabled || !tenantId || !clientId || !m365User || !m365Secret) throw new Error('m365_disabled');
     const basis = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(m365User)}/mailFolders`;
     const auswahl = '$select=subject,toRecipients,sentDateTime,lastModifiedDateTime';
@@ -4445,6 +4471,7 @@ export default function (api: any) {
           } else {
             // Nachricht 2: Report als Dokument, Text als Beschriftung, Knopf dran.
             const text = ergebnisNachricht(kopf, file.name);
+            if (betreffFehlt(kopf)) api.logger.warn(`[report-watcher] ${file.name}: Kopfzeile „betreff:“ fehlt bei „Entwurf … senden“ (Warnung, Zustellung läuft)`);
             const markup = reportGoMarkup(file.name);
             for (const chatId of await getTelegramTargets('dev', { fallbackToOperativ: true })) {
               await sendTelegramDocumentHtml(chatId, file.filePath, text, markup);

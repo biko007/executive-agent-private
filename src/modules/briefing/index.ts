@@ -39,10 +39,11 @@ export {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   REPORT_ABLAGEN,
   ERLEDIGT_DATEI, ladeErledigt, vermerkeErledigt, leseOffeneCcReports, pruefeOffeneAktionen,
+  yahooPostfachStand, postfaecherVereint,
   leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE, leseFristenErledigt,
   leseCcLoginStand,
 } from './quellen.js';
-export type { ErledigtEintrag, PostfachStand } from './quellen.js';
+export type { ErledigtEintrag, PostfachStand, ImapLesend } from './quellen.js';
 
 export {
   AKTION_TAGE, AKTION_ZEILEN_MAX, istSendeAktion, mailZiele, betreffNormal, betreffKern, entwurfStand, berichtTag, offeneAktionen,

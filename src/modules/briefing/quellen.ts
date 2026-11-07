@@ -109,6 +109,52 @@ export function leseOffeneCcReports(ablagen = REPORT_ABLAGEN): (CcReport & { zie
 
 export interface PostfachStand { gesendet: MailKurz[]; entwuerfe: MailKurz[] }
 
+/** Was `yahooPostfachStand` von ImapFlow braucht — im Test ersetzbar. */
+export interface ImapLesend {
+  list(): Promise<Array<{ path: string; specialUse?: string }>>;
+  getMailboxLock(pfad: string, o: { readOnly: true }): Promise<{ release(): void }>;
+  search(q: { since: Date }, o: { uid: true }): Promise<number[] | false>;
+  fetch(bereich: string, q: { envelope: true; internalDate: true }, o: { uid: true }): AsyncIterable<any>;
+}
+
+/**
+ * Yahoo Sent und Draft, nur lesend (EXAMINE, kein Lesevermerk) — Vorschlag 4b,
+ * Owner-Freigabe 07.11.2026: Die Anker-Entwürfe lagen in Yahoo und wurden von
+ * dort gesendet; die Prüfung sah sie bis dahin nicht.
+ */
+export async function yahooPostfachStand(c: ImapLesend, seitIso: string): Promise<PostfachStand> {
+  const ordner = await c.list();
+  const sent = ordner.find(o => o.specialUse === '\\Sent')?.path;
+  const draft = ordner.find(o => o.specialUse === '\\Drafts')?.path;
+  const lies = async (pfad: string | undefined, seit: Date | null): Promise<MailKurz[]> => {
+    if (!pfad) return [];
+    const sperre = await c.getMailboxLock(pfad, { readOnly: true });
+    try {
+      const uids = await c.search({ since: seit ?? new Date(0) }, { uid: true });
+      if (!uids || !uids.length) return [];
+      const raus: MailKurz[] = [];
+      for await (const m of c.fetch(uids.join(','), { envelope: true, internalDate: true }, { uid: true })) {
+        const zeit = (m.envelope?.date ?? m.internalDate) as Date | undefined;
+        raus.push({
+          betreff: String(m.envelope?.subject || ''),
+          an: (m.envelope?.to || []).map((x: any) => String(x?.address || '').toLowerCase()).filter(Boolean),
+          zeit: zeit ? new Date(zeit).toISOString() : '',
+        });
+      }
+      return raus;
+    } finally { sperre.release(); }
+  };
+  /* IMAP SINCE ist tagesgenau; die Zeitgrenze prüft entwurfStand selbst. */
+  const gesendet = (await lies(sent, new Date(Date.parse(seitIso) - 86_400_000))).filter(m => m.zeit >= seitIso);
+  const entwuerfe = await lies(draft, null);
+  return { gesendet, entwuerfe };
+}
+
+/** Zwei Postfachstände zusammenlegen (M365 + Yahoo). */
+export function postfaecherVereint(...staende: PostfachStand[]): PostfachStand {
+  return { gesendet: staende.flatMap(s => s.gesendet), entwuerfe: staende.flatMap(s => s.entwuerfe) };
+}
+
 /** graphRequest wiederholt bis zu viermal mit je 20 s — so lange darf das Briefing nicht warten. */
 export const POSTFACH_ZEITLIMIT_MS = 10_000;
 
@@ -151,7 +197,7 @@ export async function pruefeOffeneAktionen(opts: {
         // Gesendet zählt ab eine Stunde vor dem Report: Der Entwurf entsteht kurz
         // vor dem Report, eine frühere Mail im selben Strang ist nicht dieser Entwurf.
         const seit = new Date(Date.parse(r.zeit) - 3600_000).toISOString();
-        const st = entwurfStand(r.ziel!, pf.gesendet, pf.entwuerfe, seit);
+        const st = entwurfStand(r.ziel!, pf.gesendet, pf.entwuerfe, seit, r.zeit);
         if (st.stand === 'gesendet') {
           neuErledigt.push({ schluessel, zeit: (opts.jetzt ?? new Date()).toISOString(), grund: `gesendet ${st.zeit} an ${st.an}` });
           erledigt.add(schluessel);

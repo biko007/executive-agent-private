@@ -74,7 +74,9 @@ export function mailZiele(text: string): MailZiel {
       const nurAn = anListe.split(/\*\*Cc:\*\*|·\s*Cc|\s\/\s/)[0];
       for (const a of nurAn.match(ADRESSE) ?? []) an.add(a.toLowerCase());
     }
-    const betreff = /\*\*Betreff:\*\*(.*)$/.exec(z)?.[1] ?? /^\|\s*Betreff\s*\|([^|]*)\|/.exec(z)?.[1];
+    /* Kopfzeile `betreff:` (Pflicht bei „Entwurf … senden“ seit 07.11.2026, Vorschlag 4b). */
+    const betreff = /\*\*Betreff:\*\*(.*)$/.exec(z)?.[1] ?? /^\|\s*Betreff\s*\|([^|]*)\|/.exec(z)?.[1]
+      ?? /^betreff:\s*(.*)$/.exec(z)?.[1]?.replace(/^["']|["']$/g, '');
     if (betreff !== undefined && betreff.trim()) {
       // Mit und ohne Schlussklammer: „… (unverändert)" ist eine Notiz,
       // „Nebenkosten 2025 (MG24)" gehört zum Betreff.
@@ -118,17 +120,31 @@ export function betreffNormal(b: string): string {
  *   - Liegt noch ein Entwurf an den Empfänger mit diesem Betreff, ist nichts
  *     gesendet — auch wenn eine ältere Mail im selben Strang den gleichen
  *     vergleichbaren Betreff trägt (Review 29.10.2026).
- *   - Nennt der Report keinen Betreff, wird nie auf „gesendet" geschlossen.
  *   - Gesendet = für JEDEN Empfänger eine Mail ab `seit` mit gleichem Betreff.
+ *   - Nennt der Report keinen Betreff (Vorschlag 4b, Owner-Freigabe 07.11.2026;
+ *     Anlass: Fehr-Mail 06.11. stand trotz Versand als offen da): gesendet ist,
+ *     was NACH der Reportzeit `berichtZeit` an JEDEN An-Empfänger ging — und nur,
+ *     wenn an keinen von ihnen mehr ein Entwurf liegt (oben geprüft). Eine
+ *     frühere Mail an denselben Empfänger zählt nicht. Ohne `berichtZeit`
+ *     bleibt es wie bisher bei „fehlt“.
  */
 export function entwurfStand(
-  ziel: MailZiel, gesendet: MailKurz[], entwuerfe: MailKurz[], seit: string,
+  ziel: MailZiel, gesendet: MailKurz[], entwuerfe: MailKurz[], seit: string, berichtZeit?: string,
 ): EntwurfStand {
   const passt = (m: MailKurz, an: string) =>
     m.an.some(x => x.toLowerCase() === an)
     && (ziel.betreffe.length === 0 || ziel.betreffe.includes(betreffNormal(m.betreff)));
   if (entwuerfe.some(m => ziel.an.some(a => passt(m, a)))) return { stand: 'entwurf' };
-  if (ziel.betreffe.length === 0) return { stand: 'fehlt' };
+  if (ziel.betreffe.length === 0) {
+    if (!berichtZeit || ziel.an.length === 0) return { stand: 'fehlt' };
+    const ab = Date.parse(berichtZeit);
+    const erste = ziel.an.map(a => gesendet
+      .filter(m => Date.parse(m.zeit) > ab && m.an.some(x => x.toLowerCase() === a))
+      .sort((x, y) => x.zeit.localeCompare(y.zeit))[0]);
+    if (!erste.every(Boolean)) return { stand: 'fehlt' };
+    const spaetester = erste.reduce((x, y) => (y!.zeit > x!.zeit ? y : x))!;
+    return { stand: 'gesendet', zeit: spaetester.zeit, an: ziel.an.join(', ') };
+  }
   /* Vorrang hat der genaue Betreff: Eine Antwort im selben Strang („RE: …")
      und die Erstmail haben denselben vergleichbaren Betreff. Doris bekam am
      28.10. um 05:57 die v4 und um 20:38 die v5 als „RE: …" — ohne Vorrang

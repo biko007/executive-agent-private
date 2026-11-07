@@ -391,3 +391,25 @@ describe('Kopfblock steht in Zeile 1', () => {
     expect(roh).not.toContain('## DIGEST');
   });
 });
+
+/* ── Vorschlag 4b (07.11.2026): Kopfzeile betreff: bei „Entwurf … senden“ ── */
+import { betreffFehlt, kopfblockLesen as kopfLesen4b, ergebnisNachricht as nachricht4b } from '../index.js';
+
+describe('4b: betreff-Pflicht im Kopfblock', () => {
+  const kopf = (zusatz: string) => kopfLesen4b(`---\ntitel: T\nstatus: aktion\naufgabe: a\nergebnis: [ "x" ]\naktion: "Entwurf in Outlook prüfen und senden."\n${zusatz}tests: n/a\nrote_zone: nein\ndauer_min: 3\n---\n# T`)!;
+  test('fehlender Betreff → Warnzeile, Nachricht bleibt', () => {
+    const k = kopf('');
+    expect(betreffFehlt(k)).toBe(true);
+    expect(nachricht4b(k, 'report-x.md')).toContain('Kopfzeile „betreff:“ fehlt');
+  });
+  test('mit Betreff → keine Warnung', () => {
+    const k = kopf('betreff: "RE: Einspruch"\n');
+    expect(k.betreff).toBe('RE: Einspruch');
+    expect(betreffFehlt(k)).toBe(false);
+    expect(nachricht4b(k, 'report-x.md')).not.toContain('betreff:');
+  });
+  test('andere Aktion → keine Warnung', () => {
+    const k = { ...kopf(''), aktion: 'keine' };
+    expect(betreffFehlt(k)).toBe(false);
+  });
+});

@@ -498,3 +498,70 @@ describe('cc-Login im Abendbriefing (02.11.2026)', () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 });
+
+/* ── Vorschlag 4b (Owner-Freigabe 07.11.2026): ohne Betreff, Yahoo ── */
+import { yahooPostfachStand, postfaecherVereint } from '../index.js';
+
+describe('4b: Versandprüfung ohne Betreff und mit Yahoo', () => {
+  const ohneBetreff = mailZiele('- **An:** jens.fehr@swtenergie.de · **Cc:** sandro.winter@swtenergie.de');
+  const berichtZeit = '2026-11-06T08:05:36Z';
+  const seit = '2026-11-06T07:05:36Z';
+  const fehrMail = { betreff: 'RE: PV-Abrechnung La Perla', an: ['jens.fehr@swtenergie.de'], zeit: '2026-11-06T08:18:25Z' };
+
+  test('ohne Betreff + nach der Reportzeit gesendet → gesendet', () => {
+    expect(ohneBetreff.betreffe).toEqual([]);
+    expect(entwurfStand(ohneBetreff, [fehrMail], [], seit, berichtZeit))
+      .toEqual({ stand: 'gesendet', zeit: '2026-11-06T08:18:25Z', an: 'jens.fehr@swtenergie.de' });
+  });
+
+  test('ohne Betreff + Entwurf liegt noch → entwurf', () => {
+    expect(entwurfStand(ohneBetreff, [fehrMail], [{ ...fehrMail, zeit: '2026-11-06T08:00:00Z' }], seit, berichtZeit).stand).toBe('entwurf');
+  });
+
+  test('andere Mail an denselben Empfänger VOR der Reportzeit zählt nicht', () => {
+    const frueher = { ...fehrMail, zeit: '2026-11-06T07:30:00Z' };
+    expect(entwurfStand(ohneBetreff, [frueher], [], seit, berichtZeit).stand).toBe('fehlt');
+  });
+
+  test('ohne Reportzeit bleibt es bei „fehlt“ (alter Aufruf)', () => {
+    expect(entwurfStand(ohneBetreff, [fehrMail], [], seit).stand).toBe('fehlt');
+  });
+
+  test('alle An-Empfänger nötig', () => {
+    const zwei = mailZiele('- **An:** a@x.de, b@x.de');
+    expect(entwurfStand(zwei, [{ betreff: 'x', an: ['a@x.de'], zeit: '2026-11-06T09:00:00Z' }], [], seit, berichtZeit).stand).toBe('fehlt');
+  });
+
+  test('Kopfzeile betreff: wird gelesen', () => {
+    const z = mailZiele('---\naktion: "Entwurf senden"\nbetreff: "RE: Einspruch 8728"\n---\n- **An:** kundenservice@swtenergie.de');
+    expect(z.betreffe).toEqual(['einspruch 8728']);
+  });
+
+  function fakeImap(sent: any[], drafts: any[]) {
+    const gesperrt: string[] = [];
+    let offen = '';
+    return {
+      gesperrt,
+      list: async () => [{ path: 'Inbox' }, { path: 'Sent', specialUse: '\\Sent' }, { path: 'Draft', specialUse: '\\Drafts' }, { path: 'Bulk', specialUse: '\\Junk' }],
+      getMailboxLock: async (p: string, o: { readOnly: true }) => { expect(o.readOnly).toBe(true); gesperrt.push(p); offen = p; return { release: () => { offen = ''; } }; },
+      search: async () => (offen === 'Sent' ? sent : drafts).map((_, i) => i + 1),
+      fetch: async function* () { for (const m of offen === 'Sent' ? sent : drafts) yield m; },
+    };
+  }
+
+  test('Yahoo: Sent ab Grenze, Draft komplett, nur lesend', async () => {
+    const c = fakeImap(
+      [{ envelope: { subject: 'Re: Rückversand – Bestellung 51854', to: [{ address: 'Info@Digitale-Fotografien.com' }], date: new Date('2026-10-30T08:40:52Z') } },
+       { envelope: { subject: 'alt', to: [{ address: 'x@y.de' }], date: new Date('2026-10-20T08:00:00Z') } }],
+      [{ envelope: { subject: 'Re: Helly', to: [{ address: 'support.de.de@hellyhansen.com' }], date: new Date('2026-11-07T11:06:19Z') } }],
+    );
+    const st = await yahooPostfachStand(c as any, '2026-10-29T00:00:00Z');
+    expect(c.gesperrt).toEqual(['Sent', 'Draft']);
+    expect(st.gesendet).toEqual([{ betreff: 'Re: Rückversand – Bestellung 51854', an: ['info@digitale-fotografien.com'], zeit: '2026-10-30T08:40:52.000Z' }]);
+    expect(st.entwuerfe.length).toBe(1);
+    // Yahoo-Treffer schließt einen Anker-Report ohne Betreff
+    const anker = mailZiele('- **An:** info@digitale-fotografien.com');
+    const pf = postfaecherVereint({ gesendet: [], entwuerfe: [] }, st);
+    expect(entwurfStand(anker, pf.gesendet, pf.entwuerfe, '2026-10-30T07:38:31Z', '2026-10-30T08:38:31Z').stand).toBe('gesendet');
+  });
+});
