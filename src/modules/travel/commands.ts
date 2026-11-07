@@ -405,22 +405,22 @@ export function registerTravelCommands(api: any): void {
     },
   });
 
+  /* /tripsync alte Form abgeschaltet (Vorschlag 4c, Owner-Freigabe 07.11.2026):
+     Sie legte 1-Stunden-Termine in Berliner Zeit an. Die Etappen gleicht jetzt
+     der Reise-Import selbst ab (Ortszeit je Flughafen, Ankunft, Ort, Marker).
+     Der Befehl bleibt registriert und verweist auf den neuen Weg. */
   api.registerCommand({
     name: "tripsync",
     acceptsArgs: true,
-    description: "Kalender-Sync für alle Segmente: /tripsync <trip-id>",
+    description: "Kalender-Sync: läuft jetzt automatisch beim Reise-Import",
     handler: async (ctx: any) => {
-      const tripId = (ctx.args || "").trim();
-      if (!tripId) return { text: "❌ Verwendung: /tripsync <trip-id>" };
-      const trip = getTrip(tripId);
-      if (!trip) return { text: `❌ Reise "${tripId}" nicht gefunden.` };
-      let created = 0, skipped = 0, failed = 0;
-      for (const seg of trip.segments) {
-        if (seg.calendarEventId) { skipped++; continue; }
-        const cal = await createSegmentCalendarEvent(tripId, seg.id);
-        if (cal) { created++; } else { failed++; }
-      }
-      return { text: `📅 Kalender-Sync für ${trip.name}:\n✅ ${created} erstellt, ⏭ ${skipped} vorhanden, ❌ ${failed} fehlgeschlagen` };
+      const tripId = String(ctx?.args || "").trim();
+      return {
+        text: "📅 /tripsync ist abgeschaltet. Flüge, Umstiege und Termine einer Reise "
+          + "trägt der Reise-Import nach jeder neuen Version selbst in den Kalender ein "
+          + "(Ortszeit je Flughafen, mit Ankunft und Ort)."
+          + (tripId ? `\nManuell auf dem Server: bun run scripts/reise-kalender.ts ${tripId}` : ""),
+      };
     },
   });
 

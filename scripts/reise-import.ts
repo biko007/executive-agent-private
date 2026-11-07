@@ -25,6 +25,7 @@ import { dropboxZugang, dropboxVollzugang } from '../src/adapters/dropbox-zugang
 import type { DropboxAdapter } from '../src/adapters/dropbox.js';
 import {
   pruefeReise, nachTrip, ersetzen, dokumentZiel, dokumenteMitDatei, ergebnisText,
+  kalenderAbgleich, graphKalenderApi, graphZugangAusEnv, idsUebernehmen,
   DROPBOX_AUSTAUSCH, DROPBOX_AUSTAUSCH_DOKUMENTE, DROPBOX_AUSTAUSCH_DONE,
   DROPBOX_REISEN, DROPBOX_REISEN_DOKUMENTE, DROPBOX_REISEN_DONE, DOKUMENTE_KATEGORIE,
   type ReiseDatei, type ImportErgebnis,
@@ -142,8 +143,23 @@ async function verarbeite(
     }
     if (!probe && erg.dokumente.length) metadatenSchreiben(meta);
 
-    const trip = nachTrip(reise, vorhanden, new Date().toISOString(),
+    let trip = nachTrip(reise, vorhanden, new Date().toISOString(),
       erg.dokumente.map((d) => d.datei));
+    /* Etappen als M365-Termine (Vorschlag 4c, Stufe 2, Owner-Freigabe
+       07.11.2026). Nur Termine mit eigenem Marker; ein Kalenderfehler hält
+       den Import nicht auf, er steht als Hinweis im Protokoll. */
+    const zugangM365 = graphZugangAusEnv();
+    if (zugangM365) {
+      try {
+        const k = await kalenderAbgleich(trip as any, graphKalenderApi(zugangM365), { schreiben: !probe });
+        erg.warnungen.push(`Kalender${probe ? ' (Probe)' : ''}: anlegen ${k.plan.anlegen.length}, ändern ${k.plan.aendern.length}, `
+          + `gleich ${k.plan.gleich.length}, löschen ${k.plan.loeschen.length}`
+          + (k.fehler.length ? `, Fehler: ${k.fehler.join('; ')}` : ''));
+        if (!probe) trip = idsUebernehmen(trip, k.ids);
+      } catch (e: any) {
+        erg.warnungen.push(`Kalender nicht abgeglichen: ${e?.message ?? e}`);
+      }
+    }
     if (!probe) {
       fs.mkdirSync(TRAVEL_DIR, { recursive: true });
       fs.writeFileSync(zielDatei, JSON.stringify(trip, null, 2), 'utf-8');
