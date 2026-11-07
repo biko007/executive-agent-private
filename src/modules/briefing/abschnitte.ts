@@ -362,6 +362,47 @@ export function gewichtAlterZusatz(messzeit: string | null | undefined, jetzt: D
   return ` — Messung vom ${tagMonat(new Date(t).toISOString())}`;
 }
 
+/* ── Zuordnungsfragen aus der Vorlauf-Suche (Vorschlag 4a, 07.11.2026) ───── */
+
+/** Was `scripts/neuheiten-stunde.ts --vorbriefing` in die Zustandsdatei schreibt. */
+export interface VorbriefingStand {
+  /** ISO, Ende des Laufs */
+  zeit: string;
+  dauerSek: number;
+  kostenUsd: number;
+  /** gesetzt, wenn der Lauf vorzeitig endete (Zeitlimit, Kostendeckel, Fehler) */
+  abbruch?: string;
+  quellen: Array<{ name: string; ok: boolean; grund?: string }>;
+  fragen: Array<{ kurz: string; frage: string; freigabe: string }>;
+}
+
+export const ZUORDNUNG_MAX = 5;
+/** Älter als das, und der Stand gilt nicht als Vorlauf DIESES Briefings. */
+export const VORBRIEFING_ALT_MIN = 60;
+
+/**
+ * Abschnitt „Zuordnungsfragen": höchstens fünf Zeilen mit Kurzbezeichnung,
+ * Frage und Freigabewort; ausgefallene Quellen als „Quelle X nicht abrufbar".
+ * Das Briefing liest nur die fertige Datei — es wartet nie auf den Lauf.
+ */
+export function zuordnungsAbschnitt(st: VorbriefingStand | null, jetzt: Date): string[] {
+  const kopf = ['', `${RUBRIK}🧩 Zuordnungsfragen`];
+  if (!st) return [...kopf, ausfallZeile('Vorlauf-Suche')];
+  const alterMin = Math.round((jetzt.getTime() - Date.parse(st.zeit)) / 60_000);
+  const zeilen: string[] = [];
+  if (!Number.isFinite(alterMin) || alterMin > VORBRIEFING_ALT_MIN) {
+    zeilen.push(`⚠️ Vorlauf-Suche nicht aktuell (Stand ${tagMonat(st.zeit)} ${new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' }).format(new Date(st.zeit))})`);
+  }
+  if (st.abbruch) zeilen.push(`⚠️ Vorlauf-Suche vorzeitig beendet: ${st.abbruch}`);
+  for (const q of st.quellen ?? []) if (!q.ok) zeilen.push(`⚠️ Quelle ${q.name} nicht abrufbar`);
+  const fragen = (st.fragen ?? []).slice(0, ZUORDNUNG_MAX);
+  for (const f of fragen) zeilen.push(`• ${f.kurz}: ${f.frage} → ${f.freigabe}`);
+  const mehr = (st.fragen ?? []).length - fragen.length;
+  if (mehr > 0) zeilen.push(`• … und ${mehr} weitere im Stundenreport`);
+  if (!fragen.length) zeilen.push('• keine offenen Zuordnungsfragen');
+  return [...kopf, ...zeilen];
+}
+
 /* ── Abendbriefing ───────────────────────────────────────────────────────── */
 
 export interface AbendDaten {
@@ -383,6 +424,8 @@ export interface AbendDaten {
   nkFristen: NkFrist[] | null;
   /** Fertige Zeile zur Anmeldung von Claude Code; null = nicht prüfbar, fehlt = weglassen */
   ccLogin?: string | null;
+  /** Zuordnungsfragen-Abschnitt (fertige Zeilen); fehlt = weglassen */
+  zuordnung?: string[];
 }
 
 export const ABEND_FRISTEN_TAGE = 14;
@@ -412,6 +455,8 @@ export function abendZeilen(d: AbendDaten): string[] {
 
   if (d.fristenErledigt === null) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ausfallZeile('Fristen-Abgleich'));
   else if (d.fristenErledigt?.length) zeilen.push('', `${RUBRIK}✅ Fristen heute erledigt`, ...fristErledigtZeilen(d.fristenErledigt));
+
+  if (d.zuordnung?.length) zeilen.push(...d.zuordnung);
 
   if (d.ccLogin === null) zeilen.push('', ausfallZeile('cc-Login'));
   else if (d.ccLogin) zeilen.push('', d.ccLogin);

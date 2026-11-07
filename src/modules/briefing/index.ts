@@ -20,10 +20,11 @@ export {
   bankingAbschnitt, SALDO_ALT_STUNDEN,
   tradingZeilen, reisenAbschnitt, gewichtAlterZusatz,
   abendZeilen, ABEND_FRISTEN_TAGE, ccLoginZeile,
+  zuordnungsAbschnitt, ZUORDNUNG_MAX, VORBRIEFING_ALT_MIN,
 } from './abschnitte.js';
 export type {
   CcReport, NkFrist, FristErledigt, KontoStand, TradingStatus, TradingTag, ReiseKurz, AbendDaten,
-  CcLoginStand,
+  CcLoginStand, VorbriefingStand,
 } from './abschnitte.js';
 
 export { naechsteAktion, minutenVon, NACHHOL_MINUTEN, NACHHOL_FENSTER_MINUTEN, MAX_VERSUCHE } from './planer.js';
@@ -39,7 +40,7 @@ export {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   REPORT_ABLAGEN,
   ERLEDIGT_DATEI, ladeErledigt, vermerkeErledigt, leseOffeneCcReports, pruefeOffeneAktionen,
-  yahooPostfachStand, postfaecherVereint,
+  yahooPostfachStand, postfaecherVereint, leseVorbriefing, VORBRIEFING_DATEI,
   leseSekretariatFristen, SEKRETARIAT_VORGAENGE, SEKRETARIAT_VORLAUF_TAGE, leseFristenErledigt,
   leseCcLoginStand,
 } from './quellen.js';

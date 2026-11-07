@@ -90,6 +90,12 @@ export interface SekretariatDeps {
   kontext: Omit<Kontext, 'vorgaenge'>;
   /** Deckel: KI-Bewertungen je Stunde (Spec 60). `null` = ohne Deckel (Nachlauf). */
   deckelProStunde: number | null;
+  /**
+   * Kostendeckel je Lauf in $ (Vorlauf-Suche vor dem Briefing, Vorschlag 4a,
+   * Vorgabe 1,50 $). Ist er erreicht, bleibt der Rest „wartet" — wie beim
+   * Aufrufdeckel, ohne einen Fehlversuch zu zählen. Fehlt er: kein Deckel.
+   */
+  kostenDeckelUsd?: number;
   jetzt?: Date;
   probe?: boolean;
   bankVersicherer?: RegExp;
@@ -118,6 +124,8 @@ export interface LaufErgebnis {
   kostenUsd: number;
   /** Lücke in der Statuskette oder KI-Fehler → Alarm. */
   alarm: string[];
+  /** true, wenn der Kostendeckel dieses Laufs griff (`kostenDeckelUsd`). */
+  kostendeckel?: boolean;
   elemente: ElementStand[];
 }
 
@@ -261,6 +269,15 @@ export async function verarbeite(neu: Element[], d: SekretariatDeps): Promise<La
       Object.assign(st, { status: 'wartet', begruendung: 'Deckel erreicht — nächster Lauf' });
       st.kette.wartet = zeit;
       z.wartet++;
+      sichere(d, s);
+      continue;
+    }
+
+    if (d.kostenDeckelUsd != null && kostenUsd(ergebnis.tokensEin, ergebnis.tokensAus) >= d.kostenDeckelUsd) {
+      Object.assign(st, { status: 'wartet', begruendung: 'Kostendeckel des Laufs erreicht — nächster Lauf' });
+      st.kette.wartet = zeit;
+      z.wartet++;
+      ergebnis.kostendeckel = true;
       sichere(d, s);
       continue;
     }

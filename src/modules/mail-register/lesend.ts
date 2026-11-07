@@ -114,6 +114,18 @@ export interface ImapZugangsdaten {
   user: string;
   pass: string;
   ordner?: string[];
+  /**
+   * Vorlauf-Suche vor dem Briefing (Vorschlag 4a, Owner-Freigabe 07.11.2026):
+   * alle Ordner ausser Spam, Papierkorb und Entwürfen statt der festen Liste.
+   * Gesendet bleibt wie immer draussen (`ordnerAusgeschlossen`).
+   */
+  alleOrdner?: boolean;
+}
+
+/** Spam, Papierkorb, Entwürfe — nie gelesen, auch nicht mit `alleOrdner`. */
+export function imapOrdnerUebergehen(o: { path: string; specialUse?: string }): boolean {
+  if (o.specialUse && ['\\Junk', '\\Trash', '\\Drafts'].includes(o.specialUse)) return true;
+  return /^(bulk|bulk mail|spam|trash|papierkorb|draft|drafts|entwürfe)$/i.test(o.path.split('/').pop() ?? o.path);
 }
 
 /** Kopfzeilen aus dem Rohtext, Schluessel klein; Folgezeilen werden angehaengt. */
@@ -197,7 +209,8 @@ export function erstelleImapQuelle(z: ImapZugangsdaten): LeseQuelle {
       const c = await verbinde();
       const raus: Array<{ id: string; name: string; anzahl: number }> = [];
       for (const o of await c.list()) {
-        if (!erlaubt.has(o.path.toLowerCase())) continue;
+        if (o.flags?.has('\\Noselect')) continue;
+        if (z.alleOrdner ? imapOrdnerUebergehen(o) : !erlaubt.has(o.path.toLowerCase())) continue;
         raus.push({ id: o.path, name: o.path, anzahl: 0 });
       }
       return raus;

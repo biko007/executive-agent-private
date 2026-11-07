@@ -1,0 +1,15 @@
+[Unit]
+Description=bikosoc Vorlauf-Suche 06:45 und 20:45 Berliner Zeit (vor Morgen- und Abendbriefing)
+
+[Timer]
+# Vorschlag 4a, Owner-Freigabe 07.11.2026: 15 Minuten vor den Briefings um
+# 07:00 und 21:00. Server läuft auf UTC, daher die Zeitzone im Ausdruck.
+# Läuft gerade der Stundenlauf, greift die gemeinsame Sperre (stunde.lock)
+# und dieser Lauf entfällt; das Briefing meldet dann „nicht aktuell".
+OnCalendar=*-*-* 06:45:00 Europe/Berlin
+OnCalendar=*-*-* 20:45:00 Europe/Berlin
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

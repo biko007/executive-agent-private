@@ -101,6 +101,7 @@ import {
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt,
   leseCcLoginStand, ccLoginZeile, yahooPostfachStand, postfaecherVereint,
+  zuordnungsAbschnitt, leseVorbriefing,
 } from "./src/modules/briefing/index.js";
 import { ImapFlow } from "imapflow";
 import type { PostfachStand } from "./src/modules/briefing/index.js";
@@ -1783,6 +1784,8 @@ export default function (api: any) {
       termineMorgen: wert(rTermine),
       fuhrpark: wert(rFuhrpark),
       nkFristen: wert(rNk),
+      // Zuordnungsfragen aus der Vorlauf-Suche 20:45 (Vorschlag 4a, 07.11.2026); liest nur die Datei
+      zuordnung: zuordnungsAbschnitt(leseVorbriefing(), jetzt),
       // Anmeldung von Claude Code (02.11.2026); nur Existenz, Rechte, Ablaufdatei
       ccLogin: (() => { try { return ccLoginZeile(leseCcLoginStand(), heute); } catch { return null; } })(),
     });
@@ -1963,6 +1966,10 @@ export default function (api: any) {
     // ── NEUE QUELLEN abholen (oben angestossen) ──
     const [rCc, rNk, rOffen, rKonten, rTrading, rTagesbuch, rReisen] = await neueQuellen;
     const wert = <T,>(r: PromiseSettledResult<T>): T | null => (r.status === 'fulfilled' ? r.value : null);
+
+    // ── ZUORDNUNGSFRAGEN aus der Vorlauf-Suche 06:45 (Vorschlag 4a, 07.11.2026) ──
+    // Nur die fertige Datei; das Briefing wartet nicht auf den Lauf.
+    parts.push(...zuordnungsAbschnitt(leseVorbriefing(), now));
 
     // ── REISEN (laufend oder Beginn in 7 Tagen) ──
     if (rReisen.status === 'rejected') {

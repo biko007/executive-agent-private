@@ -565,3 +565,39 @@ describe('4b: Versandprüfung ohne Betreff und mit Yahoo', () => {
     expect(entwurfStand(anker, pf.gesendet, pf.entwuerfe, '2026-10-30T07:38:31Z', '2026-10-30T08:38:31Z').stand).toBe('gesendet');
   });
 });
+
+/* ── Vorschlag 4a: Abschnitt „Zuordnungsfragen" ── */
+import { zuordnungsAbschnitt, leseVorbriefing, abendZeilen as abendZeilen4a } from '../index.js';
+
+describe('4a: Zuordnungsfragen im Briefing', () => {
+  const jetzt = new Date('2026-11-08T06:00:00Z');
+  const basis = { zeit: '2026-11-08T05:52:00Z', dauerSek: 300, kostenUsd: 0.4, quellen: [{ name: 'juergen.bickel@', ok: true }], fragen: [] as any[] };
+  const frage = (i: number) => ({ kurz: `K${i}`, frage: `Frage ${i}`, freigabe: `Freigabe Vorgang K${i}` });
+
+  test('Aufbau: höchstens 5 Zeilen mit Freigabewort, Rest gezählt', () => {
+    const z = zuordnungsAbschnitt({ ...basis, fragen: [1, 2, 3, 4, 5, 6, 7].map(frage) }, jetzt);
+    expect(z[1]).toContain('Zuordnungsfragen');
+    expect(z.filter(x => x.startsWith('• K')).length).toBe(5);
+    expect(z).toContain('• K1: Frage 1 → Freigabe Vorgang K1');
+    expect(z).toContain('• … und 2 weitere im Stundenreport');
+  });
+  test('ohne Fragen: Hinweis statt Leerstelle', () => {
+    expect(zuordnungsAbschnitt(basis, jetzt)).toContain('• keine offenen Zuordnungsfragen');
+  });
+  test('Quellenausfall: „Quelle X nicht abrufbar"', () => {
+    const z = zuordnungsAbschnitt({ ...basis, quellen: [{ name: 'Gesendet Yahoo', ok: false, grund: 'timeout' }, { name: 'data@', ok: true }] }, jetzt);
+    expect(z).toContain('⚠️ Quelle Gesendet Yahoo nicht abrufbar');
+    expect(z.some(x => x.includes('data@'))).toBe(false);
+  });
+  test('Kostendeckel / Abbruch und veralteter Stand werden gemeldet', () => {
+    const z = zuordnungsAbschnitt({ ...basis, zeit: '2026-11-07T19:52:00Z', abbruch: 'Kostendeckel 1.50 $ erreicht – Rest im nächsten Lauf' }, jetzt);
+    expect(z.some(x => x.startsWith('⚠️ Vorlauf-Suche nicht aktuell'))).toBe(true);
+    expect(z).toContain('⚠️ Vorlauf-Suche vorzeitig beendet: Kostendeckel 1.50 $ erreicht – Rest im nächsten Lauf');
+  });
+  test('keine Datei → Ausfallzeile; Abendbriefing nimmt den Abschnitt auf', () => {
+    expect(leseVorbriefing(path.join(os.tmpdir(), 'gibt-es-nicht.json'))).toBeNull();
+    expect(zuordnungsAbschnitt(null, jetzt)).toContain('⚠️ Vorlauf-Suche nicht abrufbar');
+    const a = abendZeilen4a({ datumLang: 'x', ccReports: [], termineMorgen: [], fuhrpark: [], nkFristen: [], zuordnung: zuordnungsAbschnitt(basis, jetzt) });
+    expect(a.some(x => x.includes('Zuordnungsfragen'))).toBe(true);
+  });
+});

@@ -44,6 +44,9 @@ import {
   vorgangsZeilen, vorgangsTabelle, freigabeZeilen, einzelTabelle, type Element, type LaufErgebnis,
 } from '../src/modules/sekretariat/index.js';
 import { fristAbgleich, type GesendeteMail } from '../src/modules/sekretariat/fristabgleich.js';
+import { zuordnungsFragen, VORBRIEFING_DECKEL_USD } from '../src/modules/sekretariat/index.js';
+import type { VorbriefingStand } from '../src/modules/briefing/index.js';
+import { ImapFlow } from 'imapflow';
 
 const HOME = process.env.HOME || os.homedir();
 const PERSONAL = path.join(HOME, '.openclaw', 'workspace', 'artifacts', 'personal');
@@ -66,6 +69,12 @@ const probe = argv.includes('--probe');
 const nachlauf = argv.includes('--nachlauf');
 const nur = argv.includes('--nur') ? argv[argv.indexOf('--nur') + 1] : '';
 const env = (k: string) => (process.env[k] ?? '').trim();
+/* Vorlauf-Suche 15 Minuten vor jedem Briefing (Vorschlag 4a, Owner-Freigabe
+   07.11.2026): Timer neuheiten-vorbriefing.timer 06:45 und 20:45 Berlin. */
+const vorbriefing = argv.includes('--vorbriefing');
+const VORBRIEFING_DATEI = path.join(PERSONAL, 'neuheiten', 'vorbriefing.json');
+const VORBRIEFING_ZEITLIMIT_MS = 10 * 60_000;
+const DATA = 'data@bikolino.com';
 const log = (m: string) => process.stdout.write(m + '\n');
 const warn = (m: string) => process.stderr.write(m + '\n');
 
@@ -415,7 +424,75 @@ async function mailText(m: GesendeteMail): Promise<string> {
   return String(j?.uniqueBody?.content || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
 }
 
-async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
+/** Was die Vorlauf-Suche aus dem Sekretariat-Lauf mitnimmt. */
+interface VorbriefingSammler {
+  quellen: VorbriefingStand['quellen'];
+  ergebnis?: LaufErgebnis;
+  textSicher?: (t: string) => string;
+}
+
+/**
+ * Vorlauf-Suche (4a): Gesendet von juergen.bickel@, data@ und Yahoo seit dem
+ * letzten Vorlauf — nur lesend (Graph GET, IMAP EXAMINE), nur Erfassung. Die
+ * Bewertung legt eigene Mails im Vorfilter ab („eigene Mail", ohne KI-Kosten);
+ * das Element hält Betreff, Empfänger und Message-ID für den Zusammenhang fest.
+ */
+async function gesendetElemente(bekannt: (k: string) => boolean, seitIso: string): Promise<{ elemente: Element[]; quellen: VorbriefingStand['quellen'] }> {
+  const elemente: Element[] = [];
+  const quellen: VorbriefingStand['quellen'] = [];
+  const nimm = (e: Element) => { if (!bekannt(e.kennung) && !elemente.some((x) => x.kennung === e.kennung)) elemente.push(e); };
+  for (const [postfach, quelle] of [[OWNER, 'm365'], [DATA, 'data']] as const) {
+    const name = `Gesendet ${postfach.split('@')[0]}@`;
+    try {
+      let url: string | null = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(postfach)}/mailFolders/sentitems/messages`
+        + `?$select=internetMessageId,subject,toRecipients,from,sentDateTime,bodyPreview&$top=100&$orderby=sentDateTime desc`
+        + `&$filter=${encodeURIComponent(`sentDateTime ge ${seitIso}`)}`;
+      for (let seite = 0; url && seite < 5; seite++) {
+        const j: any = await graphGet(env('M365_TENANT_ID'), env('M365_CLIENT_ID'), env('M365_CLIENT_SECRET'), url);
+        for (const m of j?.value ?? []) {
+          const mid = String(m.internetMessageId || '').trim();
+          if (!mid) continue;
+          nimm({ typ: 'mail', kennung: kurzId(mid), quelle, datum: String(m.sentDateTime || ''), titel: String(m.subject || ''),
+            von: String(m.from?.emailAddress?.address || postfach).toLowerCase(), vonName: String(m.from?.emailAddress?.name || ''),
+            text: `An: ${(m.toRecipients ?? []).map((r: any) => r?.emailAddress?.address).filter(Boolean).join(', ')}\n${String(m.bodyPreview || '')}`.slice(0, 3000),
+            messageId: mid, threadIds: [], ordner: 'Gesendet', kopf: {} });
+        }
+        url = j?.['@odata.nextLink'] ?? null;
+      }
+      quellen.push({ name, ok: true });
+    } catch (e: any) { quellen.push({ name, ok: false, grund: String(e?.message ?? e).slice(0, 120) }); }
+  }
+  const c = new ImapFlow({ host: env('YAHOO_IMAP_HOST') || 'imap.mail.yahoo.com', port: Number(env('YAHOO_IMAP_PORT') || 993), secure: true,
+    auth: { user: env('YAHOO_USER'), pass: env('YAHOO_APP_PASSWORD') }, logger: false, socketTimeout: 120_000 });
+  c.on('error', () => { /* der laufende Befehl wirft selbst */ });
+  try {
+    if (!env('YAHOO_USER') || !env('YAHOO_APP_PASSWORD')) throw new Error('Yahoo-Zugang fehlt');
+    await c.connect();
+    const sent = (await c.list()).find((o) => o.specialUse === '\\Sent')?.path;
+    if (sent) {
+      const sperre = await c.getMailboxLock(sent, { readOnly: true });
+      try {
+        const uids = await c.search({ since: new Date(Date.parse(seitIso) - 86_400_000) }, { uid: true });
+        if (uids && uids.length) {
+          for await (const m of c.fetch(uids, { uid: true, envelope: true, internalDate: true }, { uid: true })) {
+            const datum = new Date((m.envelope?.date ?? m.internalDate) as Date).toISOString();
+            const mid = String(m.envelope?.messageId || '').trim();
+            if (!mid || datum < seitIso) continue;
+            nimm({ typ: 'mail', kennung: kurzId(mid), quelle: 'yahoo', datum, titel: String(m.envelope?.subject || ''),
+              von: String(m.envelope?.from?.[0]?.address || env('YAHOO_USER')).toLowerCase(), vonName: String(m.envelope?.from?.[0]?.name || ''),
+              text: `An: ${(m.envelope?.to ?? []).map((x: any) => x.address).filter(Boolean).join(', ')}`,
+              messageId: mid, threadIds: m.envelope?.inReplyTo ? [String(m.envelope.inReplyTo)] : [], ordner: 'Sent', kopf: {} });
+          }
+        }
+      } finally { sperre.release(); }
+    }
+    quellen.push({ name: 'Gesendet Yahoo', ok: true });
+  } catch (e: any) { quellen.push({ name: 'Gesendet Yahoo', ok: false, grund: String(e?.message ?? e).slice(0, 120) }); }
+  finally { await c.logout().catch(() => c.close()); }
+  return { elemente, quellen };
+}
+
+async function sekretariatLauf(nachlaufModus: boolean, vb?: VorbriefingSammler): Promise<number> {
   const beginn = Date.now();
   const jetzt = new Date();
   const einst = sekEinstellungen();
@@ -448,10 +525,27 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
 
   // 1 Erfassen: Mails (juergen.bickel@, Yahoo), data@, Dokumente
   const mail = await mailLauf({ zustand: MAIL_ZUSTAND, regeln, env, probe: nachlaufModus, nachlauf: nachlaufModus, jetzt,
-    dropbox: app?.adapter ?? null, log, warn, sekretariat: { bekannt } });
+    dropbox: app?.adapter ?? null, log, warn, sekretariat: { bekannt }, yahooAlleOrdner: !!vb });
   hinweise.push(...mail.fehler);
+  if (vb) {
+    for (const [q, name, adresse] of [['m365', 'juergen.bickel@', 'juergen.bickel@'], ['yahoo', 'Yahoo', 'jbickel2@']] as const) {
+      const ok = mail.laeufe.some((l) => l.quelle === q);
+      vb.quellen.push({ name, ok, ...(ok ? {} : { grund: mail.fehler.find((f) => f.includes(adresse))?.slice(0, 120) ?? 'nicht gelaufen' }) });
+    }
+  }
   const data = await dataElemente(bekannt, nachlaufModus ? '2026-10-18T00:00:00.000Z' : new Date(jetzt.getTime() - 3 * 86_400_000).toISOString());
   hinweise.push(...data.fehler);
+  vb?.quellen.push({ name: 'data@', ok: true });
+  /* Vorlauf-Suche: Gesendet seit dem letzten Vorlauf (15 min Überlappung), sonst 24 h. */
+  let gesendetNeu: Element[] = [];
+  if (vb) {
+    const letzter = ladeJsonSicher<VorbriefingStand>(VORBRIEFING_DATEI).zeit;
+    const seit = new Date((letzter ? Date.parse(letzter) : jetzt.getTime() - 86_400_000) - 15 * 60_000).toISOString();
+    const g = await gesendetElemente(bekannt, seit);
+    gesendetNeu = g.elemente;
+    vb.quellen.push(...g.quellen);
+    log(`vorbriefing: Gesendet seit ${seit.slice(0, 16)} — ${gesendetNeu.length} neu`);
+  }
   let dok: DokLaufErgebnis | null = null;
   try {
     const { quellen, kopien, fehler: qf } = await dokQuellen();
@@ -461,16 +555,19 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
       ersteSeite: (b) => pdfErsteSeite(b, 2) });
     hinweise.push(...dok.fehler, ...dok.hinweise);
   } catch (e: any) { hinweise.push(`Dokumententeil Abbruch: ${String(e?.message ?? e).slice(0, 200)}`); }
+  vb?.quellen.push(dok ? { name: 'Dokumente (SharePoint, OneDrive, Dropbox)', ok: true }
+    : { name: 'Dokumente (SharePoint, OneDrive, Dropbox)', ok: false, grund: hinweise.find((h) => h.startsWith('Dokumententeil'))?.slice(0, 120) });
   /* iCloud-Frühwarnung auch im Sekretariat-Lauf (seit modus „ki" lief nur noch
      dieser Zweig, die Warnung aus dem Regel-Lauf kam nie an; Befund 30.10.2026). */
   const spiegel = nachlaufModus ? { zeilen: [] as string[], erzwingen: false } : spiegelHinweise(spiegelZustand(SPIEGEL), jetzt, false);
   hinweise.push(...spiegel.zeilen);
+  if (vb) vb.quellen.push(spiegel.zeilen.length ? { name: 'iCloud-Spiegel', ok: false, grund: spiegel.zeilen[0].slice(0, 120) } : { name: 'iCloud-Spiegel', ok: true });
   const dokNeu = dok ? dokElemente(dok).filter((e) => !bekannt(e.kennung)) : [];
   const nachzuegler = nachlaufModus || !Object.keys(speicher.elemente).length ? []
     : dokNachzuegler((k) => bekannt(k) || !!speicher.elemente[k] || dokNeu.some((x) => x.kennung === k), jetzt);
   if (nachzuegler.length) hinweise.push(`Abgleich: ${nachzuegler.length} Dokument(e) im Register, aber nicht im Sekretariat — erneut zur Bewertung (nur Name)`);
-  const elemente = [...(mail.elemente ?? []), ...data.elemente, ...dokNeu, ...nachzuegler];
-  log(`sekretariat: ${elemente.length} Neuheiten erfasst (Mail ${mail.elemente?.length ?? 0}, data@ ${data.elemente.length}, Dokumente ${elemente.length - (mail.elemente?.length ?? 0) - data.elemente.length})`);
+  const elemente = [...(mail.elemente ?? []), ...data.elemente, ...gesendetNeu, ...dokNeu, ...nachzuegler];
+  log(`sekretariat: ${elemente.length} Neuheiten erfasst (Mail ${mail.elemente?.length ?? 0}, data@ ${data.elemente.length}${vb ? `, Gesendet ${gesendetNeu.length}` : ''}, Dokumente ${elemente.length - (mail.elemente?.length ?? 0) - data.elemente.length - gesendetNeu.length})`);
 
   // 2+3 Verstehen und Verknüpfen
   let ergebnis: LaufErgebnis;
@@ -481,6 +578,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
     ergebnis = await verarbeite(elemente, {
       zustand: SEK_ZUSTAND, regeln, dokRegeln, ki: anthropicClient(env('ANTHROPIC_API_KEY')), kontext: ohneVorgaenge,
       deckelProStunde: nachlaufModus ? null : einst.deckelProStunde, jetzt, log,
+      ...(vb ? { kostenDeckelUsd: VORBRIEFING_DECKEL_USD } : {}),
       bankVersicherer: /@([a-z0-9.-]*\.)?(ksk-tut\.de|vbsdn\.de|volksbank[a-z-]*\.de|vr-?bank[a-z-]*\.de|dzprivatbank\.com|comdirect\.de|revolut\.com|ubs\.com|gothaer\.(de|info)|allianz\.de|alte-leipziger\.de|standardlife\.de|ruv\.de|helvetia\.(de|ch)|pantaenius\.(de|com)|vohrer\.de|swisslife\.de|nuernberger\.de|debeka\.de|ergo\.de|axa\.de|hdi\.de)$/i,
     });
 
@@ -494,6 +592,7 @@ async function sekretariatLauf(nachlaufModus: boolean): Promise<number> {
     } catch (e: any) { warn(`neuheiten: Fristen-Abgleich nicht möglich: ${String(e?.message ?? e).slice(0, 200)}`); }
   } finally { await closePool(); }
   const stand = ladeSpeicher(SEK_ZUSTAND);
+  if (vb) { vb.ergebnis = ergebnis; vb.textSicher = ohneMieter; }
   log(`sekretariat: ${JSON.stringify(ergebnis.zaehler)}; ${ergebnis.tokensEin}/${ergebnis.tokensAus} Tokens ≈ ${ergebnis.kostenUsd} $`);
 
   // Alarm bei Lücke in der Statuskette (und bei Nachzüglern aus dem Abgleich)
@@ -646,10 +745,57 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
   ].join('\n');
 }
 
+/** Stand der Vorlauf-Suche für das Briefing schreiben (atomar). */
+function schreibeVorbriefing(vb: VorbriefingSammler, beginn: number, abbruch?: string): VorbriefingStand {
+  const stand: VorbriefingStand = {
+    zeit: new Date().toISOString(),
+    dauerSek: Math.round((Date.now() - beginn) / 1000),
+    kostenUsd: vb.ergebnis?.kostenUsd ?? 0,
+    ...(abbruch ? { abbruch } : {}),
+    quellen: vb.quellen,
+    fragen: zuordnungsFragen(vb.ergebnis?.vorgaenge ?? [], vb.textSicher ?? ((t) => ohneZugangsdaten(t))),
+  };
+  fs.mkdirSync(path.dirname(VORBRIEFING_DATEI), { recursive: true });
+  const zwischen = `${VORBRIEFING_DATEI}.tmp-${process.pid}`;
+  fs.writeFileSync(zwischen, JSON.stringify(stand, null, 1));
+  fs.renameSync(zwischen, VORBRIEFING_DATEI);
+  return stand;
+}
+
+/**
+ * Vorlauf-Suche: derselbe Sekretariat-Lauf wie stündlich, dazu Gesendet und
+ * Yahoo alle Ordner, Kostendeckel 1,50 $, Zeitlimit 10 min. Das Ergebnis
+ * liest das Briefing aus VORBRIEFING_DATEI — es wartet nie auf diesen Lauf.
+ */
+async function vorbriefingLauf(): Promise<number> {
+  const beginn = Date.now();
+  const vb: VorbriefingSammler = { quellen: [] };
+  const uhr = setTimeout(() => {
+    schreibeVorbriefing(vb, beginn, 'Zeitlimit 10 min überschritten');
+    warn('vorbriefing: Zeitlimit 10 min überschritten — Abbruch');
+    process.exit(1);
+  }, VORBRIEFING_ZEITLIMIT_MS);
+  let code = 0;
+  let abbruch: string | undefined;
+  try {
+    if (sekEinstellungen().modus === 'ki' && env('ANTHROPIC_API_KEY')) code = await sekretariatLauf(false, vb);
+    else { abbruch = 'Sekretariat im Modus „regeln" — keine Zuordnungsfragen'; code = await lauf(); }
+  } catch (e: any) {
+    abbruch = `Fehler: ${String(e?.message ?? e).slice(0, 160)}`;
+    code = 1;
+  } finally { clearTimeout(uhr); }
+  if (vb.ergebnis?.kostendeckel) abbruch ??= `Kostendeckel ${VORBRIEFING_DECKEL_USD.toFixed(2)} $ erreicht – Rest im nächsten Lauf`;
+  const st = schreibeVorbriefing(vb, beginn, abbruch);
+  log(`vorbriefing: ${st.dauerSek} s, ${st.kostenUsd} $, Quellen ${st.quellen.filter((q) => q.ok).length}/${st.quellen.length} ok, `
+    + `${st.fragen.length} Zuordnungsfrage(n)${abbruch ? `, ${abbruch}` : ''}`);
+  return code;
+}
+
 async function main(): Promise<number> {
   const frei = sperre(SPERRE);
   if (!frei) { log('neuheiten: ein anderer Lauf ist aktiv — übersprungen'); return 0; }
   try {
+    if (vorbriefing) return await vorbriefingLauf();
     if (sekNachlauf || sekNurBericht) return await sekretariatLauf(true);
     if (!nur && !nachlauf && !probe && sekEinstellungen().modus === 'ki' && env('ANTHROPIC_API_KEY')) {
       return await sekretariatLauf(false);

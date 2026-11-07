@@ -11,7 +11,7 @@ import { listAccounts } from '../banking/index.js';
 import { listTrips } from '../travel/index.js';
 import { kopfblockLesen } from '../report-telegram/index.js';
 import { ccEinordnung, VERALTET_TAGE } from './abschnitte.js';
-import type { CcLoginStand, CcReport, FristErledigt, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag } from './abschnitte.js';
+import type { CcLoginStand, CcReport, FristErledigt, KontoStand, NkFrist, ReiseKurz, TradingStatus, TradingTag, VorbriefingStand } from './abschnitte.js';
 import { AKTION_TAGE, berichtTag, entwurfStand, istSendeAktion, mailZiele, offeneAktionen } from './aktionen.js';
 import type { MailKurz, MailZiel, OffeneAktionen } from './aktionen.js';
 
@@ -341,4 +341,15 @@ export function leseCcLoginStand(home = process.env.HOME || '/home/biko'): CcLog
     ablauf = fs.readFileSync(path.join(home, '.claude-oauth-token.expires'), 'utf-8').trim().split('\n')[0] || null;
   } catch { /* fehlt */ }
   return { tokenDa, rechte, ablauf };
+}
+
+/** Zustandsdatei der Vorlauf-Suche (Vorschlag 4a, 07.11.2026). */
+export const VORBRIEFING_DATEI = path.join(HOME, '.openclaw/workspace/artifacts/personal/neuheiten/vorbriefing.json');
+
+/** Stand der Vorlauf-Suche lesen; null, wenn es keinen gibt oder er unlesbar ist. */
+export function leseVorbriefing(datei = VORBRIEFING_DATEI): VorbriefingStand | null {
+  try {
+    const d = JSON.parse(fs.readFileSync(datei, 'utf-8'));
+    return d && typeof d.zeit === 'string' ? d as VorbriefingStand : null;
+  } catch { return null; }
 }

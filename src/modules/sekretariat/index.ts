@@ -27,3 +27,4 @@ export {
   loeseFreigabe, freigabeRueckmeldung,
 } from './kurz.js';
 export type { FreigabeErgebnis } from './kurz.js';
+export { zuordnungsFragen, VORBRIEFING_DECKEL_USD } from './vorbriefing.js';

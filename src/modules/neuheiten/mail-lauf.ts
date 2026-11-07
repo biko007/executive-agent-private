@@ -73,6 +73,8 @@ export interface MailLaufOptionen {
    * Thread-IDs. `bekannt` sagt, was das Sekretariat schon hat.
    */
   sekretariat?: { bekannt: (kennung: string) => boolean };
+  /** Yahoo: alle Ordner ausser Spam/Papierkorb/Entwürfe (Vorlauf-Suche 4a). */
+  yahooAlleOrdner?: boolean;
 }
 
 export interface MailLaufErgebnis {
@@ -115,6 +117,7 @@ function standardQuellen(o: MailLaufOptionen): Array<{ name: 'm365' | 'yahoo'; z
           host: env('YAHOO_IMAP_HOST') || 'imap.mail.yahoo.com',
           port: Number(env('YAHOO_IMAP_PORT') || 993),
           user: env('YAHOO_USER'), pass: env('YAHOO_APP_PASSWORD'),
+          alleOrdner: o.yahooAlleOrdner,
         }),
       });
     } else warn('neuheiten: Yahoo-Zugang fehlt — Yahoo übersprungen.');

@@ -419,3 +419,35 @@ describe('Fristen, Wartestatus, Netz-Ablage, Korrekturen (Chat-Review 27.10.2026
     expect(korrekturZeilen(ladeKorrekturen(z))).toEqual(['Korrektur des Owners: Zugangsdaten nie speichern.', 'Richtig bewertet (Beispiel): MG24 EWärmeG: Stadt + Handwerker + PDF ein Vorgang']);
   });
 });
+
+/* ── Vorlauf-Suche vor dem Briefing (Vorschlag 4a, 07.11.2026) ── */
+import { zuordnungsFragen, VORBRIEFING_DECKEL_USD } from '../index.js';
+
+describe('4a: Kostendeckel je Lauf und Zuordnungsfragen', () => {
+  test('Deckel erreicht → Rest wartet, kein Fehlversuch, Lauf meldet es', async () => {
+    const z = tmp();
+    const ki = fakeKi([bew()]);
+    const liste = ['m-1', 'm-2', 'm-3'].map((k, i) => mail({ kennung: k, messageId: `<${k}@x>`, titel: `Thema ${k}`, datum: `2026-10-2${i + 1}T08:00:00Z` }));
+    // je Aufruf 1000/200 Tokens = 0,006 $; Deckel 0,01 $ → nach zwei Aufrufen Schluss
+    const e = await verarbeite(liste, deps(z, ki, { kostenDeckelUsd: 0.01 }));
+    expect(ki.aufrufe.length).toBe(2);
+    expect(e.kostendeckel).toBe(true);
+    expect(e.zaehler.wartet).toBe(1);
+    const s = ladeSpeicher(z);
+    expect(s.elemente['m-3'].status).toBe('wartet');
+    expect(s.elemente['m-3'].versuche).toBeUndefined();
+  });
+  test('ohne Deckel unverändert', async () => {
+    const z = tmp();
+    const e = await verarbeite([mail({ kennung: 'm-9' })], deps(z, fakeKi([bew()])));
+    expect(e.kostendeckel).toBeUndefined();
+    expect(VORBRIEFING_DECKEL_USD).toBe(1.5);
+  });
+  test('Fragen nur für offene Vorgänge mit Freigabebedarf, mit Freigabewort', () => {
+    const v = (teil: any) => ({ kennung: 'v-1', kurz: 'MG24-EWaermeG-Stadt', titel: 't', objekt: 'MG24', status: 'offen', erstellt: '', aktualisiert: '',
+      frist: null, vorschlag: 'c', naechsterSchritt: 'Antwort mit Nachweis an die Stadt', begruendung: '', elemente: [], ...teil });
+    const f = zuordnungsFragen([v({}), v({ kennung: 'v-2', kurz: 'X', status: 'wartet' }), v({ kennung: 'v-3', kurz: 'Y', vorschlag: 'f' })] as any);
+    expect(f).toEqual([{ kurz: 'MG24-EWaermeG-Stadt', frage: 'Antwortentwurf – Antwort mit Nachweis an die Stadt', freigabe: 'Freigabe Vorgang MG24-EWaermeG-Stadt' }]);
+    expect(zuordnungsFragen([v({ kurz: 'Mieter Huber' })] as any, (t) => t.replace('Huber', '[Mieter]'))[0].kurz).toBe('Mieter [Mieter]');
+  });
+});
