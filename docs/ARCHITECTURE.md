@@ -144,6 +144,39 @@ Tages-Guard + CB-SET/CLEAR + SCA-Budget + Lookback-Cursor (`f596a99`) · E3 Week
 **Offene Tails:** ⏳ erster echter 3955-Live-Test (kommt natürlich) · `SKIPPED_ALREADY_SYNCED`
 toter Code-Zweig (bewusst out of scope) · CLAUDE.md-Banking-Abschnitt nachziehen.
 
+### Stand 07.11.2026: Montagslauf, Volksbank, Meldungen (Vorschläge 4d, 4e)
+
+Das Zielmodell oben (Mo 12:00 nur Knopf) gilt seit `70c4f05` (07.10.2026) nicht
+mehr: Montags 13:00 Berlin läuft ein echter Abgleich (`runWeeklySyncWithReport`,
+Taktgeber in `index.ts`), Ergebnis per Telegram an operativ.
+
+**Volksbank (BLZ 64390130, Atruvia) — `banken.ts` `abgleichNurUeberVerbinden`:**
+Die Bank verlangt bei jedem neuen Dialog eine App-Freigabe (3955 bei jedem
+Verbinden) und lehnt einen Abrufdialog ohne Freigabe mit 9050/9800/9340 ab
+(belegt 29.10. und 02.11.2026). Umsätze kommen nur über „Bank verbinden" im
+Dashboard: Abruf im offen gehaltenen Verbindungsdialog (`abruf-nach-verbinden.ts`).
+
+- **4e Montagserinnerung** (`erinnerung.ts`, `sync-engine.ts`): Im Montagslauf
+  (`run_phase = scheduled`) wird die Volksbank **nicht** per FinTS angestoßen.
+  Stattdessen Nachricht an operativ „🏦 Volksbank: Umsätze bitte über „Bank
+  verbinden" abrufen (App-Freigabe nötig). Letzter Abruf: … (Buchungstag bis …)"
+  + Link `?tab=banking-connect`. Ist der letzte Abruf über „Bank verbinden"
+  jünger als 3 Tage, entfällt die Nachricht. Laufzeile `trigger_source = timer`,
+  Status `REMINDER_SENT` bzw. `REMINDER_SKIPPED` mit Vermerk in `error_message`
+  (Spalte `status` ist VARCHAR ohne CHECK — keine Migration). Der Wochencheck
+  (Mo 13:45) führt sie als „Erinnerung", nicht als Fehler. KSK und
+  „Abgleich jetzt" (`manual`) bleiben unverändert.
+- **4d Meldungen** (`meldung.ts`): Fehlerzeilen nur mit Endziffern (`…0028`),
+  nie `account.iban` (C5). Fehlergrund mit Bankcode und Klartext je Institut in
+  `banking_sync_runs.error_message` und in beiden Telegram-Meldungen, bei
+  Abruffehlern Link „Bank verbinden". Kein Knopf „Abgleich jetzt" für Institute,
+  bei denen der Weg nachweislich nicht trägt.
+- **„Bank verbinden" als Lauf:** Der Abruf nach dem Verbinden steht als Zeile
+  `run_phase = trigger_source = verbinden` in `banking_sync_runs` (Status
+  `SUCCESS_FULL` oder `IMPORT_FAILED` mit Grund, `sca_required` leer — kein
+  Circuit-Breaker). Daraus liest die Montagserinnerung den letzten Abruf; ältere
+  Abrufe stehen im Audit `transactions.abruf_nach_verbinden`.
+
 ---
 
 ## 6. n8n / Automationen
