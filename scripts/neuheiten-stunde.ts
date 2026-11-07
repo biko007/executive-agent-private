@@ -41,7 +41,11 @@ import { nurLesendGraph, dataText } from '../src/modules/mail-register/lesend.js
 import { kurzId } from '../src/modules/mail-register/relevanz.js';
 import {
   anthropicClient, ladeKontext, mieterErsetzer, ohneZugangsdaten, ladeKorrekturen, korrekturZeilen, verarbeite, ladeSpeicher, stundenReportSekretariat, telegramZeilen,
-  vorgangsZeilen, vorgangsTabelle, freigabeZeilen, einzelTabelle, type Element, type LaufErgebnis,
+  vorgangsZeilen, vorgangsTabelle, einzelTabelle, type Element, type LaufErgebnis,
+  /* Eigener Name: `freigabeZeilen` aus neuheiten/bericht (Regel-Lauf) und aus
+     sekretariat/bericht (Vorgänge) waren beide unter demselben Namen
+     importiert — welcher galt, hing vom Lader ab (Befund 07.11.2026). */
+  freigabeZeilen as freigabeZeilenVorgaenge,
 } from '../src/modules/sekretariat/index.js';
 import { fristAbgleich, type GesendeteMail } from '../src/modules/sekretariat/fristabgleich.js';
 import { zuordnungsFragen, VORBRIEFING_DECKEL_USD } from '../src/modules/sekretariat/index.js';
@@ -712,7 +716,7 @@ function nachlaufKiReport(e: LaufErgebnis | null, s: ReturnType<typeof ladeSpeic
     '',
     ...vorgangsTabelle(zeilen),
     '',
-    ...freigabeZeilen(zeilen),
+    ...freigabeZeilenVorgaenge(zeilen),
     '',
     `+ ${kenntnis} Vorgänge nur zur Kenntnis (im Speicher, ohne Freigabe).`,
     '',
