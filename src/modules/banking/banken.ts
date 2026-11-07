@@ -13,6 +13,12 @@ export interface UnterstuetzteBank {
   fintsUrl: string;
   /** Hinweis an den Sidecar, welches TAN-Verfahren zu wählen ist; undefined = Automatik */
   tanVerfahren?: 'SecureGo';
+  /**
+   * Abgleich ohne App-Freigabe nicht möglich (Vorschlag 4d, 07.11.2026): Die
+   * Bank lehnt jeden neuen Abrufdialog ab, nur der Verbindungsdialog nach der
+   * Freigabe liefert Umsätze. Steuert Hinweis und Knopf in der Meldung.
+   */
+  abgleichNurUeberVerbinden?: boolean;
 }
 
 export const UNTERSTUETZTE_BANKEN: Record<string, UnterstuetzteBank> = {
@@ -28,6 +34,8 @@ export const UNTERSTUETZTE_BANKEN: Record<string, UnterstuetzteBank> = {
     name: 'Volksbank Schwarzwald-Donau-Neckar eG',
     fintsUrl: 'https://fints1.atruvia.de/cgi-bin/hbciservlet',
     tanVerfahren: 'SecureGo',
+    // Belegt 29.10. und 02.11.2026: 9050/9800/9340 beim Abrufdialog ohne Freigabe
+    abgleichNurUeberVerbinden: true,
   },
 };
 

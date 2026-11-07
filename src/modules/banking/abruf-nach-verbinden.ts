@@ -31,7 +31,7 @@
 import { query as dbQuery } from '../../shared/db/index.js';
 import * as audit from '../../shared/audit/index.js';
 import * as sidecar from './sidecar-client.js';
-import { uebernimmUmsaetze, updateAccountBalance, updateSessionState, speichereAuszuege } from './store.js';
+import { uebernimmUmsaetze, updateAccountBalance, updateSessionState, speichereAuszuege, insertSyncRun, updateSyncRun } from './store.js';
 import { nimmAbgleichSperre, gibAbgleichSperreFrei } from './sync-engine.js';
 
 export interface KontoErgebnis {
@@ -136,6 +136,32 @@ export async function kontenFuerHistorie(institutionId: number): Promise<string[
     .map(k => k.iban);
 }
 
+/**
+ * Den Abruf nach dem Verbinden zusätzlich als Lauf in `banking_sync_runs`
+ * führen (Vorschlag 4d, Owner-Freigabe 07.11.2026): Bis dahin stand er nur im
+ * Audit, Dashboard-Status und Wochencheck sahen für die Volksbank nie einen
+ * Erfolg. Auslöser `verbinden`; `sca_required` bleibt leer — die Freigabe hat
+ * der Owner selbst gegeben, das ist keine TAN-Pause für den Circuit-Breaker.
+ * Ein Fehler hier darf den Abruf nicht scheitern lassen (Umsätze sind schon
+ * geschrieben).
+ */
+export async function protokolliereLauf(institutionId: number, sessionId: number, ergebnisse: KontoErgebnis[]): Promise<void> {
+  try {
+    const id = await insertSyncRun({ institutionId, runPhase: 'verbinden', triggerSource: 'verbinden', triggerId: `session-${sessionId}` });
+    const ok = ergebnisse.filter(e => e.status === 'ok');
+    const fehl = ergebnisse.filter(e => e.status !== 'ok' && e.status !== 'neu');
+    await updateSyncRun(id, {
+      // Kein SUCCESS_PARTIAL (Spec §4, wie determineStatus): jeder Fehler → IMPORT_FAILED mit Grund
+      status: fehl.length === 0 ? 'SUCCESS_FULL' : 'IMPORT_FAILED',
+      accountsSynced: ok.length,
+      transactionsNew: ok.reduce((n, e) => n + e.neu, 0),
+      ...(fehl.length ? { errorMessage: `Abruf nach Verbinden: ${fehl.map(e => `${e.konto} ${e.status}`).join(', ')}`.slice(0, 300) } : {}),
+    });
+  } catch (e: any) {
+    console.warn('[banking] Lauf nach Verbinden nicht protokolliert:', String(e?.message || e).slice(0, 160));
+  }
+}
+
 export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institutionId: number): Promise<KontoErgebnis[] | null> {
   const sperre = await nimmAbgleichSperre();
   if (!sperre) {
@@ -225,6 +251,8 @@ export async function rufeUmsaetzeNachVerbindenAb(sessionId: number, institution
     for (const iban of neuGemeldet) {
       ergebnisse.push({ konto: kurz(iban), status: 'neu', umsaetze: 0, neu: 0, umgeschluesselt: 0, pdfVerknuepft: 0, saldenprobe: null });
     }
+
+    await protokolliereLauf(institutionId, sessionId, ergebnisse);
 
     await audit.log({
       module: 'banking', action: 'transactions.abruf_nach_verbinden',

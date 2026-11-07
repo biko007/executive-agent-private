@@ -1445,7 +1445,8 @@ export async function decideReuse(
 
 export async function insertSyncRun(params: {
   institutionId: number;
-  runPhase: 'scheduled' | 'event_resync' | 'manual';
+  /** `verbinden`: Umsatzabruf im Dialog von „Bank verbinden“ (seit 07.11.2026, Vorschlag 4d; Spalte ohne CHECK, keine Migration). */
+  runPhase: 'scheduled' | 'event_resync' | 'manual' | 'verbinden';
   triggerSource?: string;
   triggerId?: string;
 }): Promise<number> {

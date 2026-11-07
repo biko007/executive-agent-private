@@ -9,6 +9,7 @@ import type pg from 'pg';
 import * as audit from '../../shared/audit/index.js';
 import * as sidecar from './sidecar-client.js';
 import { SidecarError } from './sidecar-client.js';
+import { kontoKurz, fehlerGrund, abgleichFehlerText, BANK_VERBINDEN_LINK } from './meldung.js';
 import {
   listActiveSessions,
   listAccounts,
@@ -229,6 +230,8 @@ export async function startWeeklySync(options?: {
   /* Institute, die nach einem globalen Stopp gar nicht mehr kontaktiert wurden:
      ihr Status steht beim Ueberspringen fest und wird am Ende nicht ueberschrieben. */
   const festerStatus = new Map<number, ContractStatus>();
+  /** Fehlergrund je Institut → banking_sync_runs.error_message (Vorschlag 4d). */
+  const instFehler = new Map<number, string>();
   let totalAccountsSynced = 0;
   let totalTransactionsNew = 0;
 
@@ -348,6 +351,8 @@ export async function startWeeklySync(options?: {
       const stopVorher = globalStop;
 
       const syncFn = _deps?._sidecarSync ?? sidecar.sync;
+      /* Fehlergründe dieses Instituts für error_message (Vorschlag 4d). */
+      const instGruende: string[] = [];
       let accountIndex = 0;
       for (; accountIndex < accounts.length; accountIndex++) {
         const account = accounts[accountIndex];
@@ -393,7 +398,7 @@ export async function startWeeklySync(options?: {
           if (result?.needs_tan) {
             anomalies.push({
               type: 'needs_tan', session_id: session.id, account_id: account.id,
-              message: `Sync ${account.iban}: Bank verlangt TAN (${result.tan_type || '3955'}) — Lauf gestoppt`,
+              message: `Sync Konto ${kontoKurz(account.iban)}: Bank verlangt TAN (${result.tan_type || '3955'}) — Lauf gestoppt`,
               severity: 'warn',
             });
             accountResults.push({
@@ -460,7 +465,7 @@ export async function startWeeklySync(options?: {
           if (isTimeoutError(e)) {
             anomalies.push({
               type: 'sync_error', session_id: session.id, account_id: account.id,
-              message: `Timeout Account ${account.iban}: Bankstatus unklar, bitte App prüfen`,
+              message: `Timeout Konto ${kontoKurz(account.iban)}: Bankstatus unklar, bitte App prüfen`,
               severity: 'error',
             });
             accountResults.push({
@@ -471,10 +476,13 @@ export async function startWeeklySync(options?: {
             break; // §3.4: stop everything
           }
 
-          // Definitive error — only this account affected, loop continues
+          // Definitive error — only this account affected, loop continues.
+          // Meldung mit Bankcode und Klartext, nur Endziffern (C5, Vorschlag 4d).
+          const grund = fehlerGrund(e);
+          instGruende.push(grund.text);
           anomalies.push({
             type: 'sync_error', session_id: session.id, account_id: account.id,
-            message: `Sync-Fehler Account ${account.iban}: ${e.message}`,
+            message: `Sync-Fehler Konto ${kontoKurz(account.iban)}: ${grund.text}`,
             severity: 'error',
           });
           accountResults.push({
@@ -499,6 +507,12 @@ export async function startWeeklySync(options?: {
         synced: instAccountsSynced, neu: instTransactionsNew,
         stop: globalStop !== stopVorher ? globalStop : false,
       });
+      if (instGruende.length) {
+        instFehler.set(institution.id, abgleichFehlerText({
+          institut: institution.name, blz: institution.blz, gruende: instGruende,
+          fehlgeschlagen: instGruende.length, konten: accounts.length,
+        }));
+      }
     }
 
     // Determine final status
@@ -574,6 +588,7 @@ export async function startWeeklySync(options?: {
         alertDelivered,
         accountsSynced: s.synced,
         transactionsNew: s.neu,
+        ...(s.status !== 'SUCCESS_FULL' && instFehler.has(instId) ? { errorMessage: instFehler.get(instId) } : {}),
       });
     }
 
@@ -691,7 +706,8 @@ export async function runWeeklySyncWithReport(options?: {
 
   const accountsSynced = rows.reduce((sum, r) => sum + Number(r.accounts_synced ?? 0), 0);
   const transactionsNew = rows.reduce((sum, r) => sum + Number(r.transactions_new ?? 0), 0);
-  const errorMessage = rows.map(r => r.error_message).find(m => m) ?? null;
+  // Alle Institute mit Grund, nicht nur das erste (Vorschlag 4d)
+  const errorMessage = [...new Set(rows.map(r => r.error_message).filter((m): m is string => !!m))].join('; ') || null;
 
   let telegram: string;
   if (result.status === 'SUCCESS_FULL') {
@@ -704,6 +720,10 @@ export async function runWeeklySyncWithReport(options?: {
     if (erklaerung) teile.push(erklaerung);
     if (errorMessage) teile.push(`Grund: ${errorMessage}`);
     telegram = teile.join(' ');
+    /* Handlungsweg wie bei re_auth_required (Vorschlag 4d, 07.11.2026). Einen
+       Knopf „Abgleich jetzt" gibt es bewusst nicht: Für die Volksbank geht der
+       Weg nachweislich nicht (abgleichNurUeberVerbinden). */
+    if (result.status === 'IMPORT_FAILED') telegram += `\n\u2192 Bank verbinden: ${BANK_VERBINDEN_LINK}`;
   }
 
   // Nach einem erfolgreichen Abgleich die Buchungsvorschlaege nachziehen.
@@ -1176,10 +1196,13 @@ function formatAnomalyReport(anomalies: Anomaly[]): string {
   }
 
   // Add re-auth link if any session needs it
-  const needsReAuth = anomalies.some(a => a.type === 're_auth_required' || a.type === 'needs_tan' || a.type === 'session_expiry');
+  /* Seit 07.11.2026 (Vorschlag 4d) auch bei Abruffehlern: Der Weg, der dann
+     funktioniert, ist „Bank verbinden" im Dashboard. */
+  const needsReAuth = anomalies.some(a => a.type === 're_auth_required' || a.type === 'needs_tan'
+    || a.type === 'session_expiry' || a.type === 'sync_error');
   if (needsReAuth) {
     lines.push('');
-    lines.push('\u2192 https://app.bikobickel.de/dashboard/?tab=banking-connect');
+    lines.push(`\u2192 Bank verbinden: ${BANK_VERBINDEN_LINK}`);
   }
 
   return lines.join('\n');
