@@ -3871,10 +3871,14 @@ export default function (api: any) {
           triggerSource: 'scheduler',
           triggerId: today,
         });
-        api.logger.info(`[banking-weekly] Montagsabgleich beendet: ${result.status}`);
+        api.logger.info(`[banking-weekly] Montagsabgleich beendet: ${result.status}`
+          + (result.erinnerungen.length ? `, ${result.erinnerungen.length} Erinnerung(en) statt Abgleich` : ''));
 
         const chatId = getCachedTelegramTarget('operativ');
         if (chatId) await sendTelegram(chatId, result.telegram);
+        /* Vorschlag 4e: Institute ohne Abgleich (Volksbank) bekommen zur selben
+           Zeit eine eigene Erinnerung mit Link „Bank verbinden“. */
+        for (const text of result.erinnerungen) if (chatId) await sendTelegram(chatId, text);
       } catch (e: any) {
         api.logger.error(`[banking-weekly] ${e.message}`);
         const chatId = getCachedTelegramTarget('operativ');

@@ -35,7 +35,7 @@ import path from 'node:path';
 import { query } from '../src/shared/db/index.js';
 import {
   anfangswert, ausgebliebeneSerien, euro, faelligeAbschlaege, gegenparteiAnzeige,
-  kontoKurz, offeneAbschlaege, saldenUrteil, zweckAnzeige, zweckErlaubt, type Umsatz,
+  kontoKurz, offeneAbschlaege, saldenUrteil, zweckAnzeige, zweckErlaubt, erinnerungsUrteil, type Umsatz,
 } from '../src/modules/banking-wochencheck/logik.js';
 
 const LAUFZEIT = Date.now();
@@ -124,7 +124,7 @@ async function main() {
      ausgefallener Montagslauf mit dem Ergebnis der Vorwoche „ok". */
   const laeufe = (await query(
     `SELECT DISTINCT ON (institution_id) institution_id, status, sca_required, accounts_synced,
-            transactions_new, started_at, finished_at
+            transactions_new, started_at, finished_at, error_message
        FROM banking_sync_runs
       WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin')
       ORDER BY institution_id, (status = 'RUNNING') ASC, started_at DESC`)).rows;
@@ -132,7 +132,7 @@ async function main() {
     `SELECT institution_id, count(*)::int AS n FROM banking_sync_runs
       WHERE status = 'RUNNING' AND started_at < now() - interval '1 hour' GROUP BY 1`)).rows;
 
-  type Abgleich = { name: string; urteil: 'ok' | 'fehlgeschlagen' | 'TAN-Pause' | 'läuft noch' | 'kein Lauf' | 'nur PDF' | 'nicht verbunden'; text: string };
+  type Abgleich = { name: string; urteil: 'ok' | 'fehlgeschlagen' | 'TAN-Pause' | 'läuft noch' | 'kein Lauf' | 'nur PDF' | 'nicht verbunden' | 'Erinnerung'; text: string };
   const abgleich: Abgleich[] = institute.map((i: any) => {
     if (!/^https?:\/\//.test(i.fints_url || '')) return { name: i.name, urteil: 'nur PDF', text: 'kein FinTS-Zugang, Umsätze nur per PDF-Import' };
     /* Adresse hinterlegt, aber (noch) keine gültige Sitzung — etwa nach einem
@@ -141,6 +141,9 @@ async function main() {
     if (i.sync_paused_status) return { name: i.name, urteil: 'TAN-Pause', text: `pausiert seit ${berlinZeit(i.sync_paused_since)} (${i.sync_paused_status})` };
     const l = laeufe.find((r: any) => Number(r.institution_id) === Number(i.id));
     if (!l) return { name: i.name, urteil: 'kein Lauf', text: 'heute kein Abgleich protokolliert' };
+    /* Volksbank: Montagserinnerung statt Abgleich (Vorschlag 4e) — kein Fehler. */
+    const erinnerung = erinnerungsUrteil(l.status, l.error_message);
+    if (erinnerung) return { name: i.name, ...erinnerung };
     if (l.status === 'RUNNING') return { name: i.name, urteil: 'läuft noch', text: `seit ${berlinZeit(l.started_at)} nicht abgeschlossen — wartet vermutlich auf eine TAN` };
     if (l.status === 'TAN_REQUIRED' || l.status === 'AUTO_PAUSED_PENDING_TAN') return { name: i.name, urteil: 'TAN-Pause', text: `${berlinZeit(l.started_at)}: Bank verlangt TAN` };
     if (l.status !== 'SUCCESS_FULL') return { name: i.name, urteil: 'fehlgeschlagen', text: `${berlinZeit(l.started_at)}: ${l.status}` };

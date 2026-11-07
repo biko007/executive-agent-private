@@ -39,7 +39,9 @@ describe('Meldungsbausteine', () => {
   });
 });
 
-describe('Montagslauf mit 9340 (Trockenlauf der Meldung)', () => {
+/* Seit 4e (07.11.2026) stößt der Montagslauf die Volksbank nicht mehr an; der
+   Fehlerweg gilt weiter für „Abgleich jetzt“ (manual). */
+describe('Abgleich jetzt mit 9340 (Trockenlauf der Meldung)', () => {
   test('Telegram ohne volle IBAN, mit Grund und Link; error_message gefüllt', async () => {
     const { upsertInstitution, createSession, upsertAccount } = await import('../store.js');
     const { query } = await import('../../../shared/db/index.js');
@@ -58,7 +60,7 @@ describe('Montagslauf mit 9340 (Trockenlauf der Meldung)', () => {
       _sidecarHealth: async () => ({ status: 'ok' }),
       _sidecarSync: async () => { throw fehler9340(); },
     } as any);
-    const r = await runWeeklySyncWithReport({ runPhase: 'scheduled' });
+    const r = await runWeeklySyncWithReport({ runPhase: 'manual' });
     await query(`UPDATE banking_sessions SET pending_challenge_type = NULL WHERE pending_challenge_type = 'test_disabled'`);
 
     expect(r.status).toBe('IMPORT_FAILED');

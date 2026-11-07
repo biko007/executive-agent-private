@@ -9,7 +9,11 @@ import type pg from 'pg';
 import * as audit from '../../shared/audit/index.js';
 import * as sidecar from './sidecar-client.js';
 import { SidecarError } from './sidecar-client.js';
-import { kontoKurz, fehlerGrund, abgleichFehlerText, BANK_VERBINDEN_LINK } from './meldung.js';
+import { kontoKurz, fehlerGrund, abgleichFehlerText, abgleichNurUeberVerbinden, BANK_VERBINDEN_LINK } from './meldung.js';
+import {
+  abrufFrisch, erinnerungText, erinnerungVermerk, STATUS_ERINNERUNG, STATUS_ERINNERUNG_UNTERDRUECKT, type AbrufStand,
+} from './erinnerung.js';
+import { bankKurzname } from './banken.js';
 import {
   listActiveSessions,
   listAccounts,
@@ -116,7 +120,9 @@ export type ContractStatus =
   | 'SUCCESS_FULL' | 'TAN_REQUIRED'
   | 'BANK_TIMEOUT_UNKNOWN' | 'IMPORT_FAILED'
   | 'SKIPPED_ALREADY_SYNCED' | 'SKIPPED_ALREADY_RUNNING'
-  | 'AUTO_PAUSED_PENDING_TAN';
+  | 'AUTO_PAUSED_PENDING_TAN'
+  /* Montagserinnerung statt Abgleich (Vorschlag 4e, 07.11.2026): nur Laufzeile, kein Gesamtstatus. */
+  | 'REMINDER_SENT' | 'REMINDER_SKIPPED';
 
 export interface DailySyncResult {
   run_id: string;
@@ -125,6 +131,8 @@ export interface DailySyncResult {
   alert_delivered: boolean;
   safe_to_schedule_resync: boolean;
   accounts: AccountSyncResult[];
+  /** Montagserinnerungen statt Abgleich (Vorschlag 4e): fertige Texte für den Owner. */
+  erinnerungen?: string[];
 }
 
 /** Internal anomaly type for Telegram alert formatting — not part of API contract. */
@@ -193,6 +201,30 @@ function determineStatus(
 
 // ── Weekly sync (E3: ex-dailySync, machinery unchanged) ──────────────────────
 
+/**
+ * Letzter erfolgreicher Abruf über „Bank verbinden“ (Lauf mit run_phase
+ * `verbinden` seit 4d, sonst der Audit-Eintrag des Abrufs) und jüngster
+ * Buchungstag der aktiven Konten — für die Montagserinnerung (4e).
+ */
+async function abrufStand(institutionId: number): Promise<AbrufStand> {
+  const lauf = await dbQuery<{ t: Date | string | null }>(
+    `SELECT max(finished_at) AS t FROM banking_sync_runs
+      WHERE institution_id = $1 AND run_phase = 'verbinden' AND status = 'SUCCESS_FULL'`, [institutionId]);
+  const audit = await dbQuery<{ t: Date | string | null }>(
+    `SELECT max(ts) AS t FROM audit_log
+      WHERE action = 'transactions.abruf_nach_verbinden' AND (after_jsonb->>'institution_id')::int = $1`, [institutionId]);
+  const buchung = await dbQuery<{ d: Date | string | null }>(
+    `SELECT max(t.booking_date) AS d FROM banking_transactions t JOIN banking_accounts a ON a.id = t.account_id
+      WHERE a.institution_id = $1 AND a.status = 'active' AND t.duplicate_of IS NULL`, [institutionId]);
+  const iso = (v: Date | string | null | undefined) => (v ? new Date(v).toISOString() : null);
+  const kandidaten = [iso(lauf.rows[0]?.t), iso(audit.rows[0]?.t)].filter((x): x is string => !!x).sort();
+  const d = buchung.rows[0]?.d;
+  return {
+    letzterAbruf: kandidaten.length ? kandidaten[kandidaten.length - 1] : null,
+    buchungstagBis: d ? (d instanceof Date ? new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10) : String(d).slice(0, 10)) : null,
+  };
+}
+
 export async function startWeeklySync(options?: {
   runPhase?: 'scheduled' | 'manual';
   triggerSource?: string;
@@ -232,6 +264,8 @@ export async function startWeeklySync(options?: {
   const festerStatus = new Map<number, ContractStatus>();
   /** Fehlergrund je Institut → banking_sync_runs.error_message (Vorschlag 4d). */
   const instFehler = new Map<number, string>();
+  /** Montagserinnerungen (Vorschlag 4e) — gesendet vom Aufrufer im bestehenden Meldungsweg. */
+  const erinnerungen: string[] = [];
   let totalAccountsSynced = 0;
   let totalTransactionsNew = 0;
 
@@ -312,6 +346,24 @@ export async function startWeeklySync(options?: {
       const productId = sessDbRows[0].product_id;
 
       processedInstitutions.add(institution.id);
+
+      /* Vorschlag 4e (Owner-Freigabe 07.11.2026): Institute, deren Abgleich nur
+         über „Bank verbinden“ geht (Volksbank), im Montagslauf NICHT per FinTS
+         anstoßen — kein neuer Dialog, kein 9340. Stattdessen Erinnerung, außer
+         der letzte Abruf über „Bank verbinden“ ist jünger als 3 Tage. Der Lauf
+         wird protokolliert (trigger_source timer), damit der Wochencheck keinen
+         Fehler meldet. „Abgleich jetzt“ (manual) bleibt unverändert. */
+      if (runPhase === 'scheduled' && abgleichNurUeberVerbinden(institution.blz)) {
+        const stand = await abrufStand(institution.id);
+        const frisch = abrufFrisch(stand, new Date());
+        const dbRunId = await insertSyncRun({ institutionId: institution.id, runPhase, triggerSource: 'timer', triggerId: options?.triggerId });
+        syncRunIds.set(institution.id, dbRunId);
+        const status: ContractStatus = frisch ? STATUS_ERINNERUNG_UNTERDRUECKT : STATUS_ERINNERUNG;
+        festerStatus.set(institution.id, status);
+        await updateSyncRun(dbRunId, { status, accountsSynced: 0, transactionsNew: 0, errorMessage: erinnerungVermerk(!frisch, stand) });
+        if (!frisch) erinnerungen.push(erinnerungText(bankKurzname(institution.blz, institution.name), stand));
+        continue;
+      }
 
       // §3.3 Circuit-breaker guard
       const pauseStatus = await getInstitutionSyncPauseStatus(institution.id);
@@ -614,6 +666,7 @@ export async function startWeeklySync(options?: {
       alert_delivered: alertDelivered,
       safe_to_schedule_resync: finalStatus === 'TAN_REQUIRED' && alertDelivered,
       accounts: accountResults,
+      erinnerungen,
     };
   } catch (e: any) {
     // Update any created sync runs with error
@@ -648,6 +701,8 @@ export interface WeeklySyncReport {
   transactionsNew: number;
   /** Fehlergrund aus `banking_sync_runs.error_message`, falls vorhanden. */
   errorMessage: string | null;
+  /** Montagserinnerungen (Vorschlag 4e), je eine eigene Nachricht an den Owner. */
+  erinnerungen: string[];
 }
 
 /** Erklaert einen Vertragsstatus in einem Satz, ohne Fachjargon. */
@@ -699,6 +754,7 @@ export async function runWeeklySyncWithReport(options?: {
        FROM banking_sync_runs
       WHERE run_phase = $1
         AND started_at >= now() - interval '2 hours'
+        AND status NOT IN ('REMINDER_SENT', 'REMINDER_SKIPPED')
       ORDER BY id DESC
       LIMIT 10`,
     [options?.runPhase ?? 'scheduled'],
@@ -757,6 +813,7 @@ export async function runWeeklySyncWithReport(options?: {
     accountsSynced,
     transactionsNew,
     errorMessage,
+    erinnerungen: result.erinnerungen ?? [],
   };
 }
 

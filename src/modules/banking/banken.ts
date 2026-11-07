@@ -68,6 +68,11 @@ export function bereinigeKennung(kennung: unknown): string {
     Einträge die Verbindungsdaten festhalten und unverändert bleiben sollen. */
 const KURZNAMEN: Record<string, string> = { '64350070': 'KSK', '64390130': 'Volksbank' };
 
+/** Kurzname eines Instituts für Owner-Meldungen (Montagserinnerung 4e). */
+export function bankKurzname(blz: string | null | undefined, institutName?: string | null): string {
+  return KURZNAMEN[String(blz ?? '').trim()] ?? (String(institutName || 'Bank').trim().split(/\s+/)[0] || 'Bank');
+}
+
 /**
  * Bezeichnung eines neu gemeldeten Kontos (23.10.2026). Der Sidecar meldet
  * als Namen die IBAN; so standen volle IBANs als Kontoname im Dashboard und

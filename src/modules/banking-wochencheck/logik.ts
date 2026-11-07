@@ -183,3 +183,16 @@ export function saldenUrteil(jetzt: number, vorher: number | undefined, erwartet
   if (Math.abs(jetzt - vorher) < 0.01) return 'stimmt';
   return `verschoben um ${euro(jetzt - vorher)} seit dem letzten Check`;
 }
+
+/**
+ * Laufzeile der Montagserinnerung (Vorschlag 4e, 07.11.2026): Für die Volksbank
+ * gibt es montags keinen Abgleich mehr, sondern eine Erinnerung — der
+ * Wochencheck führt sie als „Erinnerung", nicht als Fehler. Liefert null für
+ * jeden anderen Status.
+ */
+export function erinnerungsUrteil(status: string | null | undefined, vermerk: string | null | undefined): { urteil: 'Erinnerung'; text: string } | null {
+  if (status !== 'REMINDER_SENT' && status !== 'REMINDER_SKIPPED') return null;
+  const text = String(vermerk || '').trim()
+    || (status === 'REMINDER_SENT' ? 'Erinnerung gesendet' : 'Erinnerung unterdrückt (frischer Abruf)');
+  return { urteil: 'Erinnerung', text: `${text} — Abgleich nur über „Bank verbinden“` };
+}
