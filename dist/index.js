@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { execSync } from "node:child_process";
-import SunCalc from "suncalc";
 import { createTrip, listTrips, fetchWeatherBriefing, analyzeMailForBooking, formatBookingMessage, formatMeetingMessage, isMeeting, registerTravelCommands, initTravelCommands, addBookingAsSegment, handleSegmentDeletionCallback, BOOKING_EMOJI, } from "./src/modules/travel/index.js";
 import { registerAssetsCommands } from "./src/modules/assets/index.js";
 import { registerAssetsHttpRoutes } from "./src/modules/assets/routes.js";
@@ -35,8 +34,8 @@ import * as audit from "./src/shared/audit/index.js";
 import { runMigrations, query as dbQuery } from "./src/shared/db/index.js";
 import { insertLocationEvent } from "./src/modules/location/store.js";
 import { sleep, fetchWithTimeout, berlinDate, targetsWithoutOrigin, } from "./src/shared/utils/index.js";
-import { loadSettings, getLocationSettings, DEFAULT_LOCATION, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
-import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt, leseCcLoginStand, ccLoginZeile, yahooPostfachStand, postfaecherVereint, zuordnungsAbschnitt, leseVorbriefing, } from "./src/modules/briefing/index.js";
+import { loadSettings, getLocationSettings, setSetting, refreshSettingsCache, startSettingsCacheRefresh, ABEND_BRIEFING_STANDARD, } from "./src/shared/settings/index.js";
+import { ausfallZeile, alsTelegramHtml, ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt, gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE, naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet, astroOrtszeit, ortszeitHinweis, speichereZeitzone, leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen, registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt, leseCcLoginStand, ccLoginZeile, yahooPostfachStand, postfaecherVereint, zuordnungsAbschnitt, leseVorbriefing, } from "./src/modules/briefing/index.js";
 import { ImapFlow } from "imapflow";
 import { graphGet, graphPost, graphDelete, } from "./src/shared/m365/index.js";
 import { istUnsererRueckruf, parseCallbackEvent } from './src/shared/telegram-callback/index.js';
@@ -71,59 +70,11 @@ const MAIL_BOOKING_SCAN_ENABLED = (process.env.MAIL_BOOKING_SCAN_ENABLED ?? 'tru
    Zaehlerstaende verlieren. Abschalten ohne Deployment:
    METER_IMPORT_ENABLED=false in ~/.config/openclaw/env plus Neustart. */
 const METER_IMPORT_ENABLED = (process.env.METER_IMPORT_ENABLED ?? 'true').toLowerCase() !== 'false';
-function getAstroData(date, location = DEFAULT_LOCATION) {
-    const tz = 'Europe/Berlin';
-    const fmt = (d) => new Intl.DateTimeFormat('de-DE', {
-        timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
-    }).format(d);
-    const sun = SunCalc.getTimes(date, location.lat, location.lon);
-    const moonTimes = SunCalc.getMoonTimes(date, location.lat, location.lon);
-    const moon = SunCalc.getMoonIllumination(date);
-    const phase = moon.phase;
-    let moonIcon;
-    let moonPhase;
-    if (phase < 0.03 || phase >= 0.97) {
-        moonIcon = '🌑';
-        moonPhase = 'Neumond';
-    }
-    else if (phase < 0.22) {
-        moonIcon = '🌒';
-        moonPhase = 'Zunehmende Sichel';
-    }
-    else if (phase < 0.28) {
-        moonIcon = '🌓';
-        moonPhase = 'Erstes Viertel';
-    }
-    else if (phase < 0.47) {
-        moonIcon = '🌔';
-        moonPhase = 'Zunehmender Mond';
-    }
-    else if (phase < 0.53) {
-        moonIcon = '🌕';
-        moonPhase = 'Vollmond';
-    }
-    else if (phase < 0.72) {
-        moonIcon = '🌖';
-        moonPhase = 'Abnehmender Mond';
-    }
-    else if (phase < 0.78) {
-        moonIcon = '🌗';
-        moonPhase = 'Letztes Viertel';
-    }
-    else {
-        moonIcon = '🌘';
-        moonPhase = 'Abnehmende Sichel';
-    }
-    return {
-        sunrise: fmt(sun.sunrise),
-        sunset: fmt(sun.sunset),
-        moonrise: moonTimes.rise ? fmt(moonTimes.rise) : null,
-        moonset: moonTimes.set ? fmt(moonTimes.set) : null,
-        moonIcon,
-        moonPhase,
-        illumination: Math.round(moon.fraction * 100),
-    };
-}
+/* ---------------- Settings + Helpers ---------------- */
+// Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
+// berlinDate → src/shared/utils
+/* Sonne und Mond → src/modules/briefing/ortszeit.ts (astroOrtszeit); seit
+   09.11.2026 in der Ortszeit des Briefing-Orts statt fest Europe/Berlin. */
 /* ---------------- Plugin ---------------- */
 export default function (api) {
     // ── Global Error Safety Net — register FIRST, before any async work ──
@@ -1584,6 +1535,8 @@ export default function (api) {
             } })(),
         });
     }
+    /** Ortszeitzone des zuletzt erzeugten Morgenbriefings (für die Briefing-API). */
+    let letzteBriefingZone = null;
     async function generateBriefingText() {
         const tz = 'Europe/Berlin';
         const now = new Date();
@@ -1604,9 +1557,16 @@ export default function (api) {
             : locAgeMs > 6 * 3600_000
                 ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
                 : loc.label;
-        const astro = getAstroData(now, loc);
+        /* Wetter vorziehen: die Antwort liefert die Ortszeitzone für Sonne/Mond
+           (09.11.2026). Fällt Open-Meteo aus, gilt wie bisher Europe/Berlin. */
+        const weatherPromise = fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null);
+        const wetterVorab = await weatherPromise;
+        const ortsZone = wetterVorab?.zeitzone
+            ? { zeitzone: wetterVorab.zeitzone, utcOffsetMin: wetterVorab.utcOffsetMin ?? 0 } : null;
+        letzteBriefingZone = ortsZone;
+        const astro = astroOrtszeit(now, loc.lat, loc.lon, ortsZone);
         parts.push(`${RUBRIK}📅 ${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr`);
-        parts.push(`📍 ${locLabel}`);
+        parts.push(`📍 ${locLabel}${ortszeitHinweis(ortsZone, now)}`);
         parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
         parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
         const moonTimeParts = [];
@@ -1648,7 +1608,7 @@ export default function (api) {
            hat nicht geantwortet. */
         const perSource = 10;
         const [weatherResult, inboxResult, calendarResult] = await Promise.all([
-            fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null),
+            weatherPromise,
             Promise.all([
                 m365Enabled ? m365Unread(perSource).catch(() => null) : [],
                 yahooEnabled ? yahooUnread(perSource).catch(() => null) : [],
@@ -3338,7 +3298,17 @@ export default function (api) {
             let fehler = null;
             try {
                 if (art === 'morgen') {
+                    letzteBriefingZone = null;
                     text = await mitZeitlimit(morgenErzeugen());
+                    const zone = letzteBriefingZone;
+                    if (zone) {
+                        try {
+                            speichereZeitzone(art, datum, zone);
+                        }
+                        catch (e) {
+                            api.logger.warn(`[executive-agent] Briefing-Zeitzone nicht gespeichert: ${e.message}`);
+                        }
+                    }
                 }
                 else {
                     const zeilen = await mitZeitlimit(generateAbendZeilen());

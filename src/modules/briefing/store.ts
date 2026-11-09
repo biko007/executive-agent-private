@@ -5,7 +5,11 @@
  * ein Briefing heute schon zugestellt ist — das überlebt einen Neustart des
  * Gateways, die frühere Variable `lastBriefingDate` tat das nicht.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { query as dbQuery } from '../../shared/db/index.js';
+import type { OrtsZeitzone } from './ortszeit.js';
 
 export type BriefingArt = 'morgen' | 'abend';
 export type BriefingStatus = 'erzeugt' | 'gesendet' | 'fehler';
@@ -23,6 +27,39 @@ export interface BriefingEintrag {
   fehlerGemeldet: boolean;
   erzeugtAt: string;
   gesendetAt: string | null;
+  /** Ortszeitzone des Briefings (IANA); fehlt bei älteren Briefings → Dashboard nimmt Europe/Berlin */
+  zeitzone?: string;
+  utcOffsetMin?: number;
+}
+
+/* Zeitzone je Briefing (09.11.2026). Die Tabelle `briefings` hat kein
+   JSON-Feld, eine neue Spalte wäre eine Migration (Rote Zone). Deshalb eine
+   kleine Datei neben den übrigen Artefakten, Schlüssel „art|datum“. Ältere
+   Briefings bleiben ohne Eintrag. */
+export const ZEITZONEN_DATEI = path.join(os.homedir(), '.openclaw', 'workspace', 'artifacts', 'personal', 'briefing', 'zeitzonen.json');
+const ZEITZONEN_MAX = 120;
+
+export function leseZeitzonen(datei = ZEITZONEN_DATEI): Record<string, OrtsZeitzone> {
+  try { const j = JSON.parse(fs.readFileSync(datei, 'utf-8')); return j && typeof j === 'object' ? j : {}; } catch { return {}; }
+}
+
+export function speichereZeitzone(art: BriefingArt, datum: string, z: OrtsZeitzone, datei = ZEITZONEN_DATEI): void {
+  const alle = leseZeitzonen(datei);
+  alle[`${art}|${datum}`] = { zeitzone: z.zeitzone, utcOffsetMin: Math.round(z.utcOffsetMin) };
+  const schluessel = Object.keys(alle).sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]));
+  for (const k of schluessel.slice(0, Math.max(0, schluessel.length - ZEITZONEN_MAX))) delete alle[k];
+  fs.mkdirSync(path.dirname(datei), { recursive: true });
+  const tmp = `${datei}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(alle, null, 1));
+  fs.renameSync(tmp, datei);
+}
+
+/** Felder `zeitzone`/`utcOffsetMin` nur setzen, wenn ein Eintrag vorliegt. */
+export function mitZeitzone(eintraege: BriefingEintrag[], zonen: Record<string, OrtsZeitzone>): BriefingEintrag[] {
+  return eintraege.map((e) => {
+    const z = zonen[`${e.art}|${e.datum}`];
+    return z?.zeitzone ? { ...e, zeitzone: z.zeitzone, utcOffsetMin: Math.round(Number(z.utcOffsetMin) || 0) } : e;
+  });
 }
 
 function abbilden(r: any): BriefingEintrag {
@@ -98,7 +135,7 @@ export async function listeBriefings(tage = 7): Promise<BriefingEintrag[]> {
     `SELECT ${SPALTEN} FROM briefings
       WHERE datum > CURRENT_DATE - $1::int
       ORDER BY datum DESC, art DESC`, [n]);
-  return rows.map(abbilden);
+  return mitZeitzone(rows.map(abbilden), leseZeitzonen());
 }
 
 /** Ist das Briefing dieser Art für den Tag zugestellt? */
