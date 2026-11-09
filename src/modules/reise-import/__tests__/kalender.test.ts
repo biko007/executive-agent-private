@@ -61,7 +61,8 @@ describe('Zeitzonen', () => {
   test('Ortszeit → UTC, auch über Mitternacht und Winterzeit', () => {
     expect(ortszeitNachUtc('2026-11-07', '13:20', 'Europe/Zurich')).toBe('2026-11-07T12:20:00Z');
     expect(ortszeitNachUtc('2026-11-07', '16:15', 'America/Toronto')).toBe('2026-11-07T21:15:00Z');
-    expect(ortszeitNachUtc('2026-11-07', '22:14', 'America/Winnipeg')).toBe('2026-11-08T04:14:00Z');
+    // Manitoba ab 01.11.2026 dauerhaft UTC−5 (tzdata 2026e); vorher hier fälschlich −6 erwartet
+    expect(ortszeitNachUtc('2026-11-07', '22:14', 'America/Winnipeg')).toBe('2026-11-08T03:14:00Z');
     expect(ortszeitNachUtc('2026-11-24', '19:30', 'America/Los_Angeles')).toBe('2026-11-25T03:30:00Z');
     expect(ortszeitNachUtc('2026-07-01', '12:00', 'Europe/Zurich')).toBe('2026-07-01T10:00:00Z');
   });

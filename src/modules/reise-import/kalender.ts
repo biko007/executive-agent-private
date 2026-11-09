@@ -22,6 +22,7 @@
  * Reine Funktionen bis auf `kalenderAbgleich`, der über die Schnittstelle
  * `KalenderApi` schreibt (Graph im Skript, Attrappe im Test).
  */
+import { tzdataVersatzMin } from '../../shared/utils/tzif.js';
 import crypto from 'node:crypto';
 import type { Buchung, Flug, Frist, Umstieg } from './types.js';
 
@@ -108,7 +109,11 @@ export interface IstTermin {
 /* ── Zeitzonen ──────────────────────────────────────────────────────────── */
 
 /** Versatz der Zone zum Zeitpunkt `utcMs` in Minuten (lokal − UTC). */
-function versatzMin(zone: string, utcMs: number): number {
+/* Abstand zuerst aus dem System-tzdata (09.11.2026): ICU-tz 2026a der
+   Laufzeit kennt Manitobas Dauer-Sommerzeit (UTC−5 ab 01.11.2026) nicht. */
+export function versatzMin(zone: string, utcMs: number): number {
+  const sys = tzdataVersatzMin(zone, utcMs);
+  if (sys !== null) return sys;
   const t = new Intl.DateTimeFormat('en-US', {
     timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -130,10 +135,9 @@ export function ortszeitNachUtc(datum: string, uhr: string, zone: string): strin
 
 /** ISO UTC → „07.11. 13:20" in der Zone. */
 export function ortszeitText(utcIso: string, zone: string): string {
-  const t = new Intl.DateTimeFormat('de-DE', {
-    timeZone: zone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).format(new Date(utcIso));
-  return t.replace(',', '');
+  const ms = Date.parse(utcIso);
+  const l = new Date(ms + versatzMin(zone, ms) * 60_000).toISOString();
+  return `${l.slice(8, 10)}.${l.slice(5, 7)}. ${l.slice(11, 16)}`;
 }
 
 export function zoneVonFlughafen(iata: string | undefined): string | null {
