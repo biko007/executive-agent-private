@@ -3,7 +3,6 @@
  */
 import { fetchWithTimeout } from '../../shared/utils/index.js';
 import type { WeatherBriefing, WeatherDay, WeatherDayData } from './types.js';
-import { zoneAusOpenMeteo } from '../briefing/ortszeit.js';
 
 // ── WMO Weather Codes ──────────────────────────────────────────────────────
 
@@ -34,10 +33,7 @@ export async function fetchWeatherBriefing(lat: number, lon: number): Promise<We
     `&current=temperature_2m,weather_code,pressure_msl` +
     `&hourly=precipitation,pressure_msl&forecast_hours=24&past_hours=3` +
     `&daily=temperature_2m_max,temperature_2m_min,weather_code,wind_speed_10m_max,precipitation_sum,uv_index_max` +
-    /* Ortszeit statt Europe/Berlin (09.11.2026): Tagesgrenzen von Heute/Morgen/
-       Überm. und die Regenstunde gelten am Ort; Open-Meteo liefert dazu
-       `timezone` und `utc_offset_seconds`. */
-    `&timezone=auto&forecast_days=3`;
+    `&timezone=Europe%2FBerlin&forecast_days=3`;
 
   const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
   if (!res.ok) throw new Error(`Open-Meteo Fehler: ${res.status}`);
@@ -75,18 +71,14 @@ export async function fetchWeatherBriefing(lat: number, lon: number): Promise<We
   const hourlyTimes: string[] = data.hourly?.time ?? [];
   for (let i = 0; i < hourlyPrecip.length; i++) {
     if (hourlyPrecip[i] > 0) {
-      /* Ortszeit ohne Zonensuffix („2026-11-09T14:00“) — Stunde direkt lesen,
-         nicht über new Date() in der Serverzone. */
-      const h = Number(String(hourlyTimes[i]).slice(11, 13));
+      const h = new Date(hourlyTimes[i]).getHours();
       todayRainHour = h;
       break;
     }
   }
 
-  const zone = zoneAusOpenMeteo(data);
   return {
     currentTemp, currentDesc, todayRainHour, days, pressureHpa, pressureTrend,
-    ...(zone ? { zeitzone: zone.zeitzone, utcOffsetMin: zone.utcOffsetMin } : {}),
     // legacy compat
     todayMin: days[0].min, todayMax: days[0].max,
     tomorrowMin: days[1].min, tomorrowMax: days[1].max, tomorrowDesc: days[1].desc,

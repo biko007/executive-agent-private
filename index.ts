@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { execSync, spawn } from "node:child_process";
+import SunCalc from "suncalc";
 import {
   createTrip, getTrip, listTrips,
   fetchWeatherBriefing,
@@ -97,7 +98,6 @@ import {
   ccAbschnittMorgen, nkAbschnitt, bankingAbschnitt, tradingZeilen, reisenAbschnitt,
   gewichtAlterZusatz, abendZeilen, ABEND_FRISTEN_TAGE,
   naechsteAktion, holeBriefing, speichereVersuch, markiereGesendet, markiereFehlerGemeldet,
-  astroOrtszeit, ortszeitHinweis, speichereZeitzone, type OrtsZeitzone,
   leseCcReports, leseNkFristen, leseKonten, leseTradingStatus, leseTradingTagesbuch, leseReisen,
   registerBriefingHttpRoutes, pruefeOffeneAktionen, leseSekretariatFristen, leseFristenErledigt,
   leseCcLoginStand, ccLoginZeile, yahooPostfachStand, postfaecherVereint,
@@ -170,8 +170,48 @@ const METER_IMPORT_ENABLED = (process.env.METER_IMPORT_ENABLED ?? 'true').toLowe
 // Settings, LocationSetting, loadSettings, saveSettings, getLocationSettings, DEFAULT_LOCATION → src/shared/settings
 // berlinDate → src/shared/utils
 
-/* Sonne und Mond → src/modules/briefing/ortszeit.ts (astroOrtszeit); seit
-   09.11.2026 in der Ortszeit des Briefing-Orts statt fest Europe/Berlin. */
+interface AstroData {
+  sunrise: string;   // HH:MM
+  sunset: string;    // HH:MM
+  moonrise: string | null;  // HH:MM or null (no rise today)
+  moonset: string | null;   // HH:MM or null (no set today)
+  moonIcon: string;
+  moonPhase: string;
+  illumination: number; // 0-100
+}
+
+function getAstroData(date: Date, location: LocationSetting = DEFAULT_LOCATION): AstroData {
+  const tz = 'Europe/Berlin';
+  const fmt = (d: Date) => new Intl.DateTimeFormat('de-DE', {
+    timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d);
+
+  const sun = SunCalc.getTimes(date, location.lat, location.lon);
+  const moonTimes = SunCalc.getMoonTimes(date, location.lat, location.lon);
+  const moon = SunCalc.getMoonIllumination(date);
+  const phase = moon.phase;
+
+  let moonIcon: string;
+  let moonPhase: string;
+  if (phase < 0.03 || phase >= 0.97) { moonIcon = '🌑'; moonPhase = 'Neumond'; }
+  else if (phase < 0.22) { moonIcon = '🌒'; moonPhase = 'Zunehmende Sichel'; }
+  else if (phase < 0.28) { moonIcon = '🌓'; moonPhase = 'Erstes Viertel'; }
+  else if (phase < 0.47) { moonIcon = '🌔'; moonPhase = 'Zunehmender Mond'; }
+  else if (phase < 0.53) { moonIcon = '🌕'; moonPhase = 'Vollmond'; }
+  else if (phase < 0.72) { moonIcon = '🌖'; moonPhase = 'Abnehmender Mond'; }
+  else if (phase < 0.78) { moonIcon = '🌗'; moonPhase = 'Letztes Viertel'; }
+  else                    { moonIcon = '🌘'; moonPhase = 'Abnehmende Sichel'; }
+
+  return {
+    sunrise: fmt(sun.sunrise),
+    sunset: fmt(sun.sunset),
+    moonrise: moonTimes.rise ? fmt(moonTimes.rise) : null,
+    moonset: moonTimes.set ? fmt(moonTimes.set) : null,
+    moonIcon,
+    moonPhase,
+    illumination: Math.round(moon.fraction * 100),
+  };
+}
 
 /* ---------------- Plugin ---------------- */
 
@@ -1751,9 +1791,6 @@ export default function (api: any) {
     });
   }
 
-  /** Ortszeitzone des zuletzt erzeugten Morgenbriefings (für die Briefing-API). */
-  let letzteBriefingZone: OrtsZeitzone | null = null;
-
   async function generateBriefingText(): Promise<string> {
     const tz  = 'Europe/Berlin';
     const now = new Date();
@@ -1776,16 +1813,9 @@ export default function (api: any) {
       : locAgeMs > 6 * 3600_000
         ? `⚠️ ${loc.label} (Stand: vor ${Math.round(locAgeMs / 3600_000)}h)`
         : loc.label;
-    /* Wetter vorziehen: die Antwort liefert die Ortszeitzone für Sonne/Mond
-       (09.11.2026). Fällt Open-Meteo aus, gilt wie bisher Europe/Berlin. */
-    const weatherPromise = fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null as any);
-    const wetterVorab = await weatherPromise;
-    const ortsZone: OrtsZeitzone | null = wetterVorab?.zeitzone
-      ? { zeitzone: wetterVorab.zeitzone, utcOffsetMin: wetterVorab.utcOffsetMin ?? 0 } : null;
-    letzteBriefingZone = ortsZone;
-    const astro = astroOrtszeit(now, loc.lat, loc.lon, ortsZone);
+    const astro = getAstroData(now, loc);
     parts.push(`${RUBRIK}📅 ${fmtDateFull.format(now)} — ${fmtTime.format(now)} Uhr`);
-    parts.push(`📍 ${locLabel}${ortszeitHinweis(ortsZone, now)}`);
+    parts.push(`📍 ${locLabel}`);
     parts.push(`☀️ Aufgang ${astro.sunrise}  •  Untergang ${astro.sunset}`);
     parts.push(`${astro.moonIcon} ${astro.moonPhase} (${astro.illumination}%)`);
     const moonTimeParts: string[] = [];
@@ -1828,7 +1858,7 @@ export default function (api: any) {
        hat nicht geantwortet. */
     const perSource = 10;
     const [weatherResult, inboxResult, calendarResult] = await Promise.all([
-      weatherPromise,
+      fetchWeatherBriefing(loc.lat, loc.lon).catch(() => null as any),
       Promise.all([
         m365Enabled ? m365Unread(perSource).catch(() => null) : [],
         yahooEnabled ? yahooUnread(perSource).catch(() => null) : [],
@@ -3619,13 +3649,7 @@ export default function (api: any) {
       let fehler: string | null = null;
       try {
         if (art === 'morgen') {
-          letzteBriefingZone = null;
           text = await mitZeitlimit(morgenErzeugen());
-          const zone = letzteBriefingZone as OrtsZeitzone | null;
-          if (zone) {
-            try { speichereZeitzone(art, datum, zone); }
-            catch (e: any) { api.logger.warn(`[executive-agent] Briefing-Zeitzone nicht gespeichert: ${e.message}`); }
-          }
         } else {
           const zeilen = await mitZeitlimit(generateAbendZeilen());
           text = alsTelegramHtml(zeilen);
