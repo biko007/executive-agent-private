@@ -63,3 +63,17 @@ export function ergebnisZeile(e: { ok: number; warnungen: number; blockiert: num
   }
   return `RESULT: FAIL (${e.ok}/${gezaehlt} passed${e.warnungen ? `, ${warn}` : ''})`;
 }
+
+/** Codex: Schwelle für „bald ablaufend“ (Tage). */
+export const CODEX_WARN_TAGE = 3;
+
+/**
+ * Stufe der Codex-Anmeldung nach Restlaufzeit (Owner-Freigabe 09.11.2026):
+ * abgelaufen → Fehler; gültig, aber unter CODEX_WARN_TAGE → Warnung
+ * („codex login einplanen“, blockiert nicht); sonst ok. Fehlende oder
+ * unlesbare Anmeldung bleibt im Smoke-Test ein Fehler.
+ */
+export function codexAblaufStufe(tage: number): 'fehler' | 'warnung' | 'ok' {
+  if (!Number.isFinite(tage) || tage < 0) return 'fehler';
+  return tage < CODEX_WARN_TAGE ? 'warnung' : 'ok';
+}

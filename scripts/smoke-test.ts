@@ -13,7 +13,7 @@ import { execSync } from 'child_process';
 import pg from 'pg';
 import { ANTHROPIC_MODEL } from '../src/shared/utils/index.js';
 import { listActiveTelegramBindings } from '../src/modules/telegram-binding/index.js';
-import { einstufung, diensteAusArgumenten, ergebnisZeile } from './smoke-bewertung.ts';
+import { einstufung, diensteAusArgumenten, ergebnisZeile, codexAblaufStufe } from './smoke-bewertung.ts';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -99,12 +99,15 @@ interface CheckResult {
   name: string;
   pass: boolean;
   detail: string;
+  /** Nur Hinweis: gelb im Bericht, blockiert nie (z. B. Codex bald ablaufend). */
+  nurWarnung?: boolean;
 }
 
 const results: CheckResult[] = [];
 
 function pass(name: string, detail: string) { results.push({ name, pass: true, detail }); }
 function fail(name: string, detail: string) { results.push({ name, pass: false, detail }); }
+function warn(name: string, detail: string) { results.push({ name, pass: false, detail, nurWarnung: true }); }
 
 // ── 1. SERVICE HEALTH ───────────────────────────────────────────────────────
 
@@ -799,9 +802,10 @@ function checkRedZoneConf() {
  * Diese Prüfung liest NUR das Ablaufdatum aus dem Token, nie den Token selbst.
  * Sie schlägt an, bevor der Schaden entsteht:
  *
- *   abgelaufen        → Fehler
- *   weniger als 3 Tage → Fehler (Zeit zum Handeln bleibt)
- *   sonst             → ok, mit Datum
+ *   abgelaufen / fehlt → Fehler
+ *   weniger als 3 Tage → Warnung „codex login einplanen“ (seit 09.11.2026,
+ *                        Owner-Freigabe; blockiert keinen Deploy mehr)
+ *   sonst              → ok, mit Datum
  *
  * Bewusst eine Smoke-Prüfung und kein neuer Dienst: Der Smoke-Test läuft
  * ohnehin vor jedem Deploy und nach jedem Neustart.
@@ -832,10 +836,11 @@ function checkCodexAuth() {
     }
     const tage = (exp * 1000 - Date.now()) / 86_400_000;
     const datum = new Date(exp * 1000).toISOString().slice(0, 16).replace('T', ' ');
-    if (tage < 0) {
+    const stufe = codexAblaufStufe(tage);
+    if (stufe === 'fehler') {
       fail(label, `abgelaufen am ${datum} UTC — codex login ausfuehren`);
-    } else if (tage < 3) {
-      fail(label, `laeuft am ${datum} UTC ab (in ${tage.toFixed(1)} Tagen) — codex login einplanen`);
+    } else if (stufe === 'warnung') {
+      warn(label, `laeuft am ${datum} UTC ab (in ${tage.toFixed(1)} Tagen) — codex login einplanen`);
     } else {
       pass(label, `gueltig bis ${datum} UTC (${tage.toFixed(1)} Tage)`);
     }
@@ -1064,7 +1069,7 @@ async function main() {
 
   /* Rot heisst nicht immer Abbruch: Eine dienstgebundene Pruefung ist fuer
      fremde Dienste nur eine Warnung (smoke-bewertung.ts, 02.11.2026). */
-  const bewertet = results.map(r => ({ ...r, stufe: einstufung(r.name, r.pass, DIENSTE) }));
+  const bewertet = results.map(r => ({ ...r, stufe: r.nurWarnung ? 'warnung' as const : einstufung(r.name, r.pass, DIENSTE) }));
   const ok = bewertet.filter(r => r.stufe === 'ok').length;
   const warnungen = bewertet.filter(r => r.stufe === 'warnung');
   const blockiert = bewertet.filter(r => r.stufe === 'blockiert').length;

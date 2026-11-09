@@ -92,3 +92,22 @@ describe('deploy.sh nutzt die Bewertung', () => {
     expect(rueckfall).toContain('Dienst gesund, Smoke weiterhin rot');
   });
 });
+
+// ── Codex-Anmeldung: bald ablaufend = Warnung, abgelaufen = Fehler (09.11.2026) ──
+import { codexAblaufStufe, CODEX_WARN_TAGE } from '../scripts/smoke-bewertung.ts';
+
+describe('codexAblaufStufe', () => {
+  test('bald ablaufend (unter 3 Tagen) → Warnung', () => {
+    expect(CODEX_WARN_TAGE).toBe(3);
+    expect(codexAblaufStufe(2.8)).toBe('warnung');
+    expect(codexAblaufStufe(0.01)).toBe('warnung');
+  });
+  test('abgelaufen → Fehler', () => {
+    expect(codexAblaufStufe(-0.1)).toBe('fehler');
+    expect(codexAblaufStufe(Number.NaN)).toBe('fehler');
+  });
+  test('genug Restlaufzeit → ok', () => {
+    expect(codexAblaufStufe(3)).toBe('ok');
+    expect(codexAblaufStufe(40)).toBe('ok');
+  });
+});
