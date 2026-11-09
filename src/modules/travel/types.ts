@@ -129,6 +129,9 @@ export interface WeatherBriefing {
   days: [WeatherDayData, WeatherDayData, WeatherDayData]; // heute, morgen, übermorgen
   pressureHpa: number;     // current pressure_msl
   pressureTrend: '↑ steigend' | '↓ fallend' | '→ stabil';
+  /** Ortszeitzone laut Open-Meteo (IANA) und Abstand zu UTC in Minuten */
+  zeitzone?: string;
+  utcOffsetMin?: number;
   // legacy compat
   todayMin: number; todayMax: number;
   tomorrowMin: number; tomorrowMax: number; tomorrowDesc: string;
